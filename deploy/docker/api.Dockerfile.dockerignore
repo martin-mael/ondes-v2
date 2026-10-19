@@ -1,0 +1,17 @@
+**/node_modules
+**/.DS_Store
+**/coverage
+**/dist
+**/*.tsbuildinfo
+.git
+.github
+.claude
+.env
+.env.*
+docs
+engine
+deploy
+**/*.md
+.editorconfig
+biome.json
+vitest*.config.ts
