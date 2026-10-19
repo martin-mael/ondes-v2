@@ -1,0 +1,13 @@
+{
+  "name": "@ondes/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/main.ts",
+    "start": "node src/main.ts",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@ondes/shared": "workspace:*"
+  }
+}
