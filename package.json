@@ -8,6 +8,12 @@
   },
   "scripts": {
     "dev": "pnpm --recursive --parallel --if-present run dev",
+    "dev:up": "docker compose -f deploy/compose.dev.yml up -d --wait postgres rabbitmq garage icecast liquidsoap && docker compose -f deploy/compose.dev.yml run --rm garage-init",
+    "dev:down": "docker compose -f deploy/compose.dev.yml down",
+    "dev:reset": "docker compose -f deploy/compose.dev.yml down -v",
+    "dev:logs": "docker compose -f deploy/compose.dev.yml logs -f",
+    "dev:ps": "docker compose -f deploy/compose.dev.yml ps -a",
+    "dev:seed": "node --env-file-if-exists=.env deploy/dev/seed/index.ts",
     "lint": "biome check .",
     "format": "biome check --write .",
     "typecheck": "pnpm --recursive --parallel --if-present run typecheck",
