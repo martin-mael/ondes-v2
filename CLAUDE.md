@@ -56,10 +56,12 @@ engine/
 deploy/                    # compose files, installer, Caddyfile
 docs/                      # research, ADRs (docs/adr/NNNN-title.md)
 ```
-This layout is the target. Issue #3 creates it and may adjust it. If it does, update this file in the same PR.
+Created by #3. Packages are named `@ondes/<folder>` (e.g. `@ondes/shared`) and are **source-first**: each exports `./src/index.ts`, with no build step between packages. If you change the layout, update this file in the same PR.
 
 ## Conventions
-- **TypeScript** strict, ESM, Node 24 LTS, pnpm workspaces. Libraries (Fastify, Drizzle, TanStack, Vitest) are confirmed in #3. Check `package.json` rather than assuming.
+- **Stack:** see `docs/adr/0001-stack.md`. Node ≥ 24.18, pnpm workspaces, TypeScript 7 (type check only), Biome 2 (lint + format), Vitest 5. Fastify, Drizzle, React/Vite/TanStack are installed by the issue that first needs them. Check `package.json` rather than assuming.
+- **Erasable TypeScript only:** Node runs `.ts` files directly (`node src/main.ts`), so there are no `enum`, `namespace` or constructor parameter properties (use `as const` objects or zod enums). Relative imports carry the `.ts` extension: `import { x } from './x.ts'`.
+- **Adding a dependency:** `pnpm --filter @ondes/<pkg> add <dep>@<exact-version>`. Pin exact versions and don't add root dependencies except tooling.
 - **Validation:** zod at every boundary (HTTP, queue messages, engine callbacks). Types are inferred from `packages/shared/src/contracts`, never duplicated.
 - **Tenancy:** every station-scoped table has `station_id` (and `org_id` where relevant). Repository functions take the tenant scope explicitly. Never query station data without it.
 - **Time:** store UTC (`timestamptz`); compute in the station's IANA timezone through `packages/shared/src/time`. Any scheduling code needs DST tests (last Sunday of March and October, Europe/Paris).
@@ -77,11 +79,12 @@ This layout is the target. Issue #3 creates it and may adjust it. If it does, up
 
 ## Tests & checks
 Every PR must pass, locally and in CI:
-- `pnpm lint`, `pnpm typecheck` and `pnpm test` (unit tests next to the code, `*.test.ts`).
-- `pnpm test:integration` when you touch db, queue, storage or engine (uses `deploy/compose.dev.yml` services).
-- Engine template changes: `pnpm test:engine` (runs `liquidsoap --check` and the fixtures in `engine/tests`).
+- `pnpm lint` (Biome; `pnpm format` auto-fixes formatting and import order), `pnpm typecheck` and `pnpm test` (unit tests next to the code, `*.test.ts`).
+- `pnpm test:integration` when you touch db, queue, storage or engine: `*.int.test.ts` files, using the `deploy/compose.dev.yml` services.
+- Engine template changes: `pnpm test:engine` (`engine/tests/run.sh`: `liquidsoap --check` on every template, plus the fixtures in `engine/tests`).
+- Run one package's tests with `pnpm vitest run apps/api`, or typecheck one package with `pnpm --filter @ondes/api typecheck`.
 
-The exact scripts are defined by #3 and #10. If a command here is wrong, fix this file.
+If a command here is wrong, fix this file.
 
 ## Commits & PRs
 - Conventional commits: `feat(library): …`, `fix(engine): …`, `contract: …`, `chore: …`, `docs: …`.

@@ -1,0 +1,11 @@
+{
+  "name": "@ondes/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@ondes/shared": "workspace:*"
+  }
+}
