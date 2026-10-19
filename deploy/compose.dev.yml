@@ -1,0 +1,150 @@
+# Backing services for local development. See deploy/README.md.
+#
+#   pnpm dev:up      # start everything and wait until healthy
+#   pnpm dev:down    # stop (volumes are kept; add -v to wipe them)
+#
+# Every image is pinned to an exact version. Every published port is bound to
+# 127.0.0.1 only. Liquidsoap's control port is never published.
+# Defaults below match .env.example; override any of them from your shell or with
+# `docker compose --env-file .env -f deploy/compose.dev.yml ...`.
+
+name: ondes-dev
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ondes}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ondes}
+      POSTGRES_DB: ${POSTGRES_DB:-ondes}
+      POSTGRES_TEST_DB: ${POSTGRES_TEST_DB:-ondes_test}
+    ports:
+      - 127.0.0.1:${POSTGRES_PORT:-5432}:5432
+    volumes:
+      # Postgres 18 images keep data under /var/lib/postgresql/<major>/docker.
+      - postgres-data:/var/lib/postgresql
+      - ./dev/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  rabbitmq:
+    image: rabbitmq:4.3.6-management-alpine
+    hostname: rabbitmq # RabbitMQ keys its data directory on the node name
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-ondes}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-ondes}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-ondes}
+    ports:
+      - 127.0.0.1:${RABBITMQ_PORT:-5672}:5672
+      # Management UI: localhost only, never published in production.
+      - 127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, check_port_connectivity]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  garage:
+    image: dxflrs/garage:v2.4.1
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-0c0e909319f61fcdb55ae72965e15321a109fe535601cad945461f8ecf8f1680}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:-ondes-dev-admin-token}
+    ports:
+      - 127.0.0.1:${S3_PORT:-3900}:3900
+      - 127.0.0.1:${GARAGE_ADMIN_PORT:-3903}:3903
+    volumes:
+      - ./dev/garage/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    healthcheck:
+      # The image has no shell; `garage status` answers once the node is up.
+      test: [CMD, /garage, status]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # One-shot: assigns the node a layout, imports the dev key, creates the bucket.
+  garage-init:
+    image: node:24.22.0-alpine
+    command: [node, /init/init.ts]
+    environment:
+      GARAGE_ADMIN_URL: http://garage:3903
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:-ondes-dev-admin-token}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-GK6f6e6465732d6465762d6b65}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-fc0e6e6f0bb08c084598a6494af6fc8299054cfbcb7e11d28c2241aeb3b54ee8}
+      S3_BUCKET: ${S3_BUCKET:-ondes-dev}
+    volumes:
+      - ./dev/garage/init.ts:/init/init.ts:ro
+    depends_on:
+      garage:
+        condition: service_healthy
+    restart: 'no'
+
+  icecast:
+    image: libretime/icecast:2.5.0-alpine
+    # Write the dev config over the image's default, then let the image entrypoint apply
+    # the ICECAST_* overrides (it edits /etc/icecast.xml in place).
+    entrypoint:
+      - sh
+      - -c
+      - cat /config/icecast.xml > /etc/icecast.xml && exec docker-entrypoint icecast -c /etc/icecast.xml
+    environment:
+      ICECAST_SOURCE_PASSWORD: ${ICECAST_SOURCE_PASSWORD:-ondes-dev-source}
+      ICECAST_RELAY_PASSWORD: ${ICECAST_RELAY_PASSWORD:-ondes-dev-relay}
+      ICECAST_ADMIN_USERNAME: ${ICECAST_ADMIN_USER:-admin}
+      ICECAST_ADMIN_PASSWORD: ${ICECAST_ADMIN_PASSWORD:-ondes-dev-admin}
+      ICECAST_HOSTNAME: localhost
+    ports:
+      - 127.0.0.1:${ICECAST_PORT:-8000}:8000
+    volumes:
+      - ./dev/icecast/icecast.xml:/config/icecast.xml:ro
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8000/status-json.xsl]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  liquidsoap:
+    # Latest 2.4.x at the time of writing; spike #13 may revisit the exact version.
+    image: savonet/liquidsoap:v2.4.6
+    command: [/config/dev.liq]
+    environment:
+      ICECAST_HOST: icecast
+      ICECAST_PORT: '8000'
+      ICECAST_SOURCE_PASSWORD: ${ICECAST_SOURCE_PASSWORD:-ondes-dev-source}
+    # No `ports:` on purpose. Telnet (1234) is reachable from the compose network only.
+    expose:
+      - '1234'
+    volumes:
+      - ./dev/liquidsoap/dev.liq:/config/dev.liq:ro
+    depends_on:
+      icecast:
+        condition: service_healthy
+    healthcheck:
+      # Asks the telnet server for its version: proves the script loaded and is running.
+      # Each probe logs a client connection, hence the long interval once started.
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/1234 && printf 'version\nquit\n' >&3 && grep -q Liquidsoap <&3
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  garage-meta:
+  garage-data:
