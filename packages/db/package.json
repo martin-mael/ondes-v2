@@ -3,9 +3,20 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit -p ."
+    "typecheck": "tsc --noEmit -p .",
+    "generate": "drizzle-kit generate",
+    "migrate": "node --env-file-if-exists=../../.env src/migrate-cli.ts"
+  },
+  "devDependencies": {
+    "drizzle-kit": "0.31.11"
+  },
+  "dependencies": {
+    "@ondes/shared": "workspace:*",
+    "drizzle-orm": "0.45.4",
+    "postgres": "3.4.9"
   }
 }
