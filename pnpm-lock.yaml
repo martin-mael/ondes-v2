@@ -23,9 +23,15 @@ importers:
 
   apps/api:
     dependencies:
+      '@ondes/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
       '@ondes/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
 
   apps/web:
     dependencies:
@@ -35,13 +41,29 @@ importers:
 
   apps/worker:
     dependencies:
+      '@ondes/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
       '@ondes/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
 
   packages/db: {}
 
-  packages/queue: {}
+  packages/queue:
+    dependencies:
+      '@ondes/shared':
+        specifier: workspace:*
+        version: link:../shared
+      rabbitmq-client:
+        specifier: 5.1.0
+        version: 5.1.0
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
 
   packages/scheduling: {}
 
@@ -503,6 +525,10 @@ packages:
     resolution: {integrity: sha512-YUbWYCgErwnMAVkjUnYa+KlMBzGpHwiIt/DE7f0G33AuX2LH9UcTk6KgWxd3zRU+pN3u/C+Xl3EnMLM4Hea7Sg==}
     engines: {node: ^10 || ^12 || >=14}
 
+  rabbitmq-client@5.1.0:
+    resolution: {integrity: sha512-tTs9v/3nx9GTduRE1IqY4FviCYS9SS7kC3XaYyZ74FMEKy6QdueWGhnShCRCu+g0DzExPtPluMn5pmPwuY7LPQ==}
+    engines: {node: '>=16'}
+
   rolldown@1.2.14:
     resolution: {integrity: sha512-eTBTTqMR6uHKLgcUqpJP8ntzDI6V4LYA8negAMBEI7gkgVvOdrx6VsvS2Ym+83KhOPdLCHWJu0w7UQFJZhHKNw==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -893,6 +919,8 @@ snapshots:
       nanoid: 3.3.20
       picocolors: 1.1.1
       source-map-js: 1.2.2
+
+  rabbitmq-client@5.1.0: {}
 
   rolldown@1.2.14:
     dependencies:
