@@ -1,50 +1,50 @@
-# Ondes station engine: minimal template draft (spike #13).
+# Ondes station engine template (#27). Liquidsoap 2.4.6.
 #
 # One Liquidsoap process per station. Node owns the log and feeds this script just in
-# time; the script only executes and reports what aired. The engine adapter contract
-# (commands, events, payloads, transport) is docs/adr/0002-engine-control.md and
+# time; the script only executes and reports what aired. The control API (routes,
+# payloads, events) is docs/adr/0002-engine-control.md and
 # packages/shared/src/contracts/engine.ts. Keep the three in sync.
 #
+# This file is a template, not a runnable script: apps/api/src/modules/engine/config
+# renders it from a station's settings. It replaces the `@ondes:config` marker below with
+# the station's constants and the `@ondes:outputs` marker with its Icecast outputs, and
+# stamps the result with a config version. `pnpm test:engine` renders it for every
+# settings combination in engine/tests/template/combos.ts and runs `liquidsoap --check`.
+#
 # Source chain, highest priority first:
-#   live (input.harbor, gated by Node) > queue (request.queue fed by Node)
+#   live (input.harbor, gated by Node) > queue (segments pushed by Node)
 #   > safety playlist > emergency single() > mksafe (silence)
+# then: processing (compressor, limiter) > as-run > mksafe > blank.detect > outputs.
 #
 # Ports (inside the station's Docker network):
-#   ENGINE_CONTROL_PORT (7000)  control API: harbor HTTP + JSON. Internal only, never published.
-#   ENGINE_LIVE_PORT    (8005)  input.harbor for live DJs. The only port that may be published.
-#   9599                        Prometheus metrics. Internal only.
+#   control_port (7000)  control API: harbor HTTP + JSON. Internal only, never published.
+#   live_port    (8005)  input.harbor for live DJs. The only port that may be published.
+#   metrics_port (9599)  Prometheus metrics. Internal only.
 #
-# #27 turns this file into a generated, versioned template. Until then it reads its
-# settings from the environment so the spike in engine/spikes/control can drive it.
+# Secrets never go into the rendered script (it is stored and versioned): they come from
+# the container environment.
+#   ENGINE_CONTROL_TOKEN     bearer token for the control API (empty: no auth, dev only)
+#   ENGINE_LIVE_PASSWORD     shared live password, when no live auth webhook is set
+#   ICECAST_SOURCE_PASSWORD  Icecast source password
+
+# @ondes:config
 
 settings.server.telnet := false
 settings.harbor.bind_addrs := ["0.0.0.0"]
 settings.prometheus.server := true
-settings.prometheus.server.port := 9599
+settings.prometheus.server.port := metrics_port
 settings.log.stdout := true
 settings.log.file := false
 
-def env(name, default) =
-  environment.get(default=default, name)
-end
+control_token = environment.get(default="", "ENGINE_CONTROL_TOKEN")
+live_password = environment.get(default="", "ENGINE_LIVE_PASSWORD")
+icecast_password = environment.get(default="", "ICECAST_SOURCE_PASSWORD")
 
-station_id = env("STATION_ID", "dev")
-control_port = int_of_string(env("ENGINE_CONTROL_PORT", "7000"))
-control_token = env("ENGINE_CONTROL_TOKEN", "")
-events_url = env("ENGINE_EVENTS_URL", "")
-live_port = int_of_string(env("ENGINE_LIVE_PORT", "8005"))
-live_mount = env("ENGINE_LIVE_MOUNT", "live")
-live_auth_url = env("ENGINE_LIVE_AUTH_URL", "")
-live_password = env("ENGINE_LIVE_PASSWORD", "")
-safety_dir = env("ENGINE_SAFETY_DIR", "/media/safety")
-emergency_file = env("ENGINE_EMERGENCY_FILE", "/media/emergency.wav")
-default_cross = float_of_string(env("ENGINE_CROSS_DURATION", "3."))
-blank_max = float_of_string(env("ENGINE_BLANK_MAX", "10."))
-blank_threshold = float_of_string(env("ENGINE_BLANK_THRESHOLD", "-40."))
-icecast_host = env("ICECAST_HOST", "icecast")
-icecast_port = int_of_string(env("ICECAST_PORT", "8000"))
-icecast_password = env("ICECAST_SOURCE_PASSWORD", "hackme")
-icecast_mount = env("ICECAST_MOUNT", "#{station_id}.mp3")
+if
+  icecast_password == ""
+then
+  log.critical(label="ondes", "ICECAST_SOURCE_PASSWORD is not set: the outputs cannot connect")
+end
 
 # A new id on every start, so Node can tell a restart (seq back to 1) from lost events.
 boot_id = "#{int_of_float(time())}-#{random.int(min=100000, max=999999)}"
@@ -54,10 +54,10 @@ started_at = time()
 # Events: engine -> Node.
 #
 # Callbacks only append to an in-memory log (cheap, so they can run on the clock thread).
-# A separate thread posts new events to ENGINE_EVENTS_URL in order, in batches, and
-# retries until Node acknowledges with a 2xx. Node can also pull GET /v1/events?after=N
-# to backfill after a gap. The log is written by the clock thread only, and the sender
-# only reads it, so the two never race.
+# A separate thread posts new events to events_url in order, in batches, and retries
+# until Node acknowledges with a 2xx. Node can also pull GET /v1/events?after=N to
+# backfill after a gap. The log is written by the clock thread only (and once at boot,
+# below), and the sender only reads it, so the two never race.
 
 event_seq = ref(0)
 event_log = ref([])
@@ -141,11 +141,107 @@ def nullable_meta(m, key) =
 end
 
 # ---------------------------------------------------------------------------------------
-# Sources.
+# Main queue: segments pushed by Node.
+#
+# A segment is one log item, or an island chain (A body | island | B body, spike #12)
+# that must air as ONE track: the station crossfade works in whole frames and drops or
+# pads up to a frame at every track boundary it sees, so it must never see an island
+# join. Each segment plays as `sequence(merge=true, [...requests, source.fail()])`, with
+# `liq_amplify` applied per request inside it (amplify only reads its override on a new
+# track, and the merged segment has none at the joins). Node sends cue points already
+# snapped to the playout copy's packet grid and biased by half a sample; the template
+# passes them through untouched. A single item is a one-request segment.
+#
+# Threads: harbor handlers are the only writers of `segments` (push, remove, clear) and
+# of a segment's `aborted` flag; the clock thread is the only writer of `started_id` and
+# `current_segment`. Each side only reads what the other writes, so no write is lost.
+# Node's adapter sends commands one at a time.
 
-# Node pushes log items here. Requests carry our metadata as annotations:
-# ondes_item_id, cue/fade/amplify/cross overrides, title/artist.
-queue = request.queue(id="queue")
+segments = ref([])
+next_segment_id = ref(0)
+started_id = ref(0)
+
+def new_segment(requests) =
+  next_segment_id := next_segment_id() + 1
+  {id=next_segment_id(), requests=requests, left=ref(requests), aborted=ref(false)}
+end
+
+current_segment = ref(new_segment([]))
+
+def pending_segments() =
+  list.filter(fun (s) -> s.id > started_id(), segments())
+end
+
+def pending_requests() =
+  list.flatten(list.map(fun (s) -> s.requests, pending_segments()))
+end
+
+def meta_of(r, key) =
+  m = request.metadata(r)
+  if list.assoc.mem(key, m) then m[key] else "" end
+end
+
+def item_of(r) =
+  meta_of(r, "ondes_item_id")
+end
+
+# One request of a segment, with its own gain. `left` holds the requests not taken yet,
+# so the clock can release them if the segment is skipped half way.
+def segment_request(seg, (r : request)) =
+  taken = ref(false)
+  amplify(
+    override="liq_amplify",
+    1.,
+    request.dynamic(
+      synchronous=true,
+      available={not taken() and not seg.aborted()},
+      fun () ->
+        if
+          taken() or seg.aborted()
+        then
+          null
+        else
+          taken := true
+          seg.left := list.remove(r, seg.left())
+          r
+        end
+    )
+  )
+end
+
+def segment_source(seg) =
+  # `merge` does not apply when advancing to the last source of the list, hence the
+  # trailing `source.fail()`, which is never ready.
+  sequence(
+    id="segment_#{seg.id}",
+    merge=true,
+    [...list.map(fun (r) -> segment_request(seg, r), seg.requests), source.fail()]
+  )
+end
+
+# Runs on the clock thread, at every track boundary and while nothing is ready.
+def next_segment() =
+  pending = pending_segments()
+  if
+    list.is_empty(pending)
+  then
+    null
+  else
+    seg = list.hd(pending)
+    done = current_segment()
+    # A skipped segment never takes its remaining requests: release them here.
+    if done.aborted() then list.iter(request.destroy, done.left()) end
+    started_id := seg.id
+    current_segment := seg
+    segment_source(seg)
+  end
+end
+
+# self_sync=false: crossfade refuses a source that may control its own latency.
+queue = source.dynamic(id="queue", self_sync=false, track_sensitive={true}, next_segment)
+
+# ---------------------------------------------------------------------------------------
+# Fallback sources.
 
 # Station-local safety rotation, read from the playout cache. Reloaded when files change.
 safety =
@@ -160,20 +256,20 @@ safety =
 emergency =
   single(id="emergency", "annotate:ondes_source=\"emergency\":#{emergency_file}")
 
-# liq_amplify must be applied per track before the crossfade mixes two tracks together.
-queue_out = amplify(id="queue_gain", override="liq_amplify", 1., queue)
+# liq_amplify must be applied per track before the crossfade mixes two tracks together
+# (the queue applies it per request, inside each segment).
 safety = amplify(id="safety_gain", override="liq_amplify", 1., safety)
 
 # track_sensitive=false: as soon as Node refills a dry queue, the log takes the air back
 # (through the crossfade below) instead of waiting for the safety track to end. It also
 # stops the emergency file from sticking at boot, before the first requests resolve.
-auto =
-  fallback(id="auto", track_sensitive=false, [queue_out, safety, emergency])
+auto = fallback(id="auto", track_sensitive=false, [queue, safety, emergency])
 
 # Overlap between two tracks = min(liq_cross_end_duration of the outgoing one,
-# liq_cross_start_duration of the incoming one); 0 on both = butt splice (island joins).
-# Fades use liq_fade_in / liq_fade_out. Don't use liq_cross_duration: in 2.4.6 it sets
-# both ends of the track at once and delays the track's metadata, see ADR 0002.
+# liq_cross_start_duration of the incoming one). Fades use liq_fade_in / liq_fade_out.
+# Don't use liq_cross_duration: in 2.4.6 it sets both ends of the track at once and
+# delays the track's metadata, see ADR 0002. A segment is one track here: its first
+# request carries the cross/fade into it, its last request the cross/fade out of it.
 auto =
   crossfade(
     id="xfade",
@@ -183,7 +279,16 @@ auto =
     auto
   )
 
-# Live input. Auth: Node's webhook if configured, else a single shared password.
+# ---------------------------------------------------------------------------------------
+# Live input (live_input setting). Auth: Node's webhook if configured, else the shared
+# ENGINE_LIVE_PASSWORD. #64 extends this into a harbor pool.
+
+live_enabled = ref(false)
+live_connected = ref(false)
+live_ready = ref(fun () -> false)
+# Ends the track on air, whichever branch it comes from (POST /v1/skip).
+skip_on_air = ref(fun () -> auto.skip())
+
 def live_auth(login) =
   if
     live_auth_url != ""
@@ -210,65 +315,97 @@ def live_auth(login) =
   end
 end
 
-live =
-  input.harbor(
-    id="live",
-    port=live_port,
-    auth=live_auth,
-    buffer=5.,
-    max=10.,
-    live_mount
+def with_live(auto) =
+  live =
+    input.harbor(
+      id="live",
+      port=live_port,
+      auth=live_auth,
+      buffer=live_buffer,
+      max=live_max,
+      live_mount
+    )
+
+  # Never forward the DJ's credentials: drop the Authorization header.
+  live.on_connect(
+    synchronous=true,
+    fun (headers) ->
+      begin
+        live_connected := true
+        d = json.object()
+        d.add(
+          "headers",
+          list.filter(fun (h) -> string.case(lower=true, fst(h)) != "authorization", headers)
+        )
+        emit("live.connected", d)
+      end
   )
 
-live_connected = ref(false)
-
-# Never forward the DJ's credentials: drop the Authorization header.
-live.on_connect(
-  synchronous=true,
-  fun (headers) ->
-    begin
-      live_connected := true
-      d = json.object()
-      d.add(
-        "headers",
-        list.filter(fun (h) -> string.case(lower=true, fst(h)) != "authorization", headers)
-      )
-      emit("live.connected", d)
-    end
-)
-
-live.on_disconnect(
-  synchronous=true,
-  fun () ->
-    begin
-      live_connected := false
-      emit("live.disconnected", json.object())
-    end
-)
-
-# Node decides when a live DJ may take over (live slot, or an ad-hoc override).
-live_enabled = ref(false)
-live_gated = switch(id="live_gate", track_sensitive=false, [({live_enabled()}, live)])
-
-# Tag above the gate: opening it starts a new track there, and insert_missing gives that
-# track metadata, which is what the as-run callback keys on.
-live_gated =
-  metadata.map(
-    insert_missing=true,
-    fun (_) -> [("ondes_source", "live")],
-    live_gated
+  live.on_disconnect(
+    synchronous=true,
+    fun () ->
+      begin
+        live_connected := false
+        emit("live.disconnected", json.object())
+      end
   )
+
+  # Ready once input.harbor has buffered `buffer` seconds; only then can it take the air.
+  live_ready := fun () -> live.is_ready()
+
+  # Node decides when a live DJ may take over (live slot, or an ad-hoc override).
+  gated = switch(id="live_gate", track_sensitive=false, [({live_enabled()}, live)])
+
+  # Tag above the gate: opening it starts a new track there, and insert_missing gives
+  # that track metadata, which is what the as-run callback keys on.
+  gated = metadata.map(insert_missing=true, fun (_) -> [("ondes_source", "live")], gated)
+
+  def live_fade(a, b) =
+    add(normalize=false, [fade.in(duration=1., b), fade.out(duration=1., a)])
+  end
+  main =
+    fallback(
+      id="main", track_sensitive=false, transitions=[live_fade, live_fade], [gated, auto]
+    )
+  skip_on_air := fun () -> main.skip()
+  main
+end
+
+program = if live_input then (with_live(auto) : source) else (auto : source) end
+
+# ---------------------------------------------------------------------------------------
+# Processing (per-station toggles). Before mksafe, so silence passes through untouched.
 
 radio =
-  fallback(
-    id="main",
-    track_sensitive=false,
-    transitions=[
-      fun (a, b) -> add(normalize=false, [fade.in(duration=1., b), fade.out(duration=1., a)]),
-      fun (a, b) -> add(normalize=false, [fade.in(duration=1., b), fade.out(duration=1., a)])
-    ],
-    [live_gated, auto]
-  )
+  if
+    compressor_enabled
+  then
+    (
+      compress(
+        id="compressor",
+        threshold=compressor_threshold,
+        ratio=compressor_ratio,
+        attack=compressor_attack,
+        release=compressor_release,
+        knee=compressor_knee,
+        gain=compressor_gain,
+        program
+      )
+    :
+      source
+    )
+  else
+    program
+  end
+
+radio =
+  if
+    limiter_enabled
+  then
+    (limit(id="limiter", threshold=limiter_threshold, release=limiter_release, radio) : source)
+  else
+    radio
+  end
 
 # ---------------------------------------------------------------------------------------
 # As-run: what actually aired, taken after every transition, right before the output.
@@ -276,11 +413,14 @@ radio =
 # Keyed on metadata, not on track marks: when a crossfade override is set, Liquidsoap
 # emits the track mark at the start of the transition with empty metadata, and the
 # incoming track's metadata only when its audio actually starts. A new request id (rid)
-# is a new item; sources without requests (live) are keyed by source name.
+# is a new item, so every request of a segment (A body, island, B body) gets its own
+# track.started although the segment is one track; sources without requests (live) are
+# keyed by source name.
 
 current = ref(json.object())
 current_key = ref("")
 current_item = ref("")
+current_segment_id = ref(json.value(null))
 current_source = ref("")
 current_started = ref(0.)
 
@@ -302,7 +442,11 @@ def on_air(m) =
     current_started() > 0.
   then
     d = json.object()
-    d.add("item_id", if current_item() == "" then json.value(null) else json.value(current_item()) end)
+    d.add(
+      "item_id",
+      if current_item() == "" then json.value(null) else json.value(current_item()) end
+    )
+    d.add("segment_id", current_segment_id())
     d.add("source", current_source())
     d.add("started_at", current_started())
     d.add("played", now - current_started())
@@ -320,17 +464,23 @@ def on_air(m) =
     end
   d = json.object()
   d.add("item_id", if item == "" then json.value(null) else json.value(item) end)
+  d.add("segment_id", nullable_meta(m, "ondes_segment_id"))
   d.add("source", src)
   d.add("title", nullable_meta(m, "title"))
   d.add("artist", nullable_meta(m, "artist"))
   d.add("filename", nullable_meta(m, "filename"))
   d.add("rid", nullable_meta(m, "rid"))
   current_item := item
+  current_segment_id := nullable_meta(m, "ondes_segment_id")
   current_source := src
   current_started := now
   current := d
   emit("track.started", d)
 end
+
+# The callbacks go on mksafe's output (the cast sources above have no methods left); its
+# own silence carries no metadata, so it never shows up in the as-run.
+radio = mksafe(id="safe", radio)
 
 radio.on_metadata(
   synchronous=true,
@@ -358,7 +508,6 @@ radio.on_track(
 
 # Silence on the final mix, whatever the source. After mksafe, so that "nothing to play
 # at all" (mksafe's silence) is detected too.
-radio = mksafe(id="safe", radio)
 radio =
   blank.detect(
     id="blank",
@@ -374,7 +523,7 @@ radio.on_noise(synchronous=true, fun () -> emit("blank.recovered", json.object()
 blank_source = radio
 
 # ---------------------------------------------------------------------------------------
-# Metrics. Built-in server on 9599 plus a few station gauges.
+# Metrics. Built-in server on metrics_port plus a few station gauges.
 
 queue_length_metric =
   prometheus.gauge(
@@ -408,7 +557,7 @@ latency_metric = prometheus.latency(labels=["station"])
 latency_metric(label_values=[station_id], radio)
 
 def update_metrics() =
-  queue_length_gauge(float(queue.length()))
+  queue_length_gauge(float(list.length(pending_requests())))
   live_gauge(if live_connected() then 1. else 0. end)
   blank_gauge(if blank_source.is_blank() then 1. else 0. end)
   list.iter(
@@ -424,7 +573,7 @@ end
 thread.run(every=1., update_metrics)
 
 # ---------------------------------------------------------------------------------------
-# Control API: harbor HTTP + JSON on ENGINE_CONTROL_PORT.
+# Control API: harbor HTTP + JSON on control_port.
 
 # Every reply is a JSON string, so handlers never unify `res.json` over different types.
 def reply(res, code, body) =
@@ -452,17 +601,19 @@ def fail(res, code, message) =
 end
 
 def request_json(r) =
-  m = request.metadata(r)
   d = json.object()
   d.add("rid", request.id(r))
+  m = request.metadata(r)
   d.add("item_id", nullable_meta(m, "ondes_item_id"))
+  d.add("segment_id", nullable_meta(m, "ondes_segment_id"))
   d.add("uri", request.uri(r))
   d.add("status", request.status(r))
   d
 end
 
-def queue_json() =
-  list.map(request_json, queue.queue())
+def requests_json(rs) =
+  items = list.map(fun (r) -> request_json(r).stringify(compact=true), rs)
+  "[" ^ string.concat(separator=",", items) ^ "]"
 end
 
 def state_json() =
@@ -470,6 +621,7 @@ def state_json() =
   s.add("boot_id", boot_id)
   s.add("station_id", station_id)
   s.add("version", liquidsoap.version)
+  s.add("config_version", config_version)
   s.add("uptime", time() - started_at)
   s.add("seq", event_seq())
   on_air = current()
@@ -478,12 +630,12 @@ def state_json() =
   # crash the engine (Source.Unavailable). Node knows each item's planned duration.
   if current_started() > 0. then on_air.add("elapsed", time() - current_started()) end
   s.add("on_air", on_air)
-  s.add("queue", queue_json())
+  s.add("queue", list.map(request_json, pending_requests()))
   l = json.object()
   l.add("enabled", live_enabled())
   l.add("connected", live_connected())
-  # Ready once input.harbor has buffered `buffer` seconds; only then can it take the air.
-  l.add("ready", live.is_ready())
+  is_ready = live_ready()
+  l.add("ready", is_ready())
   s.add("live", l)
   s.add("blank", blank_source.is_blank())
   levels = blank_source.dB_levels()
@@ -520,6 +672,74 @@ def string_annotation(k, v) =
   if null.defined(v) then [annotation(k, null.get(v))] else [] end
 end
 
+# Creates and resolves one request. `transitions`: its crossfade annotations, if any (a
+# segment's first part carries the transition into the segment, its last part the
+# transition out of it; inside a segment there is no transition at all). Fails with the
+# URI when the file can't be resolved.
+def make_request(p, segment_id, transitions) =
+  gain =
+    if
+      null.defined(p.amplify_db)
+    then
+      [annotation("liq_amplify", "#{string.float(null.get(p.amplify_db))} dB")]
+    else
+      []
+    end
+  segment = if segment_id != "" then [annotation("ondes_segment_id", segment_id)] else [] end
+  annotations =
+    [
+      annotation("ondes_item_id", p.item_id),
+      ...segment,
+      annotation("ondes_source", "queue"),
+      ...float_annotation("liq_cue_in", p.cue_in),
+      ...float_annotation("liq_cue_out", p.cue_out),
+      ...transitions,
+      ...gain,
+      ...string_annotation("title", p.title),
+      ...string_annotation("artist", p.artist)
+    ]
+  r = request.create("annotate:#{string.concat(separator=',', annotations)}:#{p.uri}")
+  if
+    request.resolve(timeout=5., content_type=queue, r)
+  then
+    (r, "")
+  else
+    request.destroy(r)
+    (r, p.uri)
+  end
+end
+
+def into_annotations(t) =
+  [
+    ...float_annotation("liq_fade_in", t.fade_in),
+    ...float_annotation("liq_cross_start_duration", t.cross_in)
+  ]
+end
+
+def out_annotations(t) =
+  [
+    ...float_annotation("liq_fade_out", t.fade_out),
+    ...float_annotation("liq_cross_end_duration", t.cross_out)
+  ]
+end
+
+# Queues resolved requests as one segment, or releases them all if one failed (nothing
+# is queued). Returns the requests, or the error.
+def enqueue(made) =
+  missing = list.filter(fun (x) -> snd(x) != "", made)
+  if
+    not list.is_empty(missing)
+  then
+    list.iter(fun (x) -> if snd(x) == "" then request.destroy(fst(x)) end, made)
+    ([], "cannot resolve #{snd(list.hd(missing))}")
+  else
+    rs = list.map(fst, made)
+    segments := [...pending_segments(), new_segment(rs)]
+    (rs, "")
+  end
+end
+
+# POST /v1/queue: one log item, a one-request segment.
 def handle_push(req, res) =
   if
     authorized(req, res)
@@ -541,38 +761,14 @@ def handle_push(req, res) =
             artist: string?
           }
       ) = req.body()
-      gain =
-        if
-          null.defined(p.amplify_db)
-        then
-          [annotation("liq_amplify", "#{string.float(null.get(p.amplify_db))} dB")]
-        else
-          []
-        end
-      annotations =
-        [
-          annotation("ondes_item_id", p.item_id),
-          annotation("ondes_source", "queue"),
-          ...float_annotation("liq_cue_in", p.cue_in),
-          ...float_annotation("liq_cue_out", p.cue_out),
-          ...float_annotation("liq_fade_in", p.fade_in),
-          ...float_annotation("liq_fade_out", p.fade_out),
-          ...float_annotation("liq_cross_start_duration", p.cross_in),
-          ...float_annotation("liq_cross_end_duration", p.cross_out),
-          ...gain,
-          ...string_annotation("title", p.title),
-          ...string_annotation("artist", p.artist)
-        ]
-      uri = "annotate:#{string.concat(separator=',', annotations)}:#{p.uri}"
-      r = request.create(uri)
+      transitions = [...into_annotations(p), ...out_annotations(p)]
+      let (rs, problem) = enqueue([make_request(p, "", transitions)])
       if
-        request.resolve(timeout=5., content_type=queue, r)
+        problem != ""
       then
-        queue.push(r)
-        reply(res, 201, request_json(r).stringify(compact=true))
+        fail(res, 422, problem)
       else
-        request.destroy(r)
-        fail(res, 422, "cannot resolve #{p.uri}")
+        reply(res, 201, request_json(list.hd(rs)).stringify(compact=true))
       end
     catch err do
       fail(res, 400, "invalid push: #{err.message}")
@@ -580,27 +776,99 @@ def handle_push(req, res) =
   end
 end
 
+# POST /v1/segment: an island chain (A body, island, B body), aired as one track.
+def handle_segment(req, res) =
+  if
+    authorized(req, res)
+  then
+    try
+      let json.parse (
+        s :
+          {
+            segment_id: string,
+            parts:
+              [
+                {
+                  item_id: string,
+                  uri: string,
+                  cue_in: float?,
+                  cue_out: float?,
+                  amplify_db: float?,
+                  title: string?,
+                  artist: string?
+                }
+              ],
+            fade_in: float?,
+            fade_out: float?,
+            cross_in: float?,
+            cross_out: float?
+          }
+      ) = req.body()
+      if
+        list.is_empty(s.parts)
+      then
+        fail(res, 400, "invalid segment: no parts")
+      else
+        n = list.length(s.parts)
+        made =
+          list.mapi(
+            fun (i, p) ->
+              begin
+                into = if i == 0 then into_annotations(s) else [] end
+                outro = if i == n - 1 then out_annotations(s) else [] end
+                make_request(p, s.segment_id, [...into, ...outro])
+              end,
+            s.parts
+          )
+        let (rs, problem) = enqueue(made)
+        if
+          problem != ""
+        then
+          fail(res, 422, problem)
+        else
+          reply(
+            res,
+            201,
+            "{\"segment_id\":#{json.stringify(s.segment_id)},\"requests\":#{requests_json(rs)}}"
+          )
+        end
+      end
+    catch err do
+      fail(res, 400, "invalid segment: #{err.message}")
+    end
+  end
+end
+
+# Drops queued segments (never the one on air) and releases their requests. A segment
+# the clock starts in the meantime keeps its requests: it is on air, use skip.
+def drop_segments(keep) =
+  pending = pending_segments()
+  dropped = list.filter(fun (s) -> not keep(s), pending)
+  segments := list.filter(keep, pending)
+  list.iter(
+    fun (s) -> if s.id > started_id() then list.iter(request.destroy, s.requests) end,
+    dropped
+  )
+  list.fold(fun (n, s) -> n + list.length(s.requests), 0, dropped)
+end
+
+# DELETE /v1/queue/:id: removes every queued entry whose item_id or segment_id is `id`.
+# A segment can't be split: naming one of its parts removes all of it.
 def handle_remove(req, res) =
   if
     authorized(req, res)
   then
-    item_id = req.query["item_id"]
-    matches =
-      list.filter(
-        fun (r) ->
-          begin
-            m = request.metadata(r)
-            list.assoc.mem("ondes_item_id", m) and m["ondes_item_id"] == item_id
-          end,
-        queue.queue()
-      )
+    wanted = req.query["id"]
+    def named(r) =
+      item_of(r) == wanted or meta_of(r, "ondes_segment_id") == wanted
+    end
+    removed = drop_segments(fun (s) -> not list.exists(named, s.requests))
     if
-      matches == []
+      removed == 0
     then
-      fail(res, 404, "item #{item_id} is not queued")
+      fail(res, 404, "#{wanted} is not queued")
     else
-      list.iter(queue.remove, matches)
-      reply(res, 200, json.stringify({removed=list.length(matches)}))
+      reply(res, 200, json.stringify({removed=removed}))
     end
   end
 end
@@ -609,17 +877,19 @@ def handle_clear(req, res) =
   if
     authorized(req, res)
   then
-    n = queue.length()
-    queue.set_queue([])
-    reply(res, 200, json.stringify({removed=n}))
+    reply(res, 200, json.stringify({removed=drop_segments(fun (_) -> false)}))
   end
 end
 
+# Ends whatever is on air. A segment on air ends as a whole: its remaining requests
+# (the island, B body) are not played.
 def handle_skip(req, res) =
   if
     authorized(req, res)
   then
-    radio.skip()
+    if current_source() == "queue" then current_segment().aborted := true end
+    skip = skip_on_air()
+    skip()
     reply(res, 200, json.stringify({skipped=true}))
   end
 end
@@ -628,15 +898,21 @@ def handle_live(req, res) =
   if
     authorized(req, res)
   then
-    try
-      let json.parse (p : {enabled: bool}) = req.body()
-      live_enabled := p.enabled
-      d = json.object()
-      d.add("enabled", p.enabled)
-      emit("live.gate", d)
-      reply(res, 200, json.stringify({enabled=p.enabled}))
-    catch err do
-      fail(res, 400, "invalid live command: #{err.message}")
+    if
+      not live_input
+    then
+      fail(res, 409, "live input is disabled for this station")
+    else
+      try
+        let json.parse (p : {enabled: bool}) = req.body()
+        live_enabled := p.enabled
+        d = json.object()
+        d.add("enabled", p.enabled)
+        emit("live.gate", d)
+        reply(res, 200, json.stringify({enabled=p.enabled}))
+      catch err do
+        fail(res, 400, "invalid live command: #{err.message}")
+      end
     end
   end
 end
@@ -653,7 +929,7 @@ def handle_events(req, res) =
       if
         list.assoc.mem("after", req.query)
       then
-        int_of_string(req.query["after"])
+        int_of_string(default=0, req.query["after"])
       else
         0
       end
@@ -662,15 +938,27 @@ def handle_events(req, res) =
 end
 
 def handle_health(_, res) =
-  reply(res, 200, json.stringify({status="ok", boot_id=boot_id, version=liquidsoap.version}))
+  reply(
+    res,
+    200,
+    json.stringify(
+      {
+        status="ok",
+        boot_id=boot_id,
+        version=liquidsoap.version,
+        config_version=config_version
+      }
+    )
+  )
 end
 
 harbor.http.register(port=control_port, method="GET", "/v1/health", handle_health)
 harbor.http.register(port=control_port, method="GET", "/v1/state", handle_state)
 harbor.http.register(port=control_port, method="GET", "/v1/events", handle_events)
 harbor.http.register(port=control_port, method="POST", "/v1/queue", handle_push)
+harbor.http.register(port=control_port, method="POST", "/v1/segment", handle_segment)
 harbor.http.register(port=control_port, method="DELETE", "/v1/queue", handle_clear)
-harbor.http.register(port=control_port, method="DELETE", "/v1/queue/:item_id", handle_remove)
+harbor.http.register(port=control_port, method="DELETE", "/v1/queue/:id", handle_remove)
 harbor.http.register(port=control_port, method="POST", "/v1/skip", handle_skip)
 harbor.http.register(port=control_port, method="POST", "/v1/live", handle_live)
 
@@ -684,15 +972,6 @@ emit(
 )
 
 # ---------------------------------------------------------------------------------------
-# Output.
+# Outputs: one output.icecast per mount in the station settings. `radio` is the final mix.
 
-output.icecast(
-  %mp3(bitrate=128),
-  id="icecast",
-  host=icecast_host,
-  port=icecast_port,
-  password=icecast_password,
-  mount=icecast_mount,
-  name="Ondes #{station_id}",
-  radio
-)
+# @ondes:outputs
