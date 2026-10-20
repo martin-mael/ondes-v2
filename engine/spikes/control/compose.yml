@@ -1,0 +1,129 @@
+# Control spike (#13). Runs engine/templates/station.liq in three configurations and a
+# Node driver that exercises the control API. Self-contained (its own Icecast), so it
+# doesn't depend on, or disturb, the shared dev stack:
+#
+#   docker compose -f engine/spikes/control/compose.yml run --rm --use-aliases driver
+#   docker compose -f engine/spikes/control/compose.yml down -v
+#
+# `run --use-aliases driver` starts everything the driver depends on and returns its exit
+# code (--use-aliases: the engines post events to the `driver` hostname). Don't use
+# `up --abort-on-container-exit`: the one-shot `fixtures` exiting would tear the stack down.
+
+name: ondes-spike-control
+
+x-engine: &engine
+  image: savonet/liquidsoap:v2.4.6
+  command: [/engine/templates/station.liq]
+  volumes:
+    - ../../templates:/engine/templates:ro
+    - media:/media:ro
+  depends_on:
+    fixtures:
+      condition: service_completed_successfully
+    icecast:
+      condition: service_healthy
+
+services:
+  icecast:
+    image: libretime/icecast:2.5.0-alpine
+    entrypoint:
+      - sh
+      - -c
+      - cat /config/icecast.xml > /etc/icecast.xml && exec docker-entrypoint icecast -c /etc/icecast.xml
+    environment:
+      ICECAST_SOURCE_PASSWORD: ondes-spike-source
+      ICECAST_HOSTNAME: localhost
+    ports:
+      - 127.0.0.1:${SPIKE_ICECAST_PORT:-8100}:8000
+    volumes:
+      - ../../../deploy/dev/icecast/icecast.xml:/config/icecast.xml:ro
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8000/status-json.xsl]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  fixtures:
+    image: node:24.22.0-alpine
+    working_dir: /repo
+    command: [node, engine/spikes/control/fixtures.ts, /media]
+    volumes:
+      - ../../..:/repo:ro
+      - media:/media
+
+  # Full chain: queue > safety > emergency > mksafe, live, events pushed to the driver.
+  engine:
+    <<: *engine
+    environment:
+      STATION_ID: spike
+      ENGINE_CONTROL_TOKEN: spike-token
+      ENGINE_EVENTS_URL: http://driver:8080/events
+      ENGINE_LIVE_AUTH_URL: http://driver:8080/live-auth
+      ENGINE_CROSS_DURATION: '2.'
+      ENGINE_BLANK_MAX: '4.'
+      ICECAST_HOST: icecast
+      ICECAST_SOURCE_PASSWORD: ondes-spike-source
+      ICECAST_MOUNT: spike.mp3
+
+  # No safety files: an empty queue must fall to the emergency single(). No events URL,
+  # so the driver pulls GET /v1/events instead.
+  engine-emergency:
+    <<: *engine
+    environment:
+      STATION_ID: spike-emergency
+      ENGINE_SAFETY_DIR: /media/empty
+      ICECAST_HOST: icecast
+      ICECAST_SOURCE_PASSWORD: ondes-spike-source
+      ICECAST_MOUNT: spike-emergency.mp3
+
+  # No safety files and no emergency file: only mksafe is left, so the output is silent.
+  engine-bare:
+    <<: *engine
+    environment:
+      STATION_ID: spike-bare
+      ENGINE_SAFETY_DIR: /media/empty
+      ENGINE_EMERGENCY_FILE: /media/missing.wav
+      ENGINE_BLANK_MAX: '3.'
+      ICECAST_HOST: icecast
+      ICECAST_SOURCE_PASSWORD: ondes-spike-source
+      ICECAST_MOUNT: spike-bare.mp3
+
+  # Stand-in DJ: streams MP3 to engine:8005/live when the driver calls POST /start.
+  dj:
+    image: savonet/liquidsoap:v2.4.6
+    command: [/spike/dj.liq]
+    environment:
+      LIVE_HOST: engine
+    volumes:
+      - ./dj.liq:/spike/dj.liq:ro
+
+  driver:
+    image: node:24.22.0-alpine
+    working_dir: /repo
+    command: [node, engine/spikes/control/spike.ts]
+    environment:
+      ENGINE_URL: http://engine:7000
+      ENGINE_EMERGENCY_URL: http://engine-emergency:7000
+      ENGINE_BARE_URL: http://engine-bare:7000
+      ENGINE_METRICS_URL: http://engine:9599/metrics
+      ENGINE_LIVE_URL: http://engine:8005/live
+      DJ_URL: http://dj:7001
+      ENGINE_CONTROL_TOKEN: spike-token
+      MEDIA_DIR: /media
+    volumes:
+      - ../../..:/repo:ro
+      - media:/media:ro
+    depends_on:
+      fixtures:
+        condition: service_completed_successfully
+      engine:
+        condition: service_started
+      engine-emergency:
+        condition: service_started
+      engine-bare:
+        condition: service_started
+      dj:
+        condition: service_started
+
+volumes:
+  media:
