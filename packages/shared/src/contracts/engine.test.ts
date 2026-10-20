@@ -3,6 +3,7 @@ import {
   engineEventBatchSchema,
   engineEventSchema,
   enginePushItemSchema,
+  enginePushSegmentSchema,
   engineStateSchema,
 } from './engine.ts';
 
@@ -37,6 +38,44 @@ describe('enginePushItemSchema', () => {
     expect(enginePushItemSchema.safeParse({ item_id: 'A', uri: '/a', cross_in: -1 }).success).toBe(
       false,
     );
+  });
+});
+
+describe('enginePushSegmentSchema', () => {
+  const part = (item_id: string) => ({ item_id, uri: `/media/${item_id}.flac` });
+
+  it('accepts an island chain with per-part gain and segment transitions', () => {
+    const segment = {
+      segment_id: 'island-1',
+      parts: [
+        { ...part('A'), cue_in: 2.0000113, cue_out: 12.0000113, amplify_db: -3.5 },
+        { ...part('VT'), amplify_db: 0 },
+        { ...part('B'), cue_in: 8.0000113, amplify_db: -1.5 },
+      ],
+      cross_in: 3,
+      cross_out: 2,
+    };
+    expect(enginePushSegmentSchema.parse(segment)).toEqual(segment);
+  });
+
+  it('needs at least two parts, each with ordered cues', () => {
+    expect(enginePushSegmentSchema.safeParse({ segment_id: 's', parts: [part('A')] }).success).toBe(
+      false,
+    );
+    expect(
+      enginePushSegmentSchema.safeParse({
+        segment_id: 's',
+        parts: [part('A'), { ...part('B'), cue_in: 4, cue_out: 1 }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps transitions on the segment, not its parts', () => {
+    const parsed = enginePushSegmentSchema.parse({
+      segment_id: 's',
+      parts: [{ ...part('A'), cross_out: 0 }, part('B')],
+    });
+    expect(parsed.parts[0]).not.toHaveProperty('cross_out');
   });
 });
 
