@@ -40,7 +40,7 @@ All under `/v1`, JSON bodies, schemas in `packages/shared/src/contracts/engine.t
 | `GET /v1/events?after=<seq>` | – | event log after `seq` (last 1000 kept) |
 | `POST /v1/queue` | `{item_id, uri, cue_in?, cue_out?, fade_in?, fade_out?, amplify_db?, cross_in?, cross_out?, title?, artist?}` | `201 {rid, item_id, uri, status}`, `422` if the file can't be resolved, `400` on a bad body |
 | `POST /v1/segment` | `{segment_id, parts: [{item_id, uri, cue_in?, cue_out?, amplify_db?, title?, artist?}] (2–16), fade_in?, fade_out?, cross_in?, cross_out?}` | `201 {segment_id, requests[]}`, `422` if any part can't be resolved (nothing queued), `400` on a bad body. Added by #28, served by #27. |
-| `DELETE /v1/queue/:id` | – | `{removed}`: every queued request whose `item_id` or `segment_id` is `id`; `404` if none |
+| `DELETE /v1/queue/:id` | – | `{removed}` (requests): every queued entry whose `item_id` or `segment_id` is `id`. Naming one part of a segment removes the whole segment. `404` if none |
 | `DELETE /v1/queue` | – | `{removed}` (clears the queue) |
 | `POST /v1/skip` | – | `{skipped}`: ends whatever is on air (a whole segment, if one plays) |
 | `POST /v1/live` | `{enabled}` | opens or closes the live gate |

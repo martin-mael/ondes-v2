@@ -114,8 +114,9 @@ export type EnginePushSegment = z.infer<typeof enginePushSegmentSchema>;
 export const engineLiveGateSchema = z.object({ enabled: z.boolean() });
 export type EngineLiveGate = z.infer<typeof engineLiveGateSchema>;
 
-// `DELETE /v1/queue/:id` removes every queued request whose item_id or segment_id is `id`
-// (404 if none). `DELETE /v1/queue` clears the queue. `POST /v1/skip` ends whatever is on
+// `DELETE /v1/queue/:id` removes every queued entry whose item_id or segment_id is `id`
+// (404 if none). A segment can't be split: naming any of its parts removes all of it, and
+// `removed` counts requests. `DELETE /v1/queue` clears the queue. `POST /v1/skip` ends whatever is on
 // air. None of them take a body.
 
 // ---------------------------------------------------------------------------------------

@@ -166,7 +166,13 @@ export async function startFakeEngine(
     if (req.method === 'DELETE' && url.pathname.startsWith('/v1/queue/')) {
       const id = decodeURIComponent(url.pathname.slice('/v1/queue/'.length));
       const before = engine.queue.length;
-      engine.queue = engine.queue.filter((r) => r.item_id !== id && r.segment_id !== id);
+      // A segment can't be split: naming any of its parts removes all of it.
+      const segments = new Set(
+        engine.queue.filter((r) => r.item_id === id && r.segment_id).map((r) => r.segment_id),
+      );
+      engine.queue = engine.queue.filter(
+        (r) => r.item_id !== id && r.segment_id !== id && !segments.has(r.segment_id),
+      );
       const removed = before - engine.queue.length;
       if (!removed) return send(res, 404, { error: `item ${id} is not queued` });
       return send(res, 200, { removed });

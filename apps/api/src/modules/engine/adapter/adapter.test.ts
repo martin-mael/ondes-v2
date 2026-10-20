@@ -59,7 +59,7 @@ describe('EngineAdapter', () => {
     expect(seg.requests.map((r) => r.item_id)).toEqual(['B', 'VT', 'C']);
     expect(seg.requests.every((r) => r.segment_id === 'island-1')).toBe(true);
 
-    expect(await adapter.remove('island-1')).toEqual({ removed: 3 });
+    expect(await adapter.remove('VT')).toEqual({ removed: 3 });
     await expect(adapter.remove('island-1')).rejects.toBeInstanceOf(EngineNotQueuedError);
     expect(await adapter.clear()).toEqual({ removed: 1 });
   });
