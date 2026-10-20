@@ -127,6 +127,7 @@ export const engineQueuedRequestSchema = z.object({
   item_id: z.string().nullable(),
   /** Set on the parts of a segment, absent or null for single items. */
   segment_id: z.string().nullable().optional(),
+  /** Liquidsoap's request URI: the pushed path behind our `annotate:` prefix. */
   uri: z.string(),
   /** Liquidsoap request status: idle, resolving, ready, playing, destroyed. */
   status: z.string(),
