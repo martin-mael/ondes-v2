@@ -7,5 +7,10 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@ondes/shared": "workspace:*",
+    "rabbitmq-client": "5.1.0",
+    "zod": "4.6.7"
   }
 }

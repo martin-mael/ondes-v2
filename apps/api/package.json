@@ -9,6 +9,8 @@
   },
   "dependencies": {
     "@ondes/db": "workspace:*",
-    "@ondes/shared": "workspace:*"
+    "@ondes/queue": "workspace:*",
+    "@ondes/shared": "workspace:*",
+    "zod": "4.6.7"
   }
 }

@@ -26,9 +26,15 @@ importers:
       '@ondes/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@ondes/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
       '@ondes/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
 
   apps/web:
     dependencies:
@@ -38,9 +44,15 @@ importers:
 
   apps/worker:
     dependencies:
+      '@ondes/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
       '@ondes/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
 
   packages/db:
     dependencies:
@@ -58,7 +70,17 @@ importers:
         specifier: 0.31.11
         version: 0.31.11
 
-  packages/queue: {}
+  packages/queue:
+    dependencies:
+      '@ondes/shared':
+        specifier: workspace:*
+        version: link:../shared
+      rabbitmq-client:
+        specifier: 5.1.0
+        version: 5.1.0
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
 
   packages/scheduling: {}
 
@@ -1099,6 +1121,10 @@ packages:
     resolution: {integrity: sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw==}
     engines: {node: '>=12'}
 
+  rabbitmq-client@5.1.0:
+    resolution: {integrity: sha512-tTs9v/3nx9GTduRE1IqY4FviCYS9SS7kC3XaYyZ74FMEKy6QdueWGhnShCRCu+g0DzExPtPluMn5pmPwuY7LPQ==}
+    engines: {node: '>=16'}
+
   resolve-pkg-maps@1.0.0:
     resolution: {integrity: sha512-seS2Tj26TBVOC2NIc2rOe2y2ZO7efxITtLZcGSOnHHNOQ7CkiUBfw0Iw2ck6xkIhPwLhKNLS8BO+hEpngQlqzw==}
 
@@ -1840,6 +1866,8 @@ snapshots:
       source-map-js: 1.2.2
 
   postgres@3.4.9: {}
+
+  rabbitmq-client@5.1.0: {}
 
   resolve-pkg-maps@1.0.0: {}
 
