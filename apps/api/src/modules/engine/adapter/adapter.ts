@@ -24,6 +24,7 @@ import {
 import { z } from 'zod';
 import {
   EngineBadRequestError,
+  EngineConflictError,
   type EngineError,
   EngineNotQueuedError,
   EngineProtocolError,
@@ -62,7 +63,7 @@ export type EngineAdapter = {
   clear(): Promise<EngineRemoveResult>;
   /** Ends whatever is on air (a whole segment, if one is playing). */
   skip(): Promise<void>;
-  /** Opens or closes the live gate. */
+  /** Opens or closes the live gate. `EngineConflictError` if live is disabled for the station. */
   setLive(enabled: boolean): Promise<void>;
 };
 
@@ -188,6 +189,8 @@ export function createEngineAdapter(options: EngineAdapterOptions): EngineAdapte
         return new EngineUnauthorizedError('unauthorized', message, details);
       case 404:
         return new EngineNotQueuedError('not_queued', message, details);
+      case 409:
+        return new EngineConflictError('conflict', message, details);
       case 422:
         return new EngineUnresolvableError('unresolvable', message, details);
       default:

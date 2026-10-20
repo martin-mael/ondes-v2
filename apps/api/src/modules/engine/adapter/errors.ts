@@ -10,6 +10,7 @@ export type EngineErrorCode =
   | 'bad_request'
   | 'not_queued'
   | 'unresolvable'
+  | 'conflict'
   | 'engine_error'
   | 'invalid_response';
 
@@ -54,6 +55,9 @@ export class EngineNotQueuedError extends EngineError {}
 
 /** 422 on a push: a file isn't in the playout cache or can't be decoded. Nothing was queued. */
 export class EngineUnresolvableError extends EngineError {}
+
+/** 409: the command doesn't apply to this station's setup (e.g. live input disabled). */
+export class EngineConflictError extends EngineError {}
 
 /** Any other non-2xx answer. */
 export class EngineServerError extends EngineError {}

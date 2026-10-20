@@ -6,7 +6,7 @@ One `StationEngine` per station:
 | Piece | File | Role |
 |---|---|---|
 | `EngineAdapter` | `adapter.ts` | Typed commands over `fetch`: `health`, `state`, `events(after)`, `push`, `pushSegment`, `remove`, `clear`, `skip`, `setLive`. Bearer token, per-attempt timeouts, zod-checked answers. |
-| Errors | `errors.ts` | `EngineUnresolvableError` (422: file not in the playout cache, nothing queued), `EngineNotQueuedError` (404), `EngineUnavailableError` (timeout / unreachable), `EngineUnauthorizedError`, `EngineBadRequestError`, `EngineServerError`, `EngineProtocolError`. All extend `EngineError` with a `code`. |
+| Errors | `errors.ts` | `EngineUnresolvableError` (422: file not in the playout cache, nothing queued), `EngineNotQueuedError` (404), `EngineConflictError` (409: live input disabled), `EngineUnavailableError` (timeout / unreachable), `EngineUnauthorizedError`, `EngineBadRequestError`, `EngineServerError`, `EngineProtocolError`. All extend `EngineError` with a `code`. |
 | Event ingest | `ingest.ts` | Dedupes on `(boot_id, seq)`, backfills gaps and new boots from `GET /v1/events?after=`, publishes domain events, then hands `GET /v1/state` to `onResync`. |
 | Health monitor | `health.ts` | Polls `GET /v1/health`; publishes `engine.up` (first contact, recovery, new boot) and `engine.down` (after `downAfter` failed probes). |
 | Events route | `route.ts` | `POST /internal/engine/stations/:stationId/events`, the engine's `ENGINE_EVENTS_URL`. A plain handler plus `registerEngineEventRoutes(app, …)` for Fastify. |

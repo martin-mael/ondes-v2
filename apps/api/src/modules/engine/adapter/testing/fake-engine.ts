@@ -21,6 +21,8 @@ export type FakeEngine = {
   delayMs: number;
   /** Answer every route but health with this status, while set. */
   failWith: number | null;
+  /** Live input disabled in the station settings: `POST /v1/live` answers 409. */
+  liveDisabled: boolean;
   /** Health answers this status, while set (null = 200). */
   healthStatus: number | null;
   /** Appends an event to the log, as the engine's callbacks do. */
@@ -49,6 +51,7 @@ export async function startFakeEngine(
     files: new Set(['/media/a.flac', '/media/b.flac', '/media/c.flac', '/media/island.flac']),
     delayMs: 0,
     failWith: null,
+    liveDisabled: false,
     healthStatus: null,
     emit(type, data) {
       const event = {
@@ -105,7 +108,12 @@ export async function startFakeEngine(
 
     if (route === 'GET /v1/health') {
       if (engine.healthStatus) return send(res, engine.healthStatus, { error: 'down' });
-      return send(res, 200, { status: 'ok', boot_id: engine.bootId, version: '2.4.6' });
+      return send(res, 200, {
+        status: 'ok',
+        boot_id: engine.bootId,
+        version: '2.4.6',
+        config_version: 'cfg-1',
+      });
     }
     if (engine.failWith) return send(res, engine.failWith, { error: 'failing on purpose' });
     if (options.token && req.headers.authorization !== `Bearer ${options.token}`) {
@@ -179,6 +187,7 @@ export async function startFakeEngine(
     }
     if (route === 'POST /v1/skip') return send(res, 200, { skipped: true });
     if (route === 'POST /v1/live') {
+      if (engine.liveDisabled) return send(res, 409, { error: 'live input is disabled' });
       if (typeof body.enabled !== 'boolean') return send(res, 400, { error: 'invalid live' });
       engine.emit('live.gate', { enabled: body.enabled });
       return send(res, 200, { enabled: body.enabled });

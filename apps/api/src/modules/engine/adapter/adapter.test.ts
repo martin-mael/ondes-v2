@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createEngineAdapter, type EngineAdapter } from './adapter.ts';
 import {
   EngineBadRequestError,
+  EngineConflictError,
   EngineNotQueuedError,
   EngineProtocolError,
   EngineServerError,
@@ -36,6 +37,7 @@ describe('EngineAdapter', () => {
       status: 'ok',
       boot_id: engine.bootId,
       version: '2.4.6',
+      config_version: 'cfg-1',
     });
     await expect(noToken.state()).rejects.toBeInstanceOf(EngineUnauthorizedError);
     const state = await adapter.state();
@@ -128,5 +130,12 @@ describe('EngineAdapter', () => {
     await adapter.setLive(true);
     const events = await adapter.events(1);
     expect(events.map((e) => [e.seq, e.type])).toEqual([[2, 'live.gate']]);
+  });
+
+  it('maps a disabled live input to EngineConflictError', async () => {
+    engine.liveDisabled = true;
+    await expect(adapter.setLive(true)).rejects.toBeInstanceOf(EngineConflictError);
+    // Not retried: a 409 won't change by asking again.
+    expect(engine.calls.filter((c) => c === 'POST /v1/live')).toHaveLength(1);
   });
 });

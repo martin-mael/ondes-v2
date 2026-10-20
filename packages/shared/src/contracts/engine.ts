@@ -110,7 +110,10 @@ export const enginePushSegmentSchema = z.object({
 });
 export type EnginePushSegment = z.infer<typeof enginePushSegmentSchema>;
 
-/** `POST /v1/live`: allow or forbid a connected live DJ to take over the air. */
+/**
+ * `POST /v1/live`: allow or forbid a connected live DJ to take over the air.
+ * `409` if the station's live input is disabled in its settings.
+ */
 export const engineLiveGateSchema = z.object({ enabled: z.boolean() });
 export type EngineLiveGate = z.infer<typeof engineLiveGateSchema>;
 
@@ -157,6 +160,11 @@ export const engineHealthSchema = z.object({
   status: z.literal('ok'),
   boot_id: z.string(),
   version: z.string(),
+  /**
+   * Hash of the template and station settings the running script was rendered from (#27).
+   * Differs from the expected one when a settings change is waiting for a restart.
+   */
+  config_version: z.string().optional(),
 });
 export type EngineHealth = z.infer<typeof engineHealthSchema>;
 
@@ -177,6 +185,11 @@ export const engineStateSchema = z.object({
   boot_id: z.string(),
   station_id: z.string(),
   version: z.string(),
+  /**
+   * Hash of the template and station settings the running script was rendered from (#27).
+   * Differs from the expected one when a settings change is waiting for a restart.
+   */
+  config_version: z.string().optional(),
   uptime: z.number(),
   /** Last event sequence number emitted by this boot. */
   seq: z.number().int().nonnegative(),
