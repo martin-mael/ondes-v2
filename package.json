@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "pnpm --recursive --parallel --if-present run dev",
-    "dev:up": "docker compose -f deploy/compose.dev.yml up -d --wait postgres rabbitmq garage icecast liquidsoap && docker compose -f deploy/compose.dev.yml run --rm garage-init",
+    "dev:up": "docker compose -f deploy/compose.dev.yml up -d --wait postgres rabbitmq garage icecast liquidsoap mailpit && docker compose -f deploy/compose.dev.yml run --rm garage-init",
     "dev:down": "docker compose -f deploy/compose.dev.yml down",
     "dev:reset": "docker compose -f deploy/compose.dev.yml down -v",
     "dev:logs": "docker compose -f deploy/compose.dev.yml logs -f",

@@ -1,7 +1,15 @@
-import { createDb, type DbClient, runMigrations } from '@ondes/db';
+import { createDb, type Db, type DbClient, runMigrations } from '@ondes/db';
+import type { FastifyInstance } from 'fastify';
+import fp from 'fastify-plugin';
 
-// Database setup for the api. Fastify arrives with #6, which wraps this in a plugin
-// (`app.decorate('db', …)`, `onClose` → `close()`). Until then it's a plain function.
+// Database access for the api: `app.db` (Drizzle) and `app.dbClient` (pool + raw SQL).
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    db: Db;
+    dbClient: DbClient;
+  }
+}
 
 export interface DbConfig {
   databaseUrl: string;
@@ -21,3 +29,19 @@ export async function setupDb(config: DbConfig): Promise<DbClient> {
   if (config.migrateOnBoot ?? true) await runMigrations(config.databaseUrl);
   return createDb(config.databaseUrl, { applicationName: 'ondes-api' });
 }
+
+export type DbPluginOptions =
+  /** Runs `setupDb` and closes the pool on shutdown. */
+  | { config: DbConfig }
+  /** An already open client (tests). The caller closes it. */
+  | { client: DbClient };
+
+export const dbPlugin = fp(
+  async (app: FastifyInstance, options: DbPluginOptions) => {
+    const client = 'client' in options ? options.client : await setupDb(options.config);
+    app.decorate('dbClient', client);
+    app.decorate('db', client.db);
+    if ('config' in options) app.addHook('onClose', () => client.close());
+  },
+  { name: 'db' },
+);
