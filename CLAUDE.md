@@ -82,7 +82,7 @@ Created by #3. Packages are named `@ondes/<folder>` (e.g. `@ondes/shared`) and a
 Every PR must pass, locally and in CI:
 - `pnpm lint` (Biome; `pnpm format` auto-fixes formatting and import order), `pnpm typecheck` and `pnpm test` (unit tests next to the code, `*.test.ts`).
 - `pnpm test:integration` when you touch db, queue, storage or engine: `*.int.test.ts` files, using the `deploy/compose.dev.yml` services.
-- Engine template changes: `pnpm test:engine` (`engine/tests/run.sh`: `liquidsoap --check` on every template, plus the fixtures in `engine/tests`).
+- Engine template changes: `pnpm test:engine` (`engine/tests/run.sh`: `liquidsoap --check` on every template, plus the fixtures in `engine/tests`). It includes the island splice test (`engine/tests/splice/README.md`), which needs Docker and `ffmpeg` on the host; `SPLICE_ARGS=--quick` runs only its FLAC cases.
 - Run one package's tests with `pnpm vitest run apps/api`, or typecheck one package with `pnpm --filter @ondes/api typecheck`.
 - CI (`.github/workflows/ci.yml`) runs lint, typecheck and unit tests, plus `pnpm test:integration` against Postgres 18 and RabbitMQ 4 service containers. `images.yml` builds the production images on every PR and pushes them to GHCR from `main`.
 - Build a production image locally from the repo root: `docker build -f deploy/docker/api.Dockerfile .` (or `worker`). Images run the `.ts` sources directly (`docs/adr/0005-production-images.md`).
