@@ -41,6 +41,9 @@ importers:
       '@ondes/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@ondes/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       drizzle-orm:
         specifier: 0.45.4
         version: 0.45.4(postgres@3.4.9)
@@ -90,6 +93,9 @@ importers:
       '@ondes/shared':
         specifier: workspace:*
         version: link:../shared
+      '@ondes/storage':
+        specifier: workspace:*
+        version: link:../storage
       drizzle-orm:
         specifier: 0.45.4
         version: 0.45.4(postgres@3.4.9)

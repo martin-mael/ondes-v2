@@ -13,6 +13,8 @@ src/
   tenant.ts           # OrgScope / StationScope, resolveOrgScope(), resolveStationScope(), whereStation()
   audit.ts            # withAudit(), writeAudit(), auditDiff()
   repos/tenancy.ts    # organizations, stations, users, memberships, API keys
+  repos/library.ts    # assets, files, cues, loudness, analysis, tags (#17)
+  repos/storage.ts    # createPostgresQuotaStore(): @ondes/storage's QuotaStore on Postgres
   testing.ts          # @ondes/db/testing: createTestDatabase() for *.int.test.ts
 ```
 
