@@ -11,11 +11,11 @@ Requirements: Docker, and `ffmpeg` (with libmp3lame) on the host. The music case
 one track from Wikimedia Commons the first time it runs.
 
 ```sh
-pnpm test:engine                                   # everything, including this test
+pnpm test:engine:splice                            # this test (full matrix)
 sh engine/tests/splice/run.sh                      # detector unit tests + full matrix (~5 min)
 sh engine/tests/splice/run.sh --quick              # FLAC, tone and noise only (~1 min)
 node engine/tests/splice/run.ts --only noise-flac  # one subset of the matrix
-SPLICE_ARGS=--quick pnpm test:engine               # quick matrix through test:engine
+pnpm test:engine:splice --quick                    # FLAC cases only (what CI runs)
 ```
 
 Everything generated goes to `engine/tests/splice/.work/` (git-ignored): test material,

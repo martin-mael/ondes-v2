@@ -11,9 +11,12 @@ import {
 import type { ListedObject, Storage } from './storage.ts';
 
 describe('quota accounting', () => {
+  const K1 = 'org/o/sha256/aa.flac';
+  const K2 = 'org/o/sha256/bb.flac';
+
   it('rejects uploads over the limit', async () => {
     const store = createMemoryQuotaStore({ o: 100 });
-    await chargeStoredObject(store, 'o', 60);
+    await chargeStoredObject(store, 'o', K1, 60);
     await expect(assertQuota(store, 'o', 40)).resolves.toEqual({ usedBytes: 60, limitBytes: 100 });
     await expect(assertQuota(store, 'o', 41)).rejects.toBeInstanceOf(QuotaExceededError);
   });
@@ -23,22 +26,44 @@ describe('quota accounting', () => {
     await expect(assertQuota(store, 'o', Number.MAX_SAFE_INTEGER)).resolves.toBeDefined();
   });
 
-  it('does not double count deduplicated objects', async () => {
+  it('charges a shared object once, even for concurrent references', async () => {
     const store = createMemoryQuotaStore();
-    await chargeStoredObject(store, 'o', 10);
-    expect(await chargeStoredObject(store, 'o', 10, { alreadyExisted: true })).toBe(10);
+    const totals = await Promise.all([
+      chargeStoredObject(store, 'o', K1, 10),
+      chargeStoredObject(store, 'o', K1, 10),
+    ]);
+    expect(Math.max(...totals)).toBe(10);
+    expect((await store.get('o')).usedBytes).toBe(10);
   });
 
-  it('releases bytes without going negative', async () => {
+  it('deletes a shared object only when its last reference goes', async () => {
     const store = createMemoryQuotaStore();
-    await chargeStoredObject(store, 'o', 10);
-    expect(await releaseStoredObject(store, 'o', 4)).toBe(6);
-    expect(await releaseStoredObject(store, 'o', 100)).toBe(0);
+    const deleted: string[] = [];
+    const storage = { delete: async (key: string) => void deleted.push(key) };
+    await chargeStoredObject(store, 'o', K1, 10);
+    await chargeStoredObject(store, 'o', K1, 10); // a second asset with the same content
+    await chargeStoredObject(store, 'o', K2, 5);
+
+    expect(await releaseStoredObject(storage, store, 'o', K1)).toEqual({
+      usedBytes: 15,
+      deleted: false,
+    });
+    expect(deleted).toEqual([]);
+    expect(await releaseStoredObject(storage, store, 'o', K1)).toEqual({
+      usedBytes: 5,
+      deleted: true,
+    });
+    expect(deleted).toEqual([K1]);
+    // Releasing an unknown reference is a no-op.
+    expect(await releaseStoredObject(storage, store, 'o', K1)).toEqual({
+      usedBytes: 5,
+      deleted: false,
+    });
   });
 
   it('rejects invalid byte counts', async () => {
     const store = createMemoryQuotaStore();
-    await expect(chargeStoredObject(store, 'o', -1)).rejects.toThrow();
+    await expect(chargeStoredObject(store, 'o', K1, -1)).rejects.toThrow();
     await expect(assertQuota(store, 'o', 1.5)).rejects.toThrow();
   });
 

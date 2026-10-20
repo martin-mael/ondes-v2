@@ -3,10 +3,7 @@
 # Defaults to the Liquidsoap image pinned in deploy/compose.dev.yml (#13); override with LIQUIDSOAP_IMAGE.
 set -eu
 
-# Island splice test (#12): seam detector + A body → island → B body through Liquidsoap.
-# SPLICE_ARGS=--quick runs the FLAC cases only.
-# shellcheck disable=SC2086
-sh engine/tests/splice/run.sh ${SPLICE_ARGS:-}
+# The island splice matrix (#12) is separate: `pnpm test:engine:splice` (needs ffmpeg).
 
 templates=$(find engine/templates -name '*.liq' 2>/dev/null)
 if [ -z "$templates" ]; then

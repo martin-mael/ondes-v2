@@ -8,15 +8,34 @@ export type OrgUsage = {
 };
 
 /**
- * Persistence port for per-org storage counters. #5's schema backs it in Postgres; this
- * package only defines the contract (plus {@link createMemoryQuotaStore} for tests).
- * `add` must be atomic (e.g. `UPDATE … SET used_bytes = used_bytes + $delta RETURNING`).
+ * Persistence port for per-org storage usage, with a reference count per stored object.
+ * Content-addressed keys mean several assets of an org can share one object, so the org is
+ * charged when the first reference appears and credited when the last one goes, and the
+ * object may only be deleted at that point. The DB layer implements it (e.g. a
+ * `storage_object (org_id, key, size_bytes, ref_count)` table updated in one statement);
+ * {@link createMemoryQuotaStore} is for tests.
  */
 export interface QuotaStore {
   get(orgId: string): Promise<OrgUsage>;
-  /** Adds `deltaBytes` (may be negative) and returns the new total, never below 0. */
-  add(orgId: string, deltaBytes: number): Promise<number>;
-  /** Overwrites the counter, used by {@link reconcileOrgUsage}. */
+  /**
+   * Atomically adds a reference to `key`. Only the first reference charges `sizeBytes`, so
+   * two concurrent uploads of the same content are charged once.
+   */
+  addReference(
+    orgId: string,
+    key: string,
+    sizeBytes: number,
+  ): Promise<{ usedBytes: number; firstReference: boolean }>;
+  /**
+   * Atomically removes a reference to `key`. When it was the last one, credits the object's
+   * size and returns `lastReference: true`: the caller may then delete the object.
+   * Removing a reference that doesn't exist is a no-op.
+   */
+  removeReference(
+    orgId: string,
+    key: string,
+  ): Promise<{ usedBytes: number; lastReference: boolean }>;
+  /** Overwrites the usage counter, used by {@link reconcileOrgUsage}. */
   set(orgId: string, usedBytes: number): Promise<void>;
 }
 
@@ -64,28 +83,34 @@ export async function assertQuota(
 }
 
 /**
- * Charges the org for an object that now exists in storage. Content-addressed keys dedupe,
- * so pass `alreadyExisted: true` (from a `head` before the upload) to skip double counting.
+ * Records that an asset now references the stored object `key` (after a successful upload,
+ * or when an upload turned out to be a duplicate). Charges the org on the first reference.
  */
 export async function chargeStoredObject(
   store: QuotaStore,
   orgId: string,
+  key: string,
   sizeBytes: number,
-  { alreadyExisted = false }: { alreadyExisted?: boolean } = {},
 ): Promise<number> {
   assertBytes(sizeBytes);
-  if (alreadyExisted) return (await store.get(orgId)).usedBytes;
-  return store.add(orgId, sizeBytes);
+  return (await store.addReference(orgId, key, sizeBytes)).usedBytes;
 }
 
-/** Credits the org for a deleted object. */
+/**
+ * Drops an asset's reference to `key`. Deletes the object from storage, and credits the org,
+ * only when no other asset still references it. Returns whether the object was deleted.
+ * If the delete itself fails after the credit, the orphaned object is picked up by
+ * {@link reconcileOrgUsage}, which measures the bucket.
+ */
 export async function releaseStoredObject(
+  storage: Pick<Storage, 'delete'>,
   store: QuotaStore,
   orgId: string,
-  sizeBytes: number,
-): Promise<number> {
-  assertBytes(sizeBytes);
-  return store.add(orgId, -sizeBytes);
+  key: string,
+): Promise<{ usedBytes: number; deleted: boolean }> {
+  const { usedBytes, lastReference } = await store.removeReference(orgId, key);
+  if (lastReference) await storage.delete(key);
+  return { usedBytes, deleted: lastReference };
 }
 
 /** Sums the size of every object under the org's prefix. The bucket is the source of truth. */
@@ -109,14 +134,35 @@ export async function reconcileOrgUsage(
 /** In-memory {@link QuotaStore} for tests and scripts. */
 export function createMemoryQuotaStore(limits: Record<string, number | null> = {}): QuotaStore {
   const used = new Map<string, number>();
+  const objects = new Map<string, { sizeBytes: number; refs: number }>();
+  const objectId = (orgId: string, key: string) => `${orgId}\u0000${key}`;
   return {
     async get(orgId) {
       return { usedBytes: used.get(orgId) ?? 0, limitBytes: limits[orgId] ?? null };
     },
-    async add(orgId, deltaBytes) {
-      const next = Math.max(0, (used.get(orgId) ?? 0) + deltaBytes);
+    async addReference(orgId, key, sizeBytes) {
+      const id = objectId(orgId, key);
+      const object = objects.get(id);
+      if (object) {
+        object.refs++;
+        return { usedBytes: used.get(orgId) ?? 0, firstReference: false };
+      }
+      objects.set(id, { sizeBytes, refs: 1 });
+      const next = (used.get(orgId) ?? 0) + sizeBytes;
       used.set(orgId, next);
-      return next;
+      return { usedBytes: next, firstReference: true };
+    },
+    async removeReference(orgId, key) {
+      const id = objectId(orgId, key);
+      const object = objects.get(id);
+      const current = used.get(orgId) ?? 0;
+      if (!object) return { usedBytes: current, lastReference: false };
+      object.refs--;
+      if (object.refs > 0) return { usedBytes: current, lastReference: false };
+      objects.delete(id);
+      const next = Math.max(0, current - object.sizeBytes);
+      used.set(orgId, next);
+      return { usedBytes: next, lastReference: true };
     },
     async set(orgId, usedBytes) {
       used.set(orgId, usedBytes);

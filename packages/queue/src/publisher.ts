@@ -46,13 +46,14 @@ export function createJobPublisher(rabbit: Connection, topology: Topology): JobP
   return {
     async enqueue(job, input, options = {}) {
       const payload = job.schema.parse(input);
+      // An explicit key names one unit of work (`track:42:v3`): never run it twice. The derived
+      // payload hash only collapses concurrent duplicates, so the same work can run again later.
+      const explicitKey = options.idempotencyKey ?? job.idempotencyKey?.(payload);
       const envelope: JobEnvelope = {
         id: randomUUID(),
         name: job.name,
-        idempotencyKey:
-          options.idempotencyKey ??
-          job.idempotencyKey?.(payload) ??
-          defaultIdempotencyKey(job.name, payload),
+        idempotencyKey: explicitKey ?? defaultIdempotencyKey(job.name, payload),
+        idempotency: explicitKey === undefined ? 'in_flight' : 'once',
         attempt: 1,
         enqueuedAt: new Date().toISOString(),
         orgId: options.orgId,

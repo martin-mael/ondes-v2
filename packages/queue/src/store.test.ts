@@ -10,6 +10,7 @@ function envelope(overrides: Partial<JobEnvelope> = {}): JobEnvelope {
     id: randomUUID(),
     name: 'ingest',
     idempotencyKey: 'track:1:v1',
+    idempotency: 'in_flight',
     attempt: 1,
     enqueuedAt: t0.toISOString(),
     payload: {},
@@ -18,7 +19,7 @@ function envelope(overrides: Partial<JobEnvelope> = {}): JobEnvelope {
 }
 
 describe('InMemoryJobRunStore', () => {
-  it('drops another job with the same key while the first is running, retrying or done', async () => {
+  it('in_flight: drops another job with the same key only while the first is in flight', async () => {
     const store = new InMemoryJobRunStore();
     const first = envelope();
     expect(await store.begin(first, 'bulk', t0)).toBe('started');
@@ -26,8 +27,38 @@ describe('InMemoryJobRunStore', () => {
     await store.markRetrying(first.id, 'boom', t0);
     expect(await store.begin(envelope(), 'bulk', t0)).toBe('duplicate');
     await store.markSucceeded(first.id, t0);
-    expect(await store.begin(envelope(), 'bulk', t0)).toBe('duplicate');
-    expect(await store.list()).toHaveLength(1);
+    // Same work enqueued again later (e.g. regenerate a log): it runs.
+    expect(await store.begin(envelope(), 'bulk', t0)).toBe('started');
+    expect(await store.list()).toHaveLength(2);
+  });
+
+  it('once: also drops another job with the same key after one succeeded', async () => {
+    const store = new InMemoryJobRunStore();
+    const first = envelope({ idempotency: 'once' });
+    expect(await store.begin(first, 'bulk', t0)).toBe('started');
+    expect(await store.begin(envelope({ idempotency: 'once' }), 'bulk', t0)).toBe('duplicate');
+    await store.markSucceeded(first.id, t0);
+    expect(await store.begin(envelope({ idempotency: 'once' }), 'bulk', t0)).toBe('duplicate');
+  });
+
+  it('forgets the oldest finished runs beyond maxFinishedRuns', async () => {
+    const store = new InMemoryJobRunStore({ maxFinishedRuns: 2 });
+    const jobs = [1, 2, 3].map((n) => envelope({ idempotencyKey: `k${n}`, idempotency: 'once' }));
+    for (const job of jobs) {
+      await store.begin(job, 'bulk', t0);
+      await store.markSucceeded(job.id, t0);
+    }
+    const running = envelope({ idempotencyKey: 'k-running' });
+    await store.begin(running, 'bulk', t0);
+    expect((await store.list()).map((r) => r.idempotencyKey).sort()).toEqual([
+      'k-running',
+      'k2',
+      'k3',
+    ]);
+    // k1 was pruned, so a `once` job with that key can run again (Postgres keeps them all).
+    expect(
+      await store.begin(envelope({ idempotencyKey: 'k1', idempotency: 'once' }), 'bulk', t0),
+    ).toBe('started');
   });
 
   it('lets the same job retry, but not run again once succeeded', async () => {

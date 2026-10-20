@@ -36,7 +36,9 @@ In the api, use `createRabbit()` from `apps/api/src/plugins/rabbit.ts`.
 `createEventPublisher(rabbit, topology, schema)` and `subscribeEvents(rabbit, topology, schema, onEvent)`. Every subscriber receives every event.
 
 ## Job status
-`JobRunStore` records each run (`running`, `retrying`, `succeeded`, `dead`) and backs the admin job list (`store.list({ status: 'dead' })`). `InMemoryJobRunStore` is the only implementation until the Postgres one lands after #5.
+`JobRunStore` records each run (`running`, `retrying`, `succeeded`, `dead`) and backs the admin job list (`store.list({ status: 'dead' })`). The worker uses `PostgresJobRunStore` from `@ondes/db`; `InMemoryJobRunStore` is for tests and single-process dev.
+
+Idempotency: a derived key (payload hash) only collapses duplicates that are in flight at the same time; an explicit key (`idempotencyKey` on the job or at enqueue) blocks forever once a run succeeded. See ADR 0006.
 
 ## Tests
 `pnpm vitest run packages/queue` (unit) and `pnpm test:integration` (needs RabbitMQ from `pnpm dev:up`, or `RABBITMQ_URL`). Integration tests use a random name prefix and delete their queues afterwards.

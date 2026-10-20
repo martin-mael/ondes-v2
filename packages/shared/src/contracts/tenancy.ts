@@ -3,6 +3,16 @@ import { z } from 'zod';
 // Tenancy contracts (#5): organizations, stations, users, memberships, API keys and the
 // audit log. Mirrors packages/db/src/schema/tenancy.ts.
 
+/**
+ * Makes every field optional but rejects an empty patch, so an update always changes something
+ * (Drizzle refuses `.set({})`, and a no-op PATCH is almost always a client bug).
+ */
+function patchOf<S extends z.ZodObject>(schema: S) {
+  return schema
+    .partial()
+    .refine((patch) => Object.values(patch).some((v) => v !== undefined), 'empty update');
+}
+
 export const uuidSchema = z.uuid();
 
 /** URL-safe identifier: lowercase letters, digits and single dashes, 2–63 chars. */
@@ -58,7 +68,7 @@ export const organizationSchema = z.object({
   updatedAt: z.date(),
 });
 export const createOrganizationSchema = organizationSchema.pick({ slug: true, name: true });
-export const updateOrganizationSchema = createOrganizationSchema.partial();
+export const updateOrganizationSchema = patchOf(createOrganizationSchema);
 
 export type Organization = z.infer<typeof organizationSchema>;
 export type CreateOrganization = z.infer<typeof createOrganizationSchema>;
@@ -98,7 +108,7 @@ export const createStationSchema = z.object({
   truePeakLimitDbtp: truePeakLimitSchema.optional(),
   engineSettings: engineSettingsSchema.optional(),
 });
-export const updateStationSchema = createStationSchema.partial();
+export const updateStationSchema = patchOf(createStationSchema);
 
 export type Station = z.infer<typeof stationSchema>;
 export type CreateStation = z.infer<typeof createStationSchema>;
@@ -117,7 +127,7 @@ export const createUserSchema = z.object({
   email: z.email().transform((email) => email.toLowerCase()),
   name: z.string().min(1).max(200),
 });
-export const updateUserSchema = createUserSchema.partial();
+export const updateUserSchema = patchOf(createUserSchema);
 
 export type User = z.infer<typeof userSchema>;
 export type CreateUser = z.input<typeof createUserSchema>;

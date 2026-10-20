@@ -6,6 +6,8 @@ import {
   createUserSchema,
   ianaTimezoneSchema,
   slugSchema,
+  updateOrganizationSchema,
+  updateStationSchema,
 } from './tenancy.ts';
 
 describe('tenancy contracts', () => {
@@ -58,5 +60,12 @@ describe('tenancy contracts', () => {
     expect(apiKeyScopeSchema.safeParse('log:read').success).toBe(true);
     expect(apiKeyScopeSchema.safeParse('library:*').success).toBe(true);
     expect(apiKeyScopeSchema.safeParse('everything').success).toBe(false);
+  });
+
+  it('rejects empty update patches', () => {
+    expect(updateStationSchema.safeParse({}).success).toBe(false);
+    expect(updateStationSchema.safeParse({ name: undefined }).success).toBe(false);
+    expect(updateOrganizationSchema.safeParse({}).success).toBe(false);
+    expect(updateStationSchema.safeParse({ name: 'Vandale' }).success).toBe(true);
   });
 });

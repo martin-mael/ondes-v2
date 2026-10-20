@@ -1,4 +1,4 @@
-import type { JobEnvelope, JobLane, JobRun, JobRunStatus } from '@ondes/shared';
+import type { IdempotencyMode, JobEnvelope, JobLane, JobRun, JobRunStatus } from '@ondes/shared';
 
 export type BeginResult = 'started' | 'duplicate';
 
@@ -18,8 +18,10 @@ export type JobRunFilter = {
 export interface JobRunStore {
   /**
    * Atomically records that an attempt starts. Returns `duplicate`, and records nothing,
-   * when the job must not run: another job with the same idempotency key is running,
-   * retrying or succeeded, or this very job already succeeded (a redelivery).
+   * when the job must not run:
+   * - this very job already succeeded (a redelivery);
+   * - another job with the same idempotency key is `running` or `retrying`;
+   * - with `idempotency: 'once'`, another job with the same key `succeeded`.
    */
   begin(envelope: JobEnvelope, lane: JobLane, now: Date): Promise<BeginResult>;
   markSucceeded(jobId: string, now: Date): Promise<void>;
@@ -30,7 +32,13 @@ export interface JobRunStore {
   list(filter?: JobRunFilter): Promise<JobRun[]>;
 }
 
-const BLOCKING: ReadonlySet<JobRunStatus> = new Set(['running', 'retrying', 'succeeded']);
+/** Statuses of *another* run that block a job with the same key. */
+export function blockingStatuses(mode: IdempotencyMode): ReadonlySet<JobRunStatus> {
+  return mode === 'once' ? BLOCKING_ONCE : BLOCKING_IN_FLIGHT;
+}
+
+const BLOCKING_IN_FLIGHT: ReadonlySet<JobRunStatus> = new Set(['running', 'retrying']);
+const BLOCKING_ONCE: ReadonlySet<JobRunStatus> = new Set(['running', 'retrying', 'succeeded']);
 
 function newRun(envelope: JobEnvelope, lane: JobLane, now: Date): JobRun {
   return {
@@ -50,25 +58,42 @@ function newRun(envelope: JobEnvelope, lane: JobLane, now: Date): JobRun {
   };
 }
 
+export type InMemoryJobRunStoreOptions = {
+  /**
+   * Finished (`succeeded` or `dead`) runs kept for duplicate checks and the job list; the
+   * oldest are forgotten beyond this. Defaults to 10 000.
+   */
+  maxFinishedRuns?: number;
+};
+
+/**
+ * Per-process store for tests and single-process dev. Lookups go through an index by
+ * idempotency key, and finished runs are pruned, so a long-running process stays bounded.
+ * It can't dedupe across worker replicas: production uses the Postgres store.
+ */
 export class InMemoryJobRunStore implements JobRunStore {
   readonly #runs = new Map<string, JobRun>();
+  readonly #byKey = new Map<string, Set<string>>();
+  /** Finished run ids, oldest first (a Set keeps insertion order). */
+  readonly #finished = new Set<string>();
+  readonly #maxFinished: number;
+
+  constructor(options: InMemoryJobRunStoreOptions = {}) {
+    this.#maxFinished = options.maxFinishedRuns ?? 10_000;
+  }
 
   async begin(envelope: JobEnvelope, lane: JobLane, now: Date): Promise<BeginResult> {
     const existing = this.#runs.get(envelope.id);
     if (existing?.status === 'succeeded') return 'duplicate';
-    for (const run of this.#runs.values()) {
-      if (
-        run.id !== envelope.id &&
-        run.idempotencyKey === envelope.idempotencyKey &&
-        BLOCKING.has(run.status)
-      ) {
-        return 'duplicate';
-      }
+    const blocking = blockingStatuses(envelope.idempotency);
+    for (const id of this.#byKey.get(envelope.idempotencyKey) ?? []) {
+      const run = this.#runs.get(id);
+      if (run && id !== envelope.id && blocking.has(run.status)) return 'duplicate';
     }
     const run = newRun(envelope, lane, now);
     // Keep the first start time across retries.
     if (existing) run.startedAt = existing.startedAt;
-    this.#runs.set(run.id, run);
+    this.#put(run);
     return 'started';
   }
 
@@ -90,7 +115,7 @@ export class InMemoryJobRunStore implements JobRunStore {
 
   async markDead(envelope: JobEnvelope, lane: JobLane, error: string, now: Date): Promise<void> {
     const run = this.#runs.get(envelope.id) ?? newRun(envelope, lane, now);
-    this.#runs.set(run.id, {
+    this.#put({
       ...run,
       status: 'dead',
       attempt: envelope.attempt,
@@ -120,6 +145,31 @@ export class InMemoryJobRunStore implements JobRunStore {
 
   #update(jobId: string, patch: Partial<JobRun>): void {
     const run = this.#runs.get(jobId);
-    if (run) this.#runs.set(jobId, { ...run, ...patch });
+    if (run) this.#put({ ...run, ...patch });
+  }
+
+  #put(run: JobRun): void {
+    this.#runs.set(run.id, run);
+    const ids = this.#byKey.get(run.idempotencyKey) ?? new Set<string>();
+    this.#byKey.set(run.idempotencyKey, ids);
+    ids.add(run.id);
+    this.#finished.delete(run.id);
+    if (run.status === 'succeeded' || run.status === 'dead') {
+      this.#finished.add(run.id);
+      this.#prune();
+    }
+  }
+
+  #prune(): void {
+    for (const id of this.#finished) {
+      if (this.#finished.size <= this.#maxFinished) return;
+      this.#finished.delete(id);
+      const run = this.#runs.get(id);
+      this.#runs.delete(id);
+      if (!run) continue;
+      const ids = this.#byKey.get(run.idempotencyKey);
+      ids?.delete(id);
+      if (ids?.size === 0) this.#byKey.delete(run.idempotencyKey);
+    }
   }
 }

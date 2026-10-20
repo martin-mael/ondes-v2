@@ -14,17 +14,27 @@ import { z } from 'zod';
 export const jobLaneSchema = z.enum(['high', 'bulk']);
 export type JobLane = z.infer<typeof jobLaneSchema>;
 
+/**
+ * How long an idempotency key blocks other jobs with the same key.
+ * - `in_flight`: only while a run is `running` or `retrying`. Default, used with the derived
+ *   payload-hash key: the same work enqueued twice at once runs once, but enqueuing it again
+ *   later (a log to regenerate, a cache to resync) runs again.
+ * - `once`: also after a run `succeeded`. Set automatically when the key is explicit
+ *   (`entity:version`), because such a key names one unit of work that must never run twice.
+ */
+export const idempotencyModeSchema = z.enum(['in_flight', 'once']);
+export type IdempotencyMode = z.infer<typeof idempotencyModeSchema>;
+
 /** Message body on the wire. `payload` is validated by the job's own schema on consume. */
 export const jobEnvelopeSchema = z.object({
   /** Unique per enqueue; stays the same across retries of that enqueue. */
   id: z.uuid(),
   /** Job name, as given to `defineJob`, e.g. `ingest` or `log-generate`. */
   name: z.string().min(1).max(100),
-  /**
-   * Duplicates (same key) are dropped once one run with the key is running or succeeded.
-   * Content hash or `entity:version`; defaults to a hash of name + payload.
-   */
+  /** Content hash or `entity:version`; defaults to a hash of name + payload. */
   idempotencyKey: z.string().min(1).max(512),
+  /** See {@link idempotencyModeSchema}. Absent on messages from older publishers. */
+  idempotency: idempotencyModeSchema.default('in_flight'),
   /** 1 for the first delivery, incremented by each retry. */
   attempt: z.int().min(1),
   enqueuedAt: z.iso.datetime(),

@@ -27,12 +27,15 @@ Names below use the default prefix `ondes`.
 - Retry tiers are 10 s, 1 min and 10 min; a job gets 4 attempts, then goes to the DLQ. One queue per tier (instead of per-message TTL) keeps expiry in FIFO order, which quorum queues require. The delay is part of the queue name because a queue's TTL can't change after declaration.
 - The worker acks a delivery only after its follow-up message (retry or dead letter) is confirmed. If publishing that fails, the delivery is requeued, and the lane queues' quorum `x-delivery-limit` (5) dead-letters a message that keeps crashing workers. Dead-lettering uses the at-least-once strategy.
 - Invalid envelopes, unknown job names, payloads that fail their schema, and `NonRetryableError`s go to the DLQ without retrying.
-- Idempotency is enforced on consume, through the `JobRunStore` port: a job is dropped when another job with the same key is running, retrying or succeeded, or when the same job already succeeded (a redelivery). The default key is `<job>:<sha256 of the canonical payload>`; jobs can derive `entity:version` keys instead.
+- Idempotency is enforced on consume, through the `JobRunStore` port. A job is always dropped when it already succeeded (a redelivery). Whether *another* job with the same key blocks it depends on the envelope's `idempotency` mode:
+  - `in_flight` (default, with the derived key `<job>:<sha256 of the canonical payload>`): blocked only while that other run is `running` or `retrying`. Concurrent duplicates collapse, but the same work enqueued again later (regenerate a log, resync a cache) runs again.
+  - `once` (set automatically when the key is explicit, e.g. `track:<id>:<version>`): also blocked after that other run `succeeded`. An explicit key names one unit of work.
+  - (Revised in review of #110: the first version blocked on `succeeded` for every key, which silently dropped legitimate re-runs.)
 - Delivery is at least once. Handlers must be idempotent anyway, because a worker can die between finishing a handler and recording success.
 
 ### Job registry
 The worker loads `apps/worker/src/jobs/<job>/index.ts`, whose default export is a `defineJob(...)` named after its folder. Adding a job never touches a shared file.
 
 ## Consequences
-- Job status lives behind `JobRunStore`. The in-memory implementation is per-process; a Postgres `job_run` table replaces it once `packages/db` exists (follow-up to #5).
+- Job status lives behind `JobRunStore`. Production uses the Postgres store (`job_run` table in `packages/db`), whose partial unique index on in-flight keys makes duplicate detection atomic across worker replicas. The in-memory store is per-process and prunes finished runs (`maxFinishedRuns`), for tests and single-process dev only.
 - Events are transient: a subscriber that is down misses them, and clients resync over HTTP.
