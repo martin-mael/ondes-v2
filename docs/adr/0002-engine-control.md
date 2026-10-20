@@ -1,6 +1,6 @@
 # ADR 0002: Engine control: harbor HTTP + JSON, pushed events, just-in-time queue
 
-- Status: accepted (contract v1 is a draft that #28 finalises)
+- Status: accepted (contract v1 is a draft that #28 finalises). Amended 2026-10-20: island joins follow spike #12.
 - Date: 2026-10-20
 - Issue: #13 (spike). Consumers: #27 (template), #28 (adapter).
 
@@ -67,7 +67,9 @@ The template turns push fields into `annotate:` metadata (values quoted with `st
 | `item_id` | `ondes_item_id` (ours) | our as-run callback | ✅ |
 | – | `ondes_source` (ours) | tags each branch: `queue`, `safety`, `emergency`, `live` | ✅ |
 
-**Crossfade overlap = min(outgoing `cross_out`, incoming `cross_in`).** Set both to the planned overlap. **0 on both = butt splice** with no gap and no overlap (island joins, #54). Unset means the station default (`ENGINE_CROSS_DURATION`).
+**Crossfade overlap = min(outgoing `cross_out`, incoming `cross_in`).** Set both to the planned overlap. **0 on both = an abrupt cut, but not a sample-exact one:** the `crossfade` operator is frame-granular, and spike #12 measured up to ~443 samples lost at such a boundary. **Never use it for island joins.** Unset means the station default (`ENGINE_CROSS_DURATION`).
+
+**Island chains (#54) are pushed as one merged segment**, never as separate queue items. The segment is `A body → island → B body`, built with `sequence(merge=true, [...requests, source.fail()])`, with `liq_amplify` applied per request inside it, cue-ins on the playout copy's 1024-sample grid, and cue points biased by half a sample. The station crossfade then sees the chain as one track. See `engine/spikes/splice/RESULTS.md`; the push API for segments is designed in #29 and #57.
 
 **Don't use `liq_cross_duration`.** In 2.4.6 it sets both ends of the track at once, and it decouples the track's metadata from its track mark: the mark comes at the start of the transition with empty metadata, and the metadata only arrives once the track's audio starts. The audio is right (no dead air), but anything keyed on `on_track` loses the item id. Use the start/end keys.
 
@@ -130,4 +132,4 @@ emergency single()┘
 - #28 implements `EngineAdapter` over `fetch` with the schemas in `@ondes/shared`, an events endpoint (dedupe on `(boot_id, seq)`, gap backfill) and the live-auth webhook. It publishes engine events on RabbitMQ and SSE.
 - #27 turns `engine/templates/station.liq` into a generated template. Its environment variables are the settings to render. Keep the route paths, metadata keys and event types in sync with the contract file; contract changes follow the `contract:` PR rule.
 - The wire format is snake_case because it maps one to one onto Liquidsoap metadata; the adapter maps it to domain types.
-- Open points: an engine-side gauge for "seconds of audio queued" (needs durations from Node); whether to push islands (#54) as single items (likely, with `cross_in = cross_out = 0` around them); per-station processing chain (#27).
+- Open points: an engine-side gauge for "seconds of audio queued" (needs durations from Node); islands (#54) are settled by spike #12 (one merged segment, see above); per-station processing chain (#27).

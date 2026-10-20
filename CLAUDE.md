@@ -85,6 +85,11 @@ Every PR must pass, locally and in CI:
 - Engine template changes: `pnpm test:engine` (`engine/tests/run.sh`: `liquidsoap --check` on every template, in the Liquidsoap image pinned in `deploy/compose.dev.yml`). Needs Docker.
 - Island splice regression test (`engine/tests/splice/README.md`): `pnpm test:engine:splice` (full matrix) or `pnpm test:engine:splice --quick` (FLAC cases, what CI runs). Needs Docker and `ffmpeg`. Run it when you touch islands, cue handling or the Liquidsoap version.
 - Run one package's tests with `pnpm vitest run apps/api`, or typecheck one package with `pnpm --filter @ondes/api typecheck`.
+- **The dev stack is shared.** Every worktree talks to the same `ondes-dev` compose project on fixed localhost ports, so parallel sessions use the same Postgres, RabbitMQ, Garage, Icecast and Liquidsoap.
+  - Start it with `pnpm dev:up`. It's idempotent and safe to run even if another session already started it.
+  - **Never run `pnpm dev:down`, `pnpm dev:reset` or `docker compose … down` from a session**, and don't restart or recreate its services. You'd cut off every other session mid-test. Stopping the stack is for the human.
+  - Integration tests stay isolated on the shared stack: a throwaway database per test file (`createTestDatabase`), random queue prefixes, random S3 keys. Keep it that way in new tests.
+  - If you need extra containers (e.g. a spike's own engine), use your own compose project name and your own ports, like `engine/spikes/control` does.
 - CI (`.github/workflows/ci.yml`) runs lint, typecheck and unit tests, plus `pnpm test:integration` against Postgres 18 and RabbitMQ 4 service containers. `images.yml` builds the production images on every PR and pushes them to GHCR from `main`.
 - Build a production image locally from the repo root: `docker build -f deploy/docker/api.Dockerfile .` (or `worker`). Images run the `.ts` sources directly (`docs/adr/0005-production-images.md`).
 
