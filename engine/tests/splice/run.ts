@@ -108,6 +108,11 @@ function runLiquidsoap(work: string, playlist: string, out: string, liqMode: str
     [
       'run',
       '--rm',
+      // Run as the host user so the engine can write its output into the bind-mounted work
+      // dir on Linux (CI); the image's own user doesn't own it. HOME must stay writable.
+      ...(process.getuid && process.getgid
+        ? ['--user', `${process.getuid()}:${process.getgid()}`, '-e', 'HOME=/tmp']
+        : []),
       '-v',
       `${work}:/work`,
       '-v',
