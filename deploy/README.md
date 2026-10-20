@@ -11,7 +11,7 @@ Requirements: Docker with Compose v2.24+ (Docker Desktop or OrbStack on macOS).
 ```sh
 cp .env.example .env   # app-side settings (DATABASE_URL, S3_*, ...)
 pnpm dev:up            # start all services and wait until they're healthy
-pnpm dev:seed          # demo data (no-op until the DB schema lands in #5)
+pnpm dev:seed          # migrate, then create the demo org, station and user
 pnpm dev:ps            # status of each service
 pnpm dev:logs          # follow logs (add a service name: pnpm dev:logs icecast)
 pnpm dev:down          # stop, keep the data

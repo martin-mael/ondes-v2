@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
+    "@ondes/db": "workspace:*",
     "@ondes/shared": "workspace:*"
   }
 }

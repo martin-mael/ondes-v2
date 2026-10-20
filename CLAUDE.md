@@ -73,6 +73,7 @@ Created by #3. Packages are named `@ondes/<folder>` (e.g. `@ondes/shared`) and a
 - **Naming:** files kebab-case; DB tables snake_case singular (`log_item`); API routes `/api/v1/stations/:stationId/...`.
 
 ## Database migrations (parallel-safe)
+- Full workflow, tenant scopes (`resolveStationScope`, `whereStation`) and the audit writer (`withAudit`): `packages/db/README.md`.
 - Put your tables in your domain's schema file, or create a new one. Don't edit another domain's file except to add a foreign key you need, and mention it in the PR.
 - Migrations are generated with a **timestamp prefix**. If main moved and the migration journal conflicts: rebase, **delete your generated migration, regenerate it**, rerun the tests. Never hand-merge the journal.
 - Migrations must be forward-only and safe on a populated DB (expand/contract for renames).
