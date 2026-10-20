@@ -39,7 +39,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # Service versions mirror deploy/compose.dev.yml (#4); keep them in sync.
-    # TODO: add MinIO (S3) here when @ondes/storage gets integration tests.
+    # Garage (S3) isn't a service container: it needs its config file and a bootstrap step,
+    # so it's started from compose.dev.yml below.
     services:
       postgres:
         image: postgres:18
@@ -63,6 +64,13 @@ jobs:
     env:
       DATABASE_URL: postgres://ondes:ondes@localhost:5432/ondes
       RABBITMQ_URL: amqp://ondes:ondes@localhost:5672
+      # Dev-only Garage key from .env.example, same defaults as compose.dev.yml.
+      S3_ENDPOINT: http://127.0.0.1:3900
+      S3_REGION: garage
+      S3_BUCKET: ondes-dev
+      S3_ACCESS_KEY_ID: GK6f6e6465732d6465762d6b65
+      S3_SECRET_ACCESS_KEY: fc0e6e6f0bb08c084598a6494af6fc8299054cfbcb7e11d28c2241aeb3b54ee8
+      S3_FORCE_PATH_STYLE: 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,6 +81,10 @@ jobs:
           node-version-file: .nvmrc
           check-latest: true
           cache: pnpm
+      - name: Start Garage (S3)
+        run: |
+          docker compose -f deploy/compose.dev.yml up -d --wait garage
+          docker compose -f deploy/compose.dev.yml run --rm garage-init
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:integration
 
