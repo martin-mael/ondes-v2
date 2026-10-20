@@ -1,5 +1,6 @@
-# Engine adapter integration test (#28): one real station engine running
-# engine/templates/station.liq, driven by adapter.int.test.ts from the host.
+# Engine adapter integration test (#28): one real station engine running the station
+# template (#27), rendered by adapter.int.test.ts into ./.rendered/station.liq, and driven
+# by that test from the host.
 #
 # Its own project name and ports, so it never touches the shared ondes-dev stack. The test
 # starts it and tears it down; by hand:
@@ -42,23 +43,18 @@ services:
   engine:
     # Keep in sync with deploy/compose.dev.yml (ADR 0002 pins 2.4.6).
     image: savonet/liquidsoap:v2.4.6
-    command: [/engine/templates/station.liq]
+    command: [/engine/station.liq]
     restart: unless-stopped
+    # Settings are baked into the rendered script; only secrets come from the environment.
     environment:
-      STATION_ID: it-station
       ENGINE_CONTROL_TOKEN: it-token
-      ENGINE_EVENTS_URL: http://host.docker.internal:${ENGINE_IT_EVENTS_PORT:-17181}/internal/engine/stations/it-station/events
-      ENGINE_CROSS_DURATION: '0.5'
-      ENGINE_BLANK_MAX: '4.'
-      ICECAST_HOST: icecast
       ICECAST_SOURCE_PASSWORD: ondes-it-source
-      ICECAST_MOUNT: it.mp3
     extra_hosts:
       - host.docker.internal:host-gateway
     ports:
       - 127.0.0.1:${ENGINE_IT_CONTROL_PORT:-17180}:7000
     volumes:
-      - ../../../../../../../engine/templates:/engine/templates:ro
+      - ./.rendered:/engine:ro
       - media:/media:ro
     depends_on:
       fixtures:

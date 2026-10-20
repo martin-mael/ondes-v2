@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -18,6 +19,7 @@ import {
   engineRealtimeEventSchema,
 } from '@ondes/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { renderStationScript } from '../config/index.ts';
 import { EngineNotQueuedError, EngineUnresolvableError } from './errors.ts';
 import type { ResyncReason } from './ingest.ts';
 import { createEngineEventsHandler } from './route.ts';
@@ -31,6 +33,8 @@ import { createStationEngine, type StationEngine } from './station.ts';
 
 const run = promisify(execFile);
 const composeFile = fileURLToPath(new URL('./testing/compose.yml', import.meta.url));
+/** The rendered station script goes here (gitignored); compose mounts it into the engine. */
+const renderedDir = fileURLToPath(new URL('./testing/.rendered/', import.meta.url));
 const project = 'ondes-engine-adapter-it';
 const controlPort = Number(process.env.ENGINE_IT_CONTROL_PORT ?? 17180);
 const eventsPort = Number(process.env.ENGINE_IT_EVENTS_PORT ?? 17181);
@@ -54,6 +58,7 @@ let station: StationEngine;
 /** What came back through RabbitMQ, i.e. what SSE clients would see. */
 const received: EngineRealtimeEvent[] = [];
 const resyncs: Array<{ reason: ResyncReason; state: EngineState }> = [];
+let configVersion = '';
 
 async function waitFor<T>(what: string, find: () => T | undefined, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
@@ -92,7 +97,11 @@ beforeAll(async () => {
   });
 
   // The engine reaches this through host.docker.internal, hence 0.0.0.0.
-  const handle = createEngineEventsHandler({ ingestFor: () => station.ingest });
+  // The template sends the control token on event posts (#27): require it.
+  const handle = createEngineEventsHandler({
+    ingestFor: () => station.ingest,
+    token: 'it-token',
+  });
   server = createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -107,6 +116,20 @@ beforeAll(async () => {
     res.end(JSON.stringify(out.body));
   });
   await new Promise<void>((resolve) => server.listen(eventsPort, '0.0.0.0', resolve));
+
+  // The station template (#27), rendered for this test's station like the api will.
+  const rendered = renderStationScript({
+    stationId: STATION,
+    name: 'Ondes integration test',
+    eventsUrl: `http://host.docker.internal:${eventsPort}/internal/engine/stations/${STATION}/events`,
+    paths: { safetyDir: '/media/safety', emergencyFile: '/media/emergency.wav' },
+    crossfade: { duration: 0.5 },
+    blank: { maxSeconds: 4 },
+    outputs: [{ mount: 'it.mp3', format: 'mp3', bitrate: 128 }],
+  });
+  configVersion = rendered.version;
+  mkdirSync(renderedDir, { recursive: true });
+  writeFileSync(`${renderedDir}station.liq`, rendered.script);
 
   await compose('down', '-v', '--remove-orphans');
   await compose('up', '-d');
@@ -133,6 +156,7 @@ describe('engine adapter against Liquidsoap', () => {
       received.find((e) => e.type === 'engine.booted'),
     );
     expect(booted.data).toMatchObject({ seq: 1, bootId: up.data.bootId, version: '2.4.6' });
+    expect((await station.adapter.health()).config_version).toBe(configVersion);
     // Empty queue at boot: the safety playlist plays.
     await waitFor('safety on air', () =>
       received.find((e) => e.type === 'engine.track.started' && e.data.source === 'safety'),
@@ -193,23 +217,26 @@ describe('engine adapter against Liquidsoap', () => {
     expect((await station.adapter.state()).live.enabled).toBe(false);
   });
 
-  it('pushes an island segment, if the template supports it', async (ctx) => {
-    const result = await station.adapter
-      .pushSegment({
-        segment_id: 'island-1',
-        parts: [
-          { item_id: 'S1', uri: '/media/tone-d.wav', cue_out: 2 },
-          { item_id: 'S2', uri: '/media/tone-e.wav', cue_out: 2, amplify_db: 0 },
-        ],
-      })
-      .catch((error: unknown) => error);
-    if (result instanceof EngineNotQueuedError) {
-      // 404: the station template doesn't serve POST /v1/segment yet (#27).
-      ctx.skip();
-      return;
+  it('pushes an island segment as one queue entry', async () => {
+    const mark = received.length;
+    const result = await station.adapter.pushSegment({
+      segment_id: 'island-1',
+      parts: [
+        { item_id: 'S1', uri: '/media/tone-d.wav', cue_out: 2 },
+        { item_id: 'S2', uri: '/media/tone-e.wav', cue_out: 2, amplify_db: 0 },
+      ],
+      cross_in: 0.5,
+    });
+    expect(result.segment_id).toBe('island-1');
+    expect(result.requests.map((r) => [r.item_id, r.segment_id])).toEqual([
+      ['S1', 'island-1'],
+      ['S2', 'island-1'],
+    ]);
+    const s1 = await waitFor('S1 on air', () => started('S1', mark));
+    const s2 = await waitFor('S2 on air', () => started('S2', mark));
+    for (const e of [s1, s2]) {
+      expect(e.type === 'engine.track.started' && e.data.segmentId).toBe('island-1');
     }
-    expect(result).toMatchObject({ segment_id: 'island-1' });
-    await waitFor('segment on air', () => started('S1'));
   }, 30_000);
 
   it('resyncs after the engine restarts', async () => {
