@@ -8,6 +8,9 @@
     "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
-    "@ondes/shared": "workspace:*"
+    "@ondes/db": "workspace:*",
+    "@ondes/queue": "workspace:*",
+    "@ondes/shared": "workspace:*",
+    "zod": "4.6.7"
   }
 }

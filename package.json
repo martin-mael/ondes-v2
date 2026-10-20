@@ -20,7 +20,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:engine": "sh engine/tests/run.sh"
+    "test:engine": "sh engine/tests/run.sh",
+    "test:engine:splice": "sh engine/tests/splice/run.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

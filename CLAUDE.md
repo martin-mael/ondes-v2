@@ -73,6 +73,7 @@ Created by #3. Packages are named `@ondes/<folder>` (e.g. `@ondes/shared`) and a
 - **Naming:** files kebab-case; DB tables snake_case singular (`log_item`); API routes `/api/v1/stations/:stationId/...`.
 
 ## Database migrations (parallel-safe)
+- Full workflow, tenant scopes (`resolveStationScope`, `whereStation`) and the audit writer (`withAudit`): `packages/db/README.md`.
 - Put your tables in your domain's schema file, or create a new one. Don't edit another domain's file except to add a foreign key you need, and mention it in the PR.
 - Migrations are generated with a **timestamp prefix**. If main moved and the migration journal conflicts: rebase, **delete your generated migration, regenerate it**, rerun the tests. Never hand-merge the journal.
 - Migrations must be forward-only and safe on a populated DB (expand/contract for renames).
@@ -81,7 +82,8 @@ Created by #3. Packages are named `@ondes/<folder>` (e.g. `@ondes/shared`) and a
 Every PR must pass, locally and in CI:
 - `pnpm lint` (Biome; `pnpm format` auto-fixes formatting and import order), `pnpm typecheck` and `pnpm test` (unit tests next to the code, `*.test.ts`).
 - `pnpm test:integration` when you touch db, queue, storage or engine: `*.int.test.ts` files, using the `deploy/compose.dev.yml` services.
-- Engine template changes: `pnpm test:engine` (`engine/tests/run.sh`: `liquidsoap --check` on every template, plus the fixtures in `engine/tests`).
+- Engine template changes: `pnpm test:engine` (`engine/tests/run.sh`: `liquidsoap --check` on every template, in the Liquidsoap image pinned in `deploy/compose.dev.yml`). Needs Docker.
+- Island splice regression test (`engine/tests/splice/README.md`): `pnpm test:engine:splice` (full matrix) or `pnpm test:engine:splice --quick` (FLAC cases, what CI runs). Needs Docker and `ffmpeg`. Run it when you touch islands, cue handling or the Liquidsoap version.
 - Run one package's tests with `pnpm vitest run apps/api`, or typecheck one package with `pnpm --filter @ondes/api typecheck`.
 - CI (`.github/workflows/ci.yml`) runs lint, typecheck and unit tests, plus `pnpm test:integration` against Postgres 18 and RabbitMQ 4 service containers. `images.yml` builds the production images on every PR and pushes them to GHCR from `main`.
 - Build a production image locally from the repo root: `docker build -f deploy/docker/api.Dockerfile .` (or `worker`). Images run the `.ts` sources directly (`docs/adr/0005-production-images.md`).
