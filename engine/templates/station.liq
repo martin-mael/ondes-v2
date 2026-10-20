@@ -99,6 +99,13 @@ def send_failed(reason) =
   next_send := time() + list.nth(delays, min(send_failures(), 5) - 1)
 end
 
+# The adapter may check that events come from this engine: same token as the control API.
+event_headers =
+  [
+    ("Content-Type", "application/json"),
+    ...(if control_token != "" then [("Authorization", "Bearer #{control_token}")] else [] end)
+  ]
+
 def flush_events() =
   if
     events_url != "" and time() >= next_send()
@@ -113,7 +120,7 @@ def flush_events() =
         r =
           http.post(
             timeout=2.,
-            headers=[("Content-Type", "application/json")],
+            headers=event_headers,
             data=batch_body(batch),
             events_url
           )
