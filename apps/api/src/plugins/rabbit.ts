@@ -8,13 +8,19 @@ import {
   type QueueConnection,
   subscribeEvents,
 } from '@ondes/queue';
+import type { FastifyInstance } from 'fastify';
+import fp from 'fastify-plugin';
 import { z } from 'zod';
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    rabbit: Rabbit;
+  }
+}
 
 /**
  * RabbitMQ access for the api (#8): enqueue jobs, publish real-time events, and subscribe to
- * the event fanout (the SSE plugin's source). Framework-agnostic for now: once the Fastify
- * server lands, it registers this as a plugin (`app.decorate('rabbit', ...)`, closed in
- * `onClose`).
+ * the event fanout (the SSE plugin's source). Registered as `app.rabbit` by `rabbitPlugin`.
  */
 export type Rabbit = {
   queue: QueueConnection;
@@ -52,3 +58,18 @@ export async function createRabbit(url: string): Promise<Rabbit> {
     },
   };
 }
+
+export type RabbitPluginOptions =
+  /** Connects, and closes on shutdown. */
+  | { url: string }
+  /** An already open connection (tests). The caller closes it. */
+  | { rabbit: Rabbit };
+
+export const rabbitPlugin = fp(
+  async (app: FastifyInstance, options: RabbitPluginOptions) => {
+    const rabbit = 'rabbit' in options ? options.rabbit : await createRabbit(options.url);
+    app.decorate('rabbit', rabbit);
+    if ('url' in options) app.addHook('onClose', () => rabbit.close());
+  },
+  { name: 'rabbit' },
+);
