@@ -10,6 +10,7 @@ import {
 } from '@tanstack/react-router';
 import { toast } from 'sonner';
 import { z } from 'zod';
+import { SafetyPage } from '../features/settings/safety/safety-page.tsx';
 import { AcceptInvitationPage } from './auth/accept-invitation-page.tsx';
 import { AccountPage } from './auth/account-page.tsx';
 import { AuthLayout } from './auth/auth-layout.tsx';
@@ -162,6 +163,12 @@ const dashboardRoute = createRoute({
   component: DashboardPage,
 });
 
+const safetySettingsRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: '/settings/safety',
+  component: SafetyPage,
+});
+
 const routeTree = rootRoute.addChildren([
   authLayout.addChildren([
     loginRoute,
@@ -171,7 +178,11 @@ const routeTree = rootRoute.addChildren([
     resetPasswordRoute,
     acceptInvitationRoute,
   ]),
-  appLayout.addChildren([homeRoute, accountRoute, stationRoute.addChildren([dashboardRoute])]),
+  appLayout.addChildren([
+    homeRoute,
+    accountRoute,
+    stationRoute.addChildren([dashboardRoute, safetySettingsRoute]),
+  ]),
 ]);
 
 export function createAppRouter(

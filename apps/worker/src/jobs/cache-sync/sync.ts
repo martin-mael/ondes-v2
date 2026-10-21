@@ -16,6 +16,7 @@ import {
 } from '@ondes/db';
 import { type CacheFileError, type CacheObject, playoutRelPath } from '@ondes/shared';
 import { ObjectNotFoundError, type Storage } from '@ondes/storage';
+import { type FallbackSyncReport, syncFallbacks } from './fallbacks.ts';
 import {
   ChecksumMismatchError,
   diskSpace,
@@ -77,6 +78,8 @@ export type CachePassReport = {
   busy: Need[];
   partialsRemoved: number;
   diskLow: boolean;
+  /** The safety playlist and emergency file (#34), synced once per job after the passes. */
+  fallbacks?: FallbackSyncReport;
 };
 
 export function stationCacheDir(cacheRoot: string, stationId: string): string {
@@ -118,7 +121,12 @@ export async function syncStation(
     const before = await cacheLogFingerprint(deps.db, scope, range);
     const report = await passOnce(deps, scope, { now, range, settings }, signal);
     const after = await cacheLogFingerprint(deps.db, scope, range);
-    if (after === before || passes >= 3 || signal?.aborted) return { ...report, passes };
+    if (after === before || passes >= 3 || signal?.aborted) {
+      if (signal?.aborted) return { ...report, passes };
+      const root = stationCacheDir(deps.cacheRoot, scope.stationId);
+      const fallbacks = await syncFallbacks(deps, scope, root, { signal });
+      return { ...report, passes, fallbacks };
+    }
   }
 }
 

@@ -11,6 +11,7 @@ engine only ever plays local files. Design and measurements: `docs/adr/0004-play
 | `planner.ts` | Pure: the pinned window (`now − 1 h` → `now + 48 h`, UTC), what to fetch, defer and evict. |
 | `sync.ts` | One pass for a station (`syncStation`), and `fetchOne`. |
 | `urgent.ts` | The feeder's urgent fetch of one file (`cache-fetch` job, `../cache-fetch`). |
+| `fallbacks.ts` | The safety playlist and emergency file (#34): pinned for good outside `media/`. |
 | `trigger.ts` | What enqueues passes: a durable consumer of `log.updated`, and a 10 min sweep. |
 | `deps.ts` | Dependencies from the environment, shared by both jobs. |
 | `packages/db/src/schema/cache.ts`, `repos/cache.ts` | `playout_cache_file`, `station_cache`; horizon query, readiness. |
@@ -22,7 +23,8 @@ engine only ever plays local files. Design and measurements: `docs/adr/0004-play
   media/<aa>/<sha256>.<ext>          final files, 0444, created only by rename(2)
   .partial/<sha256>.<ext>.part       downloads in progress (resumed with a Range request)
   .partial/<sha256>.<ext>.lock       held by the process downloading that file
-  safety/, emergency.flac            the template's fallbacks: outside media/, never evicted
+  safety/<sha256>.flac               the safety playlist (#34): hard links, never evicted
+  emergency.flac, .emergency.sha256  the emergency loop (#34) and which content it holds
 ```
 
 ## A pass
@@ -62,6 +64,23 @@ A pass that throws (unwritable cache root, database down) records `last_error` o
 - Reconcile and forget only delete rows older than the pass's scan, so a row an urgent fetch
   wrote meanwhile survives.
 
+## Fallback files (#34)
+
+After the passes, every job syncs the station's safety playlist and emergency file
+(`fallbacks.ts`), selected in the api (`apps/api/src/modules/engine/safety`):
+
+- `safety/` is created first, even when nothing is selected: the engine's watched playlist
+  never sees a directory created after it started.
+- Each selected playout file is fetched into `media/` like any other (same lock, same checks),
+  then hard-linked into place through `.partial/` and `rename(2)`. The link costs no space
+  while `media/` keeps its copy and survives its eviction; it isn't counted in the budget.
+- `emergency.flac` is replaced atomically; `.emergency.sha256` says which content it holds.
+  A selected asset without a playout file yet keeps the previous file; clearing the
+  selection removes it.
+- Deselected safety files (and anything else in `safety/`) are removed.
+- The outcome replaces the station's `station_fallback_file` rows (`ready` or `failed` with
+  the error) and stamps `station_fallback_state.synced_at`; the api reads them.
+
 ## Triggers
 
 - `log.updated` on the events fanout, through the durable queue `ondes.events.cache-sync`
@@ -71,7 +90,8 @@ A pass that throws (unwritable cache root, database down) records `last_error` o
   handler retries in process (1 s, 5 s, 30 s), then gives the event up to the sweep: the
   queue never redelivers it in a loop.
 - Every 10 min: enqueue `cache-sync` for every station.
-- `app.playoutCache.requestSync(scope)` (a 422 from the engine) and
+- `app.playoutCache.requestSync(scope)` (a 422 from the engine, or a change of the safety
+  playlist or emergency file) and
   `requestUrgentFetch(scope, assetFileId)` (a miss at push time), from the api.
 
 Both jobs run on the `high` lane with the default `in_flight` idempotency (payload hash), so
@@ -120,7 +140,7 @@ overrides the budget, horizon and a download cap (`bytes_per_sec`) — `setStati
 - Unit: `pnpm vitest run apps/worker/src/jobs/cache-sync` (planner incl. DST windows, layout
   with an in-memory storage, triggers), `packages/db/src/repos/cache.test.ts` (readiness),
   `apps/api/src/modules/cache/alerts.test.ts`.
-- Integration (`pnpm dev:up`, `.env` loaded): `cache-sync.int.test.ts` (Garage, Postgres,
+- Integration (`pnpm dev:up`, `.env` loaded): `fallbacks.int.test.ts` (#34) and `cache-sync.int.test.ts` (Garage, Postgres,
   RabbitMQ: cold sync, idempotency, corrupt object then fixed, missing object, eviction under
   budget, deferral, disk/table reconcile, urgent fetch, triggers) and
   `apps/api/src/modules/cache/cache.int.test.ts` (alerts raised and resolved, the endpoint).

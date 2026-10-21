@@ -14,6 +14,7 @@ import {
   type EngineLifecyclePluginOptions,
   engineLifecyclePlugin,
 } from './modules/engine/lifecycle/plugin.ts';
+import { type SafetyPluginOptions, safetyPlugin } from './modules/engine/safety/plugin.ts';
 import { type InvitationsOptions, invitationsRoutes } from './modules/invitations/routes.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
@@ -38,6 +39,8 @@ export interface AppOptions {
   alerts?: AlertsPluginOptions;
   /** Playout cache (#31): readiness API and cache alerts. */
   cache?: CachePluginOptions;
+  /** Safety playlist and emergency file (#34): alert interval, event queue (tests). */
+  safety?: SafetyPluginOptions;
   /** Media storage. Optional so tests that don't upload can skip S3; without it, no upload routes. */
   storage?: Storage;
   /** Upload route settings beyond `storage` (tests). */
@@ -96,6 +99,8 @@ export async function buildApp(options: AppOptions) {
   });
   // Playout cache (#31): `app.playoutCache` for the feeder, `GET …/cache`, cache alerts.
   await app.register(cachePlugin, options.cache ?? {});
+  // Safety playlist and emergency file (#34): routes, on-air source, fallback alerts.
+  await app.register(safetyPlugin, options.safety ?? {});
   if (options.storage) {
     await app.register(uploadPlugin, { ...options.uploads, storage: options.storage });
   }

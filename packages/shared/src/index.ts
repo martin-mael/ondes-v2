@@ -13,6 +13,7 @@ export * from './contracts/library-jobs.ts';
 export * from './contracts/log.ts';
 export * from './contracts/loudness.ts';
 export * from './contracts/orgs.ts';
+export * from './contracts/safety.ts';
 export * from './contracts/streams.ts';
 export * from './contracts/tenancy.ts';
 export * from './json.ts';

@@ -31,6 +31,20 @@ export default defineJob(
     }
     const scope = await resolveStationScope(deps.db, payload.orgId, payload.stationId);
     const report = await runCacheSync(deps, scope, ctx.signal);
+    const fb = report.fallbacks;
+    if (fb && (fb.linked || fb.removed || fb.failed.length || fb.diskLow)) {
+      console.log(
+        JSON.stringify({
+          level: fb.failed.length || fb.diskLow ? 'warn' : 'info',
+          msg: 'cache sync: fallbacks',
+          stationId: payload.stationId,
+          linked: fb.linked,
+          removed: fb.removed,
+          failed: fb.failed.map((f) => ({ sha256: f.sha256, error: f.error })),
+          diskLow: fb.diskLow,
+        }),
+      );
+    }
     if (report.fetched.length || report.failed.length || report.plan.evict.length) {
       console.log(
         JSON.stringify({

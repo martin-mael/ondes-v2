@@ -25,7 +25,7 @@ import type { Storage } from '@ondes/storage';
 //     media/<aa>/<sha256>.<ext>      final files, mode 0444, only ever created by rename(2)
 //     .partial/<sha256>.<ext>.part   downloads in progress (same filesystem: rename is atomic)
 //     .partial/<sha256>.<ext>.lock   held by the process downloading that file
-//     safety/, emergency.flac        the template's fallbacks: outside media/, never touched
+//     safety/, emergency.flac        the template's fallbacks (#34): outside media/, see fallbacks.ts
 //
 // The engine is only ever given paths under media/, so it can never open a partial file.
 
