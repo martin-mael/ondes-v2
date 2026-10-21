@@ -42,6 +42,7 @@ export function toRealtimeEvent(e: EngineEvent): EngineRealtimeEvent {
           artist: e.data.artist,
           filename: e.data.filename,
           rid: e.data.rid,
+          liveSessionId: e.data.live_session_id ?? null,
         },
       };
     case 'track.ended':

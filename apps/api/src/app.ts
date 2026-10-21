@@ -8,6 +8,7 @@ import {
 } from 'fastify-type-provider-zod';
 import { health } from './health.ts';
 import { type AlertsPluginOptions, alertsPlugin } from './modules/alerts/plugin.ts';
+import { type AsRunPluginOptions, asRunPlugin } from './modules/asrun/plugin.ts';
 import { authRoutes } from './modules/auth/routes.ts';
 import { type CachePluginOptions, cachePlugin } from './modules/cache/plugin.ts';
 import {
@@ -36,6 +37,8 @@ export interface AppOptions {
   engine?: EngineLifecyclePluginOptions;
   /** Alerts (#33): the engine lookup for the silence action, the escalation sweep. */
   alerts?: AlertsPluginOptions;
+  /** As-run (#30): the durable queue name (tests). */
+  asrun?: AsRunPluginOptions;
   /** Playout cache (#31): readiness API and cache alerts. */
   cache?: CachePluginOptions;
   /** Media storage. Optional so tests that don't upload can skip S3; without it, no upload routes. */
@@ -75,6 +78,8 @@ export async function buildApp(options: AppOptions) {
   // Library routes carry their full /api/v1/stations/:stationId path.
   await app.register(libraryPlugin);
   await app.register(logRoutes, { prefix: '/api/v1' });
+  // As-run (#30): `GET …/asrun`, engine track events -> as-run entries (durable queue).
+  await app.register(asRunPlugin, options.asrun ?? {});
   // Engine lifecycle (#35): engine routes, the internal engine events route, engines at boot.
   if (options.engine) await app.register(engineLifecyclePlugin, options.engine);
   // Alerts (#33): `app.alerts`, its routes under /api/v1, engine events -> alerts. Registered
