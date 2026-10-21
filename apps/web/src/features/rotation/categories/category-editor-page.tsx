@@ -23,10 +23,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/ui/card';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/ui/field';
 import { Input } from '@/ui/input';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
-import { Spinner } from '@/ui/spinner';
 import { Textarea } from '@/ui/textarea';
 import { isApiError, request } from '../../../app/api/client.ts';
 import { type FieldErrors, FormAlert, fieldErrors } from '../../../app/forms.tsx';
+import { DelayedSpinner, PageSkeleton } from '../../../app/pending.tsx';
+import { useUnsavedChanges } from '../../../app/unsaved.tsx';
 import { categoriesApi, categoryKeys, categoryQuery, useDraftPreview } from './api.ts';
 import { useCategoryT } from './messages.ts';
 import { ManualMembers, PreviewPanel } from './preview-panel.tsx';
@@ -119,7 +120,7 @@ export function NewCategoryPage() {
 export function EditCategoryPage() {
   const { stationId, categoryId } = editRoute.useParams();
   const detail = useQuery(categoryQuery(stationId, categoryId));
-  if (detail.isPending) return <Spinner className="m-6" />;
+  if (detail.isPending) return <PageSkeleton />;
   if (detail.isError) {
     return (
       <div className="p-6">
@@ -143,6 +144,9 @@ function CategoryEditor({
   const queryClient = useQueryClient();
   const suggestions = useTagSuggestions(stationId);
   const [draft, setDraft] = useState(() => draftOf(category));
+  // What's saved: leaving with a different draft asks first.
+  const [saved, setSaved] = useState(draft);
+  const { guard, allowLeave } = useUnsavedChanges(JSON.stringify(draft) !== JSON.stringify(saved));
   const [playsPerDay, setPlaysPerDay] = useState('');
   const [errors, setErrors] = useState<FieldErrors>({});
   const [formError, setFormError] = useState<unknown>(null);
@@ -181,16 +185,18 @@ function CategoryEditor({
     setErrors({});
     setPending(true);
     try {
-      const saved = category
+      const stored = category
         ? await categoriesApi.update(stationId, category.id, parsed.data)
         : await categoriesApi.create(stationId, parsed.data);
-      queryClient.setQueryData(categoryKeys.one(stationId, saved.id), saved);
+      setSaved(draft);
+      queryClient.setQueryData(categoryKeys.one(stationId, stored.id), stored);
       await queryClient.invalidateQueries({ queryKey: categoryKeys.all(stationId) });
       toast.success(category ? t('editor.saved') : t('editor.created'));
       if (!category) {
+        allowLeave();
         await navigate({
           to: '/stations/$stationId/categories/$categoryId',
-          params: { stationId, categoryId: saved.id },
+          params: { stationId, categoryId: stored.id },
         });
       }
     } catch (error) {
@@ -213,6 +219,7 @@ function CategoryEditor({
       queryClient.removeQueries({ queryKey: categoryKeys.one(stationId, category.id) });
       await queryClient.invalidateQueries({ queryKey: categoryKeys.all(stationId) });
       toast.success(t('editor.deleted'));
+      allowLeave();
       await navigate({ to: '/stations/$stationId/categories', params: { stationId } });
     } catch (error) {
       setFormError(error);
@@ -226,6 +233,7 @@ function CategoryEditor({
 
   return (
     <div className="flex flex-col gap-6 p-6">
+      {guard}
       <div className="flex flex-wrap items-center gap-3">
         <Button
           variant="ghost"
@@ -247,7 +255,7 @@ function CategoryEditor({
             </Button>
           )}
           <Button onClick={save} disabled={pending}>
-            {pending && <Spinner data-icon="inline-start" />}
+            <DelayedSpinner when={pending} data-icon="inline-start" />
             {category ? t('editor.save') : t('editor.create')}
           </Button>
         </div>

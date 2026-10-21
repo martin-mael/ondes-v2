@@ -5,9 +5,9 @@ import type { ReactNode } from 'react';
 import { Badge } from '@/ui/badge';
 import { Separator } from '@/ui/separator';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/ui/sheet';
-import { Spinner } from '@/ui/spinner';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
+import { ListSkeleton } from '../../app/pending.tsx';
 import { activityQuery, assetQuery, invalidateLibrary } from './api.ts';
 import {
   type AssetDrawerSectionId,
@@ -69,7 +69,7 @@ function DrawerBody({
     return (
       <div className="p-6">
         <SheetTitle className="sr-only">{t('title')}</SheetTitle>
-        <Spinner />
+        <ListSkeleton rows={8} />
       </div>
     );
   }
@@ -328,7 +328,7 @@ function BuiltinSection({
         </ul>
       );
     case 'activity':
-      if (!activity) return <Spinner />;
+      if (!activity) return <ListSkeleton rows={4} />;
       return (
         <Rows
           rows={[

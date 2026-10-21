@@ -3,8 +3,8 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { ArrowDownIcon, ArrowUpIcon } from 'lucide-react';
 import { useEffect, useMemo, useRef } from 'react';
 import { Checkbox } from '@/ui/checkbox';
-import { Spinner } from '@/ui/spinner';
 import { useI18n } from '../../app/i18n/i18n.tsx';
+import { DelayedSpinner } from '../../app/pending.tsx';
 import type { Column } from './columns.tsx';
 import { useLibraryT } from './messages.ts';
 
@@ -136,7 +136,7 @@ export function LibraryTable({
                   style={{ top: row.start, height: ROW_HEIGHT }}
                 >
                   <td className="flex items-center gap-2 px-3 text-muted-foreground">
-                    <Spinner /> {t('load.more')}
+                    <DelayedSpinner when /> {t('load.more')}
                   </td>
                 </tr>
               );

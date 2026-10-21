@@ -11,10 +11,10 @@ import { Button } from '@/ui/button';
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/ui/card';
 import { FieldGroup } from '@/ui/field';
 import { Separator } from '@/ui/separator';
-import { Spinner } from '@/ui/spinner';
 import { authApi } from '../api/auth.ts';
 import { CodeField, FormAlert, TextField, useErrorMessage, useZodForm } from '../forms.tsx';
 import { useI18n } from '../i18n/i18n.tsx';
+import { DelayedSpinner } from '../pending.tsx';
 import { meQuery, useMe } from './session.ts';
 
 const route = getRouteApi('/_app/account');
@@ -123,7 +123,7 @@ function SetupTwoFactor({ onEnabled }: { onEnabled: (codes: string[]) => Promise
     };
     return (
       <Button className="self-start" onClick={start} disabled={starting}>
-        {starting && <Spinner />}
+        <DelayedSpinner when={starting} />
         {t('account.twoFactor.setup')}
       </Button>
     );
@@ -147,7 +147,7 @@ function SetupTwoFactor({ onEnabled }: { onEnabled: (codes: string[]) => Promise
         <FormAlert error={form.formError} />
         <CodeField form={form} label={t('auth.twoFactor.code')} />
         <Button type="submit" className="self-start" disabled={form.pending}>
-          {form.pending && <Spinner />}
+          <DelayedSpinner when={form.pending} />
           {t('account.twoFactor.enable')}
         </Button>
       </FieldGroup>
@@ -172,7 +172,7 @@ function RegenerateCodes({ onCodes }: { onCodes: (codes: string[]) => void }) {
         <FormAlert error={form.formError} />
         <CodeField form={form} label={t('auth.twoFactor.code')} />
         <Button type="submit" variant="outline" className="self-start" disabled={form.pending}>
-          {form.pending && <Spinner />}
+          <DelayedSpinner when={form.pending} />
           {t('account.recovery.regenerate')}
         </Button>
       </FieldGroup>
@@ -206,7 +206,7 @@ function DisableTwoFactor({ onDisabled }: { onDisabled: () => Promise<unknown> }
         />
         <CodeField form={form} label={t('auth.twoFactor.code')} />
         <Button type="submit" variant="destructive" className="self-start" disabled={form.pending}>
-          {form.pending && <Spinner />}
+          <DelayedSpinner when={form.pending} />
           {t('account.twoFactor.disable')}
         </Button>
       </FieldGroup>

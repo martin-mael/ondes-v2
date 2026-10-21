@@ -27,9 +27,9 @@ import { Button } from '@/ui/button';
 import { useIsMobile } from '@/ui/hooks/use-mobile';
 import { cn } from '@/ui/lib/utils';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
-import { Spinner } from '@/ui/spinner';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
+import { ListSkeleton } from '../../app/pending.tsx';
 import { useShowAccess } from './access.ts';
 import { invalidateShows, occurrencesQuery, showsApi, showsQuery, slotsQuery } from './api.ts';
 import { formatDay, formatDuration, formatMonth, formatTime } from './format.ts';
@@ -275,7 +275,6 @@ export function CalendarPage() {
           <ChevronRightIcon />
         </Button>
         <h2 className="font-heading font-semibold first-letter:uppercase">{heading}</h2>
-        {occurrences.isFetching && <Spinner className="ml-auto" />}
       </div>
 
       {conflictCount > 0 && (
@@ -300,7 +299,7 @@ export function CalendarPage() {
       {occurrences.isError ? (
         <FormAlert error={occurrences.error} />
       ) : occurrences.isPending ? (
-        <Spinner />
+        <ListSkeleton />
       ) : view === 'week' ? (
         <WeekGrid
           stationId={stationId}
@@ -639,7 +638,7 @@ function WeekGrid({
             <span
               key={day}
               className={cn(
-                'px-1 py-2 text-center font-medium first-letter:uppercase',
+                'px-1 py-2 text-center text-sm font-medium first-letter:uppercase',
                 day === today && 'text-primary',
               )}
             >
@@ -766,7 +765,7 @@ function MonthGrid({
         {days.slice(0, 7).map((day) => (
           <span
             key={day}
-            className="border-b px-2 py-1 text-center font-medium first-letter:uppercase"
+            className="border-b px-2 py-1 text-center text-sm font-medium first-letter:uppercase"
           >
             {new Intl.DateTimeFormat(locale, { timeZone: 'UTC', weekday: 'short' }).format(
               new Date(`${day}T12:00:00Z`),
@@ -828,11 +827,16 @@ function ListView({
     <div className="flex flex-col gap-4">
       {days.map((day) => (
         <section key={day} data-testid={`day-${day}`} className="flex flex-col gap-1">
-          <h3 className={cn('font-medium first-letter:uppercase', day === today && 'text-primary')}>
+          <h3
+            className={cn(
+              'text-sm font-medium first-letter:uppercase',
+              day === today && 'text-primary',
+            )}
+          >
             {formatDay(day, locale, { weekday: 'long' })}
           </h3>
           {(byDay.get(day) ?? []).length === 0 ? (
-            <p className="text-muted-foreground">{t('calendar.nothing')}</p>
+            <p className="text-sm text-muted-foreground">{t('calendar.nothing')}</p>
           ) : (
             (byDay.get(day) ?? []).map((entry) => (
               <EntryButton

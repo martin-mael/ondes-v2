@@ -9,8 +9,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
-import { Spinner } from '@/ui/spinner';
 import { isApiError } from '../../app/api/client.ts';
+import { ListSkeleton } from '../../app/pending.tsx';
 import { type RankedCandidate, timelineApi } from './api.ts';
 import { ruleLabel, type TimelineT, useTimelineT } from './messages.ts';
 import { usePreview } from './preview.tsx';
@@ -256,8 +256,8 @@ function RuleSuggestions({
       )}
       <ul className="flex max-h-96 flex-col overflow-y-auto" aria-busy={pick.isFetching}>
         {pick.isPending && (
-          <li className="flex justify-center p-4">
-            <Spinner />
+          <li className="p-2">
+            <ListSkeleton rows={3} />
           </li>
         )}
         {pick.isSuccess && ranked.length === 0 && (
@@ -409,8 +409,8 @@ function LibraryResults({
       )}
       <ul className="flex max-h-96 flex-col overflow-y-auto" aria-busy={results.isFetching}>
         {results.isPending && (
-          <li className="flex justify-center p-4">
-            <Spinner />
+          <li className="p-2">
+            <ListSkeleton rows={3} />
           </li>
         )}
         {results.isSuccess && rows.length === 0 && (

@@ -7,10 +7,10 @@ import { z } from 'zod';
 import { Alert, AlertDescription } from '@/ui/alert';
 import { Button } from '@/ui/button';
 import { FieldGroup } from '@/ui/field';
-import { Spinner } from '@/ui/spinner';
 import { authApi } from '../api/auth.ts';
 import { CodeField, FormAlert, TextField, useZodForm } from '../forms.tsx';
 import { useI18n } from '../i18n/i18n.tsx';
+import { DelayedSpinner } from '../pending.tsx';
 import { AuthCard, linkClass } from './auth-layout.tsx';
 import { resetSession } from './session.ts';
 
@@ -65,7 +65,7 @@ export function LoginPage() {
               />
             )}
             <Button type="submit" disabled={form.pending}>
-              {form.pending && <Spinner />}
+              <DelayedSpinner when={form.pending} />
               {t('auth.twoFactor.submit')}
             </Button>
             <div className="flex justify-between text-xs">
@@ -126,7 +126,7 @@ export function LoginPage() {
             autoComplete="current-password"
           />
           <Button type="submit" disabled={password.pending}>
-            {password.pending && <Spinner />}
+            <DelayedSpinner when={password.pending} />
             {t('auth.login.submit')}
           </Button>
           <Link to="/forgot-password" className={`${linkClass} text-center text-xs`}>

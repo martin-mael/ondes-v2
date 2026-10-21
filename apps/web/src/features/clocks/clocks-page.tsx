@@ -5,10 +5,10 @@ import { toast } from 'sonner';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Card, CardContent } from '@/ui/card';
-import { Spinner } from '@/ui/spinner';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/ui/table';
 import { isApiError } from '../../app/api/client.ts';
 import { FormAlert } from '../../app/forms.tsx';
+import { ListSkeleton } from '../../app/pending.tsx';
 import { clockKeys, clocksApi, clocksQuery } from './api.ts';
 import { ClockTimeline } from './clock-timeline.tsx';
 import { formatMs } from './format.ts';
@@ -65,7 +65,7 @@ export function ClocksPage() {
       </div>
 
       {list.isPending ? (
-        <Spinner />
+        <ListSkeleton />
       ) : list.isError ? (
         isApiError(list.error, 'forbidden') ? (
           <p className="text-sm text-muted-foreground">{t('forbidden')}</p>

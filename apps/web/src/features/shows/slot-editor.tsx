@@ -24,6 +24,7 @@ import { Input } from '@/ui/input';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
+import { useUnsavedChanges } from '../../app/unsaved.tsx';
 import { invalidateShows, showsApi } from './api.ts';
 import { formatDay, formatDuration, weekdayName, weekdays } from './format.ts';
 import { useShowT } from './messages.ts';
@@ -96,6 +97,10 @@ export function SlotEditorDialog({
   const queryClient = useQueryClient();
   const today = localDateOf(new Date(), timezone);
   const [draft, setDraft] = useState<Draft>(() => draftOf(show, slot, today));
+  // Closing the dialog, or leaving the page, with changes asks first.
+  const { guard, confirmDiscard } = useUnsavedChanges(
+    open && JSON.stringify(draft) !== JSON.stringify(draftOf(show, slot, today)),
+  );
   const [invalid, setInvalid] = useState<Set<string>>(new Set());
   const [formError, setFormError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
@@ -160,191 +165,203 @@ export function SlotEditorDialog({
     );
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{slot ? t('slot.editTitle') : t('slot.newTitle')}</DialogTitle>
-          <DialogDescription>{t('slot.timezone', { timezone })}</DialogDescription>
-        </DialogHeader>
-        <form className="flex flex-col gap-4" onSubmit={submit} noValidate>
-          <FormAlert error={formError} />
-          <div className="grid grid-cols-2 gap-4">
-            <Field>
-              <FieldLabel htmlFor="slot-type">{t('slot.type')}</FieldLabel>
-              <NativeSelect
-                id="slot-type"
-                value={draft.type}
-                onChange={(e) => set('type', e.target.value as SlotType)}
-              >
-                <NativeSelectOption value="prerecorded">{t('type.prerecorded')}</NativeSelectOption>
-                <NativeSelectOption value="live">{t('type.live')}</NativeSelectOption>
-                <NativeSelectOption value="rerun">{t('type.rerun')}</NativeSelectOption>
-              </NativeSelect>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="slot-freq">{t('slot.repeat')}</FieldLabel>
-              <NativeSelect
-                id="slot-freq"
-                value={draft.freq}
-                onChange={(e) => set('freq', e.target.value as Draft['freq'])}
-              >
-                <NativeSelectOption value="weekly">{t('slot.freq.weekly')}</NativeSelectOption>
-                <NativeSelectOption value="once">{t('slot.freq.once')}</NativeSelectOption>
-              </NativeSelect>
-            </Field>
-          </div>
-
-          {draft.freq === 'weekly' ? (
-            <>
-              <FieldSet>
-                <FieldLegend variant="label">{t('slot.days')}</FieldLegend>
-                <div className="flex flex-wrap gap-1">
-                  {weekdays.map((day) => (
-                    <Button
-                      key={day}
-                      type="button"
-                      size="sm"
-                      variant={draft.byDay.includes(day) ? 'default' : 'outline'}
-                      aria-pressed={draft.byDay.includes(day)}
-                      aria-label={weekdayName(day, locale, 'long')}
-                      onClick={() => toggleDay(day)}
-                    >
-                      {weekdayName(day, locale)}
-                    </Button>
-                  ))}
-                </div>
-                <FieldError
-                  errors={invalid.has('byDay') ? [{ message: t('slot.daysRequired') }] : undefined}
-                />
-              </FieldSet>
-              <Field data-invalid={invalid.has('interval') ? true : undefined}>
-                <FieldLabel htmlFor="slot-interval">{t('slot.interval')}</FieldLabel>
-                <Input
-                  id="slot-interval"
-                  type="number"
-                  min={1}
-                  max={52}
-                  inputMode="numeric"
-                  value={draft.interval}
-                  onChange={(e) => set('interval', e.target.value)}
-                />
-                <FieldDescription>{t('slot.intervalHelp')}</FieldDescription>
+    <>
+      {guard}
+      <Dialog
+        open={open}
+        onOpenChange={(next) =>
+          next ? onOpenChange(true) : confirmDiscard(() => onOpenChange(false))
+        }
+      >
+        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{slot ? t('slot.editTitle') : t('slot.newTitle')}</DialogTitle>
+            <DialogDescription>{t('slot.timezone', { timezone })}</DialogDescription>
+          </DialogHeader>
+          <form className="flex flex-col gap-4" onSubmit={submit} noValidate>
+            <FormAlert error={formError} />
+            <div className="grid grid-cols-2 gap-4">
+              <Field>
+                <FieldLabel htmlFor="slot-type">{t('slot.type')}</FieldLabel>
+                <NativeSelect
+                  id="slot-type"
+                  value={draft.type}
+                  onChange={(e) => set('type', e.target.value as SlotType)}
+                >
+                  <NativeSelectOption value="prerecorded">
+                    {t('type.prerecorded')}
+                  </NativeSelectOption>
+                  <NativeSelectOption value="live">{t('type.live')}</NativeSelectOption>
+                  <NativeSelectOption value="rerun">{t('type.rerun')}</NativeSelectOption>
+                </NativeSelect>
               </Field>
-              <div className="grid grid-cols-2 gap-4">
-                <Field>
-                  <FieldLabel htmlFor="slot-start">{t('slot.startDate')}</FieldLabel>
-                  <Input
-                    id="slot-start"
-                    type="date"
-                    value={draft.startDate}
-                    onChange={(e) => set('startDate', e.target.value)}
-                  />
-                </Field>
-                <Field data-invalid={invalid.has('until') ? true : undefined}>
-                  <FieldLabel htmlFor="slot-until">{t('slot.until')}</FieldLabel>
-                  <Input
-                    id="slot-until"
-                    type="date"
-                    value={draft.until}
-                    onChange={(e) => set('until', e.target.value)}
-                  />
+              <Field>
+                <FieldLabel htmlFor="slot-freq">{t('slot.repeat')}</FieldLabel>
+                <NativeSelect
+                  id="slot-freq"
+                  value={draft.freq}
+                  onChange={(e) => set('freq', e.target.value as Draft['freq'])}
+                >
+                  <NativeSelectOption value="weekly">{t('slot.freq.weekly')}</NativeSelectOption>
+                  <NativeSelectOption value="once">{t('slot.freq.once')}</NativeSelectOption>
+                </NativeSelect>
+              </Field>
+            </div>
+
+            {draft.freq === 'weekly' ? (
+              <>
+                <FieldSet>
+                  <FieldLegend variant="label">{t('slot.days')}</FieldLegend>
+                  <div className="flex flex-wrap gap-1">
+                    {weekdays.map((day) => (
+                      <Button
+                        key={day}
+                        type="button"
+                        size="sm"
+                        variant={draft.byDay.includes(day) ? 'default' : 'outline'}
+                        aria-pressed={draft.byDay.includes(day)}
+                        aria-label={weekdayName(day, locale, 'long')}
+                        onClick={() => toggleDay(day)}
+                      >
+                        {weekdayName(day, locale)}
+                      </Button>
+                    ))}
+                  </div>
                   <FieldError
                     errors={
-                      invalid.has('until') ? [{ message: t('slot.untilInvalid') }] : undefined
+                      invalid.has('byDay') ? [{ message: t('slot.daysRequired') }] : undefined
                     }
                   />
+                </FieldSet>
+                <Field data-invalid={invalid.has('interval') ? true : undefined}>
+                  <FieldLabel htmlFor="slot-interval">{t('slot.interval')}</FieldLabel>
+                  <Input
+                    id="slot-interval"
+                    type="number"
+                    min={1}
+                    max={52}
+                    inputMode="numeric"
+                    value={draft.interval}
+                    onChange={(e) => set('interval', e.target.value)}
+                  />
+                  <FieldDescription>{t('slot.intervalHelp')}</FieldDescription>
                 </Field>
-              </div>
-            </>
-          ) : (
-            <Field>
-              <FieldLabel htmlFor="slot-date">{t('slot.date')}</FieldLabel>
-              <Input
-                id="slot-date"
-                type="date"
-                value={draft.date}
-                onChange={(e) => set('date', e.target.value)}
-              />
-            </Field>
-          )}
-          <div className="grid grid-cols-2 gap-4">
-            <Field data-invalid={invalid.has('time') ? true : undefined}>
-              <FieldLabel htmlFor="slot-time">{t('slot.time')}</FieldLabel>
-              <Input
-                id="slot-time"
-                type="time"
-                value={draft.time}
-                onChange={(e) => set('time', e.target.value)}
-              />
-            </Field>
-            <Field data-invalid={invalid.has('durationMs') ? true : undefined}>
-              <FieldLabel htmlFor="slot-duration">{t('slot.duration')}</FieldLabel>
-              <Input
-                id="slot-duration"
-                type="number"
-                min={1}
-                max={1440}
-                inputMode="numeric"
-                value={draft.durationMin}
-                onChange={(e) => set('durationMin', e.target.value)}
-              />
-            </Field>
-          </div>
-          {slot && <FieldDescription>{t('slot.detachWarning')}</FieldDescription>}
-
-          {slot && slot.exceptions.length > 0 && (
-            <section className="flex flex-col gap-2">
-              <h3 className="font-medium">{t('slot.exceptions')}</h3>
-              <ul className="flex flex-col gap-1">
-                {slot.exceptions.map((ex) => (
-                  <li key={ex.date} className="flex items-center gap-2">
-                    <span className="flex-1">
-                      {ex.kind === 'cancelled'
-                        ? t('exception.cancelled', { date: formatDay(ex.date, locale) })
-                        : t('exception.moved', {
-                            date: formatDay(ex.date, locale),
-                            to: `${formatDay(ex.startDate, locale)} ${ex.startTime}`,
-                          }) + (ex.durationMs ? ` (${formatDuration(ex.durationMs)})` : '')}
-                    </span>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      disabled={pending}
-                      onClick={() =>
-                        run(() => showsApi.removeException(stationId, show.id, slot.id, ex.date))
+                <div className="grid grid-cols-2 gap-4">
+                  <Field>
+                    <FieldLabel htmlFor="slot-start">{t('slot.startDate')}</FieldLabel>
+                    <Input
+                      id="slot-start"
+                      type="date"
+                      value={draft.startDate}
+                      onChange={(e) => set('startDate', e.target.value)}
+                    />
+                  </Field>
+                  <Field data-invalid={invalid.has('until') ? true : undefined}>
+                    <FieldLabel htmlFor="slot-until">{t('slot.until')}</FieldLabel>
+                    <Input
+                      id="slot-until"
+                      type="date"
+                      value={draft.until}
+                      onChange={(e) => set('until', e.target.value)}
+                    />
+                    <FieldError
+                      errors={
+                        invalid.has('until') ? [{ message: t('slot.untilInvalid') }] : undefined
                       }
-                    >
-                      {t('exception.restore')}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          <DialogFooter>
-            {slot && (
-              <Button
-                type="button"
-                variant="destructive"
-                className="sm:mr-auto"
-                disabled={pending}
-                onClick={async () => {
-                  if (!window.confirm(t('slot.deleteConfirm'))) return;
-                  const ok = await run(() => showsApi.removeSlot(stationId, show.id, slot.id));
-                  if (ok) onOpenChange(false);
-                }}
-              >
-                {t('slot.delete')}
-              </Button>
+                    />
+                  </Field>
+                </div>
+              </>
+            ) : (
+              <Field>
+                <FieldLabel htmlFor="slot-date">{t('slot.date')}</FieldLabel>
+                <Input
+                  id="slot-date"
+                  type="date"
+                  value={draft.date}
+                  onChange={(e) => set('date', e.target.value)}
+                />
+              </Field>
             )}
-            <Button type="submit" disabled={pending}>
-              {slot ? t('form.save') : t('slot.create')}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+            <div className="grid grid-cols-2 gap-4">
+              <Field data-invalid={invalid.has('time') ? true : undefined}>
+                <FieldLabel htmlFor="slot-time">{t('slot.time')}</FieldLabel>
+                <Input
+                  id="slot-time"
+                  type="time"
+                  value={draft.time}
+                  onChange={(e) => set('time', e.target.value)}
+                />
+              </Field>
+              <Field data-invalid={invalid.has('durationMs') ? true : undefined}>
+                <FieldLabel htmlFor="slot-duration">{t('slot.duration')}</FieldLabel>
+                <Input
+                  id="slot-duration"
+                  type="number"
+                  min={1}
+                  max={1440}
+                  inputMode="numeric"
+                  value={draft.durationMin}
+                  onChange={(e) => set('durationMin', e.target.value)}
+                />
+              </Field>
+            </div>
+            {slot && <FieldDescription>{t('slot.detachWarning')}</FieldDescription>}
+
+            {slot && slot.exceptions.length > 0 && (
+              <section className="flex flex-col gap-2">
+                <h3 className="font-medium">{t('slot.exceptions')}</h3>
+                <ul className="flex flex-col gap-1">
+                  {slot.exceptions.map((ex) => (
+                    <li key={ex.date} className="flex items-center gap-2">
+                      <span className="flex-1">
+                        {ex.kind === 'cancelled'
+                          ? t('exception.cancelled', { date: formatDay(ex.date, locale) })
+                          : t('exception.moved', {
+                              date: formatDay(ex.date, locale),
+                              to: `${formatDay(ex.startDate, locale)} ${ex.startTime}`,
+                            }) + (ex.durationMs ? ` (${formatDuration(ex.durationMs)})` : '')}
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={pending}
+                        onClick={() =>
+                          run(() => showsApi.removeException(stationId, show.id, slot.id, ex.date))
+                        }
+                      >
+                        {t('exception.restore')}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            <DialogFooter>
+              {slot && (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  className="sm:mr-auto"
+                  disabled={pending}
+                  onClick={async () => {
+                    if (!window.confirm(t('slot.deleteConfirm'))) return;
+                    const ok = await run(() => showsApi.removeSlot(stationId, show.id, slot.id));
+                    if (ok) onOpenChange(false);
+                  }}
+                >
+                  {t('slot.delete')}
+                </Button>
+              )}
+              <Button type="submit" disabled={pending}>
+                {slot ? t('form.save') : t('slot.create')}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

@@ -6,9 +6,9 @@ import { useState } from 'react';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Card, CardContent } from '@/ui/card';
-import { Spinner } from '@/ui/spinner';
 import { isApiError } from '../../app/api/client.ts';
 import { FormAlert } from '../../app/forms.tsx';
+import { ListSkeleton } from '../../app/pending.tsx';
 import { useShowAccess } from './access.ts';
 import { showsQuery } from './api.ts';
 import { useShowT } from './messages.ts';
@@ -110,7 +110,7 @@ export function ShowsPage() {
       </div>
 
       {list.isPending ? (
-        <Spinner />
+        <ListSkeleton />
       ) : list.isError ? (
         isApiError(list.error, 'forbidden') ? (
           <p className="text-sm text-muted-foreground">{t('forbidden')}</p>

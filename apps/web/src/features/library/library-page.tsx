@@ -38,10 +38,10 @@ import {
 } from '@/ui/dropdown-menu';
 import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
-import { Spinner } from '@/ui/spinner';
 import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert } from '../../app/forms.tsx';
+import { ListSkeleton } from '../../app/pending.tsx';
 import { useSseEvent } from '../../app/sse/sse.tsx';
 import { facetsQuery, refreshFirstPage, searchQuery } from './api.ts';
 import { AssetDrawer } from './asset-drawer.tsx';
@@ -332,7 +332,7 @@ export function LibraryPage() {
             </Button>
           )}
           {search.isPending ? (
-            <Spinner />
+            <ListSkeleton />
           ) : search.isError ? (
             <FormAlert error={search.error} />
           ) : items.length === 0 ? (

@@ -29,10 +29,10 @@ import {
   DialogTitle,
 } from '@/ui/dialog';
 import { Input } from '@/ui/input';
-import { Spinner } from '@/ui/spinner';
 import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert, useErrorMessage } from '../../app/forms.tsx';
+import { ListSkeleton } from '../../app/pending.tsx';
 import { asRunDayQuery, assetDetailQuery, logDayQuery, logKey, timelineApi } from './api.ts';
 import {
   AssetPickerDialog,
@@ -378,7 +378,7 @@ function Timeline() {
       )}
 
       {log.isPending ? (
-        <Spinner />
+        <ListSkeleton />
       ) : log.isError ? (
         isApiError(log.error, 'forbidden') ? (
           <p className="text-sm text-muted-foreground">{t('forbidden')}</p>

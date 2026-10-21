@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/ui/dialog';
 import { Input } from '@/ui/input';
-import { Spinner } from '@/ui/spinner';
+import { ListSkeleton } from '../../app/pending.tsx';
 import { showKeys, showsApi } from './api.ts';
 import { formatDuration } from './format.ts';
 import { useShowT } from './messages.ts';
@@ -58,8 +58,8 @@ export function EpisodeAssetPicker({
         />
         <ul className="flex max-h-80 flex-col overflow-y-auto" aria-busy={results.isFetching}>
           {results.isPending && (
-            <li className="flex justify-center p-4">
-              <Spinner />
+            <li className="p-2">
+              <ListSkeleton rows={3} />
             </li>
           )}
           {results.isSuccess && items.length === 0 && (

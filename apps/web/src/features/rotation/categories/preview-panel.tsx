@@ -12,7 +12,7 @@ import { Button } from '@/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/ui/card';
 import { Field, FieldLabel } from '@/ui/field';
 import { Input } from '@/ui/input';
-import { Spinner } from '@/ui/spinner';
+import { DelayedSpinner } from '../../../app/pending.tsx';
 import { useAssetSearch } from './api.ts';
 import { useCategoryT } from './messages.ts';
 
@@ -54,7 +54,7 @@ export function PreviewPanel({
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           {t('preview.title')}
-          {loading && <Spinner />}
+          <DelayedSpinner when={loading} />
         </CardTitle>
         {counts && (
           <CardDescription className="flex flex-wrap gap-x-3 gap-y-1">

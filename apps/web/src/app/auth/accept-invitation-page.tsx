@@ -2,10 +2,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router';
 import { toast } from 'sonner';
 import { Button } from '@/ui/button';
-import { Spinner } from '@/ui/spinner';
 import { authApi } from '../api/auth.ts';
 import { FormAlert } from '../forms.tsx';
 import { useI18n } from '../i18n/i18n.tsx';
+import { DelayedSpinner, ListSkeleton } from '../pending.tsx';
 import { AuthCard } from './auth-layout.tsx';
 import { meQuery, orgsQuery } from './session.ts';
 
@@ -40,7 +40,7 @@ export function AcceptInvitationPage() {
   if (me.isPending) {
     return (
       <AuthCard title={t('auth.invitation.title')}>
-        <Spinner />
+        <ListSkeleton rows={2} />
       </AuthCard>
     );
   }
@@ -59,7 +59,7 @@ export function AcceptInvitationPage() {
         <FormAlert error={accept.error} />
         {user ? (
           <Button onClick={() => accept.mutate()} disabled={accept.isPending}>
-            {accept.isPending && <Spinner />}
+            <DelayedSpinner when={accept.isPending} />
             {t('auth.invitation.accept')}
           </Button>
         ) : (

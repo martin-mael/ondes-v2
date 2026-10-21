@@ -5,10 +5,10 @@ import { PlusIcon } from 'lucide-react';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Card, CardContent } from '@/ui/card';
-import { Spinner } from '@/ui/spinner';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/ui/table';
 import { isApiError } from '../../../app/api/client.ts';
 import { FormAlert } from '../../../app/forms.tsx';
+import { ListSkeleton } from '../../../app/pending.tsx';
 import { categoriesQuery } from './api.ts';
 import { type CategoryT, useCategoryT } from './messages.ts';
 
@@ -54,7 +54,7 @@ export function CategoriesPage() {
       </div>
 
       {list.isPending ? (
-        <Spinner />
+        <ListSkeleton />
       ) : list.isError ? (
         isApiError(list.error, 'forbidden') ? (
           <p className="text-sm text-muted-foreground">{t('forbidden')}</p>

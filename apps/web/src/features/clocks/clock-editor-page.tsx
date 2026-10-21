@@ -38,11 +38,12 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/u
 import { Input } from '@/ui/input';
 import { cn } from '@/ui/lib/utils';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
-import { Spinner } from '@/ui/spinner';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/ui/table';
 import { Textarea } from '@/ui/textarea';
 import { isApiError } from '../../app/api/client.ts';
 import { type FieldErrors, FormAlert, fieldErrors } from '../../app/forms.tsx';
+import { DelayedSpinner, ListSkeleton, PageSkeleton } from '../../app/pending.tsx';
+import { useUnsavedChanges } from '../../app/unsaved.tsx';
 import { categoriesQuery } from '../rotation/categories/api.ts';
 import {
   clockKeys,
@@ -113,7 +114,7 @@ export function NewClockPage() {
 export function EditClockPage() {
   const { stationId, clockId } = editRoute.useParams();
   const detail = useQuery(clockQuery(stationId, clockId));
-  if (detail.isPending) return <Spinner className="m-6" />;
+  if (detail.isPending) return <PageSkeleton />;
   if (detail.isError) {
     return (
       <div className="p-6">
@@ -130,6 +131,9 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
   const queryClient = useQueryClient();
   const categories = useQuery(categoriesQuery(stationId));
   const [draft, setDraft] = useState(() => draftOf(clock));
+  // What's saved: leaving with a different draft asks first (a duplicate copies the saved one).
+  const [saved, setSaved] = useState(draft);
+  const { guard, allowLeave } = useUnsavedChanges(JSON.stringify(draft) !== JSON.stringify(saved));
   const [errors, setErrors] = useState<FieldErrors>({});
   const [formError, setFormError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
@@ -199,17 +203,19 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
     setErrors({});
     setPending(true);
     try {
-      const saved = clock
+      const stored = clock
         ? await clocksApi.update(stationId, clock.id, { ...parsed.data, version })
         : await clocksApi.create(stationId, parsed.data);
-      setVersion(saved.version);
-      queryClient.setQueryData(clockKeys.one(stationId, saved.id), saved);
+      setSaved(draft);
+      setVersion(stored.version);
+      queryClient.setQueryData(clockKeys.one(stationId, stored.id), stored);
       await queryClient.invalidateQueries({ queryKey: clockKeys.all(stationId) });
       toast.success(clock ? t('editor.saved') : t('editor.created'));
       if (!clock) {
+        allowLeave();
         await navigate({
           to: '/stations/$stationId/clocks/$clockId',
-          params: { stationId, clockId: saved.id },
+          params: { stationId, clockId: stored.id },
         });
       }
     } catch (error) {
@@ -236,6 +242,7 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
         staleTime: 0,
       });
       setDraft(draftOf(latest));
+      setSaved(draftOf(latest));
       setVersion(latest.version);
       setConflict(false);
       setSelectedKey(null);
@@ -251,6 +258,7 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
       queryClient.removeQueries({ queryKey: clockKeys.one(stationId, clock.id) });
       await queryClient.invalidateQueries({ queryKey: clockKeys.all(stationId) });
       toast.success(t('editor.deleted'));
+      allowLeave();
       await navigate({ to: '/stations/$stationId/clocks', params: { stationId } });
     } catch (error) {
       setFormError(error);
@@ -274,6 +282,7 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
 
   return (
     <div className="flex flex-col gap-6 p-6">
+      {guard}
       <div className="flex flex-wrap items-center gap-3">
         <Button
           variant="ghost"
@@ -301,7 +310,7 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
             </>
           )}
           <Button onClick={save} disabled={pending}>
-            {pending && <Spinner data-icon="inline-start" />}
+            <DelayedSpinner when={pending} data-icon="inline-start" />
             {clock ? t('editor.save') : t('editor.create')}
           </Button>
         </div>
@@ -473,7 +482,7 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
                   <Warnings t={t} warnings={estimate.warnings} onSelect={select} />
                 </>
               ) : (
-                <Spinner />
+                <ListSkeleton rows={4} />
               )}
             </CardContent>
           </Card>
@@ -985,7 +994,7 @@ function PreviewCard({
           onClick={generate}
           disabled={pending || slots.length === 0 || target === null}
         >
-          {pending ? <Spinner data-icon="inline-start" /> : <DicesIcon data-icon="inline-start" />}
+          <DicesIcon data-icon="inline-start" />
           {preview ? t('preview.again') : t('preview.generate')}
         </Button>
         {error ? <FormAlert error={error} /> : null}

@@ -22,10 +22,11 @@ import { Checkbox } from '@/ui/checkbox';
 import { Field, FieldDescription, FieldLabel } from '@/ui/field';
 import { Input } from '@/ui/input';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
-import { Spinner } from '@/ui/spinner';
 import { isApiError } from '../../../app/api/client.ts';
 import { findStation, useOrgs } from '../../../app/auth/session.ts';
 import { FormAlert } from '../../../app/forms.tsx';
+import { DelayedSpinner, ListSkeleton } from '../../../app/pending.tsx';
+import { useUnsavedChanges } from '../../../app/unsaved.tsx';
 import { categoriesQuery } from '../categories/api.ts';
 import { rulesApi, rulesKeys, rulesQuery } from './api.ts';
 import { kindLabel, type RulesT, useRulesT, violationText } from './messages.ts';
@@ -99,7 +100,7 @@ export function RulesPage() {
         <p className="max-w-2xl text-sm text-muted-foreground">{t('description')}</p>
       </div>
       {settings.isPending ? (
-        <Spinner />
+        <ListSkeleton />
       ) : settings.isError ? (
         isApiError(settings.error, 'forbidden') ? (
           <p className="text-sm text-muted-foreground">{t('forbidden')}</p>
@@ -150,6 +151,7 @@ function RulesEditor({
     }
   }
   const dirty = JSON.stringify(rules) !== JSON.stringify(ranked(saved));
+  const { guard } = useUnsavedChanges(dirty);
 
   const save = async () => {
     setError(null);
@@ -175,6 +177,7 @@ function RulesEditor({
 
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,30rem)]">
+      {guard}
       <div className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center gap-2">
           {isDefault && <Badge variant="secondary">{t('defaults')}</Badge>}
@@ -183,7 +186,7 @@ function RulesEditor({
               {t('reset')}
             </Button>
             <Button onClick={save} disabled={pending || (!dirty && !isDefault)}>
-              {pending && <Spinner data-icon="inline-start" />}
+              <DelayedSpinner when={pending} data-icon="inline-start" />
               {t('save')}
             </Button>
           </div>
@@ -660,7 +663,7 @@ function TryPanel({ stationId, rules }: { stationId: string; rules: RotationRule
               />
             </Field>
             <Button onClick={run} disabled={pending || !chosen || !rules || !at}>
-              {pending && <Spinner data-icon="inline-start" />}
+              <DelayedSpinner when={pending} data-icon="inline-start" />
               {t('try.run')}
             </Button>
           </div>

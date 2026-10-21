@@ -6,10 +6,10 @@ import { orgs, renderApp, signedIn, stationId } from '../testing/render.tsx';
 const otherStationId = orgs[0]?.stations[1]?.id ?? '';
 
 describe('app shell', () => {
-  it('lands on the first station and shows the live server clock from SSE', async () => {
+  it('lands on the first station and shows the station clock, kept in step over SSE', async () => {
     const { screen, history } = renderApp('/', signedIn());
     await waitFor(() => expect(history.location.pathname).toBe(`/stations/${stationId}`));
-    expect(await screen.findByTestId('server-clock')).toHaveTextContent('--:--:--');
+    expect(await screen.findByTestId('station-clock')).toHaveTextContent('--:--:--');
 
     const source = FakeEventSource.last();
     expect(source.url).toBe(`/api/v1/stations/${stationId}/events`);
@@ -18,7 +18,7 @@ describe('app shell', () => {
       source.emit({ type: 'server.clock', at: '2026-10-20T08:00:00.000Z' });
     });
     expect(screen.getByTestId('sse-status')).toHaveTextContent('Live');
-    const clock = screen.getByTestId('server-clock');
+    const clock = screen.getByTestId('station-clock');
     await waitFor(() => expect(clock).not.toHaveTextContent('--:--:--'));
     // The server is far in the past compared to the test machine: the offset is applied.
     expect(clock.getAttribute('datetime')?.startsWith('2026-10-20T08:00')).toBe(true);
@@ -58,7 +58,7 @@ describe('app shell', () => {
         { error: 'two_factor_required', message: 'enable 2FA' },
       ],
     });
-    await screen.findByTestId('server-clock');
+    await screen.findByTestId('station-clock');
     act(() => FakeEventSource.last().refuse());
     await waitFor(() => expect(history.location.pathname).toBe('/account'));
     expect(
@@ -71,7 +71,7 @@ describe('app shell', () => {
       ...signedIn(),
       [`GET /stations/${stationId}/events/access`]: [200, { permissions: ['engine:read'] }],
     });
-    await screen.findByTestId('server-clock');
+    await screen.findByTestId('station-clock');
     const first = FakeEventSource.last();
     act(() => {
       first.open();
@@ -97,7 +97,7 @@ describe('app shell', () => {
   it('goes back to sign-in when the session expires', async () => {
     const routes = signedIn();
     const { screen, history, queryClient } = renderApp(`/stations/${stationId}`, routes);
-    await screen.findByTestId('server-clock');
+    await screen.findByTestId('station-clock');
     routes['GET /auth/me'] = [401, { error: 'unauthenticated', message: '' }];
     routes['GET /orgs'] = [401, { error: 'unauthenticated', message: '' }];
     await act(() => queryClient.refetchQueries({ queryKey: ['auth', 'orgs'] }));

@@ -16,11 +16,11 @@ import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Card, CardContent } from '@/ui/card';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
-import { Spinner } from '@/ui/spinner';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/ui/table';
 import { isApiError } from '../../app/api/client.ts';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
+import { ListSkeleton, PageSkeleton } from '../../app/pending.tsx';
 import { type ShowAccess, useShowAccess } from './access.ts';
 import {
   episodesQuery,
@@ -71,7 +71,7 @@ export function ShowPage() {
   const [slotEdit, setSlotEdit] = useState<{ slotId?: string } | null>(null);
   const [episodeEdit, setEpisodeEdit] = useState<EpisodeEdit>(null);
 
-  if (show.isPending) return <Spinner className="m-6" />;
+  if (show.isPending) return <PageSkeleton />;
   if (show.isError) {
     return (
       <div className="p-6">
@@ -366,7 +366,7 @@ function UpcomingSection({
         {t('upcoming.timezone', { timezone: access.timezone })}
       </p>
       {pending ? (
-        <Spinner />
+        <ListSkeleton />
       ) : error ? (
         <FormAlert error={error} />
       ) : occurrences.length === 0 ? (
@@ -559,7 +559,7 @@ function SlotList({
 }) {
   const t = useShowT();
   const { locale } = useI18n();
-  if (pending) return <Spinner />;
+  if (pending) return <ListSkeleton rows={3} />;
   if (!slots || slots.length === 0) {
     return <p className="text-muted-foreground">{t('slots.empty')}</p>;
   }
@@ -601,7 +601,7 @@ function EpisodeTable({
 }) {
   const t = useShowT();
   const { locale } = useI18n();
-  if (pending) return <Spinner />;
+  if (pending) return <ListSkeleton rows={3} />;
   if (!episodes || episodes.length === 0) {
     return <p className="text-muted-foreground">{t('episodes.empty')}</p>;
   }

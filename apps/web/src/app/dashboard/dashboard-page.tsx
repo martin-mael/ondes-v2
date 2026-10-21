@@ -5,7 +5,7 @@ import { findStation, useOrgs } from '../auth/session.ts';
 import { useI18n } from '../i18n/i18n.tsx';
 import { useServerClock, useSseStatus } from '../sse/sse.tsx';
 
-// Placeholder station dashboard (#9 acceptance: the live server clock over SSE). The real
+// Placeholder station dashboard (#9 acceptance: a live clock over SSE). The real
 // dashboard is a feature (`features/dashboard`) and replaces this page.
 
 export function DashboardPage() {
@@ -29,34 +29,23 @@ export function DashboardPage() {
               : t('dashboard.offline')}
         </Badge>
       </div>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardDescription>{t('dashboard.serverClock')}</CardDescription>
-            <CardTitle>
-              <time
-                className="font-mono text-3xl tabular-nums"
-                dateTime={now?.toISOString()}
-                data-testid="server-clock"
-              >
-                {time()}
-              </time>
-            </CardTitle>
-          </CardHeader>
-        </Card>
-        {station && (
-          <Card>
-            <CardHeader>
-              <CardDescription>
-                {t('dashboard.stationTime', { timezone: station.timezone })}
-              </CardDescription>
-              <CardTitle>
-                <span className="font-mono text-3xl tabular-nums">{time(station.timezone)}</span>
-              </CardTitle>
-            </CardHeader>
-          </Card>
-        )}
-      </div>
+      {/* One clock: the station's time (kept in step with the server's clock over SSE). */}
+      <Card className="sm:max-w-sm">
+        <CardHeader>
+          <CardDescription>
+            {t('dashboard.stationTime', { timezone: station?.timezone ?? '' })}
+          </CardDescription>
+          <CardTitle>
+            <time
+              className="font-mono text-3xl tabular-nums"
+              dateTime={now?.toISOString()}
+              data-testid="station-clock"
+            >
+              {time(station?.timezone)}
+            </time>
+          </CardTitle>
+        </CardHeader>
+      </Card>
       <Card>
         <CardContent className="py-10 text-center text-sm text-muted-foreground">
           {t('dashboard.empty')}

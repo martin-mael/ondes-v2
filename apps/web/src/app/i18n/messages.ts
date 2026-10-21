@@ -126,6 +126,10 @@ const en = {
   'shell.nav.log': 'Log',
   'shell.nav.safety': 'Safety & emergency',
   'shell.nav.account': 'Account',
+  'unsaved.title': 'Leave without saving?',
+  'unsaved.body': 'Your changes on this page are not saved. If you leave, they are lost.',
+  'unsaved.stay': 'Stay',
+  'unsaved.leave': 'Leave without saving',
   'shell.station': 'Station',
   'shell.stations': 'Stations',
   'shell.noStations.title': 'No station yet',
@@ -147,7 +151,6 @@ const en = {
   'role.viewer': 'Viewer',
 
   'dashboard.title': 'Dashboard',
-  'dashboard.serverClock': 'Server time',
   'dashboard.stationTime': 'Station time ({timezone})',
   'dashboard.live': 'Live',
   'dashboard.connecting': 'Connecting…',
@@ -279,6 +282,11 @@ const fr: Messages = {
   'shell.nav.log': 'Conducteur',
   'shell.nav.safety': 'Secours et urgence',
   'shell.nav.account': 'Compte',
+  'unsaved.title': 'Quitter sans enregistrer ?',
+  'unsaved.body':
+    'Vos modifications sur cette page ne sont pas enregistrées. Si vous partez, elles sont perdues.',
+  'unsaved.stay': 'Rester',
+  'unsaved.leave': 'Quitter sans enregistrer',
   'shell.station': 'Station',
   'shell.stations': 'Stations',
   'shell.noStations.title': 'Aucune station',
@@ -301,7 +309,6 @@ const fr: Messages = {
   'role.viewer': 'Lecteur·rice',
 
   'dashboard.title': 'Tableau de bord',
-  'dashboard.serverClock': 'Heure du serveur',
   'dashboard.stationTime': 'Heure de la station ({timezone})',
   'dashboard.live': 'En direct',
   'dashboard.connecting': 'Connexion…',

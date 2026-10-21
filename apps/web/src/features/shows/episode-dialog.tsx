@@ -25,6 +25,7 @@ import { Input } from '@/ui/input';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { Textarea } from '@/ui/textarea';
 import { useI18n } from '../../app/i18n/i18n.tsx';
+import { useUnsavedChanges } from '../../app/unsaved.tsx';
 import { invalidateShows, showsApi } from './api.ts';
 import { EpisodeAssetPicker } from './asset-picker.tsx';
 import { formatDay, formatTime } from './format.ts';
@@ -142,21 +143,34 @@ export function EpisodeDialog({
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [picking, setPicking] = useState(false);
+  // The fields as the dialog opened: closing it, or leaving the page, with changes asks first.
+  const [initial, setInitial] = useState<string | null>(null);
+  const fields = JSON.stringify({ number, title, description, kind, planned });
+  const { guard, confirmDiscard } = useUnsavedChanges(
+    open && initial !== null && fields !== initial,
+  );
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the dialog opens.
   useEffect(() => {
     if (!open) return;
-    setNumber(episode ? String(episode.number) : '');
-    setTitle(episode?.title ?? '');
-    setDescription(episode?.description ?? '');
-    setKind(episode?.kind ?? (initialOccurrence?.type === 'live' ? 'live' : 'prerecorded'));
-    setPlanned(
-      episode?.slotId && episode.occurrenceDate
-        ? occurrenceKey({ slotId: episode.slotId, date: episode.occurrenceDate })
-        : initialOccurrence
-          ? occurrenceKey(initialOccurrence)
-          : '',
-    );
+    const values = {
+      number: episode ? String(episode.number) : '',
+      title: episode?.title ?? '',
+      description: episode?.description ?? '',
+      kind: episode?.kind ?? (initialOccurrence?.type === 'live' ? 'live' : 'prerecorded'),
+      planned:
+        episode?.slotId && episode.occurrenceDate
+          ? occurrenceKey({ slotId: episode.slotId, date: episode.occurrenceDate })
+          : initialOccurrence
+            ? occurrenceKey(initialOccurrence)
+            : '',
+    } as const;
+    setNumber(values.number);
+    setTitle(values.title);
+    setDescription(values.description);
+    setKind(values.kind);
+    setPlanned(values.planned);
+    setInitial(JSON.stringify(values));
     setError(null);
   }, [open]);
 
@@ -208,167 +222,181 @@ export function EpisodeDialog({
     `${formatDay(localDateOf(o.startsAt, timezone), locale)} ${formatTime(o.startsAt, timezone, locale)}${o.type === 'live' ? ` · ${t('type.live')}` : ''}`;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>
-            {episode ? t('episode.editTitle', { number: episode.number }) : t('episode.newTitle')}
-          </DialogTitle>
-          <DialogDescription>{show.name}</DialogDescription>
-        </DialogHeader>
-        <form className="flex flex-col gap-4" onSubmit={submit} noValidate>
-          <div className="grid grid-cols-[6rem_1fr] gap-4">
-            <Field data-invalid={error === t('episode.numberInvalid') ? true : undefined}>
-              <FieldLabel htmlFor="episode-number">{t('episode.number')}</FieldLabel>
-              <Input
-                id="episode-number"
-                type="number"
-                min={1}
-                inputMode="numeric"
-                placeholder={String(show.nextEpisodeNumber)}
-                value={number}
-                onChange={(e) => setNumber(e.target.value)}
+    <>
+      {guard}
+      <Dialog
+        open={open}
+        onOpenChange={(next) =>
+          next ? onOpenChange(true) : confirmDiscard(() => onOpenChange(false))
+        }
+      >
+        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {episode ? t('episode.editTitle', { number: episode.number }) : t('episode.newTitle')}
+            </DialogTitle>
+            <DialogDescription>{show.name}</DialogDescription>
+          </DialogHeader>
+          <form className="flex flex-col gap-4" onSubmit={submit} noValidate>
+            <div className="grid grid-cols-[6rem_1fr] gap-4">
+              <Field data-invalid={error === t('episode.numberInvalid') ? true : undefined}>
+                <FieldLabel htmlFor="episode-number">{t('episode.number')}</FieldLabel>
+                <Input
+                  id="episode-number"
+                  type="number"
+                  min={1}
+                  inputMode="numeric"
+                  placeholder={String(show.nextEpisodeNumber)}
+                  value={number}
+                  onChange={(e) => setNumber(e.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="episode-title">{t('episode.title')}</FieldLabel>
+                <Input
+                  id="episode-title"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                />
+              </Field>
+            </div>
+            {!episode && <FieldDescription>{t('episode.numberHelp')}</FieldDescription>}
+            <Field>
+              <FieldLabel htmlFor="episode-description">{t('episode.description')}</FieldLabel>
+              <Textarea
+                id="episode-description"
+                rows={3}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
               />
             </Field>
-            <Field>
-              <FieldLabel htmlFor="episode-title">{t('episode.title')}</FieldLabel>
-              <Input id="episode-title" value={title} onChange={(e) => setTitle(e.target.value)} />
-            </Field>
-          </div>
-          {!episode && <FieldDescription>{t('episode.numberHelp')}</FieldDescription>}
-          <Field>
-            <FieldLabel htmlFor="episode-description">{t('episode.description')}</FieldLabel>
-            <Textarea
-              id="episode-description"
-              rows={3}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-          </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel htmlFor="episode-kind">{t('episode.kind')}</FieldLabel>
-              <NativeSelect
-                id="episode-kind"
-                value={kind}
-                onChange={(e) => setKind(e.target.value as EpisodeKind)}
-              >
-                <NativeSelectOption value="prerecorded">{t('type.prerecorded')}</NativeSelectOption>
-                <NativeSelectOption value="live">{t('type.live')}</NativeSelectOption>
-              </NativeSelect>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="episode-occurrence">{t('episode.occurrence')}</FieldLabel>
-              <NativeSelect
-                id="episode-occurrence"
-                value={planned}
-                onChange={(e) => setPlanned(e.target.value)}
-              >
-                <NativeSelectOption value="">{t('episode.unscheduled')}</NativeSelectOption>
-                {current && (
-                  <NativeSelectOption value={current}>
-                    {formatDay(current.split('|')[1] ?? '', locale)}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field>
+                <FieldLabel htmlFor="episode-kind">{t('episode.kind')}</FieldLabel>
+                <NativeSelect
+                  id="episode-kind"
+                  value={kind}
+                  onChange={(e) => setKind(e.target.value as EpisodeKind)}
+                >
+                  <NativeSelectOption value="prerecorded">
+                    {t('type.prerecorded')}
                   </NativeSelectOption>
-                )}
-                {choices.map((o) => (
-                  <NativeSelectOption key={occurrenceKey(o)} value={occurrenceKey(o)}>
-                    {label(o)}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
-            </Field>
-          </div>
+                  <NativeSelectOption value="live">{t('type.live')}</NativeSelectOption>
+                </NativeSelect>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="episode-occurrence">{t('episode.occurrence')}</FieldLabel>
+                <NativeSelect
+                  id="episode-occurrence"
+                  value={planned}
+                  onChange={(e) => setPlanned(e.target.value)}
+                >
+                  <NativeSelectOption value="">{t('episode.unscheduled')}</NativeSelectOption>
+                  {current && (
+                    <NativeSelectOption value={current}>
+                      {formatDay(current.split('|')[1] ?? '', locale)}
+                    </NativeSelectOption>
+                  )}
+                  {choices.map((o) => (
+                    <NativeSelectOption key={occurrenceKey(o)} value={occurrenceKey(o)}>
+                      {label(o)}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+              </Field>
+            </div>
 
-          {episode && (
-            <section className="flex flex-col gap-2 rounded-lg bg-muted/50 p-3">
-              <div className="flex items-center gap-2">
-                <h3 className="font-medium">{t('episode.audio')}</h3>
-                <EpisodeStatusBadge status={episode.status} episodeId={episode.id} />
-              </div>
-              <p className="text-muted-foreground">
-                {episode.assetId ? t('episode.hasAudio') : t('episode.noAudio')}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <UploadAudioButton
-                  label={episode.assetId ? t('episode.replaceAudio') : t('episode.uploadAudio')}
-                  disabled={pending}
-                  onFile={(file) => {
-                    onOpenChange(false);
-                    void upload({ showId: show.id, episodeId: episode.id }, file);
-                  }}
-                />
-                {canSearchLibrary && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={pending}
-                    onClick={() => setPicking(true)}
-                  >
-                    {t('episode.attachAsset')}
-                  </Button>
-                )}
-                {episode.assetId && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    disabled={pending}
-                    onClick={() => save({ assetId: null })}
-                  >
-                    {t('episode.removeAudio')}
-                  </Button>
-                )}
-              </div>
-            </section>
-          )}
-
-          <FieldError errors={error ? [{ message: error }] : undefined} />
-          <DialogFooter>
             {episode && (
-              <Button
-                type="button"
-                variant="destructive"
-                className="sm:mr-auto"
-                disabled={pending}
-                onClick={async () => {
-                  if (!window.confirm(t('episode.deleteConfirm'))) return;
-                  setPending(true);
-                  try {
-                    await showsApi.removeEpisode(stationId, show.id, episode.id);
-                    await invalidateShows(queryClient, stationId);
-                    toast.success(t('episode.deleted'));
-                    onOpenChange(false);
-                  } catch (e) {
-                    setError(showError(e));
-                  } finally {
-                    setPending(false);
-                  }
-                }}
-              >
-                {t('episode.delete')}
-              </Button>
+              <section className="flex flex-col gap-2 rounded-lg bg-muted/50 p-3">
+                <div className="flex items-center gap-2">
+                  <h3 className="font-medium">{t('episode.audio')}</h3>
+                  <EpisodeStatusBadge status={episode.status} episodeId={episode.id} />
+                </div>
+                <p className="text-muted-foreground">
+                  {episode.assetId ? t('episode.hasAudio') : t('episode.noAudio')}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <UploadAudioButton
+                    label={episode.assetId ? t('episode.replaceAudio') : t('episode.uploadAudio')}
+                    disabled={pending}
+                    onFile={(file) => {
+                      onOpenChange(false);
+                      void upload({ showId: show.id, episodeId: episode.id }, file);
+                    }}
+                  />
+                  {canSearchLibrary && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={pending}
+                      onClick={() => setPicking(true)}
+                    >
+                      {t('episode.attachAsset')}
+                    </Button>
+                  )}
+                  {episode.assetId && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={pending}
+                      onClick={() => save({ assetId: null })}
+                    >
+                      {t('episode.removeAudio')}
+                    </Button>
+                  )}
+                </div>
+              </section>
             )}
-            <Button type="submit" disabled={pending}>
-              {episode ? t('form.save') : t('episode.create')}
-            </Button>
-          </DialogFooter>
-        </form>
-        {episode && (
-          <EpisodeAssetPicker
-            stationId={stationId}
-            open={picking}
-            onOpenChange={setPicking}
-            pending={pending}
-            onPick={async (assetId) => {
-              if (await save({ assetId })) {
-                setPicking(false);
-                toast.success(t('episode.attached'));
-              }
-            }}
-          />
-        )}
-      </DialogContent>
-    </Dialog>
+
+            <FieldError errors={error ? [{ message: error }] : undefined} />
+            <DialogFooter>
+              {episode && (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  className="sm:mr-auto"
+                  disabled={pending}
+                  onClick={async () => {
+                    if (!window.confirm(t('episode.deleteConfirm'))) return;
+                    setPending(true);
+                    try {
+                      await showsApi.removeEpisode(stationId, show.id, episode.id);
+                      await invalidateShows(queryClient, stationId);
+                      toast.success(t('episode.deleted'));
+                      onOpenChange(false);
+                    } catch (e) {
+                      setError(showError(e));
+                    } finally {
+                      setPending(false);
+                    }
+                  }}
+                >
+                  {t('episode.delete')}
+                </Button>
+              )}
+              <Button type="submit" disabled={pending}>
+                {episode ? t('form.save') : t('episode.create')}
+              </Button>
+            </DialogFooter>
+          </form>
+          {episode && (
+            <EpisodeAssetPicker
+              stationId={stationId}
+              open={picking}
+              onOpenChange={setPicking}
+              pending={pending}
+              onPick={async (assetId) => {
+                if (await save({ assetId })) {
+                  setPicking(false);
+                  toast.success(t('episode.attached'));
+                }
+              }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
