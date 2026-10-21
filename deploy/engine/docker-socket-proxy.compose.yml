@@ -1,27 +1,61 @@
-# Docker socket proxy for the station engine lifecycle (#35).
+# Docker access for the station engine lifecycle (#35): include this file from the
+# production compose file (`include:`), and put the api on the `docker-api` network.
 #
-# The api manages one Liquidsoap container per station, but it never gets the Docker socket.
-# It talks to this proxy (`ENGINE_DOCKER_URL=http://docker-socket-proxy:2375`), an HAProxy
-# that only forwards the Engine API sections enabled below and refuses everything else
-# with 403. Include or extend this service from the production compose file; the lifecycle
-# integration test extends it too, so the allowlist is tested.
+#   api ──docker-api (internal)──> docker-proxy-guard ──docker-socket (internal)──> docker-socket-proxy ──> /var/run/docker.sock
+#
+# - docker-socket-proxy (tecnativa, pinned by digest): forwards only the Engine API sections
+#   enabled below, 403 for the rest. It filters paths, not bodies.
+# - docker-proxy-guard (apps/api/src/modules/engine/lifecycle/proxy-guard.ts): checks every
+#   request against the engine container policy (container-policy.ts): only the pinned
+#   engine image, the engine network, a read-only cache bind under ENGINE_CACHE_ROOT,
+#   tmpfs, limits, no capabilities, no privileged mode, binds, devices or host namespaces,
+#   ondes.* labels only; only engine containers can be inspected, started, stopped, updated
+#   or removed; no archive, no exec. ENGINE_DOCKER_URL=http://docker-proxy-guard:2375.
 #
 # Rules:
-# - Never publish port 2375. Put the proxy on an internal network shared with the api only:
-#   anything that reaches it can create containers.
-# - The socket is mounted read-only (that only stops the proxy replacing the socket file;
-#   the API it forwards is still read-write, hence the allowlist).
+# - Both networks are internal: nothing published, no route out. Only the api joins
+#   docker-api; only the guard joins docker-socket. Never put engines on either
+#   (ENGINE_NETWORK must be another network; the api and the guard check it).
+# - The socket is mounted read-only (that only stops the proxy replacing the socket file).
 #
-# What the lifecycle needs, and why (see apps/api/src/modules/engine/lifecycle/README.md):
-#   CONTAINERS  create, inspect, list, archive upload (the rendered script), update (restart
-#               policy), start, stop, remove. /containers/{id}/exec can be created but never
-#               run: /exec (EXEC) stays denied.
-#   IMAGES      pull the pinned Liquidsoap image when the host doesn't have it yet.
-#   POST        allow non-GET methods at all (create, start, stop, PUT archive, DELETE).
+# What the socket proxy lets through, and why:
+#   CONTAINERS  create, inspect, list, update (restart policy), start, stop, remove.
+#   IMAGES      check and pull the pinned Liquidsoap image.
+#   POST        non-GET methods at all.
 #   ALLOW_START / ALLOW_STOP / ALLOW_RESTARTS  explicit, though CONTAINERS covers them.
 # Everything else (exec, networks, volumes, build, swarm, secrets, system, events) is off.
+#
+# Needs ENGINE_NETWORK and ENGINE_CACHE_ROOT (host path) in the compose environment, the same
+# values the api gets.
 
 services:
+  docker-proxy-guard:
+    # Dependency-free sources run by plain Node. The api image (same sources) works too:
+    # `command: [node, src/modules/engine/lifecycle/proxy-guard-main.ts]`.
+    image: node:24.22.0-alpine
+    command: [node, /guard/proxy-guard-main.ts]
+    restart: unless-stopped
+    user: node
+    environment:
+      GUARD_UPSTREAM: http://docker-socket-proxy:2375
+      GUARD_ENGINE_IMAGE: ${ENGINE_IMAGE:-savonet/liquidsoap:v2.4.6}
+      GUARD_ENGINE_PREFIX: ${ENGINE_CONTAINER_PREFIX:-ondes-engine}
+      GUARD_ENGINE_NETWORK: ${ENGINE_NETWORK:?ENGINE_NETWORK is required}
+      GUARD_ENGINE_CACHE_ROOT: ${ENGINE_CACHE_ROOT:?ENGINE_CACHE_ROOT is required}
+      GUARD_DOCKER_NETWORK: docker-api
+    volumes:
+      - ../../apps/api/src/modules/engine/lifecycle:/guard:ro
+    networks: [docker-api, docker-socket]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on: [docker-socket-proxy]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:2375/_ping]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:v0.5.0@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
     restart: unless-stopped
@@ -56,6 +90,7 @@ services:
       LOG_LEVEL: warning
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [docker-socket]
     read_only: true
     tmpfs:
       - /run
@@ -63,3 +98,9 @@ services:
       - /var/lib/haproxy
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+
+networks:
+  docker-api:
+    internal: true
+  docker-socket:
+    internal: true

@@ -16,10 +16,11 @@ CREATE TABLE "station_engine" (
 	"icecast_source_password_enc" text NOT NULL,
 	"config_version" text,
 	"container_id" text,
+	"storm_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "engine_port" ADD CONSTRAINT "engine_port_station_id_station_id_fk" FOREIGN KEY ("station_id") REFERENCES "public"."station"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "station_engine" ADD CONSTRAINT "station_engine_station_fk" FOREIGN KEY ("station_id","org_id") REFERENCES "public"."station"("id","org_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "engine_port" ADD CONSTRAINT "engine_port_station_id_station_id_fk" FOREIGN KEY ("station_id") REFERENCES "public"."station"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "station_engine" ADD CONSTRAINT "station_engine_station_fk" FOREIGN KEY ("station_id","org_id") REFERENCES "public"."station"("id","org_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "station_engine_desired_state_idx" ON "station_engine" USING btree ("desired_state");

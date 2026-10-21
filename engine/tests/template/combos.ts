@@ -29,6 +29,8 @@ export function combos(): Combo[] {
           settings: {
             ...base,
             live: { enabled: live },
+            // Metrics off in half the combos: the lifecycle (#35) disables the server.
+            metrics: { enabled: compressor },
             processing: { compressor: { enabled: compressor }, limiter: { enabled: limiter } },
           },
         });

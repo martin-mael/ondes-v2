@@ -10,14 +10,13 @@ const env = process.env;
 const rabbitUrl = env.RABBITMQ_URL;
 if (!rabbitUrl) throw new Error('RABBITMQ_URL is not set');
 
-const auth = authConfigFromEnv(env);
 const app = await buildApp({
   db: { config: dbConfigFromEnv(env) },
   rabbit: { url: rabbitUrl },
   mail: { config: mailConfigFromEnv(env) },
-  auth,
+  auth: authConfigFromEnv(env),
   // Station engines (#35), when ENGINE_DOCKER_URL points at the Docker socket proxy.
-  engine: engineLifecycleConfigFromEnv(env, auth.secret) ?? undefined,
+  engine: engineLifecycleConfigFromEnv(env) ?? undefined,
   fastify: {
     logger: { level: env.LOG_LEVEL ?? 'info' },
     // Behind Caddy, rate limits key on the client IP from X-Forwarded-For. Default: trust

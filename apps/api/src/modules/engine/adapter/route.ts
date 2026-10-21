@@ -43,9 +43,9 @@ export type EngineEventsHandlerOptions = {
    * `ENGINE_CONTROL_TOKEN`, which the station template (#27) sends with every batch. The
    * route is internal, but anything else on the Docker network must not forge as-run.
    * Either one token for every station, or a lookup by station (the lifecycle, #35, gives
-   * each station its own); a station without a token is refused.
+   * each station its own; it may read the database); a station without a token is refused.
    */
-  token: string | ((stationId: string) => string | undefined);
+  token: string | ((stationId: string) => string | undefined | Promise<string | undefined>);
   logger?: Logger;
 };
 
@@ -58,7 +58,7 @@ export function createEngineEventsHandler(
   const tokenFor = typeof token === 'string' ? () => token : token;
 
   return async ({ stationId, headers, body }) => {
-    const stationToken = tokenFor(stationId);
+    const stationToken = await tokenFor(stationId);
     const expected = Buffer.from(`Bearer ${stationToken ?? ''}`);
     const given = Buffer.from(String(headers.authorization ?? ''));
     if (!stationToken || given.length !== expected.length || !timingSafeEqual(given, expected)) {

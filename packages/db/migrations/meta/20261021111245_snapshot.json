@@ -1,5 +1,5 @@
 {
-  "id": "a9d747d4-2632-46c7-85df-252d1a450cad",
+  "id": "7bd4b200-1a77-46f0-892c-c87b5b310eb1",
   "prevId": "e281989a-a356-4950-aa88-2bbd0d39d84a",
   "version": "7",
   "dialect": "postgresql",
@@ -46,7 +46,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -123,6 +123,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "storm_at": {
+          "name": "storm_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -168,7 +174,7 @@
             "id",
             "org_id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },

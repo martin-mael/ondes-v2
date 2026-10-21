@@ -2,6 +2,14 @@ import { createHash } from 'node:crypto';
 import { stableStringify } from '@ondes/shared';
 import { engineEventsUrl } from '../adapter/route.ts';
 import type { StationEngineSettingsInput } from '../config/settings.ts';
+import {
+  ENGINE_CACHE_MOUNT,
+  ENGINE_ENTRYPOINT,
+  ENGINE_LABELS,
+  ENGINE_PORTS,
+  ENGINE_SCRIPT_ENV,
+  ENGINE_TMPFS,
+} from './container-policy.ts';
 import type { ContainerCreateBody } from './docker.ts';
 import type { PortRange } from './repo.ts';
 import type { EngineSecrets } from './secrets.ts';
@@ -11,20 +19,17 @@ import type { EngineSecrets } from './secrets.ts';
  * script is rendered from and the container that runs it. No I/O, unit tested.
  */
 
-/** Ports inside the engine container. Fixed: only the host side of live varies. */
-export const ENGINE_PORTS = { control: 7000, metrics: 9599, live: 8005 } as const;
-/** Where the station's playout cache is mounted, read-only (ADR 0004). */
-export const ENGINE_CACHE_MOUNT = '/cache';
-/** Where the rendered script is copied into the container before it starts. */
-export const ENGINE_SCRIPT_DIR = '/etc';
-export const ENGINE_SCRIPT_PATH = '/etc/ondes/station.liq';
+export {
+  ENGINE_CACHE_MOUNT,
+  ENGINE_ENTRYPOINT,
+  ENGINE_LABELS,
+  ENGINE_PORTS,
+  ENGINE_SCRIPT_ENV,
+  ENGINE_TMPFS,
+} from './container-policy.ts';
 
-export const ENGINE_LABELS = {
-  managed: 'ondes.engine',
-  station: 'ondes.station',
-  configVersion: 'ondes.config_version',
-  spec: 'ondes.spec',
-} as const;
+/** Restart policy of a running engine: Docker retries a few crashes, then the guard decides. */
+export const ENGINE_RESTART_POLICY = { Name: 'on-failure', MaximumRetryCount: 5 } as const;
 
 export type EngineLimits = {
   /** CPU cores (fractional), cgroup `NanoCpus`. */
@@ -42,12 +47,8 @@ export type EngineLifecycleConfig = {
   network: string;
   /** The api's base URL as the engines see it, for ENGINE_EVENTS_URL. */
   internalApiUrl: string;
+  /** Icecast as engines reach it. Each station has its own source password (per mount). */
   icecast: { host: string; port: number };
-  /**
-   * One Icecast source password for every station (Icecast's global `<source-password>`).
-   * Unset: each station gets its own generated password, for per-mount passwords (#32).
-   */
-  sharedIcecastSourcePassword?: string;
   /** Host directory holding one playout cache directory per station (ADR 0004). */
   cacheRoot: string;
   /** Host port pool for harbor live inputs, and the address they are published on. */
@@ -96,7 +97,8 @@ export function engineSettingsFor(
     stationId: station.stationId,
     name: stored.name ?? station.name,
     control: { port: ENGINE_PORTS.control },
-    metrics: { port: ENGINE_PORTS.metrics },
+    // The metrics server has no auth and engines share a network: off until scraped.
+    metrics: { port: ENGINE_PORTS.metrics, enabled: false },
     eventsUrl: engineEventsUrl(config.internalApiUrl, station.stationId),
     live: { ...live, port: ENGINE_PORTS.live },
     paths: {
@@ -113,6 +115,8 @@ export function engineSettingsFor(
 export type ContainerSpecInput = {
   station: { stationId: string };
   configVersion: string;
+  /** The rendered script, passed to the container in ENGINE_SCRIPT. */
+  script: string;
   secrets: EngineSecrets;
   /** Host port for the live input, or null when live is disabled. */
   livePort: number | null;
@@ -135,11 +139,13 @@ export function engineContainerSpec(
 
   const body: ContainerCreateBody = {
     Image: config.image,
-    Cmd: [ENGINE_SCRIPT_PATH],
+    Entrypoint: [...ENGINE_ENTRYPOINT],
+    Cmd: [],
     Env: [
       `ENGINE_CONTROL_TOKEN=${input.secrets.controlToken}`,
       `ENGINE_LIVE_PASSWORD=${input.secrets.livePassword}`,
-      `ICECAST_SOURCE_PASSWORD=${config.sharedIcecastSourcePassword ?? input.secrets.icecastSourcePassword}`,
+      `ICECAST_SOURCE_PASSWORD=${input.secrets.icecastSourcePassword}`,
+      `${ENGINE_SCRIPT_ENV}=${input.script}`,
     ],
     Labels: {
       ...config.labels,
@@ -159,14 +165,20 @@ export function engineContainerSpec(
           ReadOnly: true,
           BindOptions: { CreateMountpoint: true },
         },
+        ...ENGINE_TMPFS.map((target) => ({
+          Type: 'tmpfs' as const,
+          Target: target,
+          TmpfsOptions: { SizeBytes: 64 * 1024 * 1024 },
+        })),
       ],
       // Docker restarts a crashed engine a few times on its own; the lifecycle's storm guard
       // decides what happens after that.
-      RestartPolicy: { Name: 'on-failure', MaximumRetryCount: 5 },
+      RestartPolicy: { ...ENGINE_RESTART_POLICY },
       NanoCpus: Math.round(config.limits.cpus * 1e9),
       Memory: config.limits.memoryMb * 1024 * 1024,
       MemorySwap: config.limits.memoryMb * 1024 * 1024,
       PidsLimit: config.limits.pids,
+      ReadonlyRootfs: true,
       CapDrop: ['ALL'],
       SecurityOpt: ['no-new-privileges:true'],
       ExtraHosts: config.extraHosts ?? [],

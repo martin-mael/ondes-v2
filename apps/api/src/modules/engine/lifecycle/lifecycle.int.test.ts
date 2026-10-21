@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,14 +39,47 @@ const icecastPort = Number(process.env.ENGINE_LIFECYCLE_IT_ICECAST_PORT ?? 17191
 const runId = randomUUID().slice(0, 8);
 const actor = { type: 'system', name: 'lifecycle-it' } as const;
 
+const containerPrefix = `ondes-lifecycle-it-${runId}`;
+let cacheRoot = '';
+let icecastDir = '';
+
 const compose = (...args: string[]) =>
   run('docker', ['compose', '-p', project, '-f', composeFile, ...args], {
     env: {
       ...process.env,
       ENGINE_LIFECYCLE_IT_DOCKER_PORT: String(dockerPort),
       ENGINE_LIFECYCLE_IT_ICECAST_PORT: String(icecastPort),
+      // The proxy guard's policy: this run's engines only.
+      ENGINE_CONTAINER_PREFIX: containerPrefix,
+      ENGINE_CACHE_ROOT: cacheRoot || '/nonexistent',
+      ICECAST_CONFIG_DIR: icecastDir || '/nonexistent',
     },
   });
+
+/** Icecast with a random global source password and the station's own on its mount. */
+function icecastXml(mount: string, password: string): string {
+  return `<?xml version="1.0"?>
+<icecast>
+  <hostname>localhost</hostname>
+  <limits><sources>4</sources></limits>
+  <authentication>
+    <source-password>${randomUUID()}</source-password>
+    <admin-user>admin</admin-user>
+    <admin-password>${randomUUID()}</admin-password>
+  </authentication>
+  <mount type="normal"><mount-name>${mount}</mount-name><password>${password}</password></mount>
+  <listen-socket><port>8000</port></listen-socket>
+  <paths>
+    <basedir>/usr/share/icecast</basedir>
+    <logdir>/var/log/icecast</logdir>
+    <webroot>/usr/share/icecast/web</webroot>
+    <adminroot>/usr/share/icecast/admin</adminroot>
+  </paths>
+  <logging><accesslog>-</accesslog><errorlog>-</errorlog></logging>
+  <security><chroot>false</chroot></security>
+</icecast>
+`;
+}
 
 /** Removes every engine container this run created (they aren't in the compose project). */
 async function removeEngines() {
@@ -74,7 +107,6 @@ let docker: DockerClient;
 let lifecycle: EngineLifecycle;
 let engines: StationEngines;
 let events: FastifyInstance;
-let cacheRoot: string;
 let scope: StationScope;
 let slug: string;
 const published: EngineRealtimeEvent[] = [];
@@ -93,21 +125,19 @@ beforeAll(async () => {
   );
   scope = unsafeScope(org.id, st.id);
 
-  await compose('down', '-v', '--remove-orphans');
-  await compose('up', '-d', '--wait');
   docker = createDockerClient({ url: `http://127.0.0.1:${dockerPort}` });
   cacheRoot = mkdtempSync(join(tmpdir(), 'ondes-lifecycle-it-'));
+  icecastDir = mkdtempSync(join(tmpdir(), 'ondes-lifecycle-it-icecast-'));
 
   engines = new StationEngines();
   // The engines post events here through host.docker.internal, hence 0.0.0.0.
   events = Fastify();
   const config: EngineLifecycleConfig = {
     image: 'savonet/liquidsoap:v2.4.6',
-    containerPrefix: `ondes-lifecycle-it-${runId}`,
+    containerPrefix,
     network: 'ondes-engine-lifecycle-it',
     internalApiUrl: 'http://host.docker.internal:0', // replaced once the server listens
     icecast: { host: 'icecast', port: 8000 },
-    sharedIcecastSourcePassword: 'ondes-lifecycle-it-source',
     cacheRoot,
     livePorts: { min: 17192, max: 17199 },
     liveBindIp: '127.0.0.1',
@@ -120,7 +150,10 @@ beforeAll(async () => {
     db: tdb.db,
     docker,
     config,
-    secretBox: createEngineSecretBox('lifecycle-it-secret-0123456789abcdef'),
+    secretBox: createEngineSecretBox({
+      currentId: 'k1',
+      keys: { k1: 'lifecycle-it-secret-0123456789abcdef' },
+    }),
     engines,
     publish: async (event) => {
       published.push(event);
@@ -132,6 +165,12 @@ beforeAll(async () => {
   const address = events.server.address();
   if (!address || typeof address === 'string') throw new Error('no events server address');
   config.internalApiUrl = `http://host.docker.internal:${address.port}`;
+
+  // The station's secrets exist before its engine: Icecast gets its mount password first.
+  const { icecastSourcePassword } = await lifecycle.secretsFor(scope);
+  writeFileSync(join(icecastDir, 'icecast.xml'), icecastXml(`/${slug}.mp3`, icecastSourcePassword));
+  await compose('down', '-v', '--remove-orphans');
+  await compose('up', '-d', '--wait');
 }, 300_000);
 
 afterAll(async () => {
@@ -139,7 +178,7 @@ afterAll(async () => {
   await events?.close();
   await removeEngines().catch(() => {});
   await compose('down', '-v', '--remove-orphans').catch(() => {});
-  if (cacheRoot) rmSync(cacheRoot, { recursive: true, force: true });
+  for (const dir of [cacheRoot, icecastDir]) if (dir) rmSync(dir, { recursive: true, force: true });
   await tdb?.drop();
 }, 120_000);
 
@@ -188,10 +227,11 @@ describe('station engine lifecycle (real Docker)', () => {
     // beyond the loopback one this test asked for.
     const { stdout } = await run('docker', [
       'inspect',
-      containerName({ containerPrefix: `ondes-lifecycle-it-${runId}` }, scope.stationId),
+      containerName({ containerPrefix }, scope.stationId),
     ]);
     const [inspected] = JSON.parse(stdout);
     expect(inspected.HostConfig).toMatchObject({
+      ReadonlyRootfs: true,
       NanoCpus: 500_000_000,
       Memory: 512 * 1024 * 1024,
       PidsLimit: 128,
@@ -202,7 +242,8 @@ describe('station engine lifecycle (real Docker)', () => {
     );
     expect(inspected.Config.Env.join('\n')).toContain('ENGINE_CONTROL_TOKEN=');
 
-    // Its default output is live on Icecast.
+    // Its default output is live on Icecast, with the station's own source password (the
+    // global one is random and unknown to the engine).
     await waitFor('the station mount on Icecast', async () => {
       const res = await fetch(`http://127.0.0.1:${icecastPort}/status-json.xsl`);
       const body = (await res.json()) as { icestats: { source?: unknown } };
@@ -240,6 +281,22 @@ describe('station engine lifecycle (real Docker)', () => {
     expect((await lifecycle.status(scope)).restartPending).toBe(false);
   }, 120_000);
 
+  it('refuses, through the real proxy chain, anything but an engine container', async () => {
+    const name = containerName({ containerPrefix }, randomUUID());
+    const privileged = await docker
+      .create(name, {
+        Image: 'savonet/liquidsoap:v2.4.6',
+        Labels: { 'ondes.engine': 'true' },
+        HostConfig: { Privileged: true, Binds: ['/:/host'] } as never,
+      })
+      .catch((e) => e);
+    expect(privileged.status).toBe(403);
+    expect(await docker.inspect(name)).toBeNull();
+    // Not an engine: invisible and untouchable (the guard's own container, say).
+    expect(await docker.inspect(`${project}-docker-proxy-guard-1`)).toBeNull();
+    expect((await docker.stop(`${project}-icecast-1`).catch((e) => e)).status).toBe(403);
+  });
+
   it('stops the engine, then removes it and frees its port', async () => {
     const stopped = await lifecycle.stop(scope);
     expect(stopped.action).toBe('stopped');
@@ -249,11 +306,7 @@ describe('station engine lifecycle (real Docker)', () => {
     expect(engines.get(scope.stationId)).toBeUndefined();
 
     await lifecycle.remove(scope);
-    expect(
-      await docker.inspect(
-        containerName({ containerPrefix: `ondes-lifecycle-it-${runId}` }, scope.stationId),
-      ),
-    ).toBeNull();
+    expect(await docker.inspect(containerName({ containerPrefix }, scope.stationId))).toBeNull();
     expect(
       await tdb.db.select().from(enginePort).where(eq(enginePort.stationId, scope.stationId)),
     ).toEqual([]);

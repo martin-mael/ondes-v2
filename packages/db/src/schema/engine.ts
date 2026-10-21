@@ -48,6 +48,11 @@ export const stationEngine = pgTable(
     configVersion: text('config_version'),
     /** Docker id of the current container, if one was created. */
     containerId: text('container_id'),
+    /**
+     * When the restart-storm guard stopped this engine; it stays down until a person
+     * restarts it. Shared by every api replica, and survives api restarts.
+     */
+    stormAt: timestamp('storm_at', { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -56,7 +61,9 @@ export const stationEngine = pgTable(
       name: 'station_engine_station_fk',
       columns: [t.stationId, t.orgId],
       foreignColumns: [station.id, station.orgId],
-    }).onDelete('cascade'),
+      // Restrict, not cascade: the engine's container must be removed first
+      // (`engineLifecycle.remove`), or deleting the station would leave it streaming.
+    }).onDelete('restrict'),
     index('station_engine_desired_state_idx').on(t.desiredState),
   ],
 );
@@ -76,7 +83,8 @@ export const enginePort = pgTable(
     port: integer('port').primaryKey(),
     stationId: uuid('station_id')
       .notNull()
-      .references(() => station.id, { onDelete: 'cascade' }),
+      // Restrict: a port is freed by `engineLifecycle.remove`, once its container is gone.
+      .references(() => station.id, { onDelete: 'restrict' }),
     purpose: text('purpose', { enum: ENGINE_PORT_PURPOSES }).notNull(),
     createdAt: createdAt(),
   },

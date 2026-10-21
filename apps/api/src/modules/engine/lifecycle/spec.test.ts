@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { renderStationScript } from '../config/render.ts';
+import { checkEngineCreate } from './container-policy.ts';
 import type { EngineLifecycleConfig } from './spec.ts';
-import { containerName, ENGINE_LABELS, engineContainerSpec, engineSettingsFor } from './spec.ts';
+import {
+  containerName,
+  ENGINE_ENTRYPOINT,
+  ENGINE_LABELS,
+  engineContainerSpec,
+  engineSettingsFor,
+} from './spec.ts';
 
 const config: EngineLifecycleConfig = {
   image: 'savonet/liquidsoap:v2.4.6',
@@ -36,7 +43,7 @@ describe('engine settings for a station', () => {
       stationId: 'st-1',
       name: 'Vandale Radio',
       control: { port: 7000 },
-      metrics: { port: 9599 },
+      metrics: { port: 9599, enabled: false },
       eventsUrl: 'http://api:3000/internal/engine/stations/st-1/events',
       live: { enabled: false, port: 8005, mount: 'dj' },
       blank: { maxSeconds: 30 },
@@ -62,7 +69,7 @@ describe('engine container spec', () => {
   const spec = (over: Partial<EngineLifecycleConfig> = {}, livePort: number | null = 8100) =>
     engineContainerSpec(
       { ...config, ...over },
-      { station: { stationId: 'st-1' }, configVersion: 'abc', secrets, livePort },
+      { station: { stationId: 'st-1' }, configVersion: 'abc', script: 'SCRIPT', secrets, livePort },
     );
 
   it('runs the pinned image with limits, the read-only cache and secrets in its env', () => {
@@ -70,8 +77,14 @@ describe('engine container spec', () => {
     expect(containerName(config, 'st-1')).toBe('ondes-engine-st-1');
     expect(body).toMatchObject({
       Image: 'savonet/liquidsoap:v2.4.6',
-      Cmd: ['/etc/ondes/station.liq'],
-      Env: ['ENGINE_CONTROL_TOKEN=ctl', 'ENGINE_LIVE_PASSWORD=live', 'ICECAST_SOURCE_PASSWORD=src'],
+      Entrypoint: [...ENGINE_ENTRYPOINT],
+      Cmd: [],
+      Env: [
+        'ENGINE_CONTROL_TOKEN=ctl',
+        'ENGINE_LIVE_PASSWORD=live',
+        'ICECAST_SOURCE_PASSWORD=src',
+        'ENGINE_SCRIPT=SCRIPT',
+      ],
       Labels: {
         [ENGINE_LABELS.managed]: 'true',
         [ENGINE_LABELS.station]: 'st-1',
@@ -84,6 +97,7 @@ describe('engine container spec', () => {
         Memory: 512 * 1024 * 1024,
         MemorySwap: 512 * 1024 * 1024,
         PidsLimit: 256,
+        ReadonlyRootfs: true,
         CapDrop: ['ALL'],
         RestartPolicy: { Name: 'on-failure', MaximumRetryCount: 5 },
         Mounts: [
@@ -94,6 +108,7 @@ describe('engine container spec', () => {
             ReadOnly: true,
             BindOptions: { CreateMountpoint: true },
           },
+          { Type: 'tmpfs', Target: '/tmp', TmpfsOptions: { SizeBytes: 64 * 1024 * 1024 } },
         ],
       },
       NetworkingConfig: { EndpointsConfig: { ondes_engines: { Aliases: ['ondes-engine-st-1'] } } },
@@ -110,10 +125,20 @@ describe('engine container spec', () => {
     });
   });
 
-  it('uses the shared Icecast source password when one is configured', () => {
-    expect(spec({ sharedIcecastSourcePassword: 'shared' }).body.Env).toContain(
-      'ICECAST_SOURCE_PASSWORD=shared',
-    );
+  it('is exactly what the Docker proxy guard allows', () => {
+    const policy = {
+      image: config.image,
+      namePrefix: config.containerPrefix,
+      network: config.network,
+      cacheRoot: config.cacheRoot,
+    };
+    expect(checkEngineCreate(policy, 'ondes-engine-st-1', spec().body)).toBeNull();
+    // The test-only loopback control port needs the guard's matching switch.
+    const loopback = spec({ publishControlOnLoopback: true }).body;
+    expect(checkEngineCreate(policy, 'ondes-engine-st-1', loopback)).toMatch(/7000/);
+    expect(
+      checkEngineCreate({ ...policy, allowLoopbackControl: true }, 'ondes-engine-st-1', loopback),
+    ).toBeNull();
   });
 
   it('changes its hash with anything that changes the container', () => {
@@ -124,7 +149,17 @@ describe('engine container spec', () => {
     expect(
       engineContainerSpec(config, {
         station: { stationId: 'st-1' },
+        configVersion: 'abc',
+        script: 'SCRIPT',
+        secrets: { ...secrets, controlToken: 'rotated' },
+        livePort: 8100,
+      }).specHash,
+    ).not.toBe(base);
+    expect(
+      engineContainerSpec(config, {
+        station: { stationId: 'st-1' },
         configVersion: 'def',
+        script: 'SCRIPT',
         secrets,
         livePort: 8100,
       }).specHash,

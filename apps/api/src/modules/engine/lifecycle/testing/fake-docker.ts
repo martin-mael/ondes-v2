@@ -1,18 +1,30 @@
 import { randomUUID } from 'node:crypto';
-import type { ContainerCreateBody, ContainerInfo, DockerClient } from '../docker.ts';
+import {
+  type ContainerCreateBody,
+  type ContainerInfo,
+  type DockerClient,
+  DockerError,
+} from '../docker.ts';
 
-/** An in-memory Docker for lifecycle tests: containers are records, nothing runs. */
+/**
+ * An in-memory Docker for lifecycle tests: containers are records, nothing runs. `failStart`
+ * makes the next start fail with that message (a port conflict, a dead daemon).
+ */
 export type FakeContainer = {
   id: string;
   name: string;
   body: ContainerCreateBody;
   running: boolean;
+  /** Started at least once (a never-started container is `created`). */
+  started: boolean;
   restartCount: number;
-  archives: { path: string; size: number }[];
 };
 
 export type FakeDocker = DockerClient & {
   containers: Map<string, FakeContainer>;
+  failStart: string | null;
+  /** Makes every call fail, as if the Docker proxy were down. */
+  down: boolean;
   calls: string[];
   byName(name: string): FakeContainer | undefined;
 };
@@ -27,12 +39,13 @@ export function createFakeDocker(): FakeDocker {
     Name: `/${c.name}`,
     RestartCount: c.restartCount,
     State: {
-      Status: c.running ? 'running' : 'exited',
+      Status: c.running ? 'running' : c.started ? 'exited' : 'created',
       Running: c.running,
       Restarting: false,
       ExitCode: 0,
     },
     Config: { Labels: c.body.Labels ?? {} },
+    HostConfig: { RestartPolicy: c.body.HostConfig.RestartPolicy ?? null },
     NetworkSettings: {
       Ports: Object.fromEntries(
         Object.entries(c.body.HostConfig.PortBindings ?? {}).map(([port, bindings]) => [
@@ -43,9 +56,11 @@ export function createFakeDocker(): FakeDocker {
     },
   });
 
-  return {
+  const fake: FakeDocker = {
     containers,
     calls,
+    failStart: null,
+    down: false,
     byName: (name) => [...containers.values()].find((c) => c.name === name),
     async ping() {},
     async inspect(nameOrId) {
@@ -74,17 +89,21 @@ export function createFakeDocker(): FakeDocker {
       calls.push(`create ${name}`);
       if (find(name)) throw new Error(`conflict: ${name} exists`);
       const id = randomUUID().replaceAll('-', '');
-      containers.set(id, { id, name, body, running: false, restartCount: 0, archives: [] });
+      containers.set(id, { id, name, body, running: false, started: false, restartCount: 0 });
       return id;
-    },
-    async putArchive(id, path, tar) {
-      calls.push(`archive ${path}`);
-      find(id)?.archives.push({ path, size: tar.length });
     },
     async start(id) {
       calls.push('start');
+      if (fake.failStart) {
+        const message = fake.failStart;
+        fake.failStart = null;
+        throw new DockerError(500, `POST /containers/${id}/start: ${message}`);
+      }
       const c = find(id);
-      if (c) c.running = true;
+      if (c) {
+        c.running = true;
+        c.started = true;
+      }
     },
     async stop(id) {
       calls.push('stop');
@@ -103,4 +122,15 @@ export function createFakeDocker(): FakeDocker {
     },
     async ensureImage() {},
   };
+  // `down`: every Docker call fails, as when the proxy is unreachable.
+  for (const key of Object.keys(fake) as (keyof FakeDocker)[]) {
+    const value = fake[key];
+    if (typeof value !== 'function' || key === 'byName') continue;
+    const method = value as (...args: unknown[]) => Promise<unknown>;
+    (fake as Record<string, unknown>)[key] = (...args: unknown[]) =>
+      fake.down
+        ? Promise.reject(new DockerError(502, 'docker proxy unreachable'))
+        : method(...args);
+  }
+  return fake;
 }

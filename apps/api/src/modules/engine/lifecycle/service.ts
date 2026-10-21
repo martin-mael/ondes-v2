@@ -1,32 +1,38 @@
 import { randomUUID } from 'node:crypto';
-import { type Db, NotFoundError, type StationScope } from '@ondes/db';
+import { type Db, type Executor, NotFoundError, type StationScope } from '@ondes/db';
 import type { EngineRealtimeEvent } from '@ondes/shared';
 import {
+  createEngineAdapter,
   createStationEngine,
+  type EngineAdapter,
   type EngineStatus,
   type StationEngineOptions,
   type StationEngines,
 } from '../adapter/index.ts';
 import { type Logger, silentLogger } from '../adapter/logger.ts';
 import { loadStationTemplate, renderStationScript } from '../config/render.ts';
-import { type ContainerInfo, type DockerClient, tarFile } from './docker.ts';
+import { type ContainerInfo, type DockerClient, DockerError } from './docker.ts';
 import { RestartGuard } from './guard.ts';
 import {
   allocatePort,
+  deleteStationEngine,
   listRunningStationScopes,
+  loadControlToken,
   loadStationEngine,
-  releasePorts,
+  rotateSecrets,
   type StationEngineRecord,
   setApplied,
   setDesiredState,
+  setStorm,
+  stationsWithEngine,
+  withStationLock,
 } from './repo.ts';
 import type { EngineSecretBox, EngineSecrets } from './secrets.ts';
 import {
   containerName,
   ENGINE_LABELS,
   ENGINE_PORTS,
-  ENGINE_SCRIPT_DIR,
-  ENGINE_SCRIPT_PATH,
+  ENGINE_RESTART_POLICY,
   type EngineLifecycleConfig,
   engineContainerSpec,
   engineSettingsFor,
@@ -34,15 +40,18 @@ import {
 
 /**
  * Station engine lifecycle (#35): creates, starts, stops and restarts each station's
- * Liquidsoap container through the Docker socket proxy, and keeps one `StationEngine`
+ * Liquidsoap container through the Docker proxy guard, and keeps one `StationEngine`
  * (adapter + event ingest + health monitor, #28) per running station. See README.md.
+ *
+ * Every operation on a station runs under a Postgres advisory lock on it, so two api
+ * replicas (or the old and new api during a rolling deploy) never act on one station at once.
  */
 
 /** What `reconcile` did. */
 export type ReconcileAction =
   /** No container: created and started. */
   | 'created'
-  /** The script (`config_version`) or the container spec changed: replaced. */
+  /** The script (`config_version`), the container spec or the secrets changed: replaced. */
   | 'recreated'
   /** The container existed but wasn't running: started. */
   | 'started'
@@ -80,8 +89,18 @@ export type EngineStatusView = {
   /** The engine runs an older script than its settings: a restart is due. */
   restartPending: boolean;
   livePort: number | null;
-  restartStorm: { tripped: boolean; restarts: number; windowSeconds: number };
+  restartStorm: { tripped: boolean; since: string | null; restarts: number; windowSeconds: number };
 };
+
+/** The host port given to the station's live input is taken by something else. */
+export class EnginePortInUseError extends Error {
+  readonly port: number;
+  constructor(port: number) {
+    super(`host port ${port} (live input) is already in use on the Docker host`);
+    this.name = 'EnginePortInUseError';
+    this.port = port;
+  }
+}
 
 export type EngineLifecycleOptions = {
   db: Db;
@@ -99,10 +118,17 @@ export type EngineLifecycleOptions = {
   template?: string;
   /** Delay between supervisor passes. Default 15 s. */
   superviseIntervalMs?: number;
+  /** First retry delay for a station whose reconcile failed; doubles up to 5 min. Default 5 s. */
+  retryBaseMs?: number;
+  /** Stations reconciled at once at boot (each holds a database connection). Default 3. */
+  bootConcurrency?: number;
+  now?: () => number;
   logger?: Logger;
 };
 
 export type EngineLifecycle = ReturnType<typeof createEngineLifecycle>;
+
+const MAX_RETRY_MS = 5 * 60_000;
 
 export function createEngineLifecycle(options: EngineLifecycleOptions) {
   const { db, docker, config, secretBox, engines } = options;
@@ -110,21 +136,32 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
   const guard = options.guard ?? new RestartGuard();
   const template = options.template ?? loadStationTemplate();
   const superviseIntervalMs = options.superviseIntervalMs ?? 15_000;
+  const retryBaseMs = options.retryBaseMs ?? 5_000;
+  const now = options.now ?? Date.now;
 
-  /** Control tokens of the stations this api manages, for the events route. */
+  /** Control tokens seen, for the events route (cache; the database is the truth). */
   const tokens = new Map<string, string>();
   /** Stations kept running by this api, with the last restart count seen. */
   const managed = new Map<string, { scope: StationScope; restartCount: number }>();
+  /** Stations whose last reconcile failed (boot, supervisor), retried with backoff. */
+  const retries = new Map<string, { scope: StationScope; attempts: number; nextAt: number }>();
   /** Control URL and token each attached `StationEngine` was built with. */
   const attached = new Map<string, { baseUrl: string; token: string }>();
   const locks = new Map<string, Promise<unknown>>();
+  /** Run before each container create (e.g. Icecast mount passwords, #32). */
+  const beforeCreate: ((scope: StationScope, secrets: EngineSecrets) => Promise<void>)[] = [];
   let supervisor: NodeJS.Timeout | undefined;
   let supervising = false;
 
-  /** Runs `fn` after any other lifecycle operation on the same station. */
-  function serialized<T>(stationId: string, fn: () => Promise<T>): Promise<T> {
+  /**
+   * Runs `fn` after any other lifecycle operation on the same station in this process, then
+   * under the station's advisory lock against other replicas. `fn` gets the locked
+   * transaction as its database handle.
+   */
+  function exclusive<T>(stationId: string, fn: (tx: Executor) => Promise<T>): Promise<T> {
+    const run = () => withStationLock(db, stationId, fn);
     const previous = locks.get(stationId) ?? Promise.resolve();
-    const next = previous.then(fn, fn);
+    const next = previous.then(run, run);
     const settled = next.catch(() => {});
     locks.set(stationId, settled);
     void settled.then(() => {
@@ -133,8 +170,8 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
     return next;
   }
 
-  async function load(scope: StationScope): Promise<StationEngineRecord> {
-    const record = await loadStationEngine(db, secretBox, scope);
+  async function load(ex: Executor, scope: StationScope): Promise<StationEngineRecord> {
+    const record = await loadStationEngine(ex, secretBox, scope);
     if (!record) throw new NotFoundError('station', scope.stationId);
     tokens.set(scope.stationId, record.secrets.controlToken);
     return record;
@@ -203,23 +240,44 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
     }
   }
 
+  /**
+   * Creates and starts the container. Any failure after `create` removes it again, so an
+   * interrupted create never leaves a dead container behind.
+   */
   async function createAndStart(
-    record: StationEngineRecord,
-    script: string,
+    scope: StationScope,
+    secrets: EngineSecrets,
     body: ReturnType<typeof engineContainerSpec>['body'],
+    livePort: number | null,
   ): Promise<ContainerInfo> {
-    const name = containerName(config, record.scope.stationId);
+    const name = containerName(config, scope.stationId);
+    for (const hook of beforeCreate) await hook(scope, secrets);
     await docker.ensureImage(config.image);
     const id = await docker.create(name, body);
-    await docker.putArchive(
-      id,
-      ENGINE_SCRIPT_DIR,
-      tarFile(ENGINE_SCRIPT_PATH.slice(ENGINE_SCRIPT_DIR.length + 1), script),
-    );
-    await docker.start(id);
-    const info = await docker.inspect(id);
-    if (!info) throw new Error(`engine container ${name} vanished after start`);
-    return info;
+    try {
+      try {
+        await docker.start(id);
+      } catch (error) {
+        if (
+          livePort !== null &&
+          error instanceof DockerError &&
+          /port is already allocated|address already in use/i.test(error.message)
+        )
+          throw new EnginePortInUseError(livePort);
+        throw error;
+      }
+      const info = await docker.inspect(id);
+      if (!info) throw new Error(`engine container ${name} vanished after start`);
+      return info;
+    } catch (error) {
+      await docker.remove(id).catch((err) => {
+        logger.error(
+          { stationId: scope.stationId, err },
+          'Removing a failed engine container failed',
+        );
+      });
+      throw error;
+    }
   }
 
   async function removeContainer(info: ContainerInfo) {
@@ -227,18 +285,25 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
     await docker.remove(info.Id);
   }
 
-  async function tripStorm(scope: StationScope, restarts: number, info: ContainerInfo | null) {
+  async function tripStorm(
+    ex: Executor,
+    scope: StationScope,
+    restarts: number,
+    info: ContainerInfo | null,
+  ) {
     logger.error({ stationId: scope.stationId, restarts }, 'Engine restart storm: stopping it');
+    await setStorm(ex, scope, new Date(now()));
     if (info) {
       await docker.setRestartPolicy(info.Id, { Name: 'no' }).catch(() => {});
       await docker.stop(info.Id).catch(() => {});
     }
+    retries.delete(scope.stationId);
     try {
       await options.publish({
         id: randomUUID(),
         type: 'engine.restart_storm',
         stationId: scope.stationId,
-        at: new Date().toISOString(),
+        at: new Date(now()).toISOString(),
         data: {
           bootId: engines.get(scope.stationId)?.health.last()?.boot_id ?? null,
           restarts,
@@ -250,28 +315,30 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
     }
   }
 
-  async function doReconcile(scope: StationScope): Promise<ReconcileResult> {
-    const record = await load(scope);
+  async function doReconcile(ex: Executor, scope: StationScope): Promise<ReconcileResult> {
+    const record = await load(ex, scope);
     const name = containerName(config, scope.stationId);
     let info = await docker.inspect(name);
 
     if (record.desiredState === 'stopped') {
       detach(scope.stationId);
+      retries.delete(scope.stationId);
       if (info?.State.Running) await docker.stop(info.Id);
       return { action: 'stopped', configVersion: null, reportedVersion: null };
     }
 
     const rendered = render(record);
-    if (guard.isTripped(scope.stationId)) {
+    if (record.stormAt || guard.isTripped(scope.stationId)) {
       return { action: 'storm', configVersion: rendered.version, reportedVersion: null };
     }
 
     const livePort = rendered.settings.live.enabled
-      ? await allocatePort(db, scope, 'live', config.livePorts)
+      ? await allocatePort(ex, scope, 'live', config.livePorts)
       : null;
     const { body, specHash } = engineContainerSpec(config, {
       station: { stationId: scope.stationId },
       configVersion: rendered.version,
+      script: rendered.script,
       secrets: record.secrets,
       livePort,
     });
@@ -283,22 +350,25 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
 
     let action: ReconcileAction;
     if (!info) {
-      info = await createAndStart(record, rendered.script, body);
+      info = await createAndStart(scope, record.secrets, body, livePort);
       action = 'created';
     } else if (
+      info.State.Status === 'created' ||
       info.Config.Labels?.[ENGINE_LABELS.spec] !== specHash ||
       (reported !== null && reported !== rendered.version)
     ) {
+      // `created` = a create interrupted before its start: stale, replace it.
       logger.info(
         {
           stationId: scope.stationId,
+          state: info.State.Status,
           from: reported ?? info.Config.Labels?.[ENGINE_LABELS.configVersion],
           to: rendered.version,
         },
-        'Engine config changed: recreating its container',
+        'Engine container out of date: recreating it',
       );
       await removeContainer(info);
-      info = await createAndStart(record, rendered.script, body);
+      info = await createAndStart(scope, record.secrets, body, livePort);
       action = 'recreated';
     } else if (!info.State.Running && !info.State.Restarting) {
       await docker.start(info.Id);
@@ -306,18 +376,42 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
       action = 'started';
     } else {
       action = 'unchanged';
+      // The spec label can't see a restart policy changed after create (a storm, by hand).
+      const policy = info.HostConfig.RestartPolicy;
+      if (
+        policy?.Name !== ENGINE_RESTART_POLICY.Name ||
+        policy.MaximumRetryCount !== ENGINE_RESTART_POLICY.MaximumRetryCount
+      ) {
+        logger.warn(
+          { stationId: scope.stationId, policy },
+          'Engine restart policy drifted: resetting',
+        );
+        await docker.setRestartPolicy(info.Id, { ...ENGINE_RESTART_POLICY });
+      }
     }
 
     managed.set(scope.stationId, { scope, restartCount: info.RestartCount });
+    retries.delete(scope.stationId);
     attach(scope, record.secrets, info);
     if (action !== 'unchanged' || record.containerId !== info.Id) {
-      await setApplied(db, scope, { configVersion: rendered.version, containerId: info.Id });
+      await setApplied(ex, scope, { configVersion: rendered.version, containerId: info.Id });
     }
     return { action, configVersion: rendered.version, reportedVersion: reported };
   }
 
+  function scheduleRetry(scope: StationScope, error: unknown) {
+    const previous = retries.get(scope.stationId);
+    const attempts = (previous?.attempts ?? 0) + 1;
+    const delay = Math.min(MAX_RETRY_MS, retryBaseMs * 2 ** (attempts - 1));
+    retries.set(scope.stationId, { scope, attempts, nextAt: now() + delay });
+    logger.error(
+      { stationId: scope.stationId, attempts, retryInMs: delay, err: error },
+      'Engine reconcile failed',
+    );
+  }
+
   /** One supervisor check of a managed station: Docker restarts, dead containers, storms. */
-  async function superviseOne(stationId: string): Promise<void> {
+  async function superviseOne(ex: Executor, stationId: string): Promise<void> {
     const entry = managed.get(stationId);
     if (!entry) return;
     const { scope } = entry;
@@ -335,20 +429,58 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
     const verdict = guard.record(stationId, restarts);
     logger.warn({ stationId, restarts: verdict.restarts, dead }, 'Engine restarted');
     if (verdict.tripped) {
-      await tripStorm(scope, verdict.restarts, info);
+      await tripStorm(ex, scope, verdict.restarts, info);
       return;
     }
-    if (dead) await doReconcile(scope);
+    if (dead) await doReconcile(ex, scope);
+  }
+
+  /**
+   * Removes engine containers of this deployment (name prefix) whose station has no engine
+   * row any more: a station deleted behind the lifecycle's back, or a crash mid-`remove`.
+   */
+  async function sweepOrphans(): Promise<string[]> {
+    const containers = await docker.list([`${ENGINE_LABELS.managed}=true`]);
+    const ours = containers.filter((c) =>
+      c.Names.some((n) => n.replace(/^\//, '').startsWith(`${config.containerPrefix}-`)),
+    );
+    const known = await stationsWithEngine(
+      db,
+      ours.map((c) => c.Labels?.[ENGINE_LABELS.station] ?? ''),
+    );
+    const removed: string[] = [];
+    for (const c of ours) {
+      const stationId = c.Labels?.[ENGINE_LABELS.station] ?? '';
+      if (known.has(stationId)) continue;
+      logger.warn({ stationId, container: c.Names[0] }, 'Removing an orphaned engine container');
+      detach(stationId);
+      await docker.stop(c.Id).catch(() => {});
+      await docker.remove(c.Id);
+      removed.push(stationId);
+    }
+    return removed;
   }
 
   async function supervise(): Promise<void> {
-    await Promise.all(
-      [...managed.keys()].map((stationId) =>
-        serialized(stationId, () => superviseOne(stationId)).catch((error) => {
-          logger.error({ stationId, err: error }, 'Engine supervision failed');
-        }),
-      ),
-    );
+    // One station at a time: each holds a database connection while it acts.
+    for (const stationId of [...managed.keys()]) {
+      if (retries.has(stationId)) continue;
+      await exclusive(stationId, (ex) => superviseOne(ex, stationId)).catch((error) => {
+        const scope = managed.get(stationId)?.scope;
+        if (error instanceof NotFoundError) return detach(stationId);
+        if (scope) scheduleRetry(scope, error);
+      });
+    }
+    for (const [stationId, entry] of [...retries]) {
+      if (entry.nextAt > now()) continue;
+      await exclusive(stationId, (ex) => doReconcile(ex, entry.scope)).catch((error) => {
+        if (error instanceof NotFoundError) return retries.delete(stationId);
+        scheduleRetry(entry.scope, error);
+      });
+    }
+    await sweepOrphans().catch((error) => {
+      logger.error({ err: error }, 'Engine orphan sweep failed');
+    });
   }
 
   function loop() {
@@ -369,61 +501,66 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
      * changed container spec. Call it after changing `station.engine_settings`.
      */
     reconcile(scope: StationScope): Promise<ReconcileResult> {
-      return serialized(scope.stationId, () => doReconcile(scope));
+      return exclusive(scope.stationId, (ex) => doReconcile(ex, scope));
     },
 
     /** Marks the engine as wanted and brings it up. */
     start(scope: StationScope): Promise<ReconcileResult> {
-      return serialized(scope.stationId, async () => {
-        await load(scope);
-        await setDesiredState(db, scope, 'running');
-        return doReconcile(scope);
+      return exclusive(scope.stationId, async (ex) => {
+        await load(ex, scope);
+        await setDesiredState(ex, scope, 'running');
+        return doReconcile(ex, scope);
       });
     },
 
     /** Marks the engine as not wanted and stops its container (kept, for its logs). */
     stop(scope: StationScope): Promise<ReconcileResult> {
-      return serialized(scope.stationId, async () => {
-        await load(scope);
-        await setDesiredState(db, scope, 'stopped');
-        return doReconcile(scope);
+      return exclusive(scope.stationId, async (ex) => {
+        await load(ex, scope);
+        await setDesiredState(ex, scope, 'stopped');
+        return doReconcile(ex, scope);
       });
     },
 
     /**
-     * A person's restart: clears the storm guard and replaces the container even if
-     * nothing changed (a fresh boot, an empty queue: the feeder re-pushes on `boot`).
+     * A person's restart: clears the storm guard and replaces the container even if nothing
+     * changed (a fresh boot, an empty queue: the feeder re-pushes on `boot`).
+     * `rotateSecrets` also generates new secrets for the station first.
      */
-    restart(scope: StationScope): Promise<ReconcileResult> {
-      return serialized(scope.stationId, async () => {
+    restart(scope: StationScope, opts: { rotateSecrets?: boolean } = {}): Promise<ReconcileResult> {
+      return exclusive(scope.stationId, async (ex) => {
         guard.reset(scope.stationId);
-        await load(scope);
-        await setDesiredState(db, scope, 'running');
+        await load(ex, scope);
+        await setStorm(ex, scope, null);
+        await setDesiredState(ex, scope, 'running');
+        if (opts.rotateSecrets) await rotateSecrets(ex, secretBox, scope);
         const info = await docker.inspect(containerName(config, scope.stationId));
         if (info) {
           await removeContainer(info);
-          await setApplied(db, scope, { configVersion: null, containerId: null });
+          await setApplied(ex, scope, { configVersion: null, containerId: null });
         }
-        const result = await doReconcile(scope);
+        const result = await doReconcile(ex, scope);
         return { ...result, action: info ? 'recreated' : result.action };
       });
     },
 
-    /** Removes the container and gives the station's ports back (station deletion). */
+    /**
+     * Removes the container, then forgets the station's engine (row, secrets, ports). Call it
+     * before deleting a station: the foreign keys refuse the deletion until then.
+     */
     remove(scope: StationScope): Promise<void> {
-      return serialized(scope.stationId, async () => {
+      return exclusive(scope.stationId, async (ex) => {
         detach(scope.stationId);
+        retries.delete(scope.stationId);
         tokens.delete(scope.stationId);
         const info = await docker.inspect(containerName(config, scope.stationId));
         if (info) await removeContainer(info);
-        await setApplied(db, scope, { configVersion: null, containerId: null });
-        await setDesiredState(db, scope, 'stopped');
-        await releasePorts(db, scope);
+        await deleteStationEngine(ex, scope);
       });
     },
 
     async status(scope: StationScope): Promise<EngineStatusView> {
-      const record = await load(scope);
+      const record = await load(db, scope);
       const rendered = render(record);
       const info = await docker.inspect(containerName(config, scope.stationId));
       const engine = engines.get(scope.stationId);
@@ -447,41 +584,90 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
         restartPending: reported !== null && reported !== rendered.version,
         livePort: livePort ? Number(livePort) : null,
         restartStorm: {
-          tripped: guard.isTripped(scope.stationId),
+          tripped: record.stormAt !== null || guard.isTripped(scope.stationId),
+          since: record.stormAt?.toISOString() ?? null,
           restarts: guard.count(scope.stationId),
           windowSeconds: guard.windowSeconds,
         },
       };
     },
 
-    /** Decrypted secrets, e.g. for the Icecast mount config (#32). */
-    async secretsFor(scope: StationScope): Promise<EngineSecrets> {
-      return (await load(scope)).secrets;
+    /**
+     * Registers a step that runs before every engine container is created (first start, a
+     * config change, a secrets rotation), with the secrets the container will get. A failure
+     * aborts the create. #32 uses it to put the station's Icecast mount passwords in place
+     * before its engine connects.
+     */
+    onBeforeCreate(hook: (scope: StationScope, secrets: EngineSecrets) => Promise<void>): void {
+      beforeCreate.push(hook);
     },
 
-    /** The events route's token check: the station's control token, if this api manages it. */
-    tokenFor: (stationId: string): string | undefined => tokens.get(stationId),
+    /** Decrypted secrets, e.g. for the station's Icecast mount passwords (#32). */
+    async secretsFor(scope: StationScope): Promise<EngineSecrets> {
+      return (await load(db, scope)).secrets;
+    },
 
     /**
-     * Api boot: reconciles every station whose engine should run (creating or updating
-     * containers as needed) and starts its `StationEngine`. One station failing doesn't stop
-     * the others.
+     * The events route's token check: the station's control token. From the cache, else
+     * from the database (an engine can post before this api reconciled it, e.g. at boot).
+     */
+    async tokenFor(stationId: string): Promise<string | undefined> {
+      const cached = tokens.get(stationId);
+      if (cached) return cached;
+      const token = await loadControlToken(db, secretBox, stationId);
+      if (token) tokens.set(stationId, token);
+      return token ?? undefined;
+    },
+
+    /**
+     * A command adapter for the station's engine, on any api replica: the attached one, or
+     * a transient one built from the station's token (e.g. for a queue consumer running on
+     * another replica, #33). Undefined when the station has no engine.
+     */
+    async adapterFor(stationId: string): Promise<EngineAdapter | undefined> {
+      const engine = engines.get(stationId);
+      if (engine) return engine.adapter;
+      const token = await loadControlToken(db, secretBox, stationId);
+      if (!token) return undefined;
+      const info = config.publishControlOnLoopback
+        ? await docker.inspect(containerName(config, stationId))
+        : null;
+      const baseUrl = controlUrl(stationId, info);
+      return baseUrl ? createEngineAdapter({ stationId, baseUrl, token }) : undefined;
+    },
+
+    /**
+     * Api boot: removes orphaned containers, then reconciles every station whose engine
+     * should run (a few at a time) and starts its `StationEngine`. A station that fails is
+     * retried by the supervisor with backoff; one failing doesn't stop the others.
      */
     async boot(): Promise<{ stationId: string; result?: ReconcileResult; error?: unknown }[]> {
+      await sweepOrphans().catch((error) => {
+        logger.error({ err: error }, 'Engine orphan sweep failed');
+      });
       const scopes = await listRunningStationScopes(db);
-      return Promise.all(
-        scopes.map(async (scope) => {
+      const results: { stationId: string; result?: ReconcileResult; error?: unknown }[] = [];
+      const queue = [...scopes];
+      const worker = async () => {
+        for (let scope = queue.shift(); scope; scope = queue.shift()) {
+          const current = scope;
           try {
-            const result = await serialized(scope.stationId, () => doReconcile(scope));
-            logger.info({ stationId: scope.stationId, action: result.action }, 'Engine ready');
-            return { stationId: scope.stationId, result };
+            const result = await exclusive(current.stationId, (ex) => doReconcile(ex, current));
+            logger.info({ stationId: current.stationId, action: result.action }, 'Engine ready');
+            results.push({ stationId: current.stationId, result });
           } catch (error) {
-            logger.error({ stationId: scope.stationId, err: error }, 'Engine boot failed');
-            return { stationId: scope.stationId, error };
+            scheduleRetry(current, error);
+            results.push({ stationId: current.stationId, error });
           }
-        }),
-      );
+        }
+      };
+      await Promise.all(Array.from({ length: options.bootConcurrency ?? 3 }, worker));
+      return results;
     },
+
+    /** Stations waiting for a retry, with their attempt count (tests, status pages). */
+    pendingRetries: () =>
+      new Map([...retries].map(([id, r]) => [id, { attempts: r.attempts, nextAt: r.nextAt }])),
 
     /** Runs one supervisor pass now (tests). */
     supervise,
