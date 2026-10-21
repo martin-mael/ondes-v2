@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   addMembership,
   auditLog,
@@ -17,7 +18,7 @@ import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../../../app.ts';
 import { createMemoryMailer } from '../../../plugins/mail.ts';
-import type { Rabbit } from '../../../plugins/rabbit.ts';
+import { createRabbit, type Rabbit } from '../../../plugins/rabbit.ts';
 import { signUpAndLogin, TEST_AUTH_CONFIG, type TestApp } from '../../auth/testing.ts';
 import { StationEngines } from '../adapter/index.ts';
 import { allocatePort, PortPoolExhaustedError } from './repo.ts';
@@ -63,22 +64,32 @@ async function newStation(): Promise<StationScope> {
   return unsafeScope(orgScope.orgId, st.id);
 }
 
+let realRabbit: Rabbit | undefined;
+
 beforeAll(async () => {
   const tdb = await createTestDatabase();
   docker = createFakeDocker();
   const mailer = createMemoryMailer();
-  const rabbit = {
+  // A real connection: other plugins on the app (SSE #9, alerts #33) consume from RabbitMQ.
+  // Publishes are captured, then sent on as usual.
+  realRabbit = await createRabbit(process.env.RABBITMQ_URL ?? 'amqp://ondes:ondes@127.0.0.1:5672');
+  const rabbit: Rabbit = {
+    ...realRabbit,
     events: {
       publish: async (event: unknown) => {
         published.push(event as EngineRealtimeEvent);
+        await realRabbit?.events.publish(event);
       },
+      close: () => realRabbit?.events.close() ?? Promise.resolve(),
     },
-  } as unknown as Rabbit;
+  };
   const app = await buildApp({
     db: { client: tdb },
     mail: { mailer },
     auth: TEST_AUTH_CONFIG,
     rabbit: { rabbit },
+    // Its own durable queue and no sweep, so it never competes with the alerts tests.
+    alerts: { eventQueue: `alerts-lifecycle-it-${randomUUID()}`, sweepIntervalMs: 0 },
     fastify: { logger: { level: process.env.TEST_LOG_LEVEL ?? 'silent' } },
     engine: {
       config,
@@ -98,6 +109,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await t?.app.close();
+  await realRabbit?.close();
   await t?.tdb.drop();
 });
 
