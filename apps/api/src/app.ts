@@ -7,6 +7,7 @@ import {
 } from 'fastify-type-provider-zod';
 import { health } from './health.ts';
 import { authRoutes } from './modules/auth/routes.ts';
+import { type InvitationsOptions, invitationsRoutes } from './modules/invitations/routes.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { type AuthConfig, authPlugin } from './plugins/auth.ts';
 import { type DbPluginOptions, dbPlugin } from './plugins/db.ts';
@@ -20,6 +21,8 @@ export interface AppOptions {
   auth: AuthConfig;
   /** Optional so tests that don't touch the queue can skip RabbitMQ. */
   rabbit?: RabbitPluginOptions;
+  /** Team onboarding (#113): DNS resolver and sending limits. */
+  invitations?: InvitationsOptions;
   fastify?: FastifyServerOptions;
 }
 
@@ -42,6 +45,7 @@ export async function buildApp(options: AppOptions) {
     .withTypeProvider<ZodTypeProvider>()
     .get('/api/v1/health', { schema: { response: { 200: healthResponseSchema } } }, () => health());
   await app.register(authRoutes, { prefix: '/api/v1' });
+  await app.register(invitationsRoutes, { prefix: '/api/v1', ...options.invitations });
   // Library routes carry their full /api/v1/stations/:stationId path.
   await app.register(libraryPlugin);
 
