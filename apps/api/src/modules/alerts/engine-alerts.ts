@@ -158,7 +158,10 @@ export function createEngineAlerts(options: EngineAlertsOptions) {
         await repo.noteEngineBoot(db, scope, event.data.bootId, at);
         await alerts.resolve(scope, alertTypes.engineDown, { ...opts, reason: 'engine_up' });
         // A healthy engine after a storm means someone restarted it: the loop is over.
-        await alerts.resolve(scope, alertTypes.engineRestartStorm, { ...opts, reason: 'engine_up' });
+        await alerts.resolve(scope, alertTypes.engineRestartStorm, {
+          ...opts,
+          reason: 'engine_up',
+        });
         return;
       default:
         return;
