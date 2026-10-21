@@ -8,3 +8,4 @@ export * from './log.ts';
 export * from './storage.ts';
 export * from './streams.ts';
 export * from './tenancy.ts';
+export * from './upload.ts';

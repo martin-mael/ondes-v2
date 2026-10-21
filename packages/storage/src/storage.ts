@@ -49,6 +49,16 @@ export type PresignPutOptions = {
   contentType?: string;
 };
 
+export type PresignPartsOptions = {
+  /** Seconds the URLs stay valid. Default 900 (15 min). */
+  expiresIn?: number;
+  /**
+   * Exact byte size per part number. When given, `Content-Length` is signed into that part's
+   * URL, so S3 refuses a body of any other size (bounds what an untrusted client can store).
+   */
+  contentLengths?: Readonly<Record<number, number>>;
+};
+
 export type UploadedPart = { partNumber: number; etag: string; size?: number };
 
 export type PresignedPart = { partNumber: number; url: string };
@@ -86,7 +96,7 @@ export interface Storage {
     key: string,
     uploadId: string,
     partNumbers: readonly number[],
-    options?: { expiresIn?: number },
+    options?: PresignPartsOptions,
   ): Promise<PresignedPart[]>;
   listParts(key: string, uploadId: string): Promise<UploadedPart[]>;
   completeMultipartUpload(

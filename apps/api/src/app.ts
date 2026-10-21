@@ -1,4 +1,5 @@
 import { healthResponseSchema } from '@ondes/shared';
+import type { Storage } from '@ondes/storage';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 import {
   serializerCompiler,
@@ -13,6 +14,7 @@ import {
   engineLifecyclePlugin,
 } from './modules/engine/lifecycle/plugin.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
+import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
 import { type AuthConfig, authPlugin } from './plugins/auth.ts';
 import { type DbPluginOptions, dbPlugin } from './plugins/db.ts';
@@ -30,6 +32,10 @@ export interface AppOptions {
   engine?: EngineLifecyclePluginOptions;
   /** Alerts (#33): the engine lookup for the silence action, the escalation sweep. */
   alerts?: AlertsPluginOptions;
+  /** Media storage. Optional so tests that don't upload can skip S3; without it, no upload routes. */
+  storage?: Storage;
+  /** Upload route settings beyond `storage` (tests). */
+  uploads?: Omit<UploadPluginOptions, 'storage'>;
   fastify?: FastifyServerOptions;
 }
 
@@ -74,6 +80,9 @@ export async function buildApp(options: AppOptions) {
       : {}),
     ...options.alerts,
   });
+  if (options.storage) {
+    await app.register(uploadPlugin, { ...options.uploads, storage: options.storage });
+  }
 
   return app;
 }
