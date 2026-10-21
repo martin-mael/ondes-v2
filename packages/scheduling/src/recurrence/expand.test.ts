@@ -1,3 +1,4 @@
+import { addDays, localDateOf, zonedInstant, zonedParts } from '@ondes/shared';
 import { describe, expect, it } from 'vitest';
 import {
   type ExpandableSlot,
@@ -7,7 +8,6 @@ import {
   type SlotException,
 } from './expand.ts';
 import { isOccurrenceDate, type SlotRule, toIcsLines, type Weekday } from './rule.ts';
-import { addDays, localDateOf, zonedInstant, zonedParts } from './zoned.ts';
 
 const PARIS = 'Europe/Paris';
 const H = 3600 * 1000;
@@ -17,6 +17,13 @@ const SPRING = '2026-03-29';
 const FALL = '2026-10-25';
 
 const iso = (d: Date) => d.toISOString();
+
+/** `value`, failing the test when it's missing. */
+function defined<T>(value: T | undefined): T {
+  expect(value).toBeDefined();
+  if (value === undefined) throw new Error('expected a value');
+  return value;
+}
 const range = (from: string, to: string) => ({ from: new Date(from), to: new Date(to) });
 
 function weekly(
@@ -152,7 +159,7 @@ describe('expandSlots across DST (Europe/Paris)', () => {
       start: '2026-03-29T00:30:00.000Z',
       end: '2026-03-29T02:30:00.000Z',
     });
-    expect(zonedParts(new Date(spring?.end ?? ''), PARIS).time).toBe('04:30');
+    expect(zonedParts(new Date(defined(spring).end), PARIS).time).toBe('04:30');
   });
 
   it('a weekly 02:30 slot airs once, at the first 02:30, on the fall-back Sunday', () => {
@@ -167,17 +174,19 @@ describe('expandSlots across DST (Europe/Paris)', () => {
       ['2026-11-01', '2026-11-01T01:30:00.000Z'],
     ]);
     // 02:30 CEST + 2 h = 03:30 CET: the wall clock shows one hour.
-    expect(zonedParts(occurrences[1]?.endsAt ?? new Date(), PARIS).time).toBe('03:30');
+    expect(zonedParts(defined(occurrences[1]).endsAt, PARIS).time).toBe('03:30');
   });
 
   it('a weekly 01:30 slot on the fall-back Sunday starts before the change', () => {
-    const [occurrence] = expandSlots(
+    const occurrences = expandSlots(
       [slot(weekly('01:30', ['su']))],
       range('2026-10-24T22:00:00Z', '2026-10-26T00:00:00Z'),
       PARIS,
     );
-    expect(iso(occurrence?.startsAt ?? new Date())).toBe('2026-10-24T23:30:00.000Z');
-    expect(occurrence?.date).toBe(FALL);
+    expect(occurrences).toHaveLength(1);
+    const occurrence = defined(occurrences[0]);
+    expect(iso(occurrence.startsAt)).toBe('2026-10-24T23:30:00.000Z');
+    expect(occurrence.date).toBe(FALL);
   });
 
   it('keeps an evening show at its local time across both changes', () => {

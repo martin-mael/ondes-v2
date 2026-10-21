@@ -1,7 +1,7 @@
+import { addDays, type LocalDate, type LocalTime, localDateOf, zonedInstant } from '@ondes/shared';
 import { isOccurrenceDate, occurrenceDates, type SlotRule } from './rule.ts';
-import { addDays, type LocalDate, type LocalTime, localDateOf, zonedInstant } from './zoned.ts';
 
-// Slot expansion (#44, ADR 0012): pure, station-local and DST-safe. The grid, the log generator
+// Slot expansion (#44, ADR 0014): pure, station-local and DST-safe. The grid, the log generator
 // (#50), missing-episode alerts (#47) and the ICS feed (#75) all read occurrences from here.
 //
 // An occurrence is identified by its slot and its *original* local date (RFC 5545's

@@ -18,7 +18,9 @@ CREATE TABLE "episode" (
 	CONSTRAINT "episode_show_number_key" UNIQUE("show_id","number"),
 	CONSTRAINT "episode_number_check" CHECK ("episode"."number" >= 1),
 	CONSTRAINT "episode_kind_check" CHECK ("episode"."kind" in ('prerecorded', 'live')),
-	CONSTRAINT "episode_status_check" CHECK ("episode"."status" in ('planned', 'ready', 'aired', 'missing'))
+	CONSTRAINT "episode_status_check" CHECK ("episode"."status" in ('planned', 'ready', 'aired', 'missing')),
+	CONSTRAINT "episode_ready_asset_check" CHECK ("episode"."status" <> 'ready' or "episode"."asset_id" is not null),
+	CONSTRAINT "episode_occurrence_pair_check" CHECK (("episode"."slot_id" is null) = ("episode"."occurrence_date" is null))
 );
 --> statement-breakpoint
 CREATE TABLE "show" (
@@ -32,6 +34,7 @@ CREATE TABLE "show" (
 	"default_duration_ms" integer,
 	"default_slot_type" text DEFAULT 'prerecorded' NOT NULL,
 	"tags" text[] DEFAULT '{}'::text[] NOT NULL,
+	"next_episode_number" integer DEFAULT 1 NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "show_id_org_station_key" UNIQUE("id","org_id","station_id"),
@@ -86,7 +89,7 @@ CREATE TABLE "show_slot_exception" (
 );
 --> statement-breakpoint
 ALTER TABLE "episode" ADD CONSTRAINT "episode_asset_id_asset_id_fk" FOREIGN KEY ("asset_id") REFERENCES "public"."asset"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "episode" ADD CONSTRAINT "episode_slot_id_show_slot_id_fk" FOREIGN KEY ("slot_id") REFERENCES "public"."show_slot"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "episode" ADD CONSTRAINT "episode_slot_id_show_slot_id_fk" FOREIGN KEY ("slot_id") REFERENCES "public"."show_slot"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "episode" ADD CONSTRAINT "episode_show_fk" FOREIGN KEY ("show_id","org_id","station_id") REFERENCES "public"."show"("id","org_id","station_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "show" ADD CONSTRAINT "show_station_org_fk" FOREIGN KEY ("station_id","org_id") REFERENCES "public"."station"("id","org_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "show_host" ADD CONSTRAINT "show_host_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -94,8 +97,9 @@ ALTER TABLE "show_host" ADD CONSTRAINT "show_host_show_fk" FOREIGN KEY ("show_id
 ALTER TABLE "show_slot" ADD CONSTRAINT "show_slot_show_fk" FOREIGN KEY ("show_id","org_id","station_id") REFERENCES "public"."show"("id","org_id","station_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "show_slot_exception" ADD CONSTRAINT "show_slot_exception_slot_fk" FOREIGN KEY ("slot_id","org_id","station_id") REFERENCES "public"."show_slot"("id","org_id","station_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "episode_occurrence_key" ON "episode" USING btree ("slot_id","occurrence_date") WHERE "episode"."slot_id" is not null;--> statement-breakpoint
+CREATE UNIQUE INDEX "episode_asset_key" ON "episode" USING btree ("asset_id") WHERE "episode"."asset_id" is not null;--> statement-breakpoint
 CREATE INDEX "episode_station_status_idx" ON "episode" USING btree ("station_id","status");--> statement-breakpoint
-CREATE INDEX "episode_asset_idx" ON "episode" USING btree ("asset_id");--> statement-breakpoint
+CREATE INDEX "episode_unscheduled_idx" ON "episode" USING btree ("show_id") WHERE "episode"."slot_id" is null;--> statement-breakpoint
 CREATE INDEX "show_station_name_idx" ON "show" USING btree ("station_id","name");--> statement-breakpoint
 CREATE INDEX "show_host_user_idx" ON "show_host" USING btree ("user_id","station_id");--> statement-breakpoint
 CREATE INDEX "show_slot_show_idx" ON "show_slot" USING btree ("show_id");--> statement-breakpoint

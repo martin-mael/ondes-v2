@@ -1,4 +1,4 @@
-# ADR 0012: Show slot recurrence as a structured RRULE subset
+# ADR 0014: Show slot recurrence as a structured RRULE subset
 
 - Status: accepted
 - Date: 2026-10-21
@@ -30,7 +30,9 @@ a form (`BYSETPOS`, `BYWEEKNO`, hourly frequencies) and is hard to validate with
   range reads.
 - **Pure expansion in `@ondes/scheduling`** (`packages/scheduling/src/recurrence`):
   `expandSlots(slots, range, timeZone)` returns every occurrence that overlaps a UTC range,
-  `findConflicts(occurrences)` every overlapping pair. Intl only, no dependency, no I/O.
+  `findConflicts(occurrences)` every overlapping pair. No I/O. The wall-clock ↔ UTC helpers it
+  uses (`zonedInstant`, `localDayBounds`, …) live in `packages/shared/src/time`, shared with
+  the log.
 - **DST follows RFC 5545 (3.3.5).** A local time in the spring-forward gap is read with the
   offset before the gap, so it lands after it (02:30 → 03:30 CEST). A time that happens twice
   is its first occurrence (02:30 CEST, not 02:30 CET). The slot keeps a single occurrence on
@@ -43,10 +45,23 @@ a form (`BYSETPOS`, `BYWEEKNO`, hourly frequencies) and is hard to validate with
   `RECURRENCE-ID`). An exception (`show_slot_exception`) is keyed the same way and either
   cancels the occurrence or moves it (new local start, optional new duration) by at most
   seven days. A moved occurrence keeps its identity, so the episode planned for it
-  (`episode.slot_id` + `episode.occurrence_date`) follows it.
+  (`episode.slot_id` + `episode.occurrence_date`, both set or both null) follows it.
+- **A premiere whose occurrence goes away is detached, not blocking.** Deleting the slot,
+  changing its rule or type, or cancelling the occurrence clears the episode's slot and date
+  (audited as `episode.detach`), and the response lists the detached episodes. The episode
+  keeps its audio and number and shows up in `GET …/episodes?scheduled=false` to be planned
+  again. Refusing the change with a 409 would let any planned episode block a programmer's
+  grid edit; detaching keeps the grid the programmer's and loses nothing.
 - **Conflicts are data, not write errors.** Writing an overlapping slot is allowed (a special
   replacing a regular show for a month is a normal thing to plan); the occurrences read
   returns the conflicts alongside, and the log generator decides what wins.
+
+- **Episodes.** Numbers come from a per-show counter (`show.next_episode_number`) that only
+  grows, so a deleted episode's number is never reused; an explicit number above it moves it.
+  Live and pre-recorded episodes share it. An episode is `ready` only with its asset (a
+  database check; deleting the asset turns it back into `planned` through a trigger). An asset
+  is the audio of one episode at most: a rerun airs the same episode again (#48), it doesn't
+  copy it.
 
 ## Consequences
 - The rule can't express monthly or yearly recurrences yet; Vandale's shows are weekly or

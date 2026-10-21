@@ -4,8 +4,10 @@ import {
   createAsset,
   createOrganization,
   createStation,
+  episode,
   resolveOrgScope,
   resolveStationScope,
+  type StationScope,
 } from '@ondes/db';
 import type {
   Actor,
@@ -13,6 +15,7 @@ import type {
   Show,
   ShowOccurrencesResponse,
   ShowSlot,
+  ShowSlotChange,
   StationRole,
 } from '@ondes/shared';
 import { and, asc, eq } from 'drizzle-orm';
@@ -31,6 +34,7 @@ let otherStationId: string;
 let episodeAsset: string;
 let songAsset: string;
 let otherEpisodeAsset: string;
+let scope: StationScope;
 const users: Record<string, { userId: string; cookie: string }> = {};
 type Who = 'programmer' | 'host' | 'presenter' | 'viewer' | 'outsider';
 
@@ -45,7 +49,7 @@ beforeAll(async () => {
     { slug: 'shows-fm', name: 'FM', timezone: 'Europe/Paris' },
   );
   stationId = st.id;
-  const scope = await resolveStationScope(db, org.id, st.id);
+  scope = await resolveStationScope(db, org.id, st.id);
   episodeAsset = (
     await createAsset(db, { actor: system, scope }, { type: 'episode', title: 'Ep audio' })
   ).id;
@@ -322,12 +326,12 @@ describe('slots and exceptions', () => {
   });
 
   it('cancels and moves single occurrences, audited, and refuses non-occurrences', async () => {
-    await ok<ShowSlot>(
+    await ok<ShowSlotChange>(
       await call('programmer', 'PUT', `/shows/${s.id}/slots/${slot.id}/exceptions/2026-03-22`, {
         kind: 'cancelled',
       }),
     );
-    const moved = await ok<ShowSlot>(
+    const { slot: moved } = await ok<ShowSlotChange>(
       await call('programmer', 'PUT', `/shows/${s.id}/slots/${slot.id}/exceptions/2026-03-29`, {
         kind: 'moved',
         startDate: '2026-03-28',
@@ -373,7 +377,7 @@ describe('slots and exceptions', () => {
     expect(far.statusCode).toBe(422);
     expect(far.json().error).toBe('move_too_far');
 
-    const restored = await ok<ShowSlot>(
+    const { slot: restored } = await ok<ShowSlotChange>(
       await call('programmer', 'DELETE', `/shows/${s.id}/slots/${slot.id}/exceptions/2026-03-22`),
     );
     expect(restored.exceptions.map((e) => e.date)).toEqual(['2026-03-29']);
@@ -390,7 +394,7 @@ describe('slots and exceptions', () => {
   });
 
   it('drops exceptions the new rule no longer has when the rule changes', async () => {
-    const updated = await ok<ShowSlot>(
+    const { slot: updated } = await ok<ShowSlotChange>(
       await call('programmer', 'PATCH', `/shows/${s.id}/slots/${slot.id}`, {
         rule: { ...slot.rule, byDay: ['sa'] },
       }),
@@ -633,13 +637,14 @@ describe('episodes', () => {
       await call('viewer', 'GET', `/shows/${s.id}/episodes`),
     );
     const linked = res.items.find((e) => e.slotId === live.id);
-    expect((await call('programmer', 'DELETE', `/shows/${s.id}/slots/${live.id}`)).statusCode).toBe(
-      204,
+    const deleted = await ok<{ detachedEpisodeIds: string[] }>(
+      await call('programmer', 'DELETE', `/shows/${s.id}/slots/${live.id}`),
     );
+    expect(deleted.detachedEpisodeIds).toEqual([linked?.id]);
     const after = await ok<Episode>(
       await call('viewer', 'GET', `/shows/${s.id}/episodes/${linked?.id}`),
     );
-    expect(after).toMatchObject({ slotId: null, occurrenceDate: '2026-09-10' });
+    expect(after).toMatchObject({ slotId: null, occurrenceDate: null });
     expect((await call('host', 'DELETE', `/shows/${s.id}/episodes/${after.id}`)).statusCode).toBe(
       204,
     );
@@ -648,5 +653,231 @@ describe('episodes', () => {
       .from(auditLog)
       .where(and(eq(auditLog.entityId, after.id), eq(auditLog.action, 'episode.delete')));
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe('premieres follow their occurrence', () => {
+  let s: Show;
+  let slot: ShowSlot;
+  const premiere = async (date: string) =>
+    ok<Episode>(
+      await call('programmer', 'POST', `/shows/${s.id}/episodes`, {
+        slotId: slot.id,
+        occurrenceDate: date,
+      }),
+      201,
+    );
+  const episodeOf = async (id: string) =>
+    ok<Episode>(await call('viewer', 'GET', `/shows/${s.id}/episodes/${id}`));
+
+  beforeAll(async () => {
+    s = await newShow('Les Mardis');
+    // Tuesdays 6, 13, 20, 27 October 2026.
+    slot = await ok<ShowSlot>(
+      await call('programmer', 'POST', `/shows/${s.id}/slots`, {
+        rule: {
+          freq: 'weekly',
+          startDate: '2026-10-06',
+          until: '2026-10-27',
+          interval: 1,
+          byDay: ['tu'],
+          time: '19:00',
+        },
+      }),
+      201,
+    );
+  });
+
+  it('keeps the premiere of a moved occurrence, detaches the one of a cancelled occurrence', async () => {
+    const kept = await premiere('2026-10-06');
+    const lost = await premiere('2026-10-13');
+    const move = await ok<ShowSlotChange>(
+      await call('programmer', 'PUT', `/shows/${s.id}/slots/${slot.id}/exceptions/2026-10-06`, {
+        kind: 'moved',
+        startDate: '2026-10-07',
+        startTime: '19:00',
+      }),
+    );
+    expect(move.detachedEpisodeIds).toEqual([]);
+    expect((await episodeOf(kept.id)).slotId).toBe(slot.id);
+
+    const cancel = await ok<ShowSlotChange>(
+      await call('programmer', 'PUT', `/shows/${s.id}/slots/${slot.id}/exceptions/2026-10-13`, {
+        kind: 'cancelled',
+      }),
+    );
+    expect(cancel.detachedEpisodeIds).toEqual([lost.id]);
+    expect(await episodeOf(lost.id)).toMatchObject({
+      slotId: null,
+      occurrenceDate: null,
+      number: lost.number,
+    });
+    const detach = (await audits(lost.id)).at(-1);
+    expect(detach).toMatchObject({ action: 'episode.detach' });
+    expect(detach?.diff).toEqual({
+      slotId: { from: slot.id, to: null },
+      occurrenceDate: { from: '2026-10-13', to: null },
+    });
+
+    const unscheduled = await ok<{ items: Episode[] }>(
+      await call('viewer', 'GET', `/shows/${s.id}/episodes?scheduled=false`),
+    );
+    expect(unscheduled.items.map((e) => e.id)).toEqual([lost.id]);
+    const scheduled = await ok<{ items: Episode[] }>(
+      await call('viewer', 'GET', `/shows/${s.id}/episodes?scheduled=true`),
+    );
+    expect(scheduled.items.map((e) => e.id)).toEqual([kept.id]);
+
+    // The schedule doesn't show a cancelled occurrence; restoring it frees it for a premiere.
+    await ok<ShowSlotChange>(
+      await call('programmer', 'DELETE', `/shows/${s.id}/slots/${slot.id}/exceptions/2026-10-13`),
+    );
+    const replanned = await ok<Episode>(
+      await call('host', 'PATCH', `/shows/${s.id}/episodes/${lost.id}`, {
+        slotId: slot.id,
+        occurrenceDate: '2026-10-13',
+      }),
+    );
+    expect(replanned.occurrenceDate).toBe('2026-10-13');
+  });
+
+  it('detaches premieres a rule change removes, and all of them on a change to rerun', async () => {
+    const late = await premiere('2026-10-27');
+    const change = await ok<ShowSlotChange>(
+      await call('programmer', 'PATCH', `/shows/${s.id}/slots/${slot.id}`, {
+        rule: { ...slot.rule, until: '2026-10-20' },
+      }),
+    );
+    expect(change.detachedEpisodeIds).toEqual([late.id]);
+    expect((await episodeOf(late.id)).slotId).toBeNull();
+
+    // A duration change detaches nothing.
+    const longer = await ok<ShowSlotChange>(
+      await call('programmer', 'PATCH', `/shows/${s.id}/slots/${slot.id}`, { durationMs: 3 * H }),
+    );
+    expect(longer.detachedEpisodeIds).toEqual([]);
+
+    const rerun = await ok<ShowSlotChange>(
+      await call('programmer', 'PATCH', `/shows/${s.id}/slots/${slot.id}`, { type: 'rerun' }),
+    );
+    expect(rerun.detachedEpisodeIds).toHaveLength(2);
+    const res = await ok<ShowOccurrencesResponse>(
+      await call(
+        'viewer',
+        'GET',
+        `/show-occurrences?from=2026-10-01T00:00:00Z&to=2026-11-01T00:00:00Z&showId=${s.id}`,
+      ),
+    );
+    expect(res.occurrences.every((o) => o.type === 'rerun' && o.episode === null)).toBe(true);
+  });
+
+  it('refuses a slot/date pair that is half set, in the database too', async () => {
+    const e = await ok<Episode>(
+      await call('programmer', 'POST', `/shows/${s.id}/episodes`, {}),
+      201,
+    );
+    await expect(
+      t.tdb.db.update(episode).set({ occurrenceDate: '2026-10-06' }).where(eq(episode.id, e.id)),
+    ).rejects.toThrow();
+  });
+});
+
+describe('episode audio and numbers', () => {
+  let s: Show;
+
+  beforeAll(async () => {
+    s = await newShow('Archives');
+  });
+
+  it('turns a ready episode back into planned when its asset is deleted', async () => {
+    const audio = await createAsset(
+      t.tdb.db,
+      { actor: system, scope },
+      { type: 'episode', title: 'Archive 1' },
+    );
+    const e = await ok<Episode>(
+      await call('programmer', 'POST', `/shows/${s.id}/episodes`, { assetId: audio.id }),
+      201,
+    );
+    expect(e.status).toBe('ready');
+    const del = await call('programmer', 'DELETE', `/assets/${audio.id}`);
+    expect(del.statusCode, del.body).toBe(204);
+    const after = await ok<Episode>(await call('viewer', 'GET', `/shows/${s.id}/episodes/${e.id}`));
+    expect(after).toMatchObject({ assetId: null, status: 'planned' });
+    // And the database refuses `ready` without audio, whoever writes it.
+    await expect(
+      t.tdb.db.update(episode).set({ status: 'ready' }).where(eq(episode.id, e.id)),
+    ).rejects.toThrow();
+    const res = await call('programmer', 'PATCH', `/shows/${s.id}/episodes/${e.id}`, {
+      status: 'ready',
+    });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error).toBe('asset_required');
+  });
+
+  it('gives an asset to one episode only', async () => {
+    const audio = await createAsset(
+      t.tdb.db,
+      { actor: system, scope },
+      { type: 'episode', title: 'Archive 2' },
+    );
+    await ok<Episode>(
+      await call('programmer', 'POST', `/shows/${s.id}/episodes`, { assetId: audio.id }),
+      201,
+    );
+    const again = await call('programmer', 'POST', `/shows/${s.id}/episodes`, {
+      assetId: audio.id,
+    });
+    expect(again.statusCode).toBe(409);
+    expect(again.json().error).toBe('asset_taken');
+  });
+
+  it('never reuses a deleted number', async () => {
+    const show = await newShow('Counter');
+    const one = await ok<Episode>(
+      await call('programmer', 'POST', `/shows/${show.id}/episodes`, {}),
+      201,
+    );
+    const two = await ok<Episode>(
+      await call('programmer', 'POST', `/shows/${show.id}/episodes`, {}),
+      201,
+    );
+    expect([one.number, two.number]).toEqual([1, 2]);
+    expect(
+      (await call('programmer', 'DELETE', `/shows/${show.id}/episodes/${two.id}`)).statusCode,
+    ).toBe(204);
+    const three = await ok<Episode>(
+      await call('programmer', 'POST', `/shows/${show.id}/episodes`, {}),
+      201,
+    );
+    expect(three.number).toBe(3);
+    // Renumbering above the counter moves it.
+    await ok<Episode>(
+      await call('programmer', 'PATCH', `/shows/${show.id}/episodes/${one.id}`, { number: 40 }),
+    );
+    expect(
+      (await ok<Show>(await call('viewer', 'GET', `/shows/${show.id}`))).nextEpisodeNumber,
+    ).toBe(41);
+  });
+
+  it('serializes renumbering against creation instead of failing it', async () => {
+    const show = await newShow('Race');
+    const first = await ok<Episode>(
+      await call('programmer', 'POST', `/shows/${show.id}/episodes`, {}),
+      201,
+    );
+    // Renumber #1 to 2 while a creation (which would take 2) runs: one waits for the other.
+    const [renumber, create] = await Promise.all([
+      call('programmer', 'PATCH', `/shows/${show.id}/episodes/${first.id}`, { number: 2 }),
+      call('programmer', 'POST', `/shows/${show.id}/episodes`, {}),
+    ]);
+    const numbers = [renumber, create].map((r) => r.statusCode);
+    // Whichever goes first, the creation never collides: it numbers after the renumbering, or
+    // the renumbering finds 2 taken (a real conflict, not a race).
+    if (numbers[0] === 200) expect(create.json().number).toBe(3);
+    else {
+      expect(numbers).toEqual([409, 201]);
+      expect(create.json().number).toBe(2);
+    }
   });
 });

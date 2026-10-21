@@ -11,6 +11,8 @@ import {
   showOccurrencesQuerySchema,
   showOccurrencesResponseSchema,
   showSchema,
+  showSlotChangeSchema,
+  showSlotDeletedSchema,
   showSlotListSchema,
   showSlotSchema,
   updateEpisodeSchema,
@@ -30,7 +32,9 @@ import * as repo from './repo.ts';
 //
 // Permissions: `show:read` reads everything. `show:write` manages shows, slots, exceptions and
 // episodes. `show:write_own` (presenters) edits a show the caller hosts and its episodes, but
-// not its hosts, its slots, or the show's existence: those shape the station's grid.
+// not its hosts, its slots, or the show's existence: those shape the station's grid. Every
+// write route carries its check in `preHandler` (`write`, or `writeOwn` for the host routes),
+// never inside the handler.
 
 const stationParams = z.object({ stationId: z.string() });
 const showParams = stationParams.extend({ showId: uuidSchema });
@@ -64,6 +68,17 @@ export async function showsRoutes(app: FastifyInstance) {
     throw new HttpError(403, 'forbidden', 'you can only edit the shows you host');
   }
 
+  /**
+   * Route guard for the routes hosts may use: `show:read` resolves the scope, then this checks
+   * `show:write` or hosting (runs after params validation, so `:showId` is a uuid).
+   */
+  const writeOwn = [
+    read,
+    async (request: FastifyRequest) => {
+      await requireShowWrite(request, (request.params as { showId: string }).showId);
+    },
+  ];
+
   // --- Shows ---
 
   r.get(
@@ -91,18 +106,18 @@ export async function showsRoutes(app: FastifyInstance) {
   r.patch(
     '/stations/:stationId/shows/:showId',
     {
-      preHandler: read,
+      preHandler: [
+        ...writeOwn,
+        async (request: FastifyRequest) => {
+          const body = request.body as { hostUserIds?: unknown };
+          if (body.hostUserIds !== undefined && !request.permissions?.has('show:write')) {
+            throw new HttpError(403, 'forbidden', "changing a show's hosts needs show:write");
+          }
+        },
+      ],
       schema: { params: showParams, body: updateShowSchema, response: { 200: showSchema } },
     },
-    async (request) => {
-      const { showId } = request.params;
-      if (request.body.hostUserIds !== undefined && !request.permissions?.has('show:write')) {
-        await repo.getShow(app.db, stationScopeOf(request), showId);
-        throw new HttpError(403, 'forbidden', "changing a show's hosts needs show:write");
-      }
-      await requireShowWrite(request, showId);
-      return repo.updateShow(app.db, ctx(request), showId, request.body);
-    },
+    (request) => repo.updateShow(app.db, ctx(request), request.params.showId, request.body),
   );
 
   r.delete(
@@ -147,7 +162,11 @@ export async function showsRoutes(app: FastifyInstance) {
     '/stations/:stationId/shows/:showId/slots/:slotId',
     {
       preHandler: write,
-      schema: { params: slotParams, body: updateShowSlotSchema, response: { 200: showSlotSchema } },
+      schema: {
+        params: slotParams,
+        body: updateShowSlotSchema,
+        response: { 200: showSlotChangeSchema },
+      },
     },
     (request) =>
       repo.updateSlot(
@@ -161,11 +180,9 @@ export async function showsRoutes(app: FastifyInstance) {
 
   r.delete(
     '/stations/:stationId/shows/:showId/slots/:slotId',
-    { preHandler: write, schema: { params: slotParams } },
-    async (request, reply) => {
-      await repo.deleteSlot(app.db, ctx(request), request.params.showId, request.params.slotId);
-      return reply.code(204).send();
-    },
+    { preHandler: write, schema: { params: slotParams, response: { 200: showSlotDeletedSchema } } },
+    (request) =>
+      repo.deleteSlot(app.db, ctx(request), request.params.showId, request.params.slotId),
   );
 
   r.put(
@@ -175,7 +192,7 @@ export async function showsRoutes(app: FastifyInstance) {
       schema: {
         params: exceptionParams,
         body: putSlotExceptionSchema,
-        response: { 200: showSlotSchema },
+        response: { 200: showSlotChangeSchema },
       },
     },
     (request) => {
@@ -186,7 +203,10 @@ export async function showsRoutes(app: FastifyInstance) {
 
   r.delete(
     '/stations/:stationId/shows/:showId/slots/:slotId/exceptions/:date',
-    { preHandler: write, schema: { params: exceptionParams, response: { 200: showSlotSchema } } },
+    {
+      preHandler: write,
+      schema: { params: exceptionParams, response: { 200: showSlotChangeSchema } },
+    },
     (request) => {
       const { showId, slotId, date } = request.params;
       return repo.deleteException(app.db, ctx(request), showId, slotId, date);
@@ -210,7 +230,7 @@ export async function showsRoutes(app: FastifyInstance) {
         app.db,
         stationScopeOf(request),
         request.params.showId,
-        request.query.status,
+        request.query,
       ),
     }),
   );
@@ -218,15 +238,13 @@ export async function showsRoutes(app: FastifyInstance) {
   r.post(
     '/stations/:stationId/shows/:showId/episodes',
     {
-      preHandler: read,
+      preHandler: writeOwn,
       schema: { params: showParams, body: createEpisodeSchema, response: { 201: episodeSchema } },
     },
-    async (request, reply) => {
-      await requireShowWrite(request, request.params.showId);
-      return reply
+    async (request, reply) =>
+      reply
         .code(201)
-        .send(await repo.createEpisode(app.db, ctx(request), request.params.showId, request.body));
-    },
+        .send(await repo.createEpisode(app.db, ctx(request), request.params.showId, request.body)),
   );
 
   r.get(
@@ -244,26 +262,24 @@ export async function showsRoutes(app: FastifyInstance) {
   r.patch(
     '/stations/:stationId/shows/:showId/episodes/:episodeId',
     {
-      preHandler: read,
+      preHandler: writeOwn,
       schema: {
         params: episodeParams,
         body: updateEpisodeSchema,
         response: { 200: episodeSchema },
       },
     },
-    async (request) => {
+    (request) => {
       const { showId, episodeId } = request.params;
-      await requireShowWrite(request, showId);
       return repo.updateEpisode(app.db, ctx(request), showId, episodeId, request.body);
     },
   );
 
   r.delete(
     '/stations/:stationId/shows/:showId/episodes/:episodeId',
-    { preHandler: read, schema: { params: episodeParams } },
+    { preHandler: writeOwn, schema: { params: episodeParams } },
     async (request, reply) => {
       const { showId, episodeId } = request.params;
-      await requireShowWrite(request, showId);
       await repo.deleteEpisode(app.db, ctx(request), showId, episodeId);
       return reply.code(204).send();
     },

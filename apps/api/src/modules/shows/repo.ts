@@ -1,4 +1,5 @@
 import {
+  type AuditFn,
   asset,
   auditDiff,
   type Db,
@@ -19,11 +20,9 @@ import {
   withAudit,
 } from '@ondes/db';
 import {
-  addDays,
   expandSlots,
   findConflicts,
   isOccurrenceDate,
-  localDateOf,
   MAX_MOVE_DAYS,
   occurrenceOn,
   ruleEndDate,
@@ -31,6 +30,7 @@ import {
 } from '@ondes/scheduling';
 import {
   type Actor,
+  addDays,
   type CreateEpisode,
   type CreateShow,
   type CreateShowSlot,
@@ -40,12 +40,15 @@ import {
   type Episode,
   type EpisodeStatus,
   type LocalDate,
+  localDateOf,
   type PutSlotException,
   putSlotExceptionSchema,
   type Show,
   type ShowOccurrencesQuery,
   type ShowOccurrencesResponse,
   type ShowSlot,
+  type ShowSlotChange,
+  type ShowSlotDeleted,
   SLOT_MAX_MOVE_DAYS,
   type SlotException,
   showOccurrencesQuerySchema,
@@ -56,16 +59,23 @@ import {
   updateShowSchema,
   updateShowSlotSchema,
 } from '@ondes/shared';
-import { and, asc, desc, eq, gte, inArray, isNull, lte, max, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { HttpError } from '../../plugins/errors.ts';
 
-// Shows, slots, exceptions and episodes (#44, ADR 0012). Every function takes the station
+// Shows, slots, exceptions and episodes (#44, ADR 0014). Every function takes the station
 // scope and filters on it; mutations run in `withAudit`. Recurrence is `@ondes/scheduling`'s:
 // this file loads rows, checks references and hands slots to `expandSlots`.
 //
-// Episode numbers: a new episode without a number gets the show's highest number + 1, under a
-// `FOR UPDATE` lock on the show row so two concurrent creations can't pick the same one. An
-// explicit number that's taken is a 409, never a silent renumbering.
+// Episode numbers come from `show.next_episode_number`, which only grows (above every number
+// used, deleted episodes included). Creating or renumbering an episode takes a `FOR UPDATE`
+// lock on the show row, so concurrent writes number one after the other. An explicit number
+// that's taken is a 409, never a silent renumbering.
+//
+// Premieres follow their occurrence: when one stops existing (slot deleted, rule or type
+// changed, occurrence cancelled), the episode planned for it is detached (slot and date
+// cleared, audited as `episode.detach`) and the response lists it. Refusing the change instead
+// would block the programmer on every presenter's draft; a detached episode keeps its audio
+// and number and is listed by `GET …/episodes?scheduled=false`.
 
 type ShowRow = typeof show.$inferSelect;
 type SlotRow = typeof showSlot.$inferSelect;
@@ -96,19 +106,9 @@ async function hostsOf(db: Executor, showIds: string[]) {
   return out;
 }
 
-async function nextNumbers(db: Executor, showIds: string[]) {
-  if (!showIds.length) return new Map<string, number>();
-  const rows = await db
-    .select({ showId: episode.showId, top: max(episode.number) })
-    .from(episode)
-    .where(inArray(episode.showId, showIds))
-    .groupBy(episode.showId);
-  return new Map(rows.map((r) => [r.showId, (r.top ?? 0) + 1]));
-}
-
 async function toShows(db: Executor, rows: ShowRow[]): Promise<Show[]> {
   const ids = rows.map((r) => r.id);
-  const [hosts, numbers] = await Promise.all([hostsOf(db, ids), nextNumbers(db, ids)]);
+  const hosts = await hostsOf(db, ids);
   return rows.map((r) => ({
     id: r.id,
     stationId: r.stationId,
@@ -120,7 +120,7 @@ async function toShows(db: Executor, rows: ShowRow[]): Promise<Show[]> {
     defaultSlotType: r.defaultSlotType,
     tags: r.tags,
     hosts: hosts.get(r.id) ?? [],
-    nextEpisodeNumber: numbers.get(r.id) ?? 1,
+    nextEpisodeNumber: r.nextEpisodeNumber,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   }));
@@ -243,7 +243,7 @@ export async function updateShow(
   });
 }
 
-const auditable = ({ hosts, nextEpisodeNumber: _, ...s }: Show) => ({
+const auditable = ({ hosts, nextEpisodeNumber: _, updatedAt: __, ...s }: Show) => ({
   ...s,
   hostUserIds: hosts.map((h) => h.userId),
 });
@@ -385,7 +385,7 @@ export async function updateSlot(
   showId: string,
   slotId: string,
   input: UpdateShowSlot,
-): Promise<ShowSlot> {
+): Promise<ShowSlotChange> {
   const parsed = updateShowSlotSchema.parse(input);
   return withAudit(db, ctx, async (tx, audit) => {
     const before = await slotRow(tx, ctx.scope, showId, slotId);
@@ -421,19 +421,76 @@ export async function updateSlot(
       entity: { type: 'show_slot', id: slotId },
       diff: auditDiff(before, after),
     });
-    return getSlot(tx, ctx.scope, showId, slotId);
+    let detachedEpisodeIds: string[] = [];
+    if (parsed.rule || parsed.type) {
+      const exceptions = (await exceptionsOf(tx, [slotId])).get(slotId) ?? [];
+      const timezone = await stationTimezone(tx, ctx.scope);
+      const slot = { ...after, exceptions };
+      detachedEpisodeIds = await detachPremieres(
+        tx,
+        ctx.scope,
+        slotId,
+        audit,
+        (date) => after.type === 'rerun' || occurrenceOn(slot, date, timezone) === null,
+      );
+    }
+    return { slot: await getSlot(tx, ctx.scope, showId, slotId), detachedEpisodeIds };
   });
 }
 
-/** Deletes the slot and its exceptions. Its episodes stay, with `slotId` null. */
+/**
+ * Unschedules the slot's premieres whose occurrence is `gone` (slot and date cleared, one
+ * `episode.detach` audit row each). Returns their ids.
+ */
+async function detachPremieres(
+  tx: Tx,
+  scope: StationScope,
+  slotId: string,
+  audit: AuditFn,
+  gone: (date: LocalDate) => boolean,
+): Promise<string[]> {
+  const rows = await tx
+    .select({ id: episode.id, occurrenceDate: episode.occurrenceDate })
+    .from(episode)
+    .where(and(eq(episode.slotId, slotId), whereStation(episode, scope)))
+    .orderBy(asc(episode.occurrenceDate));
+  const detached = rows.filter((r) => r.occurrenceDate !== null && gone(r.occurrenceDate));
+  if (!detached.length) return [];
+  await tx
+    .update(episode)
+    .set({ slotId: null, occurrenceDate: null })
+    .where(
+      and(
+        inArray(
+          episode.id,
+          detached.map((r) => r.id),
+        ),
+        whereStation(episode, scope),
+      ),
+    );
+  for (const r of detached) {
+    await audit({
+      action: 'episode.detach',
+      entity: { type: 'episode', id: r.id },
+      diff: {
+        slotId: { from: slotId, to: null },
+        occurrenceDate: { from: r.occurrenceDate, to: null },
+      },
+    });
+  }
+  return detached.map((r) => r.id);
+}
+
+/** Deletes the slot and its exceptions. Its premieres are kept, unscheduled. */
 export async function deleteSlot(
   db: Db,
   ctx: StationContext,
   showId: string,
   slotId: string,
-): Promise<void> {
-  await withAudit(db, ctx, async (tx, audit) => {
+): Promise<ShowSlotDeleted> {
+  return withAudit(db, ctx, async (tx, audit) => {
     const before = await slotRow(tx, ctx.scope, showId, slotId);
+    const detachedEpisodeIds = await detachPremieres(tx, ctx.scope, slotId, audit, () => true);
     await tx
       .delete(showSlot)
       .where(and(eq(showSlot.id, slotId), whereStation(showSlot, ctx.scope)));
@@ -442,6 +499,7 @@ export async function deleteSlot(
       entity: { type: 'show_slot', id: slotId },
       diff: auditDiff(before, null),
     });
+    return { detachedEpisodeIds };
   });
 }
 
@@ -453,7 +511,7 @@ export async function putException(
   slotId: string,
   date: LocalDate,
   input: PutSlotException,
-): Promise<ShowSlot> {
+): Promise<ShowSlotChange> {
   const parsed = putSlotExceptionSchema.parse(input);
   return withAudit(db, ctx, async (tx, audit) => {
     const slot = await slotRow(tx, ctx.scope, showId, slotId);
@@ -497,7 +555,12 @@ export async function putException(
       entity: { type: 'show_slot', id: slotId },
       diff: auditDiff(before ?? null, after ?? null),
     });
-    return getSlot(tx, ctx.scope, showId, slotId);
+    // A moved occurrence keeps its identity, and its premiere; a cancelled one loses it.
+    const detachedEpisodeIds =
+      parsed.kind === 'cancelled'
+        ? await detachPremieres(tx, ctx.scope, slotId, audit, (d) => d === date)
+        : [];
+    return { slot: await getSlot(tx, ctx.scope, showId, slotId), detachedEpisodeIds };
   });
 }
 
@@ -507,7 +570,7 @@ export async function deleteException(
   showId: string,
   slotId: string,
   date: LocalDate,
-): Promise<ShowSlot> {
+): Promise<ShowSlotChange> {
   return withAudit(db, ctx, async (tx, audit) => {
     await slotRow(tx, ctx.scope, showId, slotId);
     const [before] = await tx
@@ -526,7 +589,8 @@ export async function deleteException(
       entity: { type: 'show_slot', id: slotId },
       diff: auditDiff(before, null),
     });
-    return getSlot(tx, ctx.scope, showId, slotId);
+    // Restoring an occurrence detaches nothing.
+    return { slot: await getSlot(tx, ctx.scope, showId, slotId), detachedEpisodeIds: [] };
   });
 }
 
@@ -566,9 +630,10 @@ export async function listEpisodes(
   db: Executor,
   scope: StationScope,
   showId: string,
-  status?: EpisodeStatus,
+  filter: { status?: EpisodeStatus | undefined; scheduled?: boolean | undefined } = {},
 ): Promise<Episode[]> {
   await showRow(db, scope, showId);
+  const { status, scheduled } = filter;
   const rows = await db
     .select()
     .from(episode)
@@ -577,6 +642,11 @@ export async function listEpisodes(
         eq(episode.showId, showId),
         whereStation(episode, scope),
         status ? eq(episode.status, status) : undefined,
+        scheduled === undefined
+          ? undefined
+          : scheduled
+            ? sql`${episode.slotId} is not null`
+            : isNull(episode.slotId),
       ),
     )
     .orderBy(desc(episode.number));
@@ -651,15 +721,39 @@ function nextStatus(current: EpisodeStatus, hadAsset: boolean, hasAsset: boolean
   return current;
 }
 
+/** `ready` means the audio is there (`episode_ready_asset_check`). */
+function checkReady(status: EpisodeStatus, assetId: string | null) {
+  if (status === 'ready' && assetId === null) {
+    throw new HttpError(422, 'asset_required', 'a ready episode needs its asset');
+  }
+}
+
+/** Keeps the show's counter above `number`. Called under the show lock. */
+async function bumpCounter(tx: Tx, parent: ShowRow, number: number) {
+  if (number < parent.nextEpisodeNumber) return;
+  await tx
+    .update(show)
+    .set({ nextEpisodeNumber: number + 1, updatedAt: parent.updatedAt })
+    .where(eq(show.id, parent.id));
+}
+
 /** Maps the unique keys of `episode` to 409s. */
 function conflictOf(err: unknown): HttpError | null {
   let current: unknown = err;
   while (current && typeof current === 'object') {
     const e = current as { code?: string; constraint_name?: string; cause?: unknown };
     if (e.code === '23505') {
-      return e.constraint_name === 'episode_occurrence_key'
-        ? new HttpError(409, 'occurrence_taken', 'another episode premieres in this occurrence')
-        : new HttpError(409, 'episode_number_taken', 'the show has an episode with this number');
+      if (e.constraint_name === 'episode_occurrence_key') {
+        return new HttpError(
+          409,
+          'occurrence_taken',
+          'another episode premieres in this occurrence',
+        );
+      }
+      if (e.constraint_name === 'episode_asset_key') {
+        return new HttpError(409, 'asset_taken', 'the asset is the audio of another episode');
+      }
+      return new HttpError(409, 'episode_number_taken', 'the show has an episode with this number');
     }
     current = e.cause;
   }
@@ -683,7 +777,7 @@ export async function createEpisode(
   const parsed = createEpisodeSchema.parse(input);
   return mapConflicts(() =>
     withAudit(db, ctx, async (tx, audit) => {
-      // Locked: concurrent creations number one after the other.
+      // Locked: concurrent writes number one after the other.
       const parent = await showRow(tx, ctx.scope, showId, true);
       await checkAsset(tx, ctx.scope, parsed.assetId);
       const slot = await checkOccurrence(
@@ -693,7 +787,9 @@ export async function createEpisode(
         parsed.slotId,
         parsed.occurrenceDate,
       );
-      const number = parsed.number ?? (await nextNumbers(tx, [showId])).get(showId) ?? 1;
+      const number = parsed.number ?? parent.nextEpisodeNumber;
+      const status = parsed.status ?? (parsed.assetId ? 'ready' : 'planned');
+      checkReady(status, parsed.assetId);
       const kind =
         parsed.kind ??
         (slot ? (slot.type === 'live' ? 'live' : 'prerecorded') : parent.defaultSlotType);
@@ -706,10 +802,11 @@ export async function createEpisode(
           showId,
           number,
           kind,
-          status: parsed.status ?? (parsed.assetId ? 'ready' : 'planned'),
+          status,
         })
         .returning();
       if (!row) throw new Error('insert returned no row');
+      await bumpCounter(tx, parent, number);
       await audit({
         action: 'episode.create',
         entity: { type: 'episode', id: row.id },
@@ -730,6 +827,8 @@ export async function updateEpisode(
   const parsed = updateEpisodeSchema.parse(input);
   return mapConflicts(() =>
     withAudit(db, ctx, async (tx, audit) => {
+      // The same lock as createEpisode, so a renumbering can't race a creation.
+      const parent = await showRow(tx, ctx.scope, showId, true);
       const before = await episodeRow(tx, ctx.scope, showId, episodeId);
       if (parsed.assetId !== undefined) await checkAsset(tx, ctx.scope, parsed.assetId);
       if (parsed.slotId !== undefined) {
@@ -738,12 +837,14 @@ export async function updateEpisode(
       const assetId = parsed.assetId === undefined ? before.assetId : parsed.assetId;
       const status =
         parsed.status ?? nextStatus(before.status, before.assetId !== null, assetId !== null);
+      checkReady(status, assetId);
       const [after] = await tx
         .update(episode)
         .set({ ...parsed, status })
         .where(and(eq(episode.id, episodeId), whereStation(episode, ctx.scope)))
         .returning();
       if (!after) throw new NotFoundError('episode', episodeId);
+      if (parsed.number !== undefined) await bumpCounter(tx, parent, parsed.number);
       await audit({
         action: 'episode.update',
         entity: { type: 'episode', id: episodeId },

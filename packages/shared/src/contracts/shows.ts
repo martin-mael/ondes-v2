@@ -3,7 +3,7 @@ import { dateInputSchema } from './library.ts';
 import { localDateSchema } from './log.ts';
 import { uuidSchema } from './tenancy.ts';
 
-// Shows, slots and episodes (#44, ADR 0012). Mirrors packages/db/src/schema/shows.ts.
+// Shows, slots and episodes (#44, ADR 0014). Mirrors packages/db/src/schema/shows.ts.
 //
 // A show airs in slots: recurring (weekly, every N weeks) or one-off, at a station-local time,
 // with per-occurrence exceptions. Each airing of a show is an episode, numbered per show
@@ -43,7 +43,7 @@ export type SlotType = z.infer<typeof slotTypeSchema>;
 /** What a show's new slots default to. A show can't default to reruns. */
 export const defaultSlotTypeSchema = z.enum(['prerecorded', 'live']);
 
-// --- Recurrence (ADR 0012) ---------------------------------------------------------------
+// --- Recurrence (ADR 0014) ---------------------------------------------------------------
 
 /** Longest gap a weekly rule may have between airings: a year. */
 export const MAX_SLOT_INTERVAL_WEEKS = 52;
@@ -136,7 +136,10 @@ export const showSchema = z.object({
   tags: z.array(z.string()),
   /** Station or org members; presenters with `show:write_own` may edit the shows they host. */
   hosts: z.array(showHostSchema),
-  /** What a new episode is numbered when it doesn't say: highest number + 1. */
+  /**
+   * What a new episode is numbered when it doesn't say. Above every number the show has used,
+   * deleted episodes included: numbers are never handed out twice.
+   */
   nextEpisodeNumber: z.int().min(1),
   createdAt: z.date(),
   updatedAt: z.date(),
@@ -189,7 +192,7 @@ export const showSlotSchema = z.object({
   showId: uuidSchema,
   type: slotTypeSchema,
   rule: slotRuleSchema,
-  /** Elapsed time: a 2 h slot airs 2 h even across a DST change (ADR 0012). */
+  /** Elapsed time: a 2 h slot airs 2 h even across a DST change (ADR 0014). */
   durationMs: z.int(),
   /** Ordered by date. */
   exceptions: z.array(slotExceptionSchema),
@@ -206,13 +209,32 @@ export const createShowSlotSchema = z.object({
 });
 export type CreateShowSlot = z.input<typeof createShowSlotSchema>;
 
-/** Exceptions on dates the new rule no longer has are dropped. */
+/**
+ * Exceptions on dates the new rule no longer has are dropped. Premieres on occurrences that no
+ * longer exist (or on every occurrence, for a change to `rerun`) are detached.
+ */
 export const updateShowSlotSchema = patchOf(
   z.object({ type: slotTypeSchema, rule: slotRuleSchema, durationMs: showDurationSchema }),
 );
 export type UpdateShowSlot = z.input<typeof updateShowSlotSchema>;
 
 export const showSlotListSchema = z.object({ items: z.array(showSlotSchema) });
+
+/**
+ * A slot change and the premieres it detached. When an occurrence stops existing (its slot is
+ * deleted, its rule or type changes, it is cancelled), the episode planned for it is kept but
+ * unscheduled: `slotId` and `occurrenceDate` become null, and it shows up in
+ * `GET …/episodes?scheduled=false` to be planned again. Each detach is audited.
+ */
+export const showSlotChangeSchema = z.object({
+  slot: showSlotSchema,
+  detachedEpisodeIds: z.array(uuidSchema),
+});
+export type ShowSlotChange = z.infer<typeof showSlotChangeSchema>;
+
+/** `DELETE …/slots/:slotId`: the premieres it detached. */
+export const showSlotDeletedSchema = z.object({ detachedEpisodeIds: z.array(uuidSchema) });
+export type ShowSlotDeleted = z.infer<typeof showSlotDeletedSchema>;
 
 // --- Episode -----------------------------------------------------------------------------
 
@@ -246,13 +268,17 @@ export const episodeSchema = z.object({
   description: z.string().nullable(),
   tracklist: z.array(tracklistEntrySchema),
   kind: episodeKindSchema,
-  /** An `episode` asset of the station. Null while missing, or after the asset was deleted. */
+  /**
+   * An `episode` asset of the station, used by this episode only. Null while missing, or after
+   * the asset was deleted (a `ready` episode then goes back to `planned`).
+   */
   assetId: uuidSchema.nullable(),
   status: episodeStatusSchema,
   airedAt: z.date().nullable(),
   /**
    * The occurrence it premieres in: a slot of its show and the occurrence's original local
-   * date. At most one episode per occurrence. `slotId` becomes null if the slot is deleted.
+   * date, both set or both null (unscheduled). At most one episode per occurrence. An episode
+   * whose occurrence stops existing is unscheduled (see `showSlotChangeSchema`).
    */
   slotId: uuidSchema.nullable(),
   occurrenceDate: localDateSchema.nullable(),
@@ -312,7 +338,14 @@ export const updateEpisodeSchema = patchOf(z.object(episodeFields)).refine(
 );
 export type UpdateEpisode = z.input<typeof updateEpisodeSchema>;
 
-export const listEpisodesQuerySchema = z.object({ status: episodeStatusSchema.optional() });
+export const listEpisodesQuerySchema = z.object({
+  status: episodeStatusSchema.optional(),
+  /** `false`: episodes not planned in any occurrence (new, or detached from one). */
+  scheduled: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .optional(),
+});
 
 /** Newest number first. */
 export const episodeListSchema = z.object({ items: z.array(episodeSchema) });

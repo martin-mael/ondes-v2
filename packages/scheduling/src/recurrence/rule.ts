@@ -6,9 +6,9 @@ import {
   type LocalTime,
   weekStart,
   zonedInstant,
-} from './zoned.ts';
+} from '@ondes/shared';
 
-// Show slot recurrence (#44, ADR 0012): a structured subset of RFC 5545 RRULE, in the
+// Show slot recurrence (#44, ADR 0014): a structured subset of RFC 5545 RRULE, in the
 // station's timezone. Validation lives in the contract (packages/shared/src/contracts/shows.ts);
 // these functions assume a valid rule.
 

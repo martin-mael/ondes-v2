@@ -19,14 +19,23 @@ import {
 import { asset } from './library.ts';
 import { station, user } from './tenancy.ts';
 
-// Shows, slots and episodes (#44, ADR 0012). Contracts: packages/shared/src/contracts/shows.ts.
+// Shows, slots and episodes (#44, ADR 0014). Contracts: packages/shared/src/contracts/shows.ts.
 //
 // Every table carries `org_id` and `station_id`; children point at their show with a composite
 // foreign key on (show_id, org_id, station_id), so a slot, host or episode can't hang off
 // another tenant's show. A slot's recurrence is the contract's `SlotRule` (jsonb), with
 // `starts_on`/`ends_on` derived from it so range reads skip slots that can't reach the range.
-// Episodes point at their asset and premiere slot with plain `on delete set null` keys (a
-// composite key would null the tenant columns too); the repository checks both are in scope.
+// Episodes point at their asset and premiere slot with plain foreign keys (a composite key
+// can't `set null` without nulling the tenant columns too); the repository checks both are in
+// scope.
+// - Asset: `on delete set null`. A deleted asset leaves the episode without audio, and the
+//   `episode_asset_cleared` trigger (custom migration) turns `ready` back into `planned` in the
+//   same statement, so `episode_ready_asset_check` holds.
+// - Premiere slot: `no action`. The repository detaches an episode (slot and date both
+//   cleared) whenever its occurrence stops existing: slot deleted, rule or type changed,
+//   occurrence cancelled. Anything else deleting a slot with premieres fails loudly.
+// Numbers come from `show.next_episode_number`, which only grows: a deleted episode's number
+// is never handed out again.
 
 const id = () => uuid('id').primaryKey().default(sql`uuidv7()`);
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
@@ -69,6 +78,8 @@ export const show = pgTable(
       .notNull()
       .default('prerecorded'),
     tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
+    /** What the next episode is numbered by default: above every number the show ever used. */
+    nextEpisodeNumber: integer('next_episode_number').notNull().default(1),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -183,7 +194,7 @@ export const episode = pgTable(
     assetId: uuid('asset_id').references(() => asset.id, { onDelete: 'set null' }),
     status: text('status').$type<EpisodeStatus>().notNull().default('planned'),
     airedAt: timestamp('aired_at', { withTimezone: true }),
-    slotId: uuid('slot_id').references(() => showSlot.id, { onDelete: 'set null' }),
+    slotId: uuid('slot_id').references(() => showSlot.id),
     occurrenceDate: date('occurrence_date', { mode: 'string' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -195,10 +206,17 @@ export const episode = pgTable(
     uniqueIndex('episode_occurrence_key')
       .on(t.slotId, t.occurrenceDate)
       .where(sql`${t.slotId} is not null`),
+    // One episode per audio file; a rerun airs the same episode again (#48), not a copy.
+    uniqueIndex('episode_asset_key').on(t.assetId).where(sql`${t.assetId} is not null`),
     index('episode_station_status_idx').on(t.stationId, t.status),
-    index('episode_asset_idx').on(t.assetId),
+    index('episode_unscheduled_idx').on(t.showId).where(sql`${t.slotId} is null`),
     check('episode_number_check', sql`${t.number} >= 1`),
     check('episode_kind_check', sql`${t.kind} in ('prerecorded', 'live')`),
     check('episode_status_check', sql`${t.status} in ('planned', 'ready', 'aired', 'missing')`),
+    check('episode_ready_asset_check', sql`${t.status} <> 'ready' or ${t.assetId} is not null`),
+    check(
+      'episode_occurrence_pair_check',
+      sql`(${t.slotId} is null) = (${t.occurrenceDate} is null)`,
+    ),
   ],
 );

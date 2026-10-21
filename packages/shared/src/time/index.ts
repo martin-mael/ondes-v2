@@ -1,11 +1,9 @@
-// Station-local wall clock ↔ UTC on Intl only, with RFC 5545's rules for the two DST traps.
-// `packages/shared/src/time` is still empty (the log keeps its own copy in
-// apps/api/src/modules/log/time.ts); move these there when it lands.
+import type { LocalDate } from '../contracts/log.ts';
+import type { LocalTime } from '../contracts/shows.ts';
 
-/** `YYYY-MM-DD`, a station-local calendar date. */
-export type LocalDate = string;
-/** `HH:MM`, a station-local wall-clock time. */
-export type LocalTime = string;
+// Station-local wall clock ↔ UTC, on Intl only, with RFC 5545's rules for the two DST traps.
+// Used by the log (day bounds), show recurrence (@ondes/scheduling) and anything else that
+// computes in a station's IANA timezone. Store UTC, compute here.
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
 
@@ -80,6 +78,27 @@ export function zonedInstant(date: LocalDate, time: LocalTime, timeZone: string)
     .sort((a, b) => a - b);
   // No candidate: the gap. The offset before it pushes the time past it.
   return new Date(candidates[0] ?? wall - before);
+}
+
+/** The wall-clock fields of `instant` in `timeZone`. */
+export function zonedFields(instant: Date, timeZone: string) {
+  const d = new Date(wallMs(instant.getTime(), timeZone));
+  return {
+    year: d.getUTCFullYear(),
+    month: d.getUTCMonth() + 1,
+    day: d.getUTCDate(),
+    hour: d.getUTCHours(),
+    minute: d.getUTCMinutes(),
+    second: d.getUTCSeconds(),
+  };
+}
+
+/** A station-local date as its UTC range `[startsAt, endsAt)`: 23, 24 or 25 hours. */
+export function localDayBounds(localDate: LocalDate, timeZone: string) {
+  return {
+    startsAt: zonedInstant(localDate, '00:00', timeZone),
+    endsAt: zonedInstant(addDays(localDate, 1), '00:00', timeZone),
+  };
 }
 
 /** The station-local date and time of `instant` (seconds dropped). */
