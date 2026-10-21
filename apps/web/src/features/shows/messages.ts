@@ -166,6 +166,9 @@ const en = {
   'upload.processing': '{file}: processing the audio…',
   'upload.done': '{file}: the episode is ready.',
   'upload.failed': '{file}: upload failed. {reason}',
+  'upload.stopped': '{file}: upload stopped when you left the page.',
+  'upload.stillProcessing':
+    '{file}: still processing. Check later, then attach it from the library if needed.',
 
   'calendar.title': 'Calendar',
   'calendar.week': 'Week',
@@ -392,6 +395,9 @@ const fr: Record<ShowMessageKey, string> = {
   'upload.processing': '{file} : traitement de l’audio…',
   'upload.done': '{file} : l’épisode est prêt.',
   'upload.failed': '{file} : l’envoi a échoué. {reason}',
+  'upload.stopped': '{file} : envoi interrompu en quittant la page.',
+  'upload.stillProcessing':
+    '{file} : traitement en cours. Revenez plus tard, et joignez-le depuis la médiathèque si besoin.',
 
   'calendar.title': 'Calendrier',
   'calendar.week': 'Semaine',

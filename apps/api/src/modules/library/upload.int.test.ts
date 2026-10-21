@@ -32,6 +32,7 @@ let storage: Storage;
 let scope: StationScope;
 let programmer: string;
 let presenter: string;
+let presenterId: string;
 const enqueued: IngestJobPayload[] = [];
 
 beforeAll(async () => {
@@ -79,6 +80,7 @@ beforeAll(async () => {
       { level: 'station', stationId: st.id, userId, role },
     );
     cookies[role] = cookie;
+    if (role === 'presenter') presenterId = userId;
   }
   programmer = cookies.programmer as string;
   presenter = cookies.presenter as string;
@@ -286,9 +288,23 @@ describe.skipIf(!enabled)('upload api (integration)', () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it('lets presenters (show:write_own) upload episodes, and only act on their own', async () => {
+  it('lets presenters upload episodes of the shows they host, and act on their own only', async () => {
+    const hosted = await api('POST', '/shows', { name: 'Hosted', hostUserIds: [presenterId] });
+    expect(hosted.statusCode, hosted.body).toBe(201);
+    const other = await api('POST', '/shows', { name: 'Not hosted' });
+    expect(other.statusCode, other.body).toBe(201);
     const episode = { filename: 'ep.wav', sizeBytes: 10, assetType: 'episode' };
-    const mine = await api('POST', '/uploads', episode, presenter);
+
+    // No show, a show they don't host, or a song: library:write.
+    for (const body of [
+      episode,
+      { ...episode, showId: other.json().id },
+      { ...episode, assetType: 'song', showId: hosted.json().id },
+    ]) {
+      expect((await api('POST', '/uploads', body, presenter)).statusCode).toBe(403);
+    }
+
+    const mine = await api('POST', '/uploads', { ...episode, showId: hosted.json().id }, presenter);
     expect(mine.statusCode, mine.body).toBe(201);
     const id = (mine.json() as Upload).id;
     const parts = await api('POST', `/uploads/${id}/parts`, { partNumbers: [1] }, presenter);

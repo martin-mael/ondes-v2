@@ -48,10 +48,11 @@ const route = getRouteApi('/_app/stations/$stationId/shows/$showId');
 const DAY_MS = 24 * 3600 * 1000;
 /** How far ahead "upcoming airings" looks. */
 const UPCOMING_DAYS = 56;
-/** "Create the missing episodes" covers the next two weeks. */
+/** "Create the missing episodes" covers airings from now to two weeks ahead. */
 const PLAN_AHEAD_DAYS = 14;
 
-type EpisodeEdit = { episode?: Episode; occurrence?: ShowOccurrence } | null;
+/** Dialogs hold ids: what they show is read from the queries, so it stays fresh after writes. */
+type EpisodeEdit = { episodeId?: string; occurrence?: ShowOccurrence } | null;
 
 export function ShowPage() {
   const t = useShowT();
@@ -67,7 +68,7 @@ export function ShowPage() {
   const unscheduled = useQuery(episodesQuery(stationId, showId, false));
   const [detached, setDetached] = useState<string[]>([]);
   const [editingShow, setEditingShow] = useState(false);
-  const [slotEdit, setSlotEdit] = useState<{ slot?: ShowSlot } | null>(null);
+  const [slotEdit, setSlotEdit] = useState<{ slotId?: string } | null>(null);
   const [episodeEdit, setEpisodeEdit] = useState<EpisodeEdit>(null);
 
   if (show.isPending) return <Spinner className="m-6" />;
@@ -87,6 +88,8 @@ export function ShowPage() {
   const upcoming = occurrences.data?.occurrences ?? [];
   const detachedEpisodes = (episodes.data?.items ?? []).filter((e) => detached.includes(e.id));
   const toPlan = (unscheduled.data?.items ?? []).filter((e) => e.slotId === null);
+  const editedSlot = slots.data?.items.find((x) => x.id === slotEdit?.slotId);
+  const editedEpisode = episodes.data?.items.find((e) => e.id === episodeEdit?.episodeId);
 
   return (
     <div className="flex min-w-0 flex-col gap-6 p-4 sm:p-6">
@@ -178,7 +181,7 @@ export function ShowPage() {
         onPlan={(occurrence) => setEpisodeEdit({ occurrence })}
         onEdit={(id) => {
           const episode = episodes.data?.items.find((e) => e.id === id);
-          if (episode) setEpisodeEdit({ episode });
+          if (episode) setEpisodeEdit({ episodeId: episode.id });
         }}
       />
 
@@ -196,7 +199,7 @@ export function ShowPage() {
                 canEdit={canEdit}
                 free={upcoming.filter((o) => !o.episode && o.type !== 'rerun')}
                 timezone={access.timezone}
-                onEdit={() => setEpisodeEdit({ episode })}
+                onEdit={() => setEpisodeEdit({ episodeId: episode.id })}
               />
             ))}
           </ul>
@@ -217,7 +220,7 @@ export function ShowPage() {
           slots={slots.data?.items}
           pending={slots.isPending}
           canManage={access.canManage}
-          onEdit={(slot) => setSlotEdit({ slot })}
+          onEdit={(slot) => setSlotEdit({ slotId: slot.id })}
         />
       </section>
 
@@ -235,7 +238,7 @@ export function ShowPage() {
           episodes={episodes.data?.items}
           pending={episodes.isPending}
           canEdit={canEdit}
-          onEdit={(episode) => setEpisodeEdit({ episode })}
+          onEdit={(episode) => setEpisodeEdit({ episodeId: episode.id })}
         />
       </section>
 
@@ -251,9 +254,10 @@ export function ShowPage() {
           <SlotEditorDialog
             stationId={stationId}
             show={data}
-            slot={slotEdit?.slot}
+            slot={editedSlot}
             timezone={access.timezone}
-            open={slotEdit !== null}
+            // A deleted slot closes the dialog rather than turning it into a new one.
+            open={slotEdit !== null && (!slotEdit.slotId || editedSlot !== undefined)}
             onOpenChange={(open) => !open && setSlotEdit(null)}
             onDetached={(ids) => setDetached(ids)}
           />
@@ -263,12 +267,12 @@ export function ShowPage() {
       <EpisodeDialog
         stationId={stationId}
         show={data}
-        episode={episodeEdit?.episode}
+        episode={editedEpisode}
         initialOccurrence={episodeEdit?.occurrence}
         occurrences={upcoming}
         timezone={access.timezone}
         canSearchLibrary={access.canSearchLibrary}
-        open={episodeEdit !== null}
+        open={episodeEdit !== null && (!episodeEdit.episodeId || editedEpisode !== undefined)}
         onOpenChange={(open) => !open && setEpisodeEdit(null)}
       />
     </div>
@@ -304,9 +308,14 @@ function UpcomingSection({
   const queryClient = useQueryClient();
   const upload = useEpisodeUpload(stationId);
   const [busy, setBusy] = useState(false);
-  const horizon = Date.now() + PLAN_AHEAD_DAYS * DAY_MS;
+  const now = Date.now();
+  const horizon = now + PLAN_AHEAD_DAYS * DAY_MS;
   const missing = occurrences.filter(
-    (o) => !o.episode && o.type !== 'rerun' && o.startsAt.getTime() < horizon,
+    (o) =>
+      !o.episode &&
+      o.type !== 'rerun' &&
+      o.startsAt.getTime() >= now &&
+      o.startsAt.getTime() < horizon,
   );
 
   const act = async (action: () => Promise<unknown>, done?: string) => {

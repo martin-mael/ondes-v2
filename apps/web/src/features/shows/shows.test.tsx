@@ -1,5 +1,5 @@
 import type { Episode, MyOrg, Show, ShowOccurrence, ShowSlot } from '@ondes/shared';
-import { fireEvent, waitFor, within } from '@testing-library/react';
+import { createEvent, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import {
   type ApiReply,
@@ -292,6 +292,7 @@ describe('show page', () => {
       sizeBytes: 4,
       contentType: 'audio/mpeg',
       assetType: 'episode',
+      showId,
     });
     expect(calls.some((c) => c.method === 'PUT' && c.path === '/bucket/part-1')).toBe(true);
     expect(
@@ -374,6 +375,216 @@ describe('show page', () => {
     });
     expect(await screen.findByRole('heading', { name: 'Episodes to plan' })).toBeVisible();
     expect(screen.getByLabelText('Plan #12 on…')).toBeVisible();
+  });
+
+  it('creates slots by rule: weekly, every N weeks, once', async () => {
+    const created: unknown[] = [];
+    const { screen, user } = renderApp(
+      showBase,
+      showRoutes('programmer', {
+        [`GET ${base}/show-occurrences`]: occurrences([]),
+        [`GET ${showBase}/slots`]: [200, { items: [] }],
+        [`POST ${showBase}/slots`]: (body) => {
+          created.push(body);
+          return [201, slot()];
+        },
+      }),
+    );
+    const add = async () => {
+      await user.click(await screen.findByRole('button', { name: 'Add a slot' }));
+      return within(await screen.findByRole('dialog'));
+    };
+
+    // Every other week, Tuesday and Thursday at 21:30 for 90 min.
+    let dialog = await add();
+    for (const day of [
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
+    ]) {
+      const button = dialog.getByRole('button', { name: day });
+      if (button.getAttribute('aria-pressed') === 'true') await user.click(button);
+    }
+    await user.click(dialog.getByRole('button', { name: 'Add the slot' }));
+    expect(await dialog.findByText('Pick at least one day.')).toBeVisible();
+    await user.click(dialog.getByRole('button', { name: 'Tuesday' }));
+    await user.click(dialog.getByRole('button', { name: 'Thursday' }));
+    await user.clear(dialog.getByLabelText('Every … weeks'));
+    await user.type(dialog.getByLabelText('Every … weeks'), '2');
+    fireEvent.change(dialog.getByLabelText('From'), { target: { value: '2026-11-03' } });
+    fireEvent.change(dialog.getByLabelText('Until (optional)'), {
+      target: { value: '2027-06-30' },
+    });
+    fireEvent.change(dialog.getByLabelText('Time'), { target: { value: '21:30' } });
+    await user.clear(dialog.getByLabelText('Length (min)'));
+    await user.type(dialog.getByLabelText('Length (min)'), '90');
+    await user.click(dialog.getByRole('button', { name: 'Add the slot' }));
+    await waitFor(() => expect(created).toHaveLength(1));
+    expect(created[0]).toEqual({
+      type: 'prerecorded',
+      durationMs: 5_400_000,
+      rule: {
+        freq: 'weekly',
+        startDate: '2026-11-03',
+        until: '2027-06-30',
+        interval: 2,
+        byDay: ['tu', 'th'],
+        time: '21:30',
+      },
+    });
+
+    // A one-off live special.
+    dialog = await add();
+    await user.selectOptions(dialog.getByLabelText('Type'), 'live');
+    await user.selectOptions(dialog.getByLabelText('Repeats'), 'once');
+    fireEvent.change(dialog.getByLabelText('Date'), { target: { value: '2026-12-31' } });
+    fireEvent.change(dialog.getByLabelText('Time'), { target: { value: '23:00' } });
+    await user.click(dialog.getByRole('button', { name: 'Add the slot' }));
+    await waitFor(() => expect(created).toHaveLength(2));
+    expect(created[1]).toEqual({
+      type: 'live',
+      durationMs: 3_600_000,
+      rule: { freq: 'once', date: '2026-12-31', time: '23:00' },
+    });
+  });
+
+  it('restores an exception from the slot editor, which stays up to date', async () => {
+    let restored = false;
+    const { screen, user } = renderApp(
+      showBase,
+      showRoutes('programmer', {
+        [`GET ${base}/show-occurrences`]: occurrences([]),
+        [`GET ${showBase}/slots`]: () => [
+          200,
+          {
+            items: [
+              slot({ exceptions: restored ? [] : [{ date: '2026-10-28', kind: 'cancelled' }] }),
+            ],
+          },
+        ],
+        [`DELETE ${showBase}/slots/${slotId}/exceptions/2026-10-28`]: () => {
+          restored = true;
+          return [200, { slot: slot(), detachedEpisodeIds: [] }];
+        },
+      }),
+    );
+    expect(await screen.findByText(/1 exception/)).toBeVisible();
+    const edits = screen.getAllByRole('button', { name: 'Edit' });
+    await user.click(edits[edits.length - 1] as HTMLElement);
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByText('Wed, Oct 28: cancelled')).toBeVisible();
+    await user.click(dialog.getByRole('button', { name: 'Restore' }));
+    await waitFor(() => expect(dialog.queryByText('Wed, Oct 28: cancelled')).toBeNull());
+    expect(dialog.queryByRole('button', { name: 'Restore' })).toBeNull();
+  });
+
+  it('attaches a library file to an episode, and shows it attached', async () => {
+    let attached = false;
+    const { screen, user, calls } = renderApp(
+      showBase,
+      showRoutes('presenter', {
+        [`GET ${base}/show-occurrences`]: occurrences([]),
+        [`GET ${showBase}/episodes`]: () => [
+          200,
+          { items: [episode(attached ? { assetId, status: 'ready' } : {})] },
+        ],
+        [`GET ${base}/assets`]: [
+          200,
+          {
+            items: [
+              {
+                id: assetId,
+                orgId: orgs[0]?.id,
+                stationId,
+                type: 'episode',
+                title: 'Matinale 12 master',
+                artists: [],
+                album: null,
+                year: null,
+                isrc: null,
+                version: null,
+                durationMs: 3_540_000,
+                explicit: false,
+                startAt: null,
+                killAt: null,
+                notes: null,
+                metadata: {},
+                sourceFilename: null,
+                normalizeLoudness: true,
+                gainOverrideDb: null,
+                createdAt: at,
+                updatedAt: at,
+              },
+            ],
+            nextCursor: null,
+          },
+        ],
+        [`PATCH ${showBase}/episodes/${episodeId}`]: () => {
+          attached = true;
+          return [200, episode({ assetId, status: 'ready' })];
+        },
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Episode #12' }));
+    let dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByText('No audio yet.')).toBeVisible();
+    await user.click(dialog.getByRole('button', { name: 'From the library' }));
+    await user.click(await screen.findByRole('button', { name: 'Use: Matinale 12 master' }));
+    expect(await screen.findByText('Audio attached.')).toBeVisible();
+    expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ assetId });
+    dialog = within(screen.getAllByRole('dialog')[0] as HTMLElement);
+    expect(await dialog.findByText('The audio file is attached.')).toBeVisible();
+    expect(dialog.getByRole('button', { name: 'Remove the audio' })).toBeVisible();
+  });
+
+  it('plans an unscheduled episode on a free airing', async () => {
+    const free = occurrence(9);
+    const { screen, user, calls } = renderApp(
+      showBase,
+      showRoutes('presenter', {
+        [`GET ${base}/show-occurrences`]: occurrences([free]),
+        [`GET ${showBase}/episodes`]: [
+          200,
+          { items: [episode({ slotId: null, occurrenceDate: null })] },
+        ],
+        [`PATCH ${showBase}/episodes/${episodeId}`]: [200, episode()],
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Episodes to plan' })).toBeVisible();
+    const select = screen.getByLabelText('Plan #12 on…');
+    const option = within(select).getAllByRole('option')[1] as HTMLOptionElement;
+    await user.selectOptions(select, option);
+    expect(await screen.findByText('Episode #12 planned.')).toBeVisible();
+    expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({
+      slotId,
+      occurrenceDate: free.date,
+    });
+  });
+
+  it('creates episodes only for airings still to come', async () => {
+    const created: unknown[] = [];
+    const { screen, user } = renderApp(
+      showBase,
+      showRoutes('presenter', {
+        [`GET ${base}/show-occurrences`]: occurrences([
+          occurrence(-0.2, { date: '2000-01-01' }),
+          occurrence(3),
+        ]),
+        [`POST ${showBase}/episodes`]: (body) => {
+          created.push(body);
+          return [201, episode({ id: newEpisodeId, number: 13 })];
+        },
+      }),
+    );
+    await user.click(
+      await screen.findByRole('button', { name: 'Create the next 2 weeks’ episodes (1)' }),
+    );
+    expect(await screen.findByText('Episode created.')).toBeVisible();
+    expect(created).toEqual([{ slotId, occurrenceDate: occurrence(3).date }]);
   });
 
   it('is read-only for viewers', async () => {
@@ -497,7 +708,7 @@ describe('calendar', () => {
     expect(calls.filter((c) => c.method === 'PUT').at(-1)?.body).toEqual({ kind: 'cancelled' });
   });
 
-  it('uploads an episode when a file is dropped on an airing', async () => {
+  it('reports a failed upload of a dropped file', async () => {
     const { screen, calls } = renderApp(
       week,
       calendarRoutes('presenter', {
@@ -515,6 +726,7 @@ describe('calendar', () => {
         sizeBytes: 4,
         contentType: 'audio/wav',
         assetType: 'episode',
+        showId,
       }),
     );
     expect(await screen.findByText(/ep12.wav: upload failed/)).toBeVisible();
@@ -524,7 +736,139 @@ describe('calendar', () => {
       screen.getByText('Drop an audio file on one of your airings to upload its episode.'),
     ).toBeVisible();
   });
+
+  it('uploads the episode of the airing a file is dropped on', async () => {
+    const { screen, calls } = renderApp(
+      week,
+      calendarRoutes('presenter', {
+        ...uploadRoutes(),
+        [`PATCH ${showBase}/episodes/${episodeId}`]: [200, episode({ assetId, status: 'ready' })],
+      }),
+    );
+    const wed = within(await screen.findByTestId('day-2026-10-21'));
+    const entry = await wed.findByRole('button', { name: /20:00 La Matinale/ });
+    const file = new File(['RIFF'], 'ep12.wav', { type: 'audio/wav' });
+    fireEvent.dragOver(entry, { dataTransfer: { types: ['Files'], files: [file] } });
+    expect(entry).toHaveTextContent('Drop to upload');
+    fireEvent.drop(entry, { dataTransfer: { types: ['Files'], files: [file] } });
+    expect(await screen.findByText('ep12.wav: the episode is ready.')).toBeVisible();
+    // The airing already has its episode: no new one, the audio goes to #12.
+    expect(calls.some((c) => c.method === 'POST' && c.path === `${showBase}/episodes`)).toBe(false);
+    expect(calls.find((c) => c.method === 'POST' && c.path === `${base}/uploads`)?.body).toEqual({
+      filename: 'ep12.wav',
+      sizeBytes: 4,
+      contentType: 'audio/wav',
+      assetType: 'episode',
+      showId,
+    });
+    expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ assetId });
+  });
+
+  it('moves an airing by dragging it to another day and time', async () => {
+    const { screen, calls } = renderApp(
+      week,
+      calendarRoutes('programmer', {
+        [`PUT ${showBase}/slots/${slotId}/exceptions/2026-10-21`]: [
+          200,
+          { slot: slot(), detachedEpisodeIds: [] },
+        ],
+      }),
+    );
+    const wed = within(await screen.findByTestId('day-2026-10-21'));
+    const entry = await wed.findByRole('button', { name: /20:00 La Matinale/ });
+    const data: Record<string, string> = {};
+    const dataTransfer = {
+      types: ['application/x-ondes-occurrence'],
+      setData: (type: string, value: string) => {
+        data[type] = value;
+      },
+      getData: (type: string) => data[type] ?? '',
+    };
+    // happy-dom lays nothing out: rects are at 0, so clientY is the offset in the column
+    // (44 px an hour): grabbed at its top, dropped at 18:00 on Thursday.
+    // happy-dom's DragEvent drops `clientY` from its init: set it on the event.
+    const at = (event: Event, clientY: number) => {
+      Object.defineProperty(event, 'clientY', { value: clientY });
+      return event;
+    };
+    fireEvent(entry, at(createEvent.dragStart(entry, { dataTransfer }), 0));
+    const thursday = screen.getByTestId('day-2026-10-22');
+    fireEvent.dragOver(thursday, { dataTransfer });
+    fireEvent(thursday, at(createEvent.drop(thursday, { dataTransfer }), 18 * 44));
+    expect(await screen.findByText(/Moved to Thu, Oct 22 18:00/)).toBeVisible();
+    expect(calls.find((c) => c.method === 'PUT')?.body).toEqual({
+      kind: 'moved',
+      startDate: '2026-10-22',
+      startTime: '18:00',
+      durationMs: null,
+    });
+  });
+
+  it('restores a cancelled airing', async () => {
+    const { screen, user, calls } = renderApp(
+      week,
+      calendarRoutes('programmer', {
+        [`DELETE ${showBase}/slots/${slotId}/exceptions/2026-10-23`]: [
+          200,
+          { slot: slot(), detachedEpisodeIds: [] },
+        ],
+      }),
+    );
+    const fri = within(await screen.findByTestId('day-2026-10-23'));
+    await user.click(await fri.findByRole('button', { name: /La Matinale.*cancelled/ }));
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByText(/This airing is cancelled/)).toBeVisible();
+    await user.click(dialog.getByRole('button', { name: 'Restore' }));
+    expect(await screen.findByText('Airing restored.')).toBeVisible();
+    expect(
+      calls.some(
+        (c) =>
+          c.method === 'DELETE' && c.path === `${showBase}/slots/${slotId}/exceptions/2026-10-23`,
+      ),
+    ).toBe(true);
+  });
+
+  it('marks live airings for screen readers', async () => {
+    const { screen } = renderApp(
+      week,
+      calendarRoutes('programmer', {
+        [`GET ${base}/show-occurrences`]: occurrences([airing({ type: 'live' })]),
+      }),
+    );
+    const wed = within(await screen.findByTestId('day-2026-10-21'));
+    expect(await wed.findByRole('img', { name: 'Live' })).toBeInTheDocument();
+  });
+
+  it('opens on the list view on a phone', async () => {
+    const width = window.innerWidth;
+    window.innerWidth = 375;
+    try {
+      const { screen } = renderApp(
+        `${base}/shows/calendar?date=2026-10-21`,
+        calendarRoutes('presenter'),
+      );
+      expect(await screen.findByRole('button', { name: 'List', pressed: true })).toBeVisible();
+      expect(await screen.findByRole('heading', { name: 'Wednesday, Oct 21' })).toBeVisible();
+      expect(screen.getAllByText('Nothing on air.').length).toBeGreaterThan(0);
+    } finally {
+      window.innerWidth = width;
+    }
+  });
 });
+
+/** The library upload api, answering an ingested upload of `assetId`. */
+function uploadRoutes(): Record<string, ApiRoute> {
+  return {
+    [`POST ${base}/uploads`]: [201, uploadReply({})],
+    [`POST ${base}/uploads/${uploadId}/parts`]: [
+      200,
+      { parts: [{ partNumber: 1, url: 'http://s3.test/bucket/part-1' }], expiresIn: 900 },
+    ],
+    'PUT /bucket/part-1': [200],
+    [`POST ${base}/uploads/${uploadId}/complete`]: [202, uploadReply({ status: 'queued' })],
+    [`GET ${base}/uploads/${uploadId}`]: [200, uploadReply({ status: 'ingested', assetId })],
+  };
+}
 
 function uploadReply(overrides: Record<string, unknown>) {
   return {

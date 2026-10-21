@@ -376,11 +376,12 @@ function EntryLabel({
       <span className="tabular-nums">{time}</span>{' '}
       <span className="font-medium">{o.show.name}</span>
       {o.type === 'live' && (
-        <RadioIcon className="ml-1 inline size-3" aria-label={t('type.live')} />
+        <RadioIcon className="ml-1 inline size-3" role="img" aria-label={t('type.live')} />
       )}
       {entry.conflicts.length > 0 && (
         <CircleAlertIcon
           className="ml-1 inline size-3 text-destructive"
+          role="img"
           aria-label={t('conflict.label')}
         />
       )}
@@ -551,10 +552,12 @@ function WeekGrid({
       grabMin: number;
     };
     const rect = event.currentTarget.getBoundingClientRect();
-    const raw_min = ((event.clientY - rect.top) / HOUR_PX) * 60 - drag.grabMin;
+    const rawMin = ((event.clientY - rect.top) / HOUR_PX) * 60 - (drag.grabMin || 0);
+    // No pointer position (some synthetic drops): nothing sensible to move to.
+    if (!Number.isFinite(rawMin)) return;
     const minutes = Math.min(
       1440 - SNAP_MIN,
-      Math.max(0, Math.round(raw_min / SNAP_MIN) * SNAP_MIN),
+      Math.max(0, Math.round(rawMin / SNAP_MIN) * SNAP_MIN),
     );
     if (Math.abs(daysBetween(drag.date, day)) > SLOT_MAX_MOVE_DAYS) {
       toast.error(t('occurrence.tooFar', { days: SLOT_MAX_MOVE_DAYS }));

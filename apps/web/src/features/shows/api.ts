@@ -167,17 +167,51 @@ export const invalidateShows = (queryClient: QueryClient, stationId: string) =>
 
 export type UploadProgress = { phase: 'uploading'; pct: number } | { phase: 'processing' };
 
+/** How long the page waits for ingest before saying "still processing, check later". */
+export const PROCESSING_TIMEOUT_MS = 10 * 60_000;
+
+export interface UploadOptions {
+  signal?: AbortSignal;
+  /** Fallback poll of the upload's status while ingest runs. */
+  pollMs?: number;
+  processingTimeoutMs?: number;
+  /**
+   * Resolves early when the upload may have changed (an SSE event), so the status is read
+   * again before the next poll. Default: no early wake-up.
+   */
+  waitForChange?: (uploadId: string, ms: number, signal?: AbortSignal) => Promise<void>;
+}
+
+/** `ms` later, or sooner when aborted (then it rejects). */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      },
+      { once: true },
+    );
+  });
+}
+
 /**
- * Uploads an episode file to the library (#18: S3 multipart through presigned part URLs) and
- * waits for ingest. Resolves with the asset id, or the existing one when the station already
- * has this exact file. Presenters may do this with `show:write_own`.
+ * Uploads an episode file of a show to the library (#18: S3 multipart through presigned part
+ * URLs) and waits for ingest. Resolves with the asset id, or the existing one when the station
+ * already has this exact file. Presenters may do this for the shows they host (`showId`).
+ * Throws `ApiError` `still_processing` when ingest takes longer than `processingTimeoutMs`.
  */
 export async function uploadEpisodeAudio(
   stationId: string,
+  showId: string,
   file: File,
   onProgress: (p: UploadProgress) => void,
-  options: { pollMs?: number; signal?: AbortSignal } = {},
+  options: UploadOptions = {},
 ): Promise<string> {
+  const { signal } = options;
   const base = `${station(stationId)}/uploads`;
   const upload = await request(base, {
     body: {
@@ -185,39 +219,57 @@ export async function uploadEpisodeAudio(
       sizeBytes: file.size,
       contentType: file.type || undefined,
       assetType: 'episode',
+      showId,
     },
     schema: uploadSchema,
+    signal,
   });
-  onProgress({ phase: 'uploading', pct: 0 });
-  const numbers = Array.from({ length: upload.partCount }, (_, i) => i + 1);
-  let sent = 0;
-  for (let i = 0; i < numbers.length; i += 1000) {
-    const { parts } = await request(`${base}/${upload.id}/parts`, {
-      body: { partNumbers: numbers.slice(i, i + 1000) },
-      schema: presignedUploadPartsSchema,
-    });
-    for (const part of parts) {
-      const start = (part.partNumber - 1) * upload.partSize;
-      const blob = file.slice(start, Math.min(start + upload.partSize, file.size));
-      let res: Response;
-      try {
-        res = await fetch(part.url, { method: 'PUT', body: blob, signal: options.signal });
-      } catch (error) {
-        throw new ApiError(0, 'network', error instanceof Error ? error.message : 'upload failed');
+  try {
+    onProgress({ phase: 'uploading', pct: 0 });
+    const numbers = Array.from({ length: upload.partCount }, (_, i) => i + 1);
+    let sent = 0;
+    for (let i = 0; i < numbers.length; i += 1000) {
+      const { parts } = await request(`${base}/${upload.id}/parts`, {
+        body: { partNumbers: numbers.slice(i, i + 1000) },
+        schema: presignedUploadPartsSchema,
+        signal,
+      });
+      for (const part of parts) {
+        const start = (part.partNumber - 1) * upload.partSize;
+        const blob = file.slice(start, Math.min(start + upload.partSize, file.size));
+        let res: Response;
+        try {
+          res = await fetch(part.url, { method: 'PUT', body: blob, signal });
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          throw new ApiError(
+            0,
+            'network',
+            error instanceof Error ? error.message : 'upload failed',
+          );
+        }
+        if (!res.ok) throw new ApiError(res.status, 'upload_failed', `part ${part.partNumber}`);
+        sent += blob.size;
+        onProgress({ phase: 'uploading', pct: Math.floor((sent / Math.max(file.size, 1)) * 100) });
       }
-      if (!res.ok) throw new ApiError(res.status, 'upload_failed', `part ${part.partNumber}`);
-      sent += blob.size;
-      onProgress({ phase: 'uploading', pct: Math.floor((sent / Math.max(file.size, 1)) * 100) });
     }
+    await request(`${base}/${upload.id}/complete`, {
+      method: 'POST',
+      schema: uploadSchema,
+      signal,
+    });
+  } catch (error) {
+    // Left unfinished: free the multipart upload (best effort).
+    void request(`${base}/${upload.id}/abort`, { method: 'POST' }).catch(() => {});
+    throw error;
   }
-  await request(`${base}/${upload.id}/complete`, { method: 'POST', schema: uploadSchema });
   onProgress({ phase: 'processing' });
 
+  const deadline = Date.now() + (options.processingTimeoutMs ?? PROCESSING_TIMEOUT_MS);
+  const wait =
+    options.waitForChange ?? ((_id: string, ms: number, s?: AbortSignal) => sleep(ms, s));
   for (;;) {
-    const current: Upload = await request(`${base}/${upload.id}`, {
-      schema: uploadSchema,
-      signal: options.signal,
-    });
+    const current: Upload = await request(`${base}/${upload.id}`, { schema: uploadSchema, signal });
     if ((FINAL_UPLOAD_STATUSES as readonly string[]).includes(current.status)) {
       const assetId = current.assetId ?? current.duplicateOfAssetId;
       if (assetId) return assetId;
@@ -227,6 +279,10 @@ export async function uploadEpisodeAudio(
         current.error ?? current.status,
       );
     }
-    await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 2000));
+    const left = deadline - Date.now();
+    if (left <= 0) {
+      throw new ApiError(0, 'still_processing', `upload ${upload.id} is still processing`);
+    }
+    await wait(upload.id, Math.min(options.pollMs ?? 5000, left), signal);
   }
 }
