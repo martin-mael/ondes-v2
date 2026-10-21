@@ -3,6 +3,7 @@ export * from './client.ts';
 export * from './errors.ts';
 export * from './migrate.ts';
 export * from './repos/autocue.ts';
+export * from './repos/cache.ts';
 export * from './repos/jobs.ts';
 export * from './repos/library.ts';
 export * from './repos/storage.ts';

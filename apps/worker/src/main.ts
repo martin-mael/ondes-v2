@@ -2,6 +2,8 @@ import { fileURLToPath } from 'node:url';
 import { createDb, PostgresJobRunStore, runMigrations, sweepStorageDeletions } from '@ondes/db';
 import { connectQueue, createJobPublisher, createJobWorker } from '@ondes/queue';
 import { createS3Storage, loadStorageConfig } from '@ondes/storage';
+import { cacheRootFromEnv } from './jobs/cache-sync/deps.ts';
+import { startCacheTriggers } from './jobs/cache-sync/trigger.ts';
 import { sweepUploads } from './jobs/ingest/sweep.ts';
 import { discoverJobs, discoverTriggers } from './registry.ts';
 import { startJobTriggers } from './triggers.ts';
@@ -63,6 +65,28 @@ async function sweep() {
 const sweepTimer = setInterval(() => void sweep(), SWEEP_INTERVAL_MS);
 void sweep();
 
+// Playout cache (#31): log changes and a 10 min sweep enqueue `cache-sync`. Only when this
+// worker keeps the station caches (PLAYOUT_CACHE_ROOT, see jobs/cache-sync/deps.ts).
+const cacheTriggers = cacheRootFromEnv()
+  ? startCacheTriggers({
+      queue,
+      jobs: publisher,
+      db: database.db,
+      onError: (err) =>
+        console.error(
+          JSON.stringify({ level: 'error', msg: 'cache sync trigger failed', err: String(err) }),
+        ),
+    })
+  : undefined;
+if (!cacheTriggers) {
+  console.error(
+    JSON.stringify({
+      level: 'error',
+      msg: 'PLAYOUT_CACHE_ROOT (or ENGINE_CACHE_ROOT) is not set: this worker keeps no playout cache, so no station files are fetched and engines will skip uncached items',
+    }),
+  );
+}
+
 console.log(
   JSON.stringify({
     level: 'info',
@@ -79,6 +103,7 @@ async function stop(signal: string) {
   console.log(JSON.stringify({ level: 'info', msg: 'worker stopping', signal }));
   clearInterval(sweepTimer);
   await Promise.all(triggerConsumers.map((consumer) => consumer.close()));
+  await cacheTriggers?.close();
   await worker.close();
   await publisher.close();
   await queue.close();
