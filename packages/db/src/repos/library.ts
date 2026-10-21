@@ -15,6 +15,7 @@ import {
   type CuePoint,
   createAssetFileSchema,
   createAssetSchema,
+  getPlayoutGain,
   type ListAssetsQuery,
   listAssetsQuerySchema,
   type SetAnalysis,
@@ -45,7 +46,7 @@ import {
 } from '../schema/library.ts';
 import { type StationScope, whereStation } from '../tenant.ts';
 import { createPostgresQuotaStore, scheduleStorageDeletion } from './storage.ts';
-import type { StationContext } from './tenancy.ts';
+import { getStation, type StationContext } from './tenancy.ts';
 
 // Library repositories (#17). Reads take a station scope and filter on it; mutations go through
 // `withAudit`. Stored objects are reference-counted in `storage_object`: adding a file charges
@@ -60,6 +61,17 @@ export class LibraryConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'LibraryConflictError';
+  }
+}
+
+/**
+ * A measurement of a file that is no longer the asset's playout file (replaced while it was
+ * being analysed): dropped, never stored over a newer one.
+ */
+export class StaleMeasurementError extends LibraryConflictError {
+  constructor(assetId: string) {
+    super(`asset ${assetId}: the measured playout file is no longer current`);
+    this.name = 'StaleMeasurementError';
   }
 }
 
@@ -119,21 +131,23 @@ async function lockAsset(tx: Tx, scope: StationScope, id: string): Promise<Asset
   return row;
 }
 
-/** The asset with its files, cues, loudness, analysis and tags. */
+/** The asset with its files, cues, loudness (and the playout gain it gives), analysis and tags. */
 export async function getAssetDetail(
   db: Executor,
   scope: StationScope,
   id: string,
 ): Promise<AssetDetail> {
   const base = await getAsset(db, scope, id);
-  const [files, cues, loudness, analysis, tags] = await Promise.all([
+  const [files, cues, loudness, analysis, tags, station] = await Promise.all([
     listAssetFiles(db, scope, id),
     getCues(db, scope, id),
     getLoudness(db, scope, id),
     getAnalysis(db, scope, id),
     listAssetTags(db, scope, id),
+    getStation(db, scope, scope.stationId),
   ]);
-  return { ...base, files, cues, loudness, analysis, tags };
+  const playoutGain = getPlayoutGain({ ...base, loudness }, station);
+  return { ...base, files, cues, loudness, playoutGain, analysis, tags };
 }
 
 /** Newest first, keyset-paginated on the (time-ordered) id. */
@@ -172,13 +186,29 @@ export async function listAssets(
       ),
     );
   }
-  const rows = await db
-    .select()
-    .from(asset)
-    .where(and(...conditions))
-    .orderBy(desc(asset.id))
-    .limit(q.limit + 1);
-  const items = rows.slice(0, q.limit).map(toAsset);
+  const [rows, station] = await Promise.all([
+    db
+      .select({
+        asset,
+        loudness: {
+          integratedLufs: assetLoudness.integratedLufs,
+          truePeakDbtp: assetLoudness.truePeakDbtp,
+        },
+      })
+      .from(asset)
+      .leftJoin(
+        assetLoudness,
+        and(eq(assetLoudness.assetId, asset.id), whereStation(assetLoudness, scope)),
+      )
+      .where(and(...conditions))
+      .orderBy(desc(asset.id))
+      .limit(q.limit + 1),
+    getStation(db, scope, scope.stationId),
+  ]);
+  const items = rows.slice(0, q.limit).map((row) => {
+    const item = toAsset(row.asset);
+    return { ...item, playoutGain: getPlayoutGain({ ...item, loudness: row.loudness }, station) };
+  });
   const nextCursor = rows.length > q.limit ? (items.at(-1)?.id ?? null) : null;
   return { items, nextCursor };
 }
@@ -482,7 +512,11 @@ export async function updateCues(
   });
 }
 
-/** Autocue results. Only unlocked `auto` points change; manual edits always win. */
+/**
+ * Autocue results. Only unlocked `auto` points change; manual edits always win. The analysis
+ * ran on a snapshot of the cues, so the points it writes are fitted, under the row lock, inside
+ * the cue-in and cue-out as they are now (a person may have moved them meanwhile).
+ */
 export async function setAutoCues(
   db: Writer,
   ctx: StationContext,
@@ -494,12 +528,15 @@ export async function setAutoCues(
     const existing = await lockCues(tx, ctx.scope, assetId);
     const sampleRate = resolveSampleRate(existing, values.sampleRate);
     const points = currentPoints(existing);
+    const written = new Set<CueField>();
     for (const field of CUE_FIELDS) {
       const samples = values.points[field];
       const point = points[field];
       if (samples === undefined || point.locked || point.source === 'manual') continue;
       points[field] = { ...point, samples };
+      written.add(field);
     }
+    fitAutoCues(points, written);
     const row = await writeCues(
       tx,
       ctx.scope,
@@ -516,6 +553,48 @@ export async function setAutoCues(
     });
     return toCues(row);
   });
+}
+
+/** Positions that must lie within [cueIn, cueOut]; the fades are durations within it. */
+const MARKERS = ['introEnd', 'outroStart'] as const satisfies readonly CueField[];
+
+/**
+ * Keeps the points autocue just wrote (`written`) consistent with the others: an auto bound
+ * that crosses a person's bound is dropped, an auto marker outside the bounds is dropped, and
+ * an auto crossfade point or fade is clamped into them. Never touches a point it didn't write.
+ */
+function fitAutoCues(points: Record<CueField, CuePoint>, written: ReadonlySet<CueField>): void {
+  const drop = (field: CueField) => {
+    points[field] = { ...points[field], samples: null };
+  };
+  const cueIn = points.cueIn.samples;
+  const cueOut = points.cueOut.samples;
+  if (cueIn !== null && cueOut !== null && cueOut <= cueIn) {
+    if (written.has('cueIn')) drop('cueIn');
+    else if (written.has('cueOut')) drop('cueOut');
+  }
+  const lo = points.cueIn.samples ?? 0;
+  const hi = points.cueOut.samples;
+  if (hi !== null && hi <= lo) return;
+  const inside = (samples: number) => samples >= lo && (hi === null || samples <= hi);
+  for (const field of MARKERS) {
+    const samples = points[field].samples;
+    if (written.has(field) && samples !== null && !inside(samples)) drop(field);
+  }
+  const cross = points.crossStartNext.samples;
+  if (written.has('crossStartNext') && cross !== null && !inside(cross)) {
+    points.crossStartNext = {
+      ...points.crossStartNext,
+      samples: Math.max(lo, hi === null ? cross : Math.min(hi, cross)),
+    };
+  }
+  if (hi === null) return;
+  for (const field of ['fadeIn', 'fadeOut'] as const) {
+    const samples = points[field].samples;
+    if (written.has(field) && samples !== null && samples > hi - lo) {
+      points[field] = { ...points[field], samples: hi - lo };
+    }
+  }
 }
 
 function resolveSampleRate(existing: CuesRow | undefined, given: number | undefined): number {
@@ -545,16 +624,34 @@ export async function getLoudness(
   return loudness;
 }
 
-/** Stores a loudness measurement, replacing the previous one. */
+/**
+ * Stores a loudness measurement, replacing the previous one. With `playoutSha256`, only if that
+ * is still the asset's playout file, checked under the asset's lock (which `putAssetFile`
+ * takes too); otherwise throws `StaleMeasurementError`.
+ */
 export async function setLoudness(
   db: Writer,
   ctx: StationContext,
   assetId: string,
   input: SetLoudness,
 ): Promise<AssetLoudness> {
-  const values = { ...setLoudnessSchema.parse(input), measuredAt: new Date() };
+  const parsed = setLoudnessSchema.parse(input);
+  const values = { ...parsed, playoutSha256: parsed.playoutSha256 ?? null, measuredAt: new Date() };
   return withAudit(db, ctx, async (tx, audit) => {
     await lockAsset(tx, ctx.scope, assetId);
+    if (values.playoutSha256) {
+      const [playout] = await tx
+        .select({ sha256: assetFile.sha256 })
+        .from(assetFile)
+        .where(
+          and(
+            eq(assetFile.assetId, assetId),
+            eq(assetFile.role, 'playout'),
+            whereStation(assetFile, ctx.scope),
+          ),
+        );
+      if (playout?.sha256 !== values.playoutSha256) throw new StaleMeasurementError(assetId);
+    }
     const before = await getLoudness(tx, ctx.scope, assetId);
     const [row] = await tx
       .insert(assetLoudness)
@@ -570,6 +667,32 @@ export async function setLoudness(
     });
     return after;
   });
+}
+
+/**
+ * Assets of the station whose playout file has no loudness measurement: none at all, or one of
+ * another file (replaced since, or measured before the file was recorded). What the loudness
+ * backfill (#19) enqueues. Keyset-paginated on the asset id.
+ */
+export async function listAssetsNeedingLoudness(
+  db: Executor,
+  scope: StationScope,
+  options: { limit: number; after?: string },
+): Promise<{ assetId: string; playoutSha256: string }[]> {
+  return db
+    .select({ assetId: assetFile.assetId, playoutSha256: assetFile.sha256 })
+    .from(assetFile)
+    .leftJoin(assetLoudness, eq(assetLoudness.assetId, assetFile.assetId))
+    .where(
+      and(
+        whereStation(assetFile, scope),
+        eq(assetFile.role, 'playout'),
+        sql`${assetLoudness.playoutSha256} is distinct from ${assetFile.sha256}`,
+        options.after ? sql`${assetFile.assetId} > ${options.after}` : undefined,
+      ),
+    )
+    .orderBy(asc(assetFile.assetId))
+    .limit(options.limit);
 }
 
 export async function getAnalysis(
