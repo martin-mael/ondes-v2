@@ -1,0 +1,51 @@
+# Engine lifecycle integration test (#35): the Docker socket proxy (the production
+# definition, extended) and an Icecast, on their own compose project, network and ports.
+# The test then creates real station engine containers through the proxy, with a unique
+# name prefix and label, on the `engines` network. It never touches the shared ondes-dev
+# stack. The test starts and removes all of it; by hand:
+#
+#   docker compose -f apps/api/src/modules/engine/lifecycle/testing/compose.yml up -d --wait
+#   docker compose -f apps/api/src/modules/engine/lifecycle/testing/compose.yml down -v
+
+name: ondes-engine-lifecycle-it
+
+services:
+  docker-socket-proxy:
+    extends:
+      file: ../../../../../../../deploy/engine/docker-socket-proxy.compose.yml
+      service: docker-socket-proxy
+    restart: 'no'
+    # The test runs on the host, so the proxy is published here, on loopback only. Never
+    # publish it in production.
+    ports:
+      - 127.0.0.1:${ENGINE_LIFECYCLE_IT_DOCKER_PORT:-17190}:2375
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:2375/_ping]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  icecast:
+    image: libretime/icecast:2.5.0-alpine
+    entrypoint:
+      - sh
+      - -c
+      - cat /config/icecast.xml > /etc/icecast.xml && exec docker-entrypoint icecast -c /etc/icecast.xml
+    environment:
+      ICECAST_SOURCE_PASSWORD: ondes-lifecycle-it-source
+      ICECAST_HOSTNAME: localhost
+    volumes:
+      - ../../../../../../../deploy/dev/icecast/icecast.xml:/config/icecast.xml:ro
+    networks: [engines]
+    ports:
+      - 127.0.0.1:${ENGINE_LIFECYCLE_IT_ICECAST_PORT:-17191}:8000
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8000/status-json.xsl]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+networks:
+  # The network the lifecycle puts engines on (ENGINE_NETWORK), with a fixed name.
+  engines:
+    name: ondes-engine-lifecycle-it

@@ -1,4 +1,5 @@
 import { buildApp } from './app.ts';
+import { engineLifecycleConfigFromEnv } from './modules/engine/lifecycle/plugin.ts';
 import { authConfigFromEnv } from './plugins/auth.ts';
 import { dbConfigFromEnv } from './plugins/db.ts';
 import { mailConfigFromEnv } from './plugins/mail.ts';
@@ -9,11 +10,14 @@ const env = process.env;
 const rabbitUrl = env.RABBITMQ_URL;
 if (!rabbitUrl) throw new Error('RABBITMQ_URL is not set');
 
+const auth = authConfigFromEnv(env);
 const app = await buildApp({
   db: { config: dbConfigFromEnv(env) },
   rabbit: { url: rabbitUrl },
   mail: { config: mailConfigFromEnv(env) },
-  auth: authConfigFromEnv(env),
+  auth,
+  // Station engines (#35), when ENGINE_DOCKER_URL points at the Docker socket proxy.
+  engine: engineLifecycleConfigFromEnv(env, auth.secret) ?? undefined,
   fastify: {
     logger: { level: env.LOG_LEVEL ?? 'info' },
     // Behind Caddy, rate limits key on the client IP from X-Forwarded-For. Default: trust

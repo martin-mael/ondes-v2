@@ -122,6 +122,22 @@ export const engineBlankRecoveredEventSchema = z.object({
   data: z.object(engineOrigin),
 });
 
+/**
+ * The engine lifecycle (#35) stopped restarting a station's engine: it restarted too often
+ * in a short window (a crash loop). The engine stays stopped until someone restarts it.
+ */
+export const engineRestartStormEventSchema = z.object({
+  ...envelope,
+  type: z.literal('engine.restart_storm'),
+  data: z.object({
+    /** Last boot the health monitor saw, if any. */
+    bootId: z.string().nullable(),
+    /** Restarts counted in the window, the last one included. */
+    restarts: z.int().positive(),
+    windowSeconds: z.int().positive(),
+  }),
+});
+
 export const engineRealtimeEventSchema = z.discriminatedUnion('type', [
   engineUpEventSchema,
   engineDownEventSchema,
@@ -133,6 +149,7 @@ export const engineRealtimeEventSchema = z.discriminatedUnion('type', [
   engineLiveGateEventSchema,
   engineBlankDetectedEventSchema,
   engineBlankRecoveredEventSchema,
+  engineRestartStormEventSchema,
 ]);
 export type EngineRealtimeEvent = z.infer<typeof engineRealtimeEventSchema>;
 

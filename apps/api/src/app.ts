@@ -7,6 +7,10 @@ import {
 } from 'fastify-type-provider-zod';
 import { health } from './health.ts';
 import { authRoutes } from './modules/auth/routes.ts';
+import {
+  type EngineLifecyclePluginOptions,
+  engineLifecyclePlugin,
+} from './modules/engine/lifecycle/plugin.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { type AuthConfig, authPlugin } from './plugins/auth.ts';
 import { type DbPluginOptions, dbPlugin } from './plugins/db.ts';
@@ -20,6 +24,8 @@ export interface AppOptions {
   auth: AuthConfig;
   /** Optional so tests that don't touch the queue can skip RabbitMQ. */
   rabbit?: RabbitPluginOptions;
+  /** Station engine lifecycle (#35). Needs `rabbit`. Unset: the api manages no engines. */
+  engine?: EngineLifecyclePluginOptions;
   fastify?: FastifyServerOptions;
 }
 
@@ -44,6 +50,8 @@ export async function buildApp(options: AppOptions) {
   await app.register(authRoutes, { prefix: '/api/v1' });
   // Library routes carry their full /api/v1/stations/:stationId path.
   await app.register(libraryPlugin);
+  // Engine lifecycle (#35): engine routes, the internal engine events route, engines at boot.
+  if (options.engine) await app.register(engineLifecyclePlugin, options.engine);
 
   return app;
 }
