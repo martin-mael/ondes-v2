@@ -13,6 +13,7 @@ import { toast } from 'sonner';
 import { z } from 'zod';
 import { EditClockPage, NewClockPage } from '../features/clocks/clock-editor-page.tsx';
 import { ClocksPage } from '../features/clocks/clocks-page.tsx';
+import { TimelinePage } from '../features/log-timeline/timeline-page.tsx';
 import { CategoriesPage } from '../features/rotation/categories/categories-page.tsx';
 import {
   EditCategoryPage,
@@ -250,6 +251,14 @@ const safetySettingsRoute = createRoute({
   component: SafetyPage,
 });
 
+// The log timeline (#51): one station-local day, `?date=YYYY-MM-DD` (default: today).
+const logRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'log',
+  validateSearch: z.object({ date: localDateSchema.optional().catch(undefined) }),
+  component: TimelinePage,
+});
+
 const routeTree = rootRoute.addChildren([
   authLayout.addChildren([
     loginRoute,
@@ -275,6 +284,7 @@ const routeTree = rootRoute.addChildren([
       showsCalendarRoute,
       showRoute,
       safetySettingsRoute,
+      logRoute,
     ]),
   ]),
 ]);

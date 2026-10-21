@@ -1,5 +1,6 @@
 import { meSchema } from '@ondes/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { ApiError, request, reviveDates } from './client.ts';
 
 const reply = (status: number, body?: unknown) =>
@@ -32,6 +33,13 @@ describe('request', () => {
       '/api/v1/auth/me',
       expect.objectContaining({ method: 'GET' }),
     );
+  });
+
+  it('keeps ISO strings for contracts that type `…At` fields as strings', async () => {
+    const at = '2026-10-20T08:00:00.000Z';
+    reply(200, { startsAt: at });
+    const iso = z.object({ startsAt: z.iso.datetime({ offset: true }) });
+    expect(await request('/log', { schema: iso })).toEqual({ startsAt: at });
   });
 
   it('turns error bodies into ApiError with the stable code', async () => {

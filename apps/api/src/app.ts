@@ -19,6 +19,7 @@ import {
 } from './modules/engine/lifecycle/plugin.ts';
 import { type SafetyPluginOptions, safetyPlugin } from './modules/engine/safety/plugin.ts';
 import { type InvitationsOptions, invitationsRoutes } from './modules/invitations/routes.ts';
+import { audioPlugin } from './modules/library/audio-plugin.ts';
 import { type PeaksPluginOptions, peaksPlugin } from './modules/library/peaks-plugin.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
@@ -133,6 +134,8 @@ export async function buildApp(options: AppOptions) {
     await app.register(uploadPlugin, { ...options.uploads, storage: options.storage });
     // Waveform peaks (#22): GET …/assets/:assetId/peaks.
     await app.register(peaksPlugin, { ...options.peaks, storage: options.storage });
+    // Asset previews (#51): GET …/assets/:assetId/audio.
+    await app.register(audioPlugin, { storage: options.storage });
   }
 
   return app;
