@@ -1,10 +1,22 @@
 name: Images
 
-# Builds the production images on every PR (no push) and publishes them to GHCR from main.
+# Publishes the production images to GHCR from main. On PRs it only builds them (no push), and
+# only when a change can break the build: the images copy the sources as they are (no build
+# step, ADR 0005), so what can fail is the Dockerfiles and the filtered `pnpm install` (package
+# manifests, lockfile, workspace). Source changes can't, and main still builds every commit.
+# Not a required check: when it doesn't run, it reports nothing.
 on:
   pull_request:
+    paths:
+      - deploy/docker/**
+      - '**/package.json'
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .dockerignore
+      - .github/workflows/images.yml
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
