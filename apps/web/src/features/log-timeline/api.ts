@@ -149,7 +149,9 @@ export const timelineApi = {
   ) => {
     const { picks } = await request(`${station(stationId)}/rotation/pick`, {
       // `ignoreLogItemIds`: leave the item being replaced out of the history, so its own song
-      // and artist don't count against the candidates (asked of #38; ignored until it lands).
+      // and artist don't count against the candidates.
+      // TODO(#38): rules-38 is adding this option; until it lands the api strips it and the
+      // replaced item still counts. Drop this note once `pickRequestSchema` has it.
       body: { slots: [slot], explain: true, ignoreLogItemIds },
       schema: pickWire,
     });
