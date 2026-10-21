@@ -444,7 +444,7 @@ function EntryButton({
       data-testid="calendar-entry"
       onClick={() => onSelect(entry)}
       className={cn(
-        'relative flex min-w-0 flex-col overflow-hidden rounded-l-[4px] rounded-r-md bg-card py-0.5 pr-1.5 pl-2.5 text-left text-[0.7rem] leading-tight hover:bg-muted',
+        'relative flex min-w-0 flex-col overflow-hidden rounded-[4px] bg-card py-0.5 pr-1.5 pl-2.5 text-left text-[0.7rem] leading-tight hover:bg-muted',
         entry.kind === 'cancelled' && 'opacity-60',
         conflict && 'ring-2 ring-destructive',
         className,
