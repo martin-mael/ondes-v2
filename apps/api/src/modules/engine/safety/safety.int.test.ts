@@ -6,6 +6,7 @@ import {
   createAsset,
   createOrganization,
   createStation,
+  deleteAsset,
   type OrgScope,
   putAssetFile,
   recordFallbackSync,
@@ -177,6 +178,7 @@ describe('safety playlist and emergency file', () => {
     expect(res.json()).toEqual({
       safety: { assets: [], readyCount: 0, readyDurationMs: 0 },
       emergency: null,
+      inEngine: { safetyFiles: 0, emergency: 'none' },
       syncedAt: null,
       onAir: null,
     } satisfies SafetyStatus);
@@ -338,6 +340,59 @@ describe('safety playlist and emergency file', () => {
     expect(body.onAir?.source).toBe('queue');
     await app.safety.evaluateAlerts(scope);
     expect(await openAlerts(scope)).toEqual([]);
+  });
+
+  it('audits a removal caused by deleting the library asset', async () => {
+    const scope = await newStation();
+    const [a, b] = [await song(scope, 'A'), await song(scope, 'B')];
+    await call(scope, 'PUT', '/assets', { assetIds: [a.assetId, b.assetId] });
+    await call(scope, 'PUT', '/emergency', { assetId: a.assetId });
+    await deleteAsset(tdb.db, { actor: system, scope }, a.assetId);
+
+    const body = (await call(scope, 'GET', '')).json() as SafetyStatus;
+    expect(body.safety.assets.map((x) => x.title)).toEqual(['B']);
+    expect(body.emergency).toBeNull();
+    const audit = await tdb.db
+      .select({ action: auditLog.action, actorId: auditLog.actorId, diff: auditLog.diff })
+      .from(auditLog)
+      .where(and(eq(auditLog.stationId, scope.stationId), eq(auditLog.actorId, 'asset.delete')));
+    expect(audit.map((r) => r.action).sort()).toEqual([
+      'emergency_file.set',
+      'safety_playlist.remove',
+    ]);
+    expect(audit.find((r) => r.action === 'emergency_file.set')?.diff).toEqual({
+      assetId: { from: a.assetId, to: null },
+    });
+    // Removals through the api aren't audited twice.
+    await call(scope, 'DELETE', `/assets/${b.assetId}`);
+    const all = await tdb.db
+      .select({ actorId: auditLog.actorId })
+      .from(auditLog)
+      .where(
+        and(eq(auditLog.stationId, scope.stationId), eq(auditLog.action, 'safety_playlist.remove')),
+      );
+    expect(all.filter((r) => r.actorId === 'asset.delete')).toHaveLength(1);
+  });
+
+  it('reports a previous emergency file still in use', async () => {
+    const scope = await newStation();
+    const [old, fresh] = [await song(scope, 'Old'), await song(scope, 'New')];
+    await call(scope, 'PUT', '/emergency', { assetId: fresh.assetId });
+    await runEngine(scope);
+    // The worker couldn't fetch the new one and kept the old file.
+    await recordFallbackSync(tdb.db, scope, [
+      { kind: 'emergency', sha256: fresh.sha256, state: 'failed', error: 'io', errorMessage: 'x' },
+      { kind: 'emergency', sha256: old.sha256, state: 'ready' },
+    ]);
+    const body = (await call(scope, 'GET', '')).json() as SafetyStatus;
+    expect(body.emergency?.cache.state).toBe('failed');
+    expect(body.inEngine.emergency).toBe('previous');
+    await app.safety.evaluateAlerts(scope);
+    const [row] = await tdb.db
+      .select({ title: alert.title })
+      .from(alert)
+      .where(and(eq(alert.stationId, scope.stationId), eq(alert.type, 'engine.emergency_missing')));
+    expect(row?.title).toBe('Previous emergency file still in use');
   });
 
   it('evaluates every running station in one sweep', async () => {

@@ -22,19 +22,31 @@ export const SAFETY_ALERT_TYPES = [
 ] as const;
 
 export type SafetyAlertInput = {
-  selection: Pick<FallbackSelection, 'safety' | 'emergency' | 'onAir'>;
+  selection: Pick<FallbackSelection, 'safety' | 'emergency' | 'onAir' | 'onDisk'>;
   /** Only stations whose engine should run get alerts; the others have theirs resolved. */
   engineRunning: boolean;
   now: Date;
 };
 
+/** Which emergency file the engine's cache holds (see `SafetyStatus.inEngine`). */
+export function emergencyInEngine(
+  s: Pick<FallbackSelection, 'emergency' | 'onDisk'>,
+): 'selected' | 'previous' | 'none' {
+  const onDisk = s.onDisk.emergencySha256;
+  if (!onDisk) return 'none';
+  return s.emergency?.sha256 === onDisk ? 'selected' : 'previous';
+}
+
+/**
+ * The alerts follow what the engine's cache holds, not the selection alone: a replaced
+ * playlist keeps its old files until the next sync, so nothing is raised in between.
+ */
 export function safetyAlerts(input: SafetyAlertInput): DesiredAlert[] {
   if (!input.engineRunning) return [];
-  const { safety, emergency, onAir } = input.selection;
+  const { safety, emergency, onAir, onDisk } = input.selection;
   const out: DesiredAlert[] = [];
 
-  const ready = safety.filter((a) => a.cache.state === 'ready').length;
-  if (ready === 0) {
+  if (onDisk.safetyReady === 0) {
     out.push({
       type: alertTypes.engineSafetyEmpty,
       severity: 'warning',
@@ -44,11 +56,17 @@ export function safetyAlerts(input: SafetyAlertInput): DesiredAlert[] {
         safety.length === 0
           ? 'The station has no safety playlist: if the log runs dry, the engine falls back to the emergency file.'
           : "None of the safety playlist's files is in the engine's cache yet.",
-      details: { selected: safety.length, ready, states: countStates(safety) },
+      details: {
+        selected: safety.length,
+        ready: onDisk.safetyReady,
+        states: countStates(safety),
+      },
     });
   }
 
-  if (emergency?.cache.state !== 'ready') {
+  const inEngine = emergencyInEngine(input.selection);
+  const stuck = emergency?.cache.state === 'failed' || emergency?.cache.state === 'no_file';
+  if (inEngine === 'none') {
     out.push({
       type: alertTypes.engineEmergencyMissing,
       severity: 'warning',
@@ -60,6 +78,20 @@ export function safetyAlerts(input: SafetyAlertInput): DesiredAlert[] {
       details: emergency
         ? { assetId: emergency.assetId, state: emergency.cache.state, error: emergency.cache.error }
         : { assetId: null },
+    });
+  } else if (inEngine === 'previous' && emergency && stuck) {
+    out.push({
+      type: alertTypes.engineEmergencyMissing,
+      severity: 'warning',
+      dedupeKey: alertTypes.engineEmergencyMissing,
+      title: 'Previous emergency file still in use',
+      message: `The new emergency file can't be put in the engine's cache (${emergency.cache.state}); the previous one keeps playing.`,
+      details: {
+        assetId: emergency.assetId,
+        state: emergency.cache.state,
+        error: emergency.cache.error,
+        inUseSha256: onDisk.emergencySha256,
+      },
     });
   }
 

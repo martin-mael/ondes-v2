@@ -69,6 +69,17 @@ export const safetyStatusSchema = z.object({
     readyDurationMs: z.int().nonnegative(),
   }),
   emergency: fallbackAssetSchema.nullable(),
+  /** What the engine's cache holds as of the last sync (a change reaches it at the next one). */
+  inEngine: z.object({
+    /** Safety files in place. */
+    safetyFiles: z.int().nonnegative(),
+    /**
+     * `selected`: the selected emergency file. `previous`: an earlier one, still looping
+     * because the selected one isn't in place (not synced yet, failed, not ingested), or the
+     * selection was just cleared. `none`: no emergency file: silence after the safety playlist.
+     */
+    emergency: z.enum(['selected', 'previous', 'none']),
+  }),
   /** Last time the worker synced this station's fallback files; null if it never did. */
   syncedAt: z.date().nullable(),
   /**

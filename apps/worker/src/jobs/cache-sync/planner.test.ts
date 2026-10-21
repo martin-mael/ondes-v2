@@ -229,3 +229,25 @@ describe('diskReserveBytes', () => {
     expect(diskReserveBytes(1000 * 1024 ** 3)).toBe(50 * 1024 ** 3);
   });
 });
+
+describe('pinned fallback files (#34)', () => {
+  it('never evicts a file hard-linked as a fallback: it would free nothing', () => {
+    const p = plan({
+      now,
+      items: [item(9, now + HOUR)],
+      cached: [{ ...cached(1, now - 10 * HOUR), linked: true }, cached(2, now - 5 * HOUR)],
+      budgetBytes: 20 * MB,
+    });
+    expect(p.evict.map((e) => e.sha256)).toEqual([hash(2)]);
+    expect(p.fetch.map((f) => f.sha256)).toEqual([hash(9)]);
+  });
+
+  it('counts the pinned bytes against the budget', () => {
+    const input = { now, items: [item(9, now + HOUR)], cached: [], budgetBytes: 15 * MB };
+    expect(plan(input).fetch).toHaveLength(1);
+    const p = plan({ ...input, pinnedBytes: 10 * MB });
+    expect(p.fetch).toEqual([]);
+    expect(p.deferred.map((d) => d.sha256)).toEqual([hash(9)]);
+    expect(p.usage.usedBytes).toBe(10 * MB);
+  });
+});

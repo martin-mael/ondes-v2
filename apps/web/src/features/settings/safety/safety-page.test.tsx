@@ -63,6 +63,7 @@ const b = fallback('bb', 'Bravo', 'failed');
 const status = (over: Partial<Record<keyof SafetyStatus, unknown>> = {}) => ({
   safety: { assets: [a, b], readyCount: 1, readyDurationMs: 185_000 },
   emergency: fallback('cc', 'Loop', 'pending'),
+  inEngine: { safetyFiles: 1, emergency: 'selected' },
   syncedAt: at,
   onAir: { source: 'queue', startedAt: at },
   ...over,
@@ -95,6 +96,23 @@ describe('safety settings page', () => {
     expect(screen.queryByRole('button', { name: 'Add tracks' })).toBeNull();
     // The nav entry.
     expect(screen.getByRole('link', { name: 'Safety & emergency' })).toBeVisible();
+  });
+
+  it('flags an asset without audio and a previous emergency file still in use', async () => {
+    const { screen } = renderApp(url, {
+      ...withRole('presenter'),
+      [`GET ${api}/safety`]: [
+        200,
+        status({
+          emergency: fallback('cc', 'Loop', 'no_file'),
+          inEngine: { safetyFiles: 1, emergency: 'previous' },
+        }),
+      ],
+    });
+    expect(await screen.findByTestId('emergency-previous')).toHaveTextContent(
+      'The engine still loops the previous emergency file',
+    );
+    expect(within(screen.getByTestId('emergency-asset')).getByText('No audio file')).toBeVisible();
   });
 
   it('shows safety mode, and refreshes when a track starts', async () => {

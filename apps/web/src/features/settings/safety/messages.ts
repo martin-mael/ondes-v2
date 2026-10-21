@@ -27,6 +27,8 @@ const en = {
   'emergency.processing': 'Processing {name}…',
   'emergency.uploadFailed': 'Upload failed: {reason}',
   'emergency.set': 'Emergency file updated',
+  'emergency.previous':
+    'The engine still loops the previous emergency file: this one isn’t in its cache yet.',
 
   'safety.title': 'Safety playlist',
   'safety.description':
@@ -45,7 +47,7 @@ const en = {
   'state.ready': 'Ready',
   'state.pending': 'Syncing',
   'state.failed': 'Failed',
-  'state.no_file': 'Not ingested',
+  'state.no_file': 'No audio file',
 
   'picker.title': 'Add from the library',
   'picker.titleSingle': 'Choose the emergency file',
@@ -89,6 +91,8 @@ const fr: Record<SafetyMessageKey, string> = {
   'emergency.processing': 'Traitement de {name}…',
   'emergency.uploadFailed': 'Échec de l’envoi : {reason}',
   'emergency.set': 'Fichier d’urgence mis à jour',
+  'emergency.previous':
+    'Le moteur diffuse encore l’ancien fichier d’urgence : celui-ci n’est pas encore dans son cache.',
 
   'safety.title': 'Playlist de secours',
   'safety.description':
@@ -108,7 +112,7 @@ const fr: Record<SafetyMessageKey, string> = {
   'state.ready': 'Prêt',
   'state.pending': 'En cours',
   'state.failed': 'Échec',
-  'state.no_file': 'Non importé',
+  'state.no_file': 'Aucun fichier audio',
 
   'picker.title': 'Ajouter depuis la bibliothèque',
   'picker.titleSingle': 'Choisir le fichier d’urgence',

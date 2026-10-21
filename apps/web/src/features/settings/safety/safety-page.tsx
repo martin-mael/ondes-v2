@@ -97,7 +97,8 @@ export function SafetyPage() {
 function hasPending(status: SafetyStatus | undefined): boolean {
   if (!status) return false;
   const all = [...status.safety.assets, ...(status.emergency ? [status.emergency] : [])];
-  return all.some((a) => a.cache.state === 'pending' || a.cache.state === 'no_file');
+  // `no_file` waits for an ingest that may never come (a failed upload): not polled.
+  return all.some((a) => a.cache.state === 'pending');
 }
 
 function OnAirBadge({ status }: { status: SafetyStatus }) {
@@ -248,6 +249,11 @@ function EmergencyCard({ stationId, status, canEdit, onChange }: CardProps) {
           </div>
         ) : (
           <p className="text-muted-foreground">{t('emergency.none')}</p>
+        )}
+        {status.inEngine.emergency === 'previous' && (
+          <p className="text-destructive" data-testid="emergency-previous">
+            {t('emergency.previous')}
+          </p>
         )}
         {progress && (
           <p role="status" className="text-muted-foreground">

@@ -86,6 +86,12 @@ export type FallbackFileRow = typeof stationFallbackFile.$inferSelect;
 export type FallbackSelection = {
   safety: FallbackAsset[];
   emergency: FallbackAsset | null;
+  /**
+   * What the engine's cache holds as of the last sync, whatever the selection says now (a
+   * changed selection reaches the disk at the next sync): safety files ready, and the
+   * content of `emergency.flac`.
+   */
+  onDisk: { safetyReady: number; emergencySha256: string | null };
   syncedAt: Date | null;
   onAir: { source: EngineSource; startedAt: Date } | null;
 };
@@ -116,6 +122,11 @@ export async function getFallbackSelection(
   return {
     safety: safety.map((r) => toAsset(r, 'safety')),
     emergency: emergency ? toAsset(emergency, 'emergency') : null,
+    onDisk: {
+      safetyReady: files.filter((f) => f.kind === 'safety' && f.state === 'ready').length,
+      emergencySha256:
+        files.find((f) => f.kind === 'emergency' && f.state === 'ready')?.sha256 ?? null,
+    },
     syncedAt: state?.syncedAt ?? null,
     onAir:
       state?.onAirSource && state.onAirSince
@@ -287,6 +298,19 @@ export async function listFallbackSources(
     emergency: emergency ? source(emergency) : null,
     emergencySelected: emergency !== null,
   };
+}
+
+/**
+ * Changes whenever what the worker must put in the cache changes (selection or the selected
+ * assets' playout files): a sync pass re-runs when it moved under it.
+ */
+export async function fallbackFingerprint(db: Executor, scope: StationScope): Promise<string> {
+  const s = await listFallbackSources(db, scope);
+  return JSON.stringify([
+    s.safety.map((f) => f.sha256).sort(),
+    s.emergency?.sha256 ?? null,
+    s.emergencySelected,
+  ]);
 }
 
 export type FallbackFileInput = {

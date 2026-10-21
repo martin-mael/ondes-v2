@@ -36,7 +36,13 @@ import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { HttpError } from '../../../plugins/errors.ts';
 import type { AlertService } from '../../alerts/service.ts';
 import type { Logger } from '../adapter/index.ts';
-import { needsRaise, SAFETY_ALERT_TYPES, safetyAlertResolution, safetyAlerts } from './alerts.ts';
+import {
+  emergencyInEngine,
+  needsRaise,
+  SAFETY_ALERT_TYPES,
+  safetyAlertResolution,
+  safetyAlerts,
+} from './alerts.ts';
 
 // Safety playlist and emergency file (#34), api side. The selection is library assets; the
 // worker's cache-sync pass pins their playout files in the station's cache, where the
@@ -84,6 +90,10 @@ export function createSafetyService(options: SafetyServiceOptions): SafetyServic
         readyDurationMs: ready.reduce((sum, a) => sum + (a.durationMs ?? 0), 0),
       },
       emergency: s.emergency,
+      inEngine: {
+        safetyFiles: s.onDisk.safetyReady,
+        emergency: emergencyInEngine(s),
+      },
       syncedAt: s.syncedAt,
       onAir: s.onAir,
     };

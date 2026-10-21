@@ -66,16 +66,24 @@ A pass that throws (unwritable cache root, database down) records `last_error` o
 
 ## Fallback files (#34)
 
-After the passes, every job syncs the station's safety playlist and emergency file
-(`fallbacks.ts`), selected in the api (`apps/api/src/modules/engine/safety`):
+Every pass syncs the station's safety playlist and emergency file first (`fallbacks.ts`,
+emergency before safety), before the horizon, so a new emergency file never waits behind a
+cold fill and an aborted pass has already placed them. The selection is fingerprinted like
+the log: a change that lands during a pass (its enqueue collapsed) runs another pass. The
+station's download cap applies to them too. Selected in the api
+(`apps/api/src/modules/engine/safety`):
 
 - `safety/` is created first, even when nothing is selected: the engine's watched playlist
   never sees a directory created after it started.
 - Each selected playout file is fetched into `media/` like any other (same lock, same checks),
   then hard-linked into place through `.partial/` and `rename(2)`. The link costs no space
-  while `media/` keeps its copy and survives its eviction; it isn't counted in the budget.
+  while `media/` keeps its copy and survives its eviction.
+- Budget: a linked `media/` file is never evicted (it would free nothing), and fallback
+  bytes no `media/` file shares count as used (`pinnedBytes`). Fallbacks themselves are
+  fetched whatever the budget (only the disk reserve stops them): the horizon gets the rest.
 - `emergency.flac` is replaced atomically; `.emergency.sha256` says which content it holds.
-  A selected asset without a playout file yet keeps the previous file; clearing the
+  A selected asset that can't be placed (no playout file yet, a failed fetch) keeps the
+  previous file, recorded as `ready` so the api says it's still in use; clearing the
   selection removes it.
 - Deselected safety files (and anything else in `safety/`) are removed.
 - The outcome replaces the station's `station_fallback_file` rows (`ready` or `failed` with

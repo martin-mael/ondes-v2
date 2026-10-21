@@ -39,6 +39,13 @@ the safety playlist (random order), then the emergency file on a loop, then sile
 Assets of another station are 404. Cache states: `ready`, `pending` (not synced yet),
 `failed` (`error`: `source_missing`, `checksum_mismatch`, `io`), `no_file` (not ingested).
 
+## Deleting a library asset
+
+The selection's foreign keys cascade: deleting an asset drops it from the playlist or the
+emergency slot. A trigger (migration `…_safety-cascade-audit`) writes an `audit_log` row for
+it (actor `system` / `asset.delete`, same actions as the api), so it isn't silent; the next
+sync then removes the file, and the alerts below say what is missing.
+
 ## Safety mode and alerts
 
 The durable event queue `ondes.events.safety` records the source of every
@@ -51,7 +58,12 @@ Every 30 s one api replica evaluates, for each station whose engine should run:
 |---|---|---|
 | `engine.safety_mode` | warning, critical on `emergency` | Safety or emergency on air for 30 s (boot plays the emergency file for about a second). |
 | `engine.safety_empty` | warning | No safety file in the engine's cache (none selected, or none synced). |
-| `engine.emergency_missing` | warning | No emergency file selected, or not in the cache. |
+| `engine.emergency_missing` | warning | No emergency file in the cache, or "previous emergency file still in use": the selected one failed or has no audio file, and the worker kept the old one. |
+
+The two fallback alerts follow what the cache holds as of the last sync
+(`station_fallback_file`), not the selection alone: a replaced playlist keeps its old files
+until the worker syncs, so nothing is raised in between. `GET …/safety` says the same thing
+in `inEngine`.
 
 They resolve with `back_on_schedule`, `fallback_ok`, or `engine_stopped` when the engine's
 desired state is no longer `running`.

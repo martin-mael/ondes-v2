@@ -132,14 +132,24 @@ export async function syncFallbacks(
   const emergencyPath = join(root, EMERGENCY_FILE);
   const shaPath = join(root, EMERGENCY_SHA);
   const emergency = sources.emergency;
+  const onDisk = async () =>
+    (await exists(emergencyPath))
+      ? (await readFile(shaPath, 'utf8').catch(() => '')).trim() || null
+      : null;
   if (emergency) {
-    const current = async () =>
-      (await readFile(shaPath, 'utf8').catch(() => '')).trim() === emergency.sha256 &&
-      (await exists(emergencyPath));
+    const current = async () => (await onDisk()) === emergency.sha256;
     if (await place('emergency', emergency, emergencyPath, current)) {
       await replaceFile(shaPath, `${emergency.sha256}\n`);
     }
-  } else if (!sources.emergencySelected) {
+  }
+  if (sources.emergencySelected) {
+    // The selected file couldn't be placed (not ingested yet, failed, no room): the previous
+    // one keeps playing, since it beats silence. Record it so the api can say so.
+    const previous = await onDisk();
+    if (previous && previous !== emergency?.sha256) {
+      rows.push({ kind: 'emergency', sha256: previous, state: 'ready' });
+    }
+  } else {
     // Cleared on purpose. A selected asset that isn't ingested yet keeps the previous file.
     await rm(emergencyPath, { force: true });
     await rm(shaPath, { force: true });
@@ -160,6 +170,29 @@ export async function syncFallbacks(
 
   if (!options.signal?.aborted) await recordFallbackSync(deps.db, scope, rows);
   return report;
+}
+
+/**
+ * Bytes of the fallback files (safety/, emergency.flac) that no file of `media` shares (its
+ * copy was evicted, or never there): disk the cache budget must count, once per inode.
+ */
+export async function pinnedFallbackBytes(
+  root: string,
+  media: ReadonlyArray<{ ino?: number }>,
+): Promise<number> {
+  const shared = new Set(media.map((m) => m.ino));
+  const seen = new Set<number>();
+  let bytes = 0;
+  const names = (await readdir(join(root, SAFETY_DIR)).catch(() => [] as string[])).map((n) =>
+    join(SAFETY_DIR, n),
+  );
+  for (const name of [...names, EMERGENCY_FILE]) {
+    const st = await stat(join(root, name)).catch(() => null);
+    if (!st?.isFile() || shared.has(st.ino) || seen.has(st.ino)) continue;
+    seen.add(st.ino);
+    bytes += st.size;
+  }
+  return bytes;
 }
 
 async function exists(path: string): Promise<boolean> {
