@@ -29,7 +29,7 @@ pnpm --filter @ondes/web dev     # web app only (the api must be running)
 pnpm --filter @ondes/web build   # static build in apps/web/dist
 ```
 
-UI components come from shadcn/ui on Base UI and live in `apps/web/src/ui/` ([ADR 0008](docs/adr/0008-ui.md)). Add one with `pnpm dlx shadcn@4.22.1 add <name>` from `apps/web`, then `pnpm format`. Production serving (Caddy) comes with the installer (#84).
+UI components come from shadcn/ui on Base UI and live in `apps/web/src/ui/` ([ADR 0009](docs/adr/0009-ui.md)). Add one with `pnpm dlx shadcn@4.22.1 add <name>` from `apps/web`, then `pnpm format`. Production serving (Caddy) comes with the installer (#84).
 
 ## Layout
 

@@ -8,7 +8,7 @@ export class FakeEventSource {
   readonly url: string;
   readyState = FakeEventSource.CONNECTING;
   onopen: (() => void) | null = null;
-  onmessage: ((message: { data: string }) => void) | null = null;
+  onmessage: ((message: { data: string; lastEventId: string }) => void) | null = null;
   onerror: (() => void) | null = null;
 
   constructor(url: string) {
@@ -27,8 +27,8 @@ export class FakeEventSource {
     this.onopen?.();
   }
 
-  emit(data: unknown) {
-    this.onmessage?.({ data: JSON.stringify(data) });
+  emit(data: unknown, id = '') {
+    this.onmessage?.({ data: JSON.stringify(data), lastEventId: id });
   }
 
   /** The server refused the stream: the browser gives up. */

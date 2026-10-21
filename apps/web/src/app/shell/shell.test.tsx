@@ -53,7 +53,7 @@ describe('app shell', () => {
   it('sends the user to their account when the stream needs 2FA', async () => {
     const { screen, history } = renderApp(`/stations/${stationId}`, {
       ...signedIn(),
-      [`GET /stations/${stationId}/events`]: [
+      [`GET /stations/${stationId}/events/access`]: [
         403,
         { error: 'two_factor_required', message: 'enable 2FA' },
       ],
@@ -64,6 +64,34 @@ describe('app shell', () => {
     expect(
       await screen.findByText(/One of your organizations requires two-factor authentication/),
     ).toBeVisible();
+  });
+
+  it('reconnects by itself after a refused stream, resuming after the last event', async () => {
+    const { screen } = renderApp(`/stations/${stationId}`, {
+      ...signedIn(),
+      [`GET /stations/${stationId}/events/access`]: [200, { permissions: ['engine:read'] }],
+    });
+    await screen.findByTestId('server-clock');
+    const first = FakeEventSource.last();
+    act(() => {
+      first.open();
+      first.emit({ type: 'server.clock', at: new Date().toISOString() });
+      first.emit(
+        {
+          id: '0b9e3c84-6f1d-5a51-9a1e-3f0a4c7d2e10',
+          stationId,
+          at: new Date().toISOString(),
+          type: 'engine.up',
+          data: { bootId: 'b', version: '2.4.2' },
+        },
+        '0b9e3c84-6f1d-5a51-9a1e-3f0a4c7d2e10',
+      );
+      first.refuse();
+    });
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2), { timeout: 3_000 });
+    expect(FakeEventSource.last().url).toBe(
+      `/api/v1/stations/${stationId}/events?lastEventId=0b9e3c84-6f1d-5a51-9a1e-3f0a4c7d2e10`,
+    );
   });
 
   it('goes back to sign-in when the session expires', async () => {

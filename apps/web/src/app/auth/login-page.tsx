@@ -33,7 +33,8 @@ export function LoginPage() {
       return;
     }
     await resetSession(queryClient, result.me);
-    await navigate({ to: redirect ?? '/' });
+    // `href`, not `to`: the redirect may carry a query string (`/invitations/accept?token=…`).
+    await navigate({ href: redirect ?? '/' });
   };
 
   const password = useZodForm(loginSchema, async (data) => signedIn(await authApi.login(data)));

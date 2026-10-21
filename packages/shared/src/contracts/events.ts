@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isPermission, type Permission } from './auth.ts';
+import type { Permission } from './auth.ts';
 import { engineSourceSchema } from './engine.ts';
 
 /**
@@ -26,16 +26,6 @@ const engineOrigin = {
 };
 
 const isoTime = z.iso.datetime({ offset: true });
-
-/**
- * The base envelope alone, loose: what the SSE plugin (#9) needs to route any fanout event
- * (station + type + id for `Last-Event-ID`) without knowing every domain's payload.
- */
-export const realtimeEnvelopeSchema = z.looseObject({
-  ...envelope,
-  type: z.string().regex(/^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/, 'expected `domain.event`'),
-});
-export type RealtimeEnvelope = z.infer<typeof realtimeEnvelopeSchema>;
 
 // ---------------------------------------------------------------------------------------
 // Engine (#28). Mapped one to one from the engine wire events, plus the adapter's own
@@ -157,21 +147,30 @@ export type RealtimeEvent = z.infer<typeof realtimeEventSchema>;
 export type RealtimeEventType = RealtimeEvent['type'];
 
 // ---------------------------------------------------------------------------------------
-// Who may see what. The SSE plugin forwards a station event to a subscriber of that station
-// only if they hold this permission. By default it's `<domain>:read`, the domain being the
-// type's first segment (`engine.track.started` → `engine:read`); a domain whose name isn't a
-// permission resource maps it here. Events with no permission are never forwarded.
+// Who may see what (#9). The SSE plugin forwards only the types declared here, each to the
+// subscribers of its station that hold the listed permission, re-serialised through the
+// type's schema (undeclared fields are dropped). A new event type must be added to this map:
+// the type checker refuses a missing entry, and the plugin drops undeclared types.
+// The browser fanout is best-effort: anything with side effects uses a durable queue.
 
-const eventDomainPermissions: Record<string, Permission> = {
-  asrun: 'log:read',
-};
+export const realtimeEventPermissions = {
+  'engine.up': 'engine:read',
+  'engine.down': 'engine:read',
+  'engine.booted': 'engine:read',
+  'engine.track.started': 'engine:read',
+  'engine.track.ended': 'engine:read',
+  'engine.live.connected': 'engine:read',
+  'engine.live.disconnected': 'engine:read',
+  'engine.live.gate': 'engine:read',
+  'engine.blank.detected': 'engine:read',
+  'engine.blank.recovered': 'engine:read',
+} as const satisfies Record<RealtimeEventType, Permission>;
 
+/** Permission needed to receive `type` over SSE; `null` for types the contract doesn't declare. */
 export function eventReadPermission(type: string): Permission | null {
-  const domain = type.split('.', 1)[0] ?? '';
-  const mapped = eventDomainPermissions[domain];
-  if (mapped) return mapped;
-  const permission = `${domain}:read`;
-  return isPermission(permission) ? permission : null;
+  return Object.hasOwn(realtimeEventPermissions, type)
+    ? realtimeEventPermissions[type as RealtimeEventType]
+    : null;
 }
 
 // ---------------------------------------------------------------------------------------

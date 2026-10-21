@@ -77,8 +77,34 @@ describe('sign-in', () => {
     expect(history.location.search).toContain('redirect=%2Faccount');
   });
 
-  it('ignores redirects to other sites', async () => {
-    const { user, screen, history } = renderApp('/login?redirect=%2F%2Fevil.example', {
+  it('goes back to the page that asked, query string included', async () => {
+    const token = 'invitation-token-0123456789';
+    let signedInNow = false;
+    const { user, screen, history } = renderApp(`/invitations/accept?token=${token}`, {
+      ...signedIn(),
+      'GET /auth/me': () =>
+        signedInNow ? [200, me] : [401, { error: 'unauthenticated', message: '' }],
+      'POST /auth/login': () => {
+        signedInNow = true;
+        return [200, { status: 'ok', me }];
+      },
+    });
+    await user.click(await screen.findByRole('button', { name: 'I already have an account' }));
+    await user.type(await screen.findByLabelText('Email'), 'dj@vandale.test');
+    await user.type(screen.getByLabelText('Password'), password);
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByText(`Signed in as ${me.user.email}.`)).toBeVisible();
+    expect(history.location.pathname).toBe('/invitations/accept');
+    expect(history.location.search).toBe(`?token=${token}`);
+  });
+
+  it.each([
+    '%2F%2Fevil.example',
+    '%2F%09%2Fevil.example',
+    '%2F%5Cevil.example',
+    'https%3A%2F%2Fevil.example',
+  ])('ignores redirects to other sites (%s)', async (target) => {
+    const { user, screen, history } = renderApp(`/login?redirect=${target}`, {
       ...signedIn(),
       'GET /auth/me': [401, { error: 'unauthenticated', message: '' }],
       'POST /auth/login': [200, { status: 'ok', me }],

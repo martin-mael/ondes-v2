@@ -32,10 +32,19 @@ export interface RouterContext {
   queryClient: QueryClient;
 }
 
-/** Only same-app paths: `/x`, never `//evil.example` or `https://…`. */
+/**
+ * Only same-app paths: `/x`, never `//evil.example`, `https://…`, `/\evil` or paths with
+ * control characters (`/\t/evil` becomes `//evil` once browsers strip the tab).
+ */
 const internalPath = z
   .string()
-  .refine((value) => value.startsWith('/') && !value.startsWith('//') && !value.includes('\\'))
+  .refine(
+    (value) =>
+      value.startsWith('/') &&
+      !value.startsWith('//') &&
+      !value.includes('\\') &&
+      !/\p{Cc}/u.test(value),
+  )
   .optional()
   .catch(undefined);
 const token = z.string().min(1).optional().catch(undefined);
@@ -55,7 +64,7 @@ const authLayout = createRoute({
 
 /** Signed-in users skip sign-in and sign-up. */
 const redirectIfSignedIn = async (queryClient: QueryClient, to = '/') => {
-  if (await queryClient.ensureQueryData(meQuery)) throw redirect({ to });
+  if (await queryClient.ensureQueryData(meQuery)) throw redirect({ href: to });
 };
 
 export const loginRoute = createRoute({

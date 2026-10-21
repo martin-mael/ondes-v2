@@ -8,7 +8,7 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import { API_BASE, ApiError } from '../api/client.ts';
+import { API_BASE, isApiError, request } from '../api/client.ts';
 import { reportApiError } from '../errors.ts';
 
 // Real-time events (#9): one EventSource per open station on
@@ -47,6 +47,8 @@ export function connectSse(
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let attempts = 0;
   let closed = false;
+  /** Last event id seen, for reconnects we make ourselves (the browser's own send the header). */
+  let lastEventId = '';
 
   const setStatus = (next: SseStatus) => {
     if (next === status) return;
@@ -57,13 +59,16 @@ export function connectSse(
   const open = () => {
     if (closed) return;
     setStatus('connecting');
-    const es = createSource(url);
+    const es = createSource(
+      lastEventId ? `${url}?lastEventId=${encodeURIComponent(lastEventId)}` : url,
+    );
     source = es;
     es.onopen = () => {
       attempts = 0;
       setStatus('open');
     };
     es.onmessage = (message: MessageEvent<string>) => {
+      if (message.lastEventId) lastEventId = message.lastEventId;
       let data: unknown;
       try {
         data = JSON.parse(message.data);
@@ -92,25 +97,18 @@ export function connectSse(
     };
   };
 
-  /** Asks the api why the stream was refused. True when retrying won't help. */
+  /**
+   * Asks the api why the stream was refused, through the stream's access check (which opens
+   * no stream). True when retrying won't help.
+   */
   const diagnose = async (): Promise<boolean> => {
-    const controller = new AbortController();
     try {
-      const res = await fetch(url, {
-        credentials: 'same-origin',
-        headers: { accept: 'text/event-stream' },
-        signal: controller.signal,
-      });
-      if (res.ok) return false;
-      const body = await res.json().catch(() => null);
-      reportApiError(
-        new ApiError(res.status, body?.error ?? 'http_error', body?.message ?? res.statusText),
-      );
-      return res.status === 401 || res.status === 403 || res.status === 404;
-    } catch {
+      await request(`/stations/${encodeURIComponent(stationId)}/events/access`);
       return false;
-    } finally {
-      controller.abort();
+    } catch (error) {
+      if (!isApiError(error) || error.status === 0) return false;
+      reportApiError(error);
+      return error.status === 401 || error.status === 403 || error.status === 404;
     }
   };
 
