@@ -29,7 +29,7 @@ apps/
     plugins/            # fastify plugins: db, auth, rabbit, sse, errors
     modules/<module>/   # routes.ts, service.ts, repo.ts, *.test.ts
                         # auth, orgs, stations, library, engine, asrun, rotation,
-                        # clocks, shows, log, public, jobs, alerts, cache
+                        # clocks, shows, log, public, jobs, alerts, cache, segues
   worker/src/
     jobs/<job>/         # one folder per job type: ingest, loudness, autocue, analysis,
                         # peaks, dedupe, cache-sync (+ cache-fetch, its urgent
@@ -44,6 +44,7 @@ packages/
   shared/src/
     contracts/<domain>.ts  # zod schemas + inferred types: API DTOs, events, job payloads
     time/                  # timezone/DST helpers (station-local ↔ UTC)
+    segues/                # island derivation and hashing (pure, shared by api, worker, web)
   db/
     src/schema/<domain>.ts # one file per domain: tenancy, library, engine, asrun,
                            # rotation, clocks, shows, log, segues, live, alerts,

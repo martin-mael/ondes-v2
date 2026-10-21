@@ -3,7 +3,7 @@ import { PLAYOUT_FLAC_BLOCK_SIZE, PLAYOUT_SAMPLE_RATE, sha256HexSchema } from '.
 import { logRangeQuerySchema } from './log.ts';
 import { uuidSchema } from './tenancy.ts';
 
-// Segues and islands (#55, ADR 0016). A segue is the transition between two consecutive log
+// Segues and islands (#55, ADR 0017). A segue is the transition between two consecutive log
 // items, A (outgoing) and B (incoming), with voice tracks over it. An island is the audio the
 // renderer (#56) mixes from it: the stretch where playback deviates from "A, then B", rendered
 // into one FLAC and played by the engine as `A body → island → B body`, one merged segment

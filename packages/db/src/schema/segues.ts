@@ -27,7 +27,7 @@ import { asset } from './library.ts';
 import { logItem } from './log.ts';
 import { station, user } from './tenancy.ts';
 
-// Segues and islands (#55, ADR 0016). Contracts: packages/shared/src/contracts/segues.ts.
+// Segues and islands (#55, ADR 0017). Contracts: packages/shared/src/contracts/segues.ts.
 //
 // A `segue` joins two log items, A → B; its lanes are jsonb (positions are samples on the
 // segue's axis, 0 = A's end). Item references are `on delete set null`: deleting A or B keeps

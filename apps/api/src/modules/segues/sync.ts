@@ -29,7 +29,7 @@ import {
 } from '@ondes/shared';
 import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 
-// Island sync (#55, ADR 0016): keeps every segue's status and the station's islands in step
+// Island sync (#55, ADR 0017): keeps every segue's status and the station's islands in step
 // with the log and the library. Runs inside the caller's transaction: after each segue write
 // (audited by the caller), and from the event consumer when the log or an asset changes
 // (`plugin.ts`). Re-deriving is cheap and idempotent: an island whose spec hash didn't change

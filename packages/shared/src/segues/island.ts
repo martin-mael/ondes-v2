@@ -18,7 +18,7 @@ import {
 import { stableStringify } from '../json.ts';
 import { sha256Hex } from './sha256.ts';
 
-// Island derivation (#55, ADR 0016): segues → island specs. Pure and deterministic, so the api
+// Island derivation (#55, ADR 0017): segues → island specs. Pure and deterministic, so the api
 // (on every save and log change), the renderer (#56) and the feeder (#57, to check that a
 // rendered island still matches its inputs at air time) all compute the same spec and hash.
 //
