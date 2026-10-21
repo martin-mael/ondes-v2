@@ -37,19 +37,66 @@ export function bitrateAllowed(format: OutputFormat, kbps: number): boolean {
   return 'min' in allowed ? kbps >= allowed.min && kbps <= allowed.max : allowed.includes(kbps);
 }
 
+/** Icecast mount path without the leading slash: `vandale/mp3`. Segments are `name`s. */
+const mountPath = z
+  .string()
+  .max(64)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*(\/[A-Za-z0-9][A-Za-z0-9_.-]*)*$/);
+
+/**
+ * Fields of an output that only Icecast reads (`apps/api/src/modules/engine/icecast`), not the
+ * Liquidsoap script: changing them reloads Icecast, never restarts the engine.
+ */
+export const ICECAST_ONLY_OUTPUT_FIELDS = [
+  'maxListeners',
+  'burstSize',
+  'queueSize',
+  'fallback',
+  'intro',
+] as const;
+
 export const icecastOutputSchema = z
   .object({
-    /** Icecast mount, without the leading slash: `vandale.mp3`. */
-    mount: name.max(64),
+    /**
+     * Icecast mount, without the leading slash, in the station's namespace:
+     * `<station-slug>/<format>` (`vandale/mp3`). The Icecast config generator enforces the
+     * namespace.
+     */
+    mount: mountPath,
     format: outputFormatSchema,
     /** kbps. */
     bitrate: z.int(),
     /** Listed in the Icecast directory (YP). */
     public: z.boolean().default(false),
+    /** Listeners on this mount at once; the next ones get the fallback file. Icecast caps it. */
+    maxListeners: z.int().min(1).max(16384).default(500),
+    /** Bytes sent at once to a new listener (fast start). Must stay below `queueSize`. */
+    burstSize: z
+      .int()
+      .min(0)
+      .max(4 * 1024 * 1024)
+      .default(64 * 1024),
+    /** Bytes a listener may lag behind before Icecast drops it. */
+    queueSize: z
+      .int()
+      .min(16 * 1024)
+      .max(16 * 1024 * 1024)
+      .default(512 * 1024),
+    /**
+     * Listeners fall back to the station's emergency loop, pre-encoded in this mount's format,
+     * when the engine is not connected (stopped, restarting) or the mount is full.
+     */
+    fallback: z.boolean().default(true),
+    /** Play the station's intro file (same format) to each new listener before the stream. */
+    intro: z.boolean().default(false),
   })
   .refine((o) => bitrateAllowed(o.format, o.bitrate), {
     message: 'bitrate not supported by this format',
     path: ['bitrate'],
+  })
+  .refine((o) => o.burstSize < o.queueSize, {
+    message: 'must be below queueSize',
+    path: ['burstSize'],
   });
 export type IcecastOutput = z.output<typeof icecastOutputSchema>;
 

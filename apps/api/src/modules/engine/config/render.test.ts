@@ -88,4 +88,25 @@ describe('renderStationScript', () => {
     const versions = combos().map((c) => renderStationScript(c.settings).version);
     expect(new Set(versions).size).toBe(versions.length);
   });
+
+  it('keeps the version when only Icecast-only output fields change', () => {
+    const mp3 = { mount: 'vandale.mp3', format: 'mp3', bitrate: 128 } as const;
+    const base = renderStationScript(settings);
+    const icecastOnly = renderStationScript({
+      ...settings,
+      outputs: [{ ...mp3, maxListeners: 50, burstSize: 1024, fallback: false, intro: true }],
+    });
+    expect(icecastOnly.version).toBe(base.version);
+    expect(icecastOnly.script).toBe(base.script);
+    const bitrate = renderStationScript({ ...settings, outputs: [{ ...mp3, bitrate: 192 }] });
+    expect(bitrate.version).not.toBe(base.version);
+  });
+
+  it('accepts namespaced mounts', () => {
+    const { script } = renderStationScript({
+      ...settings,
+      outputs: [{ mount: 'vandale/mp3', format: 'mp3', bitrate: 128 }],
+    });
+    expect(script).toContain('mount="vandale/mp3"');
+  });
 });

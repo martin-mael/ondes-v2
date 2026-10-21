@@ -36,6 +36,15 @@
         <header type="cors" name="Access-Control-Expose-Headers" />
     </http-headers>
 
+    <!--
+      Every mount: Liquidsoap sends names and metadata as UTF-8; without this Icecast reads
+      them as Latin-1 on MP3/AAC mounts (#27). The generated production config sets it per
+      mount too (apps/api/src/modules/engine/icecast).
+    -->
+    <mount type="default">
+        <charset>UTF-8</charset>
+    </mount>
+
     <fileserve>1</fileserve>
 
     <paths>
