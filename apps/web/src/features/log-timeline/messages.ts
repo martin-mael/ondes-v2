@@ -79,6 +79,7 @@ const en = {
 
   'badge.locked': 'Locked',
   'badge.relaxed': 'Rule relaxed',
+  'relaxed.rule': 'Relaxed: {rule}',
   'badge.overrun': 'Overrun {duration}',
   'badge.gap': 'Gap {duration}',
   'badge.missing': 'Missing asset',
@@ -164,6 +165,7 @@ const en = {
 
   'error.log_item_locked': 'This item is locked: unlock it first.',
   'error.segment_part': 'Edit the island this item is a part of.',
+  'error.log_item_aired': 'This item aired or is on air: it can’t change any more.',
   'error.edit_conflict': 'The log changed meanwhile. It’s reloaded: try again.',
   'error.invalid_placement': 'An item can’t go there.',
   forbidden: 'You can’t see this station’s log.',
@@ -247,6 +249,7 @@ const fr: Record<TimelineMessageKey, string> = {
 
   'badge.locked': 'Verrouillé',
   'badge.relaxed': 'Règle assouplie',
+  'relaxed.rule': 'Assouplie : {rule}',
   'badge.overrun': 'Dépassement {duration}',
   'badge.gap': 'Trou {duration}',
   'badge.missing': 'Média manquant',
@@ -332,6 +335,7 @@ const fr: Record<TimelineMessageKey, string> = {
 
   'error.log_item_locked': 'Cet élément est verrouillé : déverrouillez-le d’abord.',
   'error.segment_part': 'Modifiez l’îlot dont cet élément fait partie.',
+  'error.log_item_aired': 'Cet élément est déjà passé ou à l’antenne : il ne peut plus changer.',
   'error.edit_conflict': 'Le conducteur a changé entre-temps. Il est rechargé : réessayez.',
   'error.invalid_placement': 'Un élément ne peut pas aller là.',
   forbidden: 'Vous ne pouvez pas voir le conducteur de cette station.',
@@ -355,4 +359,10 @@ export function useTimelineT(): TimelineT {
       ),
     [locale],
   );
+}
+
+/** A rotation rule kind (#38) in words; a kind this build doesn't know shows as it is. */
+export function ruleLabel(t: TimelineT, kind: string): string {
+  const key = `rule.${kind}` as TimelineMessageKey;
+  return t(key);
 }

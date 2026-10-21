@@ -24,7 +24,7 @@ import {
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu';
 import { KIND_COLORS } from './day-strip.tsx';
-import type { TimelineT } from './messages.ts';
+import { ruleLabel, type TimelineT } from './messages.ts';
 import { type ItemState, isAssetKind, isFrozen, type ShowBlock } from './model.ts';
 import { formatClock, formatDuration, formatSigned } from './time.ts';
 import type { PassedOver } from './use-live.ts';
@@ -63,8 +63,9 @@ export interface ItemRowProps {
   selected: boolean;
   canWrite: boolean;
   canListen: boolean;
-  /** The neighbours allow it: nothing goes before an aired or on-air item. */
+  /** The neighbours allow it: nothing goes next to the far side of an aired or on-air item. */
   canInsertBefore: boolean;
+  canInsertAfter: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
   /** The next item, for the transition preview. */
@@ -154,6 +155,16 @@ export function ItemRow(props: ItemRowProps) {
           )}
         </span>
         {artists && <span className="truncate pl-4 text-xs text-muted-foreground">{artists}</span>}
+        {item.relaxedRules.length > 0 && (
+          <ul className="pl-4 text-xs text-amber-700 dark:text-amber-400">
+            {item.relaxedRules.map((r) => (
+              <li key={`${r.rule}:${r.reason ?? ''}`}>
+                {t('relaxed.rule', { rule: ruleLabel(t, r.rule) })}
+                {r.reason && <span className="text-muted-foreground"> · {r.reason}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
         {item.kind === 'segment' && <SegmentParts t={t} parts={item.parts} timeZone={timeZone} />}
       </span>
       <ItemBadges {...props} missing={missing} />
@@ -178,15 +189,11 @@ function ItemBadges({
   return (
     <span className="col-span-2 col-start-3 flex flex-wrap items-center justify-end gap-1 sm:col-span-1 sm:col-start-auto">
       {item.timing !== 'flow' && item.anchorAt && (
-        <Badge
-          variant="secondary"
-          title={
-            item.capMs !== null
-              ? t('timing.cap', { duration: formatDuration(item.capMs) })
-              : undefined
-          }
-        >
+        <Badge variant="secondary">
           {t(`timing.${item.timing}`, { time: formatClock(item.anchorAt, timeZone) })}
+          {item.timing === 'soft' &&
+            item.capMs !== null &&
+            ` · ${t('timing.cap', { duration: formatDuration(item.capMs) })}`}
         </Badge>
       )}
       {item.conflict && (
@@ -196,16 +203,7 @@ function ItemBadges({
           })}
         </Badge>
       )}
-      {item.relaxedRules.length > 0 && (
-        <Badge
-          variant="outline"
-          title={item.relaxedRules
-            .map((r) => (r.reason ? `${r.rule}: ${r.reason}` : r.rule))
-            .join('\n')}
-        >
-          {t('badge.relaxed')}
-        </Badge>
-      )}
+      {item.relaxedRules.length > 0 && <Badge variant="outline">{t('badge.relaxed')}</Badge>}
       {item.locked && (
         <Badge variant="outline">
           <LockIcon data-icon="inline-start" />
@@ -226,9 +224,7 @@ function ItemBadges({
         </Badge>
       )}
       {passedOver && !aired && (
-        <Badge variant="destructive" title={t(`passedOver.${passedOver.reason}`)}>
-          {t('passedOver.title')}
-        </Badge>
+        <Badge variant="destructive">{t(`passedOver.${passedOver.reason}`)}</Badge>
       )}
     </span>
   );
@@ -264,6 +260,7 @@ function ItemMenu({
   editable,
   canListen,
   canInsertBefore,
+  canInsertAfter,
   canMoveUp,
   canMoveDown,
   next,
@@ -304,10 +301,12 @@ function ItemMenu({
                 {t('action.insertBefore')}
               </DropdownMenuItem>
             )}
-            <DropdownMenuItem onClick={() => onAction('insertAfter', item)}>
-              <BetweenHorizontalEndIcon />
-              {t('action.insertAfter')}
-            </DropdownMenuItem>
+            {canInsertAfter && (
+              <DropdownMenuItem onClick={() => onAction('insertAfter', item)}>
+                <BetweenHorizontalEndIcon />
+                {t('action.insertAfter')}
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               disabled={!changeable || item.kind === 'segment'}
               onClick={() => onAction('replace', item)}

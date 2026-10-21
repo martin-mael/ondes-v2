@@ -1,5 +1,5 @@
 import type { LogDay, LogItem, MyOrg } from '@ondes/shared';
-import { act, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeEventSource } from '../../app/testing/fake-event-source.ts';
 import { type ApiRoute, orgs, renderApp, signedIn, stationId } from '../../app/testing/render.tsx';
@@ -159,9 +159,12 @@ describe('log timeline', () => {
     expect(within(current).getByText('12:00:00')).toBeInTheDocument();
     expect(within(current).getByText('12:00:04')).toBeInTheDocument();
     expect(within(current).getByText('+4 s')).toBeInTheDocument();
-    expect(within(current).getByText('Soft 12:00:00')).toBeInTheDocument();
+    expect(within(current).getByText('Soft 12:00:00 · up to 1:00 late')).toBeInTheDocument();
     expect(within(row('Rue Merciere')).getByText('Cut')).toBeInTheDocument();
     expect(within(row('Saone Drift')).getByText('In the engine queue')).toBeInTheDocument();
+    // Why a rule was relaxed, in the row itself.
+    expect(within(row('Saone Drift')).getByText('Relaxed: Artist separation')).toBeInTheDocument();
+    expect(within(row('Saone Drift')).getByText(/no other artist fits/)).toBeInTheDocument();
     expect(within(row('La Matinale')).getByText('Locked')).toBeInTheDocument();
     expect(within(row('La Matinale')).getByText('Show')).toBeInTheDocument();
 
@@ -212,8 +215,9 @@ describe('log timeline', () => {
         },
       }),
     );
-    const badge = await within(row('Pentes')).findByText('Passed over');
-    expect(badge).toHaveAttribute('title', 'Passed over: not in the playout cache');
+    expect(
+      await within(row('Pentes')).findByText('Passed over: not in the playout cache'),
+    ).toBeInTheDocument();
   });
 
   it('refetches the day on log.updated', async () => {
@@ -452,4 +456,254 @@ describe('log timeline', () => {
     await user.click(screen.getByRole('button', { name: 'Publish' }));
     await waitFor(() => expect(status).toEqual({ status: 'published' }));
   });
+
+  it('refetches the log and the as-run after the stream reconnects', async () => {
+    const { screen } = renderApp(`${base}/log`, routes('presenter'));
+    await screen.findByText('Pentes');
+    const source = FakeEventSource.last();
+    act(() => source.open());
+    const count = (part: string) =>
+      vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes(part)).length;
+    const logs = count(`${base}/log?`);
+    const asruns = count(`${base}/asrun?`);
+    // The connection drops (the browser retries by itself), then comes back.
+    act(() => {
+      source.readyState = FakeEventSource.CONNECTING;
+      source.onerror?.();
+    });
+    act(() => source.open());
+    await waitFor(() => expect(count(`${base}/log?`)).toBeGreaterThan(logs));
+    expect(count(`${base}/asrun?`)).toBeGreaterThan(asruns);
+  });
+
+  it('moves an item by drag and drop, never next to the far side of what aired', async () => {
+    const moves: unknown[] = [];
+    const { screen } = renderApp(
+      `${base}/log`,
+      routes('programmer', {
+        [`POST ${base}/log/items/${later.id}/move`]: (b) => {
+          moves.push(b);
+          return [...result(later)] as [number, unknown];
+        },
+      }),
+    );
+    await screen.findByText('Pentes');
+    const store = new Map<string, string>();
+    const dataTransfer = {
+      setData: (k: string, v: string) => store.set(k, v),
+      getData: (k: string) => store.get(k) ?? '',
+      get types() {
+        return [...store.keys()];
+      },
+      effectAllowed: 'all',
+      dropEffect: 'none',
+    };
+    const dragged = row('Pentes');
+    expect(dragged).toHaveAttribute('draggable', 'true');
+    // Aired rows don't drag.
+    expect(row('Rue Merciere')).toHaveAttribute('draggable', 'false');
+    fireEvent.dragStart(dragged, { dataTransfer });
+    const target = row('La Matinale');
+    fireEvent.dragOver(target, { dataTransfer });
+    // happy-dom lays nothing out: any pointer is in the lower half, so "after".
+    fireEvent.drop(target, { dataTransfer, clientY: 10 });
+    await waitFor(() => expect(moves).toEqual([{ placement: { after: locked.id } }]));
+
+    // Dropping onto the on-air row is refused: nothing lands next to what's on air.
+    fireEvent.dragStart(dragged, { dataTransfer });
+    fireEvent.drop(row('Fourviere'), { dataTransfer, clientY: 10 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(moves).toHaveLength(1);
+  });
+
+  it('suggests replacements from the rules engine, with its reasons', async () => {
+    const pick = libraryAsset('c1', 'Confluence', 203_000);
+    const eligible = libraryAsset('c2', 'Ainay', 207_000);
+    const breaking = libraryAsset('c3', 'Monplaisir', 218_000);
+    let pickBody: unknown;
+    let replaced: unknown;
+    const { screen, user } = renderApp(
+      `${base}/log`,
+      routes('programmer', {
+        [`GET ${base}/categories`]: [200, { items: [category('Power', 'song')] }],
+        [`POST ${base}/rotation/pick`]: (b) => {
+          pickBody = b;
+          return [
+            200,
+            {
+              picks: [
+                {
+                  categoryId,
+                  at: later.plannedStart,
+                  asset: { ...summaryOf(pick), album: null },
+                  relaxed: [{ rule: 'song_rest', reason: 'blocked 3 of 3 candidates' }],
+                  candidates: 3,
+                  ranked: [
+                    candidate(breaking, 0, false, [
+                      {
+                        ruleId: 'artist',
+                        kind: 'artist_separation',
+                        detail: 'same artist 12 min before',
+                        values: {},
+                      },
+                    ]),
+                    candidate(eligible, 2, false, []),
+                    candidate(pick, 1, true, []),
+                  ],
+                },
+              ],
+            },
+          ];
+        },
+        [`GET ${base}/assets/${pick.id}`]: [200, assetDetail(pick)],
+        [`PUT ${base}/log/items/${later.id}`]: (b) => {
+          replaced = b;
+          return [...result(later)] as [number, unknown];
+        },
+      }),
+    );
+    await screen.findByText('Pentes');
+    await user.click(screen.getByRole('button', { name: 'Actions for Pentes' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Replace…' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText('Rules pick')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Rules' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(pickBody).toEqual({
+      slots: [{ categoryId, at: later.plannedStart }],
+      explain: true,
+      ignoreLogItemIds: [later.id],
+    });
+    // The pick, then who respects every rule, then who breaks one (with why).
+    const titles = within(dialog)
+      .getAllByRole('button', { name: /^Choose: / })
+      .map((b) => b.getAttribute('aria-label'));
+    expect(titles).toEqual(['Choose: Confluence', 'Choose: Ainay', 'Choose: Monplaisir']);
+    expect(within(dialog).getByText('Respects every rule')).toBeInTheDocument();
+    expect(within(dialog).getByText('Artist separation')).toBeInTheDocument();
+    expect(within(dialog).getByText(/same artist 12 min before/)).toBeInTheDocument();
+    expect(
+      within(dialog).getByText('To fill this slot, the rules engine relaxed:'),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText('Song rest')).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Choose: Confluence' }));
+    await waitFor(() =>
+      expect(replaced).toMatchObject({
+        kind: 'song',
+        assetId: pick.id,
+        plannedDurationMs: 203_020,
+      }),
+    );
+  });
+
+  it('falls back to the library when the rules engine isn’t there', async () => {
+    const fits = libraryAsset('a1', 'Confluence', 203_000);
+    const { screen, user } = renderApp(
+      `${base}/log`,
+      routes('programmer', {
+        [`GET ${base}/categories`]: [200, { items: [category('Power', 'song')] }],
+        [`POST ${base}/rotation/pick`]: [404, { error: 'not_found', message: 'Route not found' }],
+        [`GET ${base}/assets`]: [200, { items: [fits], nextCursor: null }],
+      }),
+    );
+    await screen.findByText('Pentes');
+    await user.click(screen.getByRole('button', { name: 'Actions for Pentes' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Replace…' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText('Confluence')).toBeInTheDocument();
+    expect(within(dialog).getByText('Fits the slot (3:20)')).toBeInTheDocument();
+  });
+
+  it('searches the whole library for lengths that fit, closest first', async () => {
+    const near = libraryAsset('d1', 'Near', 201_000);
+    const far = libraryAsset('d2', 'Far', 220_000);
+    let search: unknown;
+    const { screen, user } = renderApp(
+      `${base}/log`,
+      routes('programmer', {
+        [`POST ${base}/library/search`]: (b) => {
+          search = b;
+          return [200, { items: [far, near], nextCursor: null }];
+        },
+      }),
+    );
+    await screen.findByText('Pentes');
+    await user.click(screen.getByRole('button', { name: 'Actions for Pentes' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Replace…' }));
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByText('Near');
+    expect(search).toEqual({
+      filter: { types: ['song'], durationMs: { min: 170_000, max: 230_000 } },
+      sort: 'duration',
+      direction: 'asc',
+      limit: 200,
+    });
+    const titles = within(dialog)
+      .getAllByRole('button', { name: /^Choose: / })
+      .map((b) => b.getAttribute('aria-label'));
+    expect(titles).toEqual(['Choose: Near', 'Choose: Far']);
+  });
 });
+
+const categoryId = '01a15ddf-0000-7000-8000-0000000000c1';
+
+function category(name: string, assetType: 'song' | 'jingle') {
+  return {
+    id: categoryId,
+    orgId: orgs[0]?.id ?? '',
+    stationId,
+    name,
+    description: null,
+    color: null,
+    assetType,
+    rule: null,
+    rotationOrder: 'least_recently_played',
+    searchDepthPercent: 100,
+    restMinutes: 180,
+    maxPlaysPerDay: null,
+    maxPlaysPerWeek: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    counts: {
+      members: 3,
+      schedulable: 3,
+      ruleMatches: 0,
+      manualOnly: 3,
+      excluded: 0,
+      totalDurationMs: 600_000,
+    },
+  };
+}
+
+const summaryOf = (a: {
+  id: string;
+  title: string;
+  artists: string[];
+  durationMs: number | null;
+}) => ({
+  id: a.id,
+  title: a.title,
+  artists: a.artists,
+  durationMs: a.durationMs,
+});
+
+function candidate(
+  a: { id: string; title: string; artists: string[] },
+  position: number,
+  picked: boolean,
+  violations: { ruleId: string; kind: string; detail: string; values: Record<string, number> }[],
+) {
+  return {
+    assetId: a.id,
+    title: a.title,
+    artists: a.artists,
+    position,
+    lastPlayedAt: null,
+    violations,
+    notes: [],
+    picked,
+  };
+}

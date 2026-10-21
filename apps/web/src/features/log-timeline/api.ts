@@ -28,26 +28,6 @@ import { dayBounds } from './time.ts';
 
 const station = (stationId: string) => `/stations/${encodeURIComponent(stationId)}`;
 
-/**
- * The api client revives `…At` strings as `Date` (for the contracts typed with `z.date()`),
- * but the log and as-run contracts keep ISO strings (`startsAt`, `anchorAt`, `startedAt`):
- * turn them back before validating.
- */
-function datesToIso(value: unknown): unknown {
-  if (value instanceof Date) return value.toISOString();
-  if (Array.isArray(value)) return value.map(datesToIso);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, datesToIso(v)]));
-  }
-  return value;
-}
-const isoWire = <S extends z.ZodType>(schema: S) => z.preprocess(datesToIso, schema);
-
-const logRangeWire = isoWire(logRangeResponseSchema);
-const editWire = isoWire(logEditResultSchema);
-const dayWire = isoWire(logDayResponseSchema);
-const asRunWire = isoWire(asRunListSchema);
-
 // The two calls below belong to work landing in the same wave as this screen. Their contracts
 // aren't on main yet, so these are the subsets read here, mirroring them field for field:
 // - `pickResponseSchema` (packages/shared/src/contracts/rotation-rules.ts, #38);
@@ -111,36 +91,39 @@ const params = (query: Record<string, string | number | undefined>) => {
 
 export const timelineApi = {
   range: (stationId: string, from: string, to: string, signal?: AbortSignal) =>
-    request(`${station(stationId)}/log?${params({ from, to })}`, { schema: logRangeWire, signal }),
+    request(`${station(stationId)}/log?${params({ from, to })}`, {
+      schema: logRangeResponseSchema,
+      signal,
+    }),
   insert: (stationId: string, body: InsertLogItem) =>
-    request(`${station(stationId)}/log/items`, { body, schema: editWire }),
+    request(`${station(stationId)}/log/items`, { body, schema: logEditResultSchema }),
   replace: (stationId: string, itemId: string, body: ReplaceLogItem) =>
     request(`${station(stationId)}/log/items/${encodeURIComponent(itemId)}`, {
       method: 'PUT',
       body,
-      schema: editWire,
+      schema: logEditResultSchema,
     }),
   move: (stationId: string, itemId: string, placement: LogPlacement) =>
     request(`${station(stationId)}/log/items/${encodeURIComponent(itemId)}/move`, {
       body: { placement },
-      schema: editWire,
+      schema: logEditResultSchema,
     }),
   lock: (stationId: string, itemId: string, locked: boolean) =>
     request(`${station(stationId)}/log/items/${encodeURIComponent(itemId)}/lock`, {
       method: 'PUT',
       body: { locked },
-      schema: editWire,
+      schema: logEditResultSchema,
     }),
   remove: (stationId: string, itemId: string) =>
     request(`${station(stationId)}/log/items/${encodeURIComponent(itemId)}`, {
       method: 'DELETE',
-      schema: editWire,
+      schema: logEditResultSchema,
     }),
   setStatus: (stationId: string, date: LocalDate, status: LogDayStatus) =>
     request(`${station(stationId)}/log/days/${date}/status`, {
       method: 'PUT',
       body: { status },
-      schema: dayWire,
+      schema: logDayResponseSchema,
     }),
   /** Every as-run entry of the station-local day, in air order. */
   asRun: async (stationId: string, date: LocalDate, signal?: AbortSignal) => {
@@ -149,7 +132,7 @@ export const timelineApi = {
     do {
       const page = await request(
         `${station(stationId)}/asrun?${params({ date, limit: 500, cursor })}`,
-        { schema: asRunWire, signal },
+        { schema: asRunListSchema, signal },
       );
       items.push(...page.items);
       cursor = page.nextCursor ?? undefined;
@@ -159,9 +142,15 @@ export const timelineApi = {
   categories: (stationId: string, signal?: AbortSignal) =>
     request(`${station(stationId)}/categories`, { schema: categoryListSchema, signal }),
   /** #38: the rules engine's pick for one slot, with every candidate's verdicts. */
-  pick: async (stationId: string, slot: { categoryId: string; at: string }) => {
+  pick: async (
+    stationId: string,
+    slot: { categoryId: string; at: string },
+    ignoreLogItemIds: string[] = [],
+  ) => {
     const { picks } = await request(`${station(stationId)}/rotation/pick`, {
-      body: { slots: [slot], explain: true },
+      // `ignoreLogItemIds`: leave the item being replaced out of the history, so its own song
+      // and artist don't count against the candidates (asked of #38; ignored until it lands).
+      body: { slots: [slot], explain: true, ignoreLogItemIds },
       schema: pickWire,
     });
     const pick = picks[0];

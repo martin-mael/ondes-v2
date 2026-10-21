@@ -12,7 +12,7 @@ import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { Spinner } from '@/ui/spinner';
 import { isApiError } from '../../app/api/client.ts';
 import { type RankedCandidate, timelineApi } from './api.ts';
-import { type TimelineMessageKey, type TimelineT, useTimelineT } from './messages.ts';
+import { ruleLabel, type TimelineT, useTimelineT } from './messages.ts';
 import { usePreview } from './preview.tsx';
 import { formatDuration, formatSigned } from './time.ts';
 
@@ -68,6 +68,7 @@ export function AssetPickerDialog({
   targetMs,
   at,
   exclude,
+  replacing,
   pending,
   onPick,
 }: {
@@ -84,6 +85,8 @@ export function AssetPickerDialog({
   at?: string;
   /** The asset being replaced: not offered. */
   exclude?: string | null;
+  /** The log item being replaced: left out of the rules engine's history. */
+  replacing?: string;
   pending?: boolean;
   onPick(asset: PickedAsset, kind: PickKind): void;
 }) {
@@ -159,6 +162,7 @@ export function AssetPickerDialog({
             at={at}
             targetMs={targetMs}
             exclude={exclude}
+            replacing={replacing}
             pending={pending}
             onUnavailable={() => setSource('library')}
             onPick={(row) => onPick(row, kind)}
@@ -187,6 +191,7 @@ function RuleSuggestions({
   at,
   targetMs,
   exclude,
+  replacing,
   pending,
   onUnavailable,
   onPick,
@@ -197,14 +202,15 @@ function RuleSuggestions({
   at: string;
   targetMs?: number;
   exclude?: string | null;
+  replacing?: string;
   pending?: boolean;
   onUnavailable(): void;
   onPick(row: Row): void;
 }) {
   const [categoryId, setCategoryId] = useState(categories[0]?.id ?? '');
   const pick = useQuery({
-    queryKey: ['stations', stationId, 'rotation', 'pick', categoryId, at],
-    queryFn: () => timelineApi.pick(stationId, { categoryId, at }),
+    queryKey: ['stations', stationId, 'rotation', 'pick', categoryId, at, replacing],
+    queryFn: () => timelineApi.pick(stationId, { categoryId, at }, replacing ? [replacing] : []),
     enabled: !!categoryId,
     retry: false,
   });
@@ -300,13 +306,6 @@ function RuleSuggestions({
 export function rankCandidates(ranked: readonly RankedCandidate[]): RankedCandidate[] {
   const group = (c: RankedCandidate) => (c.picked ? 0 : c.violations.length === 0 ? 1 : 2);
   return [...ranked].sort((a, b) => group(a) - group(b) || a.position - b.position);
-}
-
-/** A rule kind in words; unknown kinds (a newer api) show as they are. */
-export function ruleLabel(t: TimelineT, kind: string): string {
-  const key = `rule.${kind}` as TimelineMessageKey;
-  const label = t(key);
-  return label === key ? kind : label;
 }
 
 function LibraryResults({

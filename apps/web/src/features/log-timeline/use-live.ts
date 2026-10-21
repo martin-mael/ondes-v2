@@ -1,7 +1,7 @@
 import type { AsRunEntry, FeederItemPassedOverEvent, LocalDate } from '@ondes/shared';
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
-import { useServerClock, useSseEvent } from '../../app/sse/sse.tsx';
+import { useEffect, useRef, useState } from 'react';
+import { useServerClock, useSseEvent, useSseStatus } from '../../app/sse/sse.tsx';
 import { asRunDayQuery, logKey } from './api.ts';
 import { dayBounds } from './time.ts';
 
@@ -9,7 +9,9 @@ import { dayBounds } from './time.ts';
 // - `log.updated`: refetch the log days it touched (events carry no full state, by contract);
 // - `asrun.started` / `asrun.ended`: patch the day's as-run, which moves the on-air highlight;
 // - `feeder.item.passed_over`: remembered for the page's lifetime (the event is transient and
-//   as-run doesn't record it).
+//   as-run doesn't record it);
+// - a reconnect after a drop: events were missed (no replay), so refetch the log and as-run.
+//   Passed-over notices missed meanwhile can't be recovered: no api records them.
 
 export type PassedOver = FeederItemPassedOverEvent['data'];
 
@@ -50,6 +52,18 @@ export function useTimelineLive(stationId: string, date: LocalDate, timeZone: st
   useSseEvent('feeder.item.passed_over', (event) => {
     setPassedOver((map) => new Map(map).set(event.data.itemId, event.data));
   });
+
+  const status = useSseStatus();
+  const opened = useRef(false);
+  const previous = useRef(status);
+  useEffect(() => {
+    if (status === 'open' && previous.current !== 'open' && opened.current) {
+      void queryClient.invalidateQueries({ queryKey: logKey(stationId) });
+      void queryClient.invalidateQueries({ queryKey: ['stations', stationId, 'asrun'] });
+    }
+    if (status === 'open') opened.current = true;
+    previous.current = status;
+  }, [status, queryClient, stationId]);
 
   return { passedOver };
 }

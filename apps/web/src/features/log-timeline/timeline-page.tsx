@@ -81,6 +81,7 @@ type Editing =
 
 const EDIT_ERRORS: Partial<Record<string, TimelineMessageKey>> = {
   log_item_locked: 'error.log_item_locked',
+  log_item_aired: 'error.log_item_aired',
   segment_part: 'error.segment_part',
   edit_conflict: 'error.edit_conflict',
   invalid_placement: 'error.invalid_placement',
@@ -273,7 +274,11 @@ function Timeline() {
   };
   const onDropItem = (draggedId: string, target: LogItem, where: 'before' | 'after') => {
     const dragged = items.find((i) => i.id === draggedId);
-    if (!dragged || isFrozen(stateOf(dragged))) return;
+    if (!dragged || isFrozen(stateOf(dragged)) || isFrozen(stateOf(target))) return;
+    // Same guard as the menu: the far-side neighbour of the drop point mustn't be frozen.
+    const i = indexOf(target);
+    const neighbour = where === 'before' ? items[i - 1] : items[i + 1];
+    if (neighbour && neighbour.id !== dragged.id && isFrozen(stateOf(neighbour))) return;
     edit.mutate({
       type: 'move',
       item: dragged,
@@ -429,6 +434,7 @@ function Timeline() {
                   const prev = items[i - 1];
                   const next = items[i + 1];
                   const prevFrozen = prev ? isFrozen(stateOf(prev)) : false;
+                  const nextFrozen = next ? isFrozen(stateOf(next)) : false;
                   return (
                     <ItemRow
                       key={item.id}
@@ -443,8 +449,9 @@ function Timeline() {
                       canWrite={canWrite}
                       canListen={canListen}
                       canInsertBefore={!prevFrozen}
+                      canInsertAfter={!nextFrozen}
                       canMoveUp={!!prev && !prevFrozen}
-                      canMoveDown={!!next}
+                      canMoveDown={!!next && !nextFrozen}
                       next={next}
                       onAction={onAction}
                       onDropItem={onDropItem}
@@ -491,6 +498,7 @@ function Timeline() {
         targetMs={editing?.type === 'replace' ? editing.item.plannedDurationMs : undefined}
         at={editing?.type === 'replace' ? editing.item.plannedStart : undefined}
         exclude={editing?.type === 'replace' ? editing.item.assetId : null}
+        replacing={editing?.type === 'replace' ? editing.item.id : undefined}
         pending={edit.isPending}
         onPick={(asset, kind) => {
           if (editing?.type === 'insert') {

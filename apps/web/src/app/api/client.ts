@@ -24,8 +24,10 @@ export const isApiError = (error: unknown, code?: string): error is ApiError =>
   error instanceof ApiError && (code === undefined || error.code === code);
 
 /**
- * Contracts type timestamps as `Date`, JSON carries ISO strings. Timestamp fields are named
- * `…At` (`createdAt`, `expiresAt`), so those are revived before validation.
+ * Most contracts type timestamps as `Date`, JSON carries ISO strings. Timestamp fields are
+ * named `…At` (`createdAt`, `expiresAt`), so those are revived before validation. Some contracts
+ * keep ISO strings instead (the log's `startsAt`/`anchorAt`, the as-run's `startedAt`): a body
+ * that doesn't validate revived is validated as sent. One body can't mix the two styles.
  */
 const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 export function reviveDates(key: string, value: unknown): unknown {
@@ -76,7 +78,12 @@ export async function request<S extends z.ZodType | undefined = undefined>(
     throw new ApiError(res.status, 'http_error', `${res.status} ${res.statusText}`);
   }
   if (!schema) return undefined as never;
-  const parsed = schema.safeParse(json);
+  let parsed = schema.safeParse(json);
+  if (!parsed.success) {
+    const raw = text ? safeParseJson(text, false) : undefined;
+    const asSent = schema.safeParse(raw);
+    if (asSent.success) parsed = asSent;
+  }
   if (!parsed.success) {
     throw new ApiError(res.status, 'invalid_response', `unexpected response from ${path}`, {
       issues: parsed.error.issues,
@@ -85,9 +92,9 @@ export async function request<S extends z.ZodType | undefined = undefined>(
   return parsed.data as never;
 }
 
-function safeParseJson(text: string): unknown {
+function safeParseJson(text: string, revive = true): unknown {
   try {
-    return JSON.parse(text, reviveDates);
+    return revive ? JSON.parse(text, reviveDates) : JSON.parse(text);
   } catch {
     return undefined;
   }
