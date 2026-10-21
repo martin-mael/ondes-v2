@@ -46,6 +46,10 @@ if its settings name another station's mount (they are also rejected when the pl
   (first start, config change, secret rotation), so Icecast knows a new password before the
   engine uses it. Icecast applies it 1–3 s after the file is written; Liquidsoap retries a
   refused connection on its own.
+- `secretsFor` creates the station's lifecycle row (with fresh secrets, engine `stopped`) on first
+  use, so the sync gives every station a stable password whether or not its engine ever ran.
+  That row references the station with `ON DELETE RESTRICT`: deleting a station must call
+  `engineLifecycle.remove(scope)` first.
 - **Without it** (the api alone, the tests): derived, `icecastSourcePassword(ICECAST_SOURCE_SECRET, stationId)`
   (an HMAC; `apps/api/src/modules/engine/icecast/passwords.ts`).
 - The generated file therefore holds the per-station passwords; the global ones (source, relay,
