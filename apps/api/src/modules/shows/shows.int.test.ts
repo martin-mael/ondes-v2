@@ -1,5 +1,6 @@
 import {
   addMembership,
+  asset,
   auditLog,
   createAsset,
   createOrganization,
@@ -812,8 +813,12 @@ describe('episode audio and numbers', () => {
       201,
     );
     expect(e.status).toBe('ready');
+    // The api refuses to delete audio an episode still needs (#23)...
     const del = await call('programmer', 'DELETE', `/assets/${audio.id}`);
-    expect(del.statusCode, del.body).toBe(204);
+    expect(del.statusCode, del.body).toBe(409);
+    expect(del.json().error).toBe('asset_in_use');
+    // ...and a delete that bypasses it still can't leave a ready episode without audio.
+    await t.tdb.db.delete(asset).where(eq(asset.id, audio.id));
     const after = await ok<Episode>(await call('viewer', 'GET', `/shows/${s.id}/episodes/${e.id}`));
     expect(after).toMatchObject({ assetId: null, status: 'planned' });
     // And the database refuses `ready` without audio, whoever writes it.
