@@ -66,6 +66,13 @@ export const engineLifecyclePlugin = fp(
       logger: app.log,
     });
     app.decorate('engineLifecycle', lifecycle);
+    if (!options.config.sharedIcecastSourcePassword) {
+      // Icecast has one global source password (deploy/icecast): per-station generated ones
+      // are only accepted with per-mount passwords, which the deploy doesn't configure.
+      app.log.warn(
+        'ICECAST_SOURCE_PASSWORD is not set: engines get per-station source passwords, which Icecast refuses unless mounts have their own passwords',
+      );
+    }
     app.decorate('stationEngines', engines);
 
     // Internal only (the engines' ENGINE_EVENTS_URL): never route /internal through Caddy.

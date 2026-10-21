@@ -25,7 +25,9 @@ Decision record: `docs/adr/0008-engine-lifecycle.md`.
 - **Secrets** in its environment (`ENGINE_CONTROL_TOKEN`, `ENGINE_LIVE_PASSWORD`,
   `ICECAST_SOURCE_PASSWORD`), never in the script. With `ICECAST_SOURCE_PASSWORD` set on the api,
   every engine uses that shared password (one Icecast `<source-password>`); unset, each engine
-  gets its station's generated one, for per-mount passwords.
+  gets its station's generated one, for per-mount passwords. The deploy's Icecast has a single
+  global source password (#32), so set `ICECAST_SOURCE_PASSWORD` in production; the api logs a
+  warning at boot when it's unset.
 - **Limits**: `NanoCpus`, `Memory` = `MemorySwap` (no swap), `PidsLimit`; `CapDrop: ALL`,
   `no-new-privileges`; json-file logs capped at 30 MB.
 - **Playout cache**: `<ENGINE_CACHE_ROOT>/<stationId>` bind-mounted read-only at `/cache`
