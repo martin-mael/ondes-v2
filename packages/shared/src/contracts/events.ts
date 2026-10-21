@@ -306,11 +306,41 @@ export type AssetIngestedEvent = z.infer<typeof assetIngestedEventSchema>;
 // ---------------------------------------------------------------------------------------
 // Every real-time event. Add other domains' schemas to this union.
 
+// ---------------------------------------------------------------------------------------
+// Feeder (#29): what the just-in-time feeder decided, for the as-run log (#30) and the UI.
+
+/**
+ * A log item will not air: a later item went on air, or the feeder dropped it to meet an
+ * anchor. Published once per item and engine boot; the id is deterministic in
+ * `(station, item, boot)`, so a durable consumer can dedupe. `reason`: `not_cached` (not in
+ * the playout cache), `unresolvable` (the engine refused the file), `no_media_file` (no
+ * playout file), `dropped` (removed by a soft or hard anchor).
+ */
+export const feederItemSkippedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('feeder.item.skipped'),
+  data: z.object({
+    itemId: z.uuid(),
+    /** The segment it belongs to, when a whole island chain is skipped. */
+    segmentId: z.uuid().nullable(),
+    plannedStart: isoTime,
+    reason: z.enum(['not_cached', 'unresolvable', 'no_media_file', 'dropped']),
+    bootId: z.string().nullable(),
+  }),
+});
+
+export type FeederItemSkippedEvent = z.infer<typeof feederItemSkippedEventSchema>;
+
+export const feederRealtimeEventSchema = z.discriminatedUnion('type', [
+  feederItemSkippedEventSchema,
+]);
+
 export const realtimeEventSchema = z.discriminatedUnion('type', [
   ...engineRealtimeEventSchema.options,
   ...logRealtimeEventSchema.options,
   ...alertRealtimeEventSchema.options,
   ...libraryRealtimeEventSchema.options,
+  ...feederRealtimeEventSchema.options,
 ]);
 export type RealtimeEvent = z.infer<typeof realtimeEventSchema>;
 export type RealtimeEventType = RealtimeEvent['type'];
@@ -347,6 +377,8 @@ export const realtimeEventPermissions = {
   // Library (#18): new assets for every reader; upload progress only for those who upload.
   'asset.ingested': 'library:read',
   'upload.updated': 'library:write',
+  // Feeder (#29): items that won't air.
+  'feeder.item.skipped': 'engine:read',
 } as const satisfies Record<RealtimeEventType, Permission>;
 
 /** Permission needed to receive `type` over SSE; `null` for types the contract doesn't declare. */

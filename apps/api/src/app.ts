@@ -10,6 +10,7 @@ import { health } from './health.ts';
 import { type AlertsPluginOptions, alertsPlugin } from './modules/alerts/plugin.ts';
 import { authRoutes } from './modules/auth/routes.ts';
 import { type CachePluginOptions, cachePlugin } from './modules/cache/plugin.ts';
+import { type FeederPluginOptions, feederPlugin } from './modules/engine/feeder/plugin.ts';
 import {
   type EngineLifecyclePluginOptions,
   engineLifecyclePlugin,
@@ -38,6 +39,8 @@ export interface AppOptions {
   alerts?: AlertsPluginOptions;
   /** Playout cache (#31): readiness API and cache alerts. */
   cache?: CachePluginOptions;
+  /** Log feeder (#29), on when the api manages engines and has RabbitMQ. `false` turns it off. */
+  feeder?: FeederPluginOptions | false;
   /** Media storage. Optional so tests that don't upload can skip S3; without it, no upload routes. */
   storage?: Storage;
   /** Upload route settings beyond `storage` (tests). */
@@ -96,6 +99,10 @@ export async function buildApp(options: AppOptions) {
   });
   // Playout cache (#31): `app.playoutCache` for the feeder, `GET …/cache`, cache alerts.
   await app.register(cachePlugin, options.cache ?? {});
+  // Log feeder (#29): keeps each station's engine queue ahead of air, one replica per station.
+  if (lifecycle && options.rabbit && options.feeder !== false) {
+    await app.register(feederPlugin, options.feeder ?? {});
+  }
   if (options.storage) {
     await app.register(uploadPlugin, { ...options.uploads, storage: options.storage });
   }
