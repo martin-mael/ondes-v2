@@ -65,7 +65,13 @@ export const stationEngineSettingsSchema = z
     url: httpUrl.optional(),
 
     control: z.object({ port: port.default(7000) }).prefault({}),
-    metrics: z.object({ port: port.default(9599) }).prefault({}),
+    metrics: z
+      .object({
+        port: port.default(9599),
+        /** Serve Prometheus metrics. The server has no auth: off unless something scrapes it. */
+        enabled: z.boolean().default(true),
+      })
+      .prefault({}),
     /** Where the engine POSTs its events (the adapter, #28). Unset: Node pulls them. */
     eventsUrl: httpUrl.optional(),
 

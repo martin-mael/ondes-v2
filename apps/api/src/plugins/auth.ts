@@ -42,6 +42,9 @@ import {
 } from '../modules/auth/repo.ts';
 import { HttpError } from './errors.ts';
 
+/** Routes under this prefix authenticate themselves (see the onRequest hook). */
+const INTERNAL_PREFIX = '/internal/';
+
 // Authentication and authorization (#6).
 // - Every request is authenticated by an `ondes_session` cookie or an `Authorization: Bearer
 //   ondes_…` API key, into `request.auth`.
@@ -200,6 +203,9 @@ export const authPlugin = fp(
     app.decorateRequest('permissions', null);
 
     app.addHook('onRequest', async (request) => {
+      // Internal routes (engine events, #35) check their own bearer tokens and are never
+      // reachable through the public proxy: their Authorization header isn't an API key.
+      if (request.url.startsWith(INTERNAL_PREFIX)) return;
       const header = request.headers.authorization;
       if (header) {
         const [kind, token] = header.split(' ');

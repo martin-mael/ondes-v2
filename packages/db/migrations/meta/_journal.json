@@ -50,6 +50,13 @@
       "when": 1792580922530,
       "tag": "20261021110842_log",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792582834689,
+      "tag": "20261021114034_engine-lifecycle",
+      "breakpoints": true
     }
   ]
 }

@@ -52,6 +52,7 @@ function configBlock(s: StationEngineSettings, version: string): string {
     ['station_name', liqString(s.name)],
     ['control_port', liqInt(s.control.port)],
     ['metrics_port', liqInt(s.metrics.port)],
+    ['metrics_enabled', liqBool(s.metrics.enabled)],
     ['events_url', liqString(s.eventsUrl ?? '')],
     ['live_input', liqBool(s.live.enabled)],
     ['live_port', liqInt(s.live.port)],

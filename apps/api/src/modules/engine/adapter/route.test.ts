@@ -90,6 +90,20 @@ describe('engine events route', () => {
     expect(() => createEngineEventsHandler({ ingestFor: engines.ingestFor, token: '' })).toThrow();
   });
 
+  it('checks per-station tokens', async () => {
+    const tokens: Record<string, string> = { [engine.stationId]: 'station-token' };
+    const h = createEngineEventsHandler({
+      ingestFor: engines.ingestFor,
+      token: (stationId) => tokens[stationId],
+    });
+    const mine = { authorization: 'Bearer station-token' };
+    expect((await h({ stationId: engine.stationId, headers: mine, body: [] })).status).toBe(200);
+    expect((await h({ stationId: engine.stationId, headers: auth, body: [] })).status).toBe(401);
+    // A station without a token is refused, even with an empty bearer.
+    const empty = { authorization: 'Bearer ' };
+    expect((await h({ stationId: 'other', headers: empty, body: [] })).status).toBe(401);
+  });
+
   it('registers on a Fastify-shaped router', async () => {
     const routes = new Map<
       string,

@@ -19,7 +19,8 @@
 # Ports (inside the station's Docker network):
 #   control_port (7000)  control API: harbor HTTP + JSON. Internal only, never published.
 #   live_port    (8005)  input.harbor for live DJs. The only port that may be published.
-#   metrics_port (9599)  Prometheus metrics. Internal only.
+#   metrics_port (9599)  Prometheus metrics, when metrics_enabled. Internal only, no auth:
+#                        the lifecycle (#35) turns it off until something scrapes it.
 #
 # Secrets never go into the rendered script (it is stored and versioned): they come from
 # the container environment.
@@ -31,7 +32,7 @@
 
 settings.server.telnet := false
 settings.harbor.bind_addrs := ["0.0.0.0"]
-settings.prometheus.server := true
+settings.prometheus.server := metrics_enabled
 settings.prometheus.server.port := metrics_port
 settings.log.stdout := true
 settings.log.file := false
