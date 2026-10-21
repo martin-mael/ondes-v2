@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { alertSeveritySchema, alertStatusSchema, silenceSettingsSchema } from './alerts.ts';
 import { engineSourceSchema } from './engine.ts';
 import {
   localDateSchema,
@@ -196,6 +197,87 @@ export const logRealtimeEventSchema = z.discriminatedUnion('type', [
   logItemChangedEventSchema,
 ]);
 export type LogRealtimeEvent = z.infer<typeof logRealtimeEventSchema>;
+// Alerts (#33). `data` is a snapshot of the alert after the change (API shape in
+// `contracts/alerts.ts`, with ISO times). A repeat raise of an open alert publishes nothing.
+// These are for the UI (best effort): side effects run from durable consumers (ADR 0006).
+
+const alertSnapshotSchema = z.object({
+  alertId: z.uuid(),
+  type: z.string(),
+  severity: alertSeveritySchema,
+  status: alertStatusSchema,
+  dedupeKey: z.string(),
+  title: z.string(),
+  message: z.string().nullable(),
+  details: z.record(z.string(), z.unknown()),
+  occurrences: z.int().positive(),
+  raisedAt: isoTime,
+  acknowledgedAt: isoTime.nullable(),
+  acknowledgedBy: z.uuid().nullable(),
+  resolvedAt: isoTime.nullable(),
+  resolution: z.string().nullable(),
+  action: z
+    .object({
+      name: z.string(),
+      state: z.enum(['pending', 'running', 'done', 'failed']),
+      attempts: z.int().nonnegative(),
+      error: z.string().nullable(),
+    })
+    .nullable(),
+});
+export type AlertSnapshot = z.infer<typeof alertSnapshotSchema>;
+
+export const alertRaisedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('alert.raised'),
+  data: alertSnapshotSchema,
+});
+
+/** The same problem came back shortly after it was resolved: the alert is open again. */
+export const alertReopenedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('alert.reopened'),
+  data: alertSnapshotSchema,
+});
+
+/** Severity went up: a raise at a higher severity, or a time-based escalation. */
+export const alertEscalatedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('alert.escalated'),
+  data: alertSnapshotSchema.extend({ previousSeverity: alertSeveritySchema }),
+});
+
+export const alertAcknowledgedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('alert.acknowledged'),
+  data: alertSnapshotSchema,
+});
+
+export const alertResolvedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('alert.resolved'),
+  data: alertSnapshotSchema,
+});
+
+/**
+ * A station's silence settings changed. `maxSeconds` / `thresholdDb` are the template's
+ * `blank` settings: the engine lifecycle (#35) re-renders the station's config.
+ */
+export const alertSilenceSettingsUpdatedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('alert.silence_settings.updated'),
+  data: silenceSettingsSchema,
+});
+
+export const alertRealtimeEventSchema = z.discriminatedUnion('type', [
+  alertRaisedEventSchema,
+  alertReopenedEventSchema,
+  alertEscalatedEventSchema,
+  alertAcknowledgedEventSchema,
+  alertResolvedEventSchema,
+  alertSilenceSettingsUpdatedEventSchema,
+]);
+export type AlertRealtimeEvent = z.infer<typeof alertRealtimeEventSchema>;
 
 // ---------------------------------------------------------------------------------------
 // Every real-time event. Add other domains' schemas to this union.
@@ -203,6 +285,7 @@ export type LogRealtimeEvent = z.infer<typeof logRealtimeEventSchema>;
 export const realtimeEventSchema = z.discriminatedUnion('type', [
   ...engineRealtimeEventSchema.options,
   ...logRealtimeEventSchema.options,
+  ...alertRealtimeEventSchema.options,
 ]);
 export type RealtimeEvent = z.infer<typeof realtimeEventSchema>;
 export type RealtimeEventType = RealtimeEvent['type'];

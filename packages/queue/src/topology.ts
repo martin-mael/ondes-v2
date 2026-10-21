@@ -1,7 +1,7 @@
 import type { JobLane } from '@ondes/shared';
 import type { Connection } from 'rabbitmq-client';
 
-export const JOB_LANES = ['high', 'bulk'] as const satisfies readonly JobLane[];
+export const JOB_LANES = ['high', 'bulk', 'notify'] as const satisfies readonly JobLane[];
 
 /** Default retry tiers: wait 10 s, then 1 min, then 10 min, then dead-letter. */
 export const DEFAULT_RETRY_TIERS_MS = [10_000, 60_000, 600_000] as const;
@@ -37,6 +37,8 @@ export type Topology = {
   deadQueue: string;
   /** Fanout exchange for real-time events (consumed by the api's SSE plugin). */
   eventsExchange: string;
+  /** Durable, named queue bound to the events exchange (`consumeEventsDurable`). */
+  eventQueue: (name: string) => string;
   laneQueue: (lane: JobLane) => string;
   retryQueue: (lane: JobLane, delayMs: number) => string;
   retryRoutingKey: (lane: JobLane, delayMs: number) => string;
@@ -64,6 +66,7 @@ export function createTopology(options: TopologyOptions = {}): Topology {
     deadExchange: `${prefix}.jobs.dead`,
     deadQueue: `${prefix}.jobs.dead`,
     eventsExchange: `${prefix}.events`,
+    eventQueue: (name) => `${prefix}.events.${name}`,
     laneQueue: (lane) => `${prefix}.jobs.${lane}`,
     // The delay is part of the name: a queue's TTL can't change once declared, so new
     // tiers get new queues instead of a PRECONDITION_FAILED on redeclare.

@@ -6,6 +6,7 @@ import {
   type ZodTypeProvider,
 } from 'fastify-type-provider-zod';
 import { health } from './health.ts';
+import { type AlertsPluginOptions, alertsPlugin } from './modules/alerts/plugin.ts';
 import { authRoutes } from './modules/auth/routes.ts';
 import {
   type EngineLifecyclePluginOptions,
@@ -27,6 +28,8 @@ export interface AppOptions {
   rabbit?: RabbitPluginOptions;
   /** Station engine lifecycle (#35). Needs `rabbit`. Unset: the api manages no engines. */
   engine?: EngineLifecyclePluginOptions;
+  /** Alerts (#33): the engine lookup for the silence action, the escalation sweep. */
+  alerts?: AlertsPluginOptions;
   fastify?: FastifyServerOptions;
 }
 
@@ -54,6 +57,23 @@ export async function buildApp(options: AppOptions) {
   await app.register(logRoutes, { prefix: '/api/v1' });
   // Engine lifecycle (#35): engine routes, the internal engine events route, engines at boot.
   if (options.engine) await app.register(engineLifecyclePlugin, options.engine);
+  // Alerts (#33): `app.alerts`, its routes under /api/v1, engine events -> alerts. Registered
+  // after the lifecycle so the silence action reaches the station's engine from any replica,
+  // and a silence-settings change re-renders the engine (`reconcile` restarts only if needed).
+  const lifecycle = app.hasDecorator('engineLifecycle') ? app.engineLifecycle : undefined;
+  await app.register(alertsPlugin, {
+    ...(lifecycle
+      ? {
+          engineFor: (stationId: string) => lifecycle.adapterFor(stationId),
+          onSilenceSettingsUpdated: async (scope) => {
+            await lifecycle.reconcile(scope).catch((err: unknown) => {
+              app.log.error({ err, stationId: scope.stationId }, 'engine reconcile failed');
+            });
+          },
+        }
+      : {}),
+    ...options.alerts,
+  });
 
   return app;
 }
