@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -128,6 +128,9 @@ beforeAll(async () => {
   docker = createDockerClient({ url: `http://127.0.0.1:${dockerPort}` });
   cacheRoot = mkdtempSync(join(tmpdir(), 'ondes-lifecycle-it-'));
   icecastDir = mkdtempSync(join(tmpdir(), 'ondes-lifecycle-it-icecast-'));
+  // mkdtemp makes 0700 directories: containers run as other users (Icecast, Liquidsoap uid
+  // 100) and must read them. Docker Desktop hides this; Linux (CI) doesn't.
+  for (const dir of [cacheRoot, icecastDir]) chmodSync(dir, 0o755);
 
   engines = new StationEngines();
   // The engines post events here through host.docker.internal, hence 0.0.0.0.
@@ -168,9 +171,19 @@ beforeAll(async () => {
 
   // The station's secrets exist before its engine: Icecast gets its mount password first.
   const { icecastSourcePassword } = await lifecycle.secretsFor(scope);
-  writeFileSync(join(icecastDir, 'icecast.xml'), icecastXml(`/${slug}.mp3`, icecastSourcePassword));
+  writeFileSync(
+    join(icecastDir, 'icecast.xml'),
+    icecastXml(`/${slug}.mp3`, icecastSourcePassword),
+    {
+      mode: 0o644,
+    },
+  );
   await compose('down', '-v', '--remove-orphans');
-  await compose('up', '-d', '--wait');
+  await compose('up', '-d', '--wait').catch(async (error) => {
+    // Say why a service didn't come up (its own logs), not just that it exited.
+    const logs = await compose('logs', '--no-color', '--tail', '50').catch((e) => e);
+    throw new Error(`${error.message}\n--- compose logs ---\n${logs.stdout ?? logs}`);
+  });
 }, 300_000);
 
 afterAll(async () => {
