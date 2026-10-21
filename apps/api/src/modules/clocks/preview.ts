@@ -1,8 +1,7 @@
-import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import type { Db, StationScope } from '@ondes/db';
 import type { AssetType, ClockPreviewAsset, PreviewPickSource, TagKey } from '@ondes/shared';
 import type { LibraryCandidate } from '../rotation/repo.ts';
+import { pickSlots } from '../rotation/rules/repo.ts';
 
 // The clock preview's picker (#39): what fills the category slots of a sample hour. The rules
 // engine (#38, `pickSlots`) is the real picker: rest, separation and rotation order against
@@ -179,19 +178,10 @@ export function rulesPicker(
   };
 }
 
-const rulesModule = new URL('../rotation/rules/repo.ts', import.meta.url);
-let found: Promise<PickSlotsFn | undefined> | undefined;
-
 /**
- * #38's `pickSlots`, if this build has it. #38 (PR #153) and this module land separately, so
- * it's looked up at runtime: until the rules module exists, previews use random picks.
- * TODO(#38): once both are on main, import `pickSlots` statically and drop the lookup.
+ * #38's `pickSlots`. Kept behind a lookup (and `PickSlotsFn`) so callers and tests can pass
+ * another picker; previews fall back to random picks when it returns nothing.
  */
 export function findPickSlots(): Promise<PickSlotsFn | undefined> {
-  found ??= existsSync(fileURLToPath(rulesModule))
-    ? import(rulesModule.href).then((mod: { pickSlots?: unknown }) =>
-        typeof mod.pickSlots === 'function' ? (mod.pickSlots as PickSlotsFn) : undefined,
-      )
-    : Promise.resolve(undefined);
-  return found;
+  return Promise.resolve(pickSlots satisfies PickSlotsFn);
 }

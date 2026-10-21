@@ -2,6 +2,7 @@ import {
   episode,
   logItem,
   type StationScope,
+  segue,
   stationEmergencyAsset,
   stationSafetyAsset,
   type Tx,
@@ -53,6 +54,14 @@ const USAGE_CHECKS: UsageCheck[] = [
       sql`select ${logItem.assetId} as asset_id, ${logItem.id}::text as used_by from ${logItem}
         where ${whereStation(logItem, scope)} and ${logItem.assetId} = any(${ids})
           and ${logItem.plannedStart} >= ${at.toISOString()}::timestamptz`,
+  },
+  {
+    // A recorded voice in a segue's lanes (#55): deleting it would lose the voice track.
+    kind: 'segue_voice',
+    query: (scope, ids) =>
+      sql`select (lane->>'assetId')::uuid as asset_id, ${segue.id}::text as used_by
+        from ${segue}, jsonb_array_elements(${segue.voices}) as lane
+        where ${whereStation(segue, scope)} and (lane->>'assetId')::uuid = any(${ids})`,
   },
 ];
 

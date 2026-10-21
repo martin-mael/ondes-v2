@@ -13,9 +13,9 @@ import { toast } from 'sonner';
 import { z } from 'zod';
 import { EditClockPage, NewClockPage } from '../features/clocks/clock-editor-page.tsx';
 import { ClocksPage } from '../features/clocks/clocks-page.tsx';
-import { TimelinePage } from '../features/log-timeline/timeline-page.tsx';
 import { librarySearchParamsSchema } from '../features/library/filters.ts';
 import { LibraryPage } from '../features/library/library-page.tsx';
+import { TimelinePage } from '../features/log-timeline/timeline-page.tsx';
 import { CategoriesPage } from '../features/rotation/categories/categories-page.tsx';
 import {
   EditCategoryPage,

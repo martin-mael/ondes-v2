@@ -14,6 +14,7 @@ import {
   resolveOrgScope,
   resolveStationScope,
   type StationScope,
+  segue,
   setAnalysis,
   setAssetTags,
   setLoudness,
@@ -505,13 +506,13 @@ describe('library bulk edits', () => {
   it('refuses to delete assets something still needs, and says what', async () => {
     const { scope } = await tenant();
     const owner = { orgId: scope.orgId, stationId: scope.stationId };
-    const [ep, safe, emergency, logged, free] = (await seed(
+    const [ep, safe, emergency, logged, voice, free] = (await seed(
       scope,
-      ['episode', 'safety', 'emergency', 'logged', 'free'].map((title) => ({
+      ['episode', 'safety', 'emergency', 'logged', 'voice', 'free'].map((title) => ({
         type: 'song' as const,
         title,
       })),
-    )) as [string, string, string, string, string];
+    )) as [string, string, string, string, string, string];
     const [s1] = await db
       .insert(show)
       .values({ ...owner, name: 'Show' })
@@ -552,9 +553,19 @@ describe('library bulk edits', () => {
         originType: 'manual',
       })
       .returning();
+    // A voice recorded into a segue's lanes (#55).
+    const [vt] = await db
+      .insert(segue)
+      .values({
+        ...owner,
+        outLane: { envelope: [] },
+        inLane: { start: 0, envelope: [] },
+        voices: [{ assetId: voice, start: 0, gainDb: 0, envelope: [] }],
+      })
+      .returning();
 
     const refusal = await bulkEdit(db, ctxOf(scope), {
-      selection: { ids: [ep, safe, emergency, logged, free] },
+      selection: { ids: [ep, safe, emergency, logged, voice, free] },
       action: { kind: 'delete' },
     }).catch((error: unknown) => error);
     expect(refusal).toMatchObject({ code: 'asset_in_use' });
@@ -565,11 +576,12 @@ describe('library bulk edits', () => {
         { assetId: safe, kind: 'safety_playlist', usedBy: scope.stationId },
         { assetId: emergency, kind: 'emergency_file', usedBy: scope.stationId },
         { assetId: logged, kind: 'log_item', usedBy: item?.id },
+        { assetId: voice, kind: 'segue_voice', usedBy: vt?.id },
       ]),
     );
-    expect(usages).toHaveLength(4);
+    expect(usages).toHaveLength(5);
     // Nothing was deleted, not even the free one.
-    expect((await allPages(scope, {})).length).toBe(5);
+    expect((await allPages(scope, {})).length).toBe(6);
     // An aired episode no longer holds its audio.
     await db
       .update(episode)

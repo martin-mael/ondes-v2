@@ -96,7 +96,12 @@ export async function buildApp(options: AppOptions) {
   // Library routes carry their full /api/v1/stations/:stationId path.
   await app.register(libraryPlugin);
   // Library screen (#23): search, facets, bulk edits, asset activity.
-  await app.register(librarySearchRoutes, { prefix: '/api/v1' });
+  // Bulk edits announce `asset.updated` / `asset.deleted` like the single-asset routes (#55).
+  const rabbit = app.hasDecorator('rabbit') ? app.rabbit : undefined;
+  await app.register(librarySearchRoutes, {
+    prefix: '/api/v1',
+    ...(rabbit ? { publish: (event) => rabbit.events.publish(event) } : {}),
+  });
   await app.register(logRoutes, { prefix: '/api/v1' });
   // As-run (#30): `GET …/asrun`, engine track events -> as-run entries (durable queue).
   await app.register(asRunPlugin, options.asrun ?? {});

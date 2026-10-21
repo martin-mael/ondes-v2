@@ -243,6 +243,7 @@ export const assetUsageKindSchema = z.enum([
   'safety_playlist',
   'emergency_file',
   'log_item',
+  'segue_voice',
 ]);
 export const assetUsageSchema = z.object({
   assetId: uuidSchema,
