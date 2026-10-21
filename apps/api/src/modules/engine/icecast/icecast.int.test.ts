@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
 import http from 'node:http';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
@@ -196,6 +198,10 @@ beforeAll(async () => {
   });
 
   await compose('down', '-v', '--remove-orphans');
+  // Created here, as the test's user, before any container mounts them: Docker would create a
+  // missing bind-mount source as root, and on Linux the test could then not write the config.
+  mkdirSync(dirname(configPath), { recursive: true });
+  mkdirSync(assetsDir, { recursive: true });
   // The fallback and intro files first: the config only refers to files that exist.
   await compose('run', '--rm', 'assets');
   const first = await sync.syncNow();
