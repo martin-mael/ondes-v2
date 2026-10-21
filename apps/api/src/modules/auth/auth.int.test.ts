@@ -89,9 +89,48 @@ describe('sign-up and email verification', () => {
       payload: { email: 'taken@example.org', name: 'Impostor', password: 'another long password' },
     });
     expect(again.statusCode).toBe(202);
-    expect(t.outbox.length).toBe(sent);
+    // The owner of the address is told, with a reset link; the response says nothing.
+    expect(t.outbox.length).toBe(sent + 1);
+    expect(t.outbox.at(-1)).toMatchObject({
+      to: 'taken@example.org',
+      subject: 'You already have an Ondes account',
+    });
+    expect(t.outbox.at(-1)?.text).toContain('https://app.test/reset-password?token=');
     // The original password still works.
     await login(t, 'taken@example.org');
+  });
+
+  it('lets the real owner reclaim an address someone else registered first', async () => {
+    await t.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/signup',
+      payload: { email: 'squat@example.org', name: 'Squatter', password: 'squatter password!' },
+    });
+    // The owner tries to sign up, gets the "already have an account" email and resets.
+    await t.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/signup',
+      payload: { email: 'squat@example.org', name: 'Owner', password: 'owner password long' },
+    });
+    const token = lastToken(t.outbox, 'squat@example.org');
+    const reset = await t.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/password/reset',
+      payload: { token, password: 'owner password long' },
+    });
+    expect(reset.statusCode).toBe(204);
+    const ok = await t.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { email: 'squat@example.org', password: 'owner password long' },
+    });
+    expect(ok.statusCode).toBe(200);
+    const squatter = await t.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { email: 'squat@example.org', password: 'squatter password!' },
+    });
+    expect(squatter.statusCode).toBe(401);
   });
 
   it('resends a verification link and invalidates the previous one', async () => {
@@ -266,6 +305,40 @@ describe('two-factor authentication', () => {
       payload: { code },
     });
     expect(replay.statusCode).toBe(401);
+  });
+
+  it('locks second-factor checks after 5 wrong codes and drops the pending login', async () => {
+    const email = 'brute@example.org';
+    const { cookie } = await signUpAndLogin(t, email, PASSWORD);
+    const { secret } = await enableTotp(t, cookie);
+    const step1 = await t.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { email, password: PASSWORD },
+    });
+    const pending = sessionCookie(step1) as string;
+    const attempt = (cookieValue: string, code: string) =>
+      t.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/login/2fa',
+        headers: cookieHeader(cookieValue),
+        payload: { code },
+      });
+    for (let i = 0; i < 4; i++)
+      expect((await attempt(pending, wrongCode(secret))).statusCode).toBe(401);
+    // The 5th wrong code locks the account's second factor and revokes the pending session.
+    expect((await attempt(pending, wrongCode(secret))).statusCode).toBe(401);
+    expect((await attempt(pending, nextCode(secret))).statusCode).toBe(401);
+
+    // Even with the password again, the right code is refused while locked.
+    const again = await t.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { email, password: PASSWORD },
+    });
+    const locked = await attempt(sessionCookie(again) as string, nextCode(secret));
+    expect(locked.statusCode).toBe(429);
+    expect(locked.json()).toMatchObject({ error: 'two_factor_locked' });
   });
 
   it('accepts each recovery code once', async () => {

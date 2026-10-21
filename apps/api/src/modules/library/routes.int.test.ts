@@ -41,11 +41,7 @@ async function tenant() {
 }
 
 function client(orgId: string) {
-  const deleted: string[] = [];
-  const deps: LibraryDeps = {
-    db: tdb.db,
-    storage: { delete: async (key) => void deleted.push(key) },
-  };
+  const deps: LibraryDeps = { db: tdb.db };
   const call = (method: string, url: string, request: Partial<RouteRequest> = {}) => {
     const route = libraryRoutes.find((r) => r.method === method && r.url.endsWith(url));
     if (!route) throw new Error(`no route ${method} ${url}`);
@@ -60,7 +56,7 @@ function client(orgId: string) {
       { params, query: {}, body: undefined, ...request },
     );
   };
-  return { call, deleted };
+  return { call };
 }
 
 async function seedAsset(scope: StationScope) {
@@ -70,11 +66,11 @@ async function seedAsset(scope: StationScope) {
 describe('library api', () => {
   it('reads, edits and deletes an asset of the caller station', async () => {
     const { orgId, scope } = await tenant();
-    const { call, deleted } = client(orgId);
+    const { call } = client(orgId);
     const a = await seedAsset(scope);
     const sha256 = randomBytes(32).toString('hex');
     const key = contentKey({ orgId, sha256, ext: 'flac' });
-    await putAssetFile(tdb.db, { delete: async () => {} }, { actor: system, scope }, a.id, {
+    await putAssetFile(tdb.db, { actor: system, scope }, a.id, {
       role: 'playout',
       storageKey: key,
       sha256,
@@ -118,7 +114,11 @@ describe('library api', () => {
     expect(detail.cues?.cueIn).toEqual({ samples: 2048, source: 'manual', locked: true });
 
     expect((await call('DELETE', '/assets/:assetId', { params })).status).toBe(204);
-    expect(deleted).toEqual([key]);
+    // The object isn't deleted inline: it's queued for the storage sweep.
+    const queued = await tdb.sql<
+      { key: string }[]
+    >`select key from storage_deletion where org_id = ${orgId}`;
+    expect(queued.map((r) => r.key)).toEqual([key]);
     expect((await createPostgresQuotaStore(tdb.db).get(orgId)).usedBytes).toBe(0);
     expect((await call('GET', '/assets/:assetId', { params })).status).toBe(404);
 

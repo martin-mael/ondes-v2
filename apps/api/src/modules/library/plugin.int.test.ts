@@ -14,7 +14,6 @@ import { createTestApp, signUpAndLogin, type TestApp } from '../auth/testing.ts'
 // scope resolution in front of the handlers.
 
 const system: Actor = { type: 'system', name: 'test' };
-const deleted: string[] = [];
 
 let t: TestApp;
 let stationId: string;
@@ -22,9 +21,7 @@ let assetId: string;
 const cookies: Partial<Record<Role | 'outsider', string>> = {};
 
 beforeAll(async () => {
-  t = await createTestApp({}, undefined, {
-    storage: { delete: async (key: string) => void deleted.push(key) } as never,
-  });
+  t = await createTestApp();
   const org = await createOrganization(t.tdb.db, system, { slug: 'lib-org', name: 'Org' });
   const orgScope = await resolveOrgScope(t.tdb.db, org.id);
   const st = await createStation(

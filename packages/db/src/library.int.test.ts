@@ -21,10 +21,14 @@ import {
   updateAsset,
   updateCues,
 } from './repos/library.ts';
-import { createPostgresQuotaStore, setOrgStorageLimit } from './repos/storage.ts';
+import {
+  createPostgresQuotaStore,
+  setOrgStorageLimit,
+  sweepStorageDeletions,
+} from './repos/storage.ts';
 import { createOrganization, createStation } from './repos/tenancy.ts';
 import { assetFile } from './schema/library.ts';
-import { storageObject } from './schema/storage.ts';
+import { storageDeletion, storageObject } from './schema/storage.ts';
 import { auditLog } from './schema/tenancy.ts';
 import { resolveOrgScope, resolveStationScope } from './tenant.ts';
 import { createTestDatabase, type TestDatabase } from './testing.ts';
@@ -63,6 +67,14 @@ function fakeStorage(failing: string[] = []) {
       deleted.push(key);
     },
   };
+}
+
+async function pendingDeletions(orgId: string): Promise<string[]> {
+  const rows = await tdb.db
+    .select({ key: storageDeletion.key })
+    .from(storageDeletion)
+    .where(eq(storageDeletion.orgId, orgId));
+  return rows.map((r) => r.key);
 }
 
 function playoutFile(orgId: string, sizeBytes = 1000): CreateAssetFile {
@@ -148,11 +160,9 @@ describe('assets', () => {
         setAssetTags(tdb.db, other.ctx, mine.id, { tags: [{ key: 'genre', value: 'x' }] }),
       ).rejects.toThrow(NotFoundError);
       await expect(
-        putAssetFile(tdb.db, fakeStorage(), other.ctx, mine.id, playoutFile(other.orgId)),
+        putAssetFile(tdb.db, other.ctx, mine.id, playoutFile(other.orgId)),
       ).rejects.toThrow(NotFoundError);
-      await expect(deleteAsset(tdb.db, fakeStorage(), other.ctx, mine.id)).rejects.toThrow(
-        NotFoundError,
-      );
+      await expect(deleteAsset(tdb.db, other.ctx, mine.id)).rejects.toThrow(NotFoundError);
       expect((await listAssets(tdb.db, other.scope)).items).toEqual([]);
     }
     expect((await getAsset(tdb.db, a.scope, mine.id)).title).toBe('ID');
@@ -172,9 +182,9 @@ describe('assets', () => {
       }),
     ).rejects.toThrow();
     // A storage key under another org's prefix is refused before touching the database.
-    await expect(
-      putAssetFile(tdb.db, fakeStorage(), a.ctx, mine.id, playoutFile(b.orgId)),
-    ).rejects.toThrow(LibraryConflictError);
+    await expect(putAssetFile(tdb.db, a.ctx, mine.id, playoutFile(b.orgId))).rejects.toThrow(
+      LibraryConflictError,
+    );
   });
 
   it('lists with filters and keyset pagination', async () => {
@@ -341,7 +351,7 @@ describe('stored objects', () => {
         createAsset(tdb.db, ctx, { type: 'song', title: `${i}` }),
       ),
     );
-    await Promise.all(assets.map((a) => putAssetFile(tdb.db, fakeStorage(), ctx, a.id, file)));
+    await Promise.all(assets.map((a) => putAssetFile(tdb.db, ctx, a.id, file)));
 
     expect(await refCount(orgId, file.storageKey)).toBe(8);
     expect((await createPostgresQuotaStore(tdb.db).get(orgId)).usedBytes).toBe(5_000);
@@ -386,9 +396,9 @@ describe('stored objects', () => {
       codec: 'pcm_s24le',
       sampleRate: 48_000,
     };
-    await putAssetFile(tdb.db, fakeStorage(), ctx, a.id, shared);
-    await putAssetFile(tdb.db, fakeStorage(), ctx, a.id, master);
-    await putAssetFile(tdb.db, fakeStorage(), ctx, b.id, shared);
+    await putAssetFile(tdb.db, ctx, a.id, shared);
+    await putAssetFile(tdb.db, ctx, a.id, master);
+    await putAssetFile(tdb.db, ctx, b.id, shared);
     await setAutoCues(tdb.db, ctx, a.id, {
       sampleRate: 44_100,
       analyzerVersion: 'x',
@@ -398,24 +408,18 @@ describe('stored objects', () => {
     const store = createPostgresQuotaStore(tdb.db);
     expect((await store.get(orgId)).usedBytes).toBe(13_000);
 
-    const first = fakeStorage();
-    expect(await deleteAsset(tdb.db, first, ctx, a.id)).toEqual({
-      deleted: [master.storageKey],
-      orphaned: [],
-    });
-    expect(first.deleted).toEqual([master.storageKey]);
+    expect(await deleteAsset(tdb.db, ctx, a.id)).toEqual({ scheduled: [master.storageKey] });
     expect(await refCount(orgId, shared.storageKey)).toBe(1);
     expect((await store.get(orgId)).usedBytes).toBe(3_000);
     await expect(getAsset(tdb.db, scope, a.id)).rejects.toThrow(NotFoundError);
 
-    // The bucket delete fails after the commit: the rows are gone, the object is reported.
-    const failing = fakeStorage([shared.storageKey]);
-    expect(await deleteAsset(tdb.db, failing, ctx, b.id)).toEqual({
-      deleted: [],
-      orphaned: [shared.storageKey],
-    });
+    // The shared object goes with its last reference: queued, never deleted inline.
+    expect(await deleteAsset(tdb.db, ctx, b.id)).toEqual({ scheduled: [shared.storageKey] });
     expect(await refCount(orgId, shared.storageKey)).toBe(0);
     expect((await store.get(orgId)).usedBytes).toBe(0);
+    expect((await pendingDeletions(orgId)).sort()).toEqual(
+      [master.storageKey, shared.storageKey].sort(),
+    );
     const left = await tdb.db.execute(
       sql`select count(*)::int as n from asset where station_id = ${scope.stationId}`,
     );
@@ -428,10 +432,9 @@ describe('stored objects', () => {
     const a = await createAsset(tdb.db, ctx, { type: 'song', title: 'a' });
     const v1 = playoutFile(orgId, 100);
     const v2 = playoutFile(orgId, 200);
-    await putAssetFile(tdb.db, fakeStorage(), ctx, a.id, v1);
-    const storage = fakeStorage();
-    const { released } = await putAssetFile(tdb.db, storage, ctx, a.id, v2);
-    expect(released.deleted).toEqual([v1.storageKey]);
+    await putAssetFile(tdb.db, ctx, a.id, v1);
+    const { released } = await putAssetFile(tdb.db, ctx, a.id, v2);
+    expect(released.scheduled).toEqual([v1.storageKey]);
     expect(await refCount(orgId, v1.storageKey)).toBe(0);
     expect((await createPostgresQuotaStore(tdb.db).get(orgId)).usedBytes).toBe(200);
 
@@ -460,8 +463,52 @@ describe('stored objects', () => {
         stationId: ctx.scope.stationId,
       }),
     ).rejects.toThrow();
-    await expect(
-      putAssetFile(tdb.db, fakeStorage(), ctx, a.id, { ...file, codec: 'aac' }),
-    ).rejects.toThrow(/FLAC/);
+    await expect(putAssetFile(tdb.db, ctx, a.id, { ...file, codec: 'aac' })).rejects.toThrow(
+      /FLAC/,
+    );
+  });
+});
+
+describe('storage sweep', () => {
+  it('deletes released objects after the grace period, keeps revived ones, retries failures', async () => {
+    const { orgId, ctx } = await makeStation('sweep');
+    const store = createPostgresQuotaStore(tdb.db);
+    const [gone, revived, flaky] = [1, 2, 3].map((n) => playoutFile(orgId, n * 100));
+    for (const file of [gone, revived, flaky] as CreateAssetFile[]) {
+      const a = await createAsset(tdb.db, ctx, { type: 'song', title: 'x' });
+      await putAssetFile(tdb.db, ctx, a.id, file);
+      await deleteAsset(tdb.db, ctx, a.id);
+    }
+    expect((await pendingDeletions(orgId)).length).toBe(3);
+
+    // Within the grace period nothing is touched.
+    const early = fakeStorage();
+    expect(await sweepStorageDeletions(tdb.db, early)).toEqual({
+      deleted: [],
+      revived: [],
+      failed: [],
+    });
+
+    // Re-uploaded after release: a new reference cancels the pending delete.
+    const again = await createAsset(tdb.db, ctx, { type: 'song', title: 'again' });
+    await putAssetFile(tdb.db, ctx, again.id, revived as CreateAssetFile);
+    expect(await pendingDeletions(orgId)).not.toContain(revived?.storageKey);
+
+    const s3 = fakeStorage([flaky?.storageKey as string]);
+    const result = await sweepStorageDeletions(tdb.db, s3, { graceMs: 0, limit: 1000 });
+    // The sweep is global (other tests' releases are swept too): check this org's keys.
+    expect(result.deleted).toContain(gone?.storageKey);
+    expect(result.deleted).not.toContain(revived?.storageKey);
+    expect(result.deleted).not.toContain(flaky?.storageKey);
+    expect(result.failed).toEqual([flaky?.storageKey]);
+    expect(s3.deleted).toContain(gone?.storageKey);
+    // The failed one stays queued, with its error, for the next sweep.
+    const [kept] = await tdb.db
+      .select()
+      .from(storageDeletion)
+      .where(eq(storageDeletion.orgId, orgId));
+    expect(kept).toMatchObject({ key: flaky?.storageKey, attempts: 1 });
+    expect(kept?.lastError).toContain('S3 down');
+    expect((await store.get(orgId)).usedBytes).toBe(200);
   });
 });

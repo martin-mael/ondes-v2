@@ -180,6 +180,10 @@ export const userAuth = pgTable('user_auth', {
   totpEnabledAt: timestamp('totp_enabled_at', { withTimezone: true }),
   /** Last accepted TOTP time step: a code can't be replayed. */
   totpLastStep: integer('totp_last_step'),
+  /** Wrong second-factor codes (TOTP or recovery) since the last success or lockout. */
+  secondFactorFailures: integer('second_factor_failures').notNull().default(0),
+  /** Second-factor checks refused until then, after too many wrong codes. */
+  secondFactorLockedUntil: timestamp('second_factor_locked_until', { withTimezone: true }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { stableStringify } from '@ondes/shared';
 import { liqBool, liqFloat, liqInt, liqString } from './liquidsoap.ts';
 import {
   type IcecastOutput,
@@ -34,23 +35,11 @@ export type RenderedStationScript = {
   settings: StationEngineSettings;
 };
 
-/** Settings as JSON with sorted keys, so the version doesn't depend on key order. */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
 export function configVersion(template: string, settings: StationEngineSettings): string {
   return createHash('sha256')
     .update(template)
     .update('\0')
-    .update(canonicalJson(settings))
+    .update(stableStringify(settings))
     .digest('hex')
     .slice(0, 16);
 }

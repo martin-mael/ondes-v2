@@ -97,7 +97,7 @@ The api sends email over SMTP (`SMTP_URL`, `MAIL_FROM`). In development `SMTP_UR
 | `AUTH_SECRET` | see `.env.example` | api (encrypts TOTP secrets; keep it stable) |
 | `AUTH_COOKIE_SECURE` | `true` (`false` in `.env.example`) | api (`Secure` session cookie; off only for plain-http dev) |
 | `AUTH_SESSION_TTL_DAYS` / `AUTH_RATE_LIMIT_MAX` | `30` / `10` | api |
-| `API_TRUST_PROXY` | `false` | api (`true` behind Caddy) |
+| `API_TRUST_PROXY` | unset = `loopback,uniquelocal` | api (proxies trusted for X-Forwarded-For; `false` to disable, `true` or a CIDR list to override) |
 
 "First start only" means the image applies the value when its volume is empty. Run `pnpm dev:reset` after changing it.
 

@@ -27,6 +27,20 @@ The link expires in 1 hour and works once. If it wasn't you, ignore this email: 
 stays the same.`,
 });
 
+export const accountExistsTemplate = defineTemplate<{ name: string; link: string }>({
+  subject: () => 'You already have an Ondes account',
+  text: ({ name, link }) =>
+    `Hello ${name},
+
+Someone (maybe you) tried to create an Ondes account with this email address, but it already
+has one. To sign in, use your password. If you don't know it, or never finished setting up
+the account, choose a new password here:
+
+${link}
+
+The link expires in 1 hour and works once. If it wasn't you, ignore this email.`,
+});
+
 export const invitationTemplate = defineTemplate<{
   inviter: string;
   orgName: string;

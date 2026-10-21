@@ -4,8 +4,8 @@ import {
   NotFoundError,
   type OrgScope,
   resolveOrgScope,
-  resolveStationScope,
   type StationScope,
+  unsafeScope,
 } from '@ondes/db';
 import {
   type Action,
@@ -209,7 +209,10 @@ export const authPlugin = fp(
         const key = await findApiKeyByToken(app.db, token);
         if (!key)
           throw new HttpError(401, 'invalid_api_key', 'unknown, revoked or expired API key');
-        await touchApiKey(app.db, key.id);
+        // Same throttle as sessions: a polling integration shouldn't turn every read into a write.
+        if (!key.lastUsedAt || Date.now() - key.lastUsedAt.getTime() > SESSION_TOUCH_MS) {
+          await touchApiKey(app.db, key.id);
+        }
         request.auth = { kind: 'api_key', apiKey: key };
         return;
       }
@@ -271,6 +274,14 @@ export const authPlugin = fp(
             throw notFound();
           }
           permissions = expandScopes(key.scopes);
+          // A key never outlives or outranks its creator: it can only use what the user who
+          // made it may still do here. Keys without a creator (system-made) keep their scopes.
+          if (key.createdBy) {
+            const creator = await userMembershipsInOrg(app.db, key.createdBy, scope);
+            if (!appliesTo(creator, stationId)) throw notFound();
+            const held = effectivePermissions(creator, stationId);
+            permissions = new Set([...permissions].filter((p) => held.has(p)));
+          }
         } else {
           const memberships = await userMembershipsInOrg(app.db, auth.user.id, scope);
           if (!appliesTo(memberships, stationId)) throw notFound();
@@ -314,7 +325,8 @@ async function resolveRouteScope(
     const owner = await stationOrgId(app.db, stationId);
     if (!owner || (orgId !== undefined && owner !== orgId))
       throw new NotFoundError('station', stationId);
-    return resolveStationScope(app.db, owner, stationId);
+    // `stationOrgId` just read this station's org from the database: the pair is proven.
+    return unsafeScope(owner, stationId);
   }
   if (orgId !== undefined) {
     if (!uuidSchema.safeParse(orgId).success) throw new NotFoundError('organization', orgId);

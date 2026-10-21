@@ -30,7 +30,7 @@ function mount(
       throw new Error('unexpected database access');
     },
   });
-  const deps: LibraryDeps = { db, storage: { delete: vi.fn() } };
+  const deps: LibraryDeps = { db };
   registerLibraryRoutes(app, deps, resolveContext);
   const call = async (key: string, request: Partial<RouteRequest> = {}) => {
     const handler = routes.get(key);

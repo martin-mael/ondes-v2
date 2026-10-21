@@ -4,6 +4,7 @@ import {
   createOrganization,
   createStation,
   invitation,
+  membership,
   type OrgScope,
   unsafeScope,
 } from '@ondes/db';
@@ -315,6 +316,39 @@ describe('API keys', () => {
       headers: bearer,
     });
     expect(after.statusCode).toBe(401);
+  });
+
+  it("is capped by its creator's current role, and dies with their membership", async () => {
+    const keymaker = await signUpAndLogin(t, 'keymaker@vandale.test');
+    await addMembership(
+      t.tdb.db,
+      { actor: system, scope },
+      { level: 'station', userId: keymaker.userId, stationId: stationA, role: 'station_manager' },
+    );
+    const created = await inject('POST', `/api/v1/stations/${stationA}/api-keys`, keymaker.cookie, {
+      name: 'script',
+      scopes: ['api_key:read'],
+    });
+    expect(created.statusCode).toBe(201);
+    const bearer = { authorization: `Bearer ${created.json().token}` };
+    const list = () =>
+      t.app.inject({
+        method: 'GET',
+        url: `/api/v1/stations/${stationA}/api-keys`,
+        headers: bearer,
+      });
+    expect((await list()).statusCode).toBe(200);
+
+    // Demoted to viewer (no api_key:read): the key loses that permission too.
+    await t.tdb.db
+      .update(membership)
+      .set({ role: 'viewer' })
+      .where(eq(membership.userId, keymaker.userId));
+    expect((await list()).statusCode).toBe(403);
+
+    // Removed from the station: the key can't see it at all.
+    await t.tdb.db.delete(membership).where(eq(membership.userId, keymaker.userId));
+    expect((await list()).statusCode).toBe(404);
   });
 
   it("can't reach another station's keys", async () => {

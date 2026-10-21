@@ -84,6 +84,9 @@ importers:
       '@ondes/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@ondes/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       zod:
         specifier: 4.6.7
         version: 4.6.7

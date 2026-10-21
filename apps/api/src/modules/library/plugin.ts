@@ -1,12 +1,6 @@
-import type { Storage } from '@ondes/storage';
 import type { FastifyInstance } from 'fastify';
 import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
 import { type LibraryDeps, libraryRoutes, runRoute } from './routes.ts';
-
-export interface LibraryPluginOptions {
-  storage: Pick<Storage, 'delete'>;
-  onOrphanedObjects?: LibraryDeps['onOrphanedObjects'];
-}
 
 /**
  * Mounts the library routes (#17) on Fastify. Each route is guarded by
@@ -14,14 +8,8 @@ export interface LibraryPluginOptions {
  * caller and resolves the station scope; the handler then gets that scope and the actor.
  * The routes carry their full `/api/v1/stations/:stationId/…` path: register without prefix.
  */
-export async function libraryPlugin(app: FastifyInstance, options: LibraryPluginOptions) {
-  const deps: LibraryDeps = {
-    db: app.db,
-    storage: options.storage,
-    onOrphanedObjects:
-      options.onOrphanedObjects ??
-      ((keys) => app.log.warn({ keys }, 'library: objects left in the bucket after a delete')),
-  };
+export async function libraryPlugin(app: FastifyInstance) {
+  const deps: LibraryDeps = { db: app.db };
   for (const route of libraryRoutes) {
     app.route({
       method: route.method,

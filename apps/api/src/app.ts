@@ -1,5 +1,4 @@
 import { healthResponseSchema } from '@ondes/shared';
-import type { Storage } from '@ondes/storage';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 import {
   serializerCompiler,
@@ -21,8 +20,6 @@ export interface AppOptions {
   auth: AuthConfig;
   /** Optional so tests that don't touch the queue can skip RabbitMQ. */
   rabbit?: RabbitPluginOptions;
-  /** Object storage. The library routes (#17) are mounted only when it's provided. */
-  storage?: Storage;
   fastify?: FastifyServerOptions;
 }
 
@@ -46,7 +43,7 @@ export async function buildApp(options: AppOptions) {
     .get('/api/v1/health', { schema: { response: { 200: healthResponseSchema } } }, () => health());
   await app.register(authRoutes, { prefix: '/api/v1' });
   // Library routes carry their full /api/v1/stations/:stationId path.
-  if (options.storage) await app.register(libraryPlugin, { storage: options.storage });
+  await app.register(libraryPlugin);
 
   return app;
 }

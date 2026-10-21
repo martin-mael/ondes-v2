@@ -352,3 +352,49 @@ export async function findInvitationByToken(
     .where(eq(invitation.tokenHash, sha256(token)));
   return row;
 }
+
+// --- Second-factor attempt limit ---------------------------------------------------------
+
+/** Wrong codes allowed before second-factor checks lock for `SECOND_FACTOR_LOCK_MS`. */
+export const SECOND_FACTOR_MAX_FAILURES = 5;
+export const SECOND_FACTOR_LOCK_MS = 15 * 60 * 1000;
+
+/** When the account's second-factor checks are locked until, or null. */
+export async function secondFactorLockedUntil(db: Executor, userId: string): Promise<Date | null> {
+  const [row] = await db
+    .select({ until: userAuth.secondFactorLockedUntil })
+    .from(userAuth)
+    .where(eq(userAuth.userId, userId));
+  return row?.until && row.until.getTime() > Date.now() ? row.until : null;
+}
+
+/**
+ * Counts a wrong code. On the Nth failure, locks second-factor checks and revokes the user's
+ * pending 2FA sessions (the attacker has to get through the password again). One statement,
+ * so concurrent attempts can't slip past the limit. Returns true if this failure locked it.
+ */
+export async function recordSecondFactorFailure(db: Executor, userId: string): Promise<boolean> {
+  const [row] = await db
+    .update(userAuth)
+    .set({
+      secondFactorFailures: sql`case when ${userAuth.secondFactorFailures} + 1 >= ${SECOND_FACTOR_MAX_FAILURES} then 0 else ${userAuth.secondFactorFailures} + 1 end`,
+      secondFactorLockedUntil: sql`case when ${userAuth.secondFactorFailures} + 1 >= ${SECOND_FACTOR_MAX_FAILURES} then now() + ${`${SECOND_FACTOR_LOCK_MS} milliseconds`}::interval else ${userAuth.secondFactorLockedUntil} end`,
+    })
+    .where(eq(userAuth.userId, userId))
+    .returning({ lockedUntil: userAuth.secondFactorLockedUntil });
+  const locked = !!row?.lockedUntil && row.lockedUntil.getTime() > Date.now();
+  if (locked) {
+    await db
+      .delete(session)
+      .where(and(eq(session.userId, userId), eq(session.twoFactorPending, true)));
+  }
+  return locked;
+}
+
+/** Clears the failure counter after a correct code. */
+export async function resetSecondFactorFailures(db: Executor, userId: string): Promise<void> {
+  await db
+    .update(userAuth)
+    .set({ secondFactorFailures: 0, secondFactorLockedUntil: null })
+    .where(and(eq(userAuth.userId, userId), sql`${userAuth.secondFactorFailures} > 0`));
+}

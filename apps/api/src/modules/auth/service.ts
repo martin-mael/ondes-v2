@@ -39,7 +39,12 @@ import type { z } from 'zod';
 import type { AuthApi } from '../../plugins/auth.ts';
 import { HttpError } from '../../plugins/errors.ts';
 import { type Mailer, sendTemplate } from '../../plugins/mail.ts';
-import { invitationTemplate, resetPasswordTemplate, verifyEmailTemplate } from './emails.ts';
+import {
+  accountExistsTemplate,
+  invitationTemplate,
+  resetPasswordTemplate,
+  verifyEmailTemplate,
+} from './emails.ts';
 import { hashPassword, verifyAgainstDummy, verifyPassword } from './password.ts';
 import {
   consumeAuthToken,
@@ -56,9 +61,12 @@ import {
   invitationStatus,
   issueAuthToken,
   listInvitations,
+  recordSecondFactorFailure,
   replaceRecoveryCodes,
+  resetSecondFactorFailures,
   revokePendingInvitations,
   type SessionRow,
+  secondFactorLockedUntil,
   toInvitation,
   type UserAuthRow,
   upsertOrgAuthPolicy,
@@ -109,13 +117,19 @@ function link(deps: AuthDeps, path: string, token: string): string {
 
 /**
  * Creates an account and sends the verification email. Answers the same way whether or not
- * the email is taken, so it can't be used to find accounts. With a valid invitation token for
- * the same email, the address counts as verified and the invitation is accepted at once.
+ * the email is taken, so it can't be used to find accounts. If it is taken, the address's
+ * owner gets an email with a password-reset link instead, so nobody can squat an address by
+ * registering it first (the reset proves the inbox and replaces the squatter's password).
+ * With a valid invitation token for the same email, the address counts as verified and the
+ * invitation is accepted at once.
  */
 export async function signup(deps: AuthDeps, input: Signup): Promise<void> {
   const email = input.email.toLowerCase();
   const existing = await findUserWithAuth(deps.db, { email });
-  if (existing?.auth) return;
+  if (existing?.auth) {
+    await sendAccountExists(deps, existing.user);
+    return;
+  }
 
   const invite = input.invitationToken
     ? await findInvitationByToken(deps.db, input.invitationToken)
@@ -165,6 +179,18 @@ async function sendVerification(deps: AuthDeps, target: User): Promise<void> {
   await sendTemplate(deps.mailer, target.email, verifyEmailTemplate, {
     name: target.name,
     link: link(deps, '/verify-email', token),
+  });
+}
+
+async function sendAccountExists(deps: AuthDeps, target: User): Promise<void> {
+  const token = await withAudit(deps.db, { actor: AUTH_SYSTEM, scope: null }, async (tx, audit) => {
+    const token = await issueAuthToken(tx, target.id, 'reset_password', RESET_TTL_MS);
+    await audit({ action: 'user.signup_existing', entity: { type: 'user', id: target.id } });
+    return token;
+  });
+  await sendTemplate(deps.mailer, target.email, accountExistsTemplate, {
+    name: target.name,
+    link: link(deps, '/reset-password', token),
   });
 }
 
@@ -287,23 +313,52 @@ export async function completeSecondFactor(
     await checkTotp(deps, credentials, input.code);
     method = 'totp';
   } else {
+    await assertSecondFactorUnlocked(deps, pending.user.id);
     const hash = deps.auth.secrets.hmac(normalizeRecoveryCode(input.recoveryCode));
     if (!(await useRecoveryCode(deps.db, pending.user.id, hash))) {
+      await secondFactorFailed(deps, pending.user.id);
       throw new HttpError(401, 'invalid_code', 'wrong or already used recovery code');
     }
+    await resetSecondFactorFailures(deps.db, pending.user.id);
     method = 'recovery_code';
   }
   await deleteSession(deps.db, pending.session.id);
   return openSession(deps, pending.user, client, method);
 }
 
-/** Verifies a TOTP code and records its time step, so the same code can't be used twice. */
+const secondFactorLocked = (until: Date) =>
+  new HttpError(429, 'two_factor_locked', 'too many wrong codes, try again later', {
+    lockedUntil: until.toISOString(),
+  });
+
+async function assertSecondFactorUnlocked(deps: AuthDeps, userId: string): Promise<void> {
+  const until = await secondFactorLockedUntil(deps.db, userId);
+  if (until) throw secondFactorLocked(until);
+}
+
+/** Counts a wrong code; locks second-factor checks (and drops pending 2FA logins) at the limit. */
+async function secondFactorFailed(deps: AuthDeps, userId: string): Promise<void> {
+  if (await recordSecondFactorFailure(deps.db, userId)) {
+    await withAudit(deps.db, { actor: AUTH_SYSTEM, scope: null }, async (_tx, audit) => {
+      await audit({ action: 'user.second_factor_locked', entity: { type: 'user', id: userId } });
+    });
+  }
+}
+
+/**
+ * Verifies a TOTP code and records its time step, so the same code can't be used twice.
+ * Wrong codes count towards the per-account limit (see `recordSecondFactorFailure`).
+ */
 async function checkTotp(deps: AuthDeps, credentials: UserAuthRow, code: string): Promise<void> {
   if (!credentials.totpSecret)
     throw new HttpError(400, 'two_factor_not_set_up', 'set up 2FA first');
+  await assertSecondFactorUnlocked(deps, credentials.userId);
   const secret = deps.auth.secrets.decrypt(credentials.totpSecret);
   const step = verifyTotp(secret, code, { afterStep: credentials.totpLastStep });
-  if (step === null) throw new HttpError(401, 'invalid_code', 'wrong or expired code');
+  if (step === null) {
+    await secondFactorFailed(deps, credentials.userId);
+    throw new HttpError(401, 'invalid_code', 'wrong or expired code');
+  }
   const [row] = await deps.db
     .update(userAuth)
     .set({ totpLastStep: step })
@@ -315,6 +370,7 @@ async function checkTotp(deps: AuthDeps, credentials: UserAuthRow, code: string)
     )
     .returning({ userId: userAuth.userId });
   if (!row) throw new HttpError(401, 'invalid_code', 'wrong or expired code');
+  await resetSecondFactorFailures(deps.db, credentials.userId);
 }
 
 export async function logout(deps: AuthDeps, current: SessionRow): Promise<void> {
@@ -531,6 +587,8 @@ export interface Caller {
   keyPermissions: ReadonlySet<Permission> | null;
   /** API keys narrowed to one station. */
   keyStationId?: string | null;
+  /** For API keys: the creator's current memberships in the org, which cap the key. */
+  keyCreatorMemberships?: { role: Role; stationId: string | null }[] | null;
 }
 
 export async function callerFor(
@@ -544,6 +602,9 @@ export async function callerFor(
       memberships: null,
       keyPermissions: expandScopes(auth.apiKey.scopes),
       keyStationId: auth.apiKey.stationId,
+      keyCreatorMemberships: auth.apiKey.createdBy
+        ? await userMembershipsInOrg(deps.db, auth.apiKey.createdBy, scope)
+        : null,
     };
   }
   return {
@@ -560,7 +621,10 @@ export function callerPermissions(
 ): ReadonlySet<Permission> {
   if (caller.keyPermissions) {
     if (caller.keyStationId && caller.keyStationId !== stationId) return new Set();
-    return caller.keyPermissions;
+    if (!caller.keyCreatorMemberships) return caller.keyPermissions;
+    // A key never outranks the user who created it (same rule as `requirePermission`).
+    const held = effectivePermissions(caller.keyCreatorMemberships, stationId);
+    return new Set([...caller.keyPermissions].filter((p) => held.has(p)));
   }
   return effectivePermissions(caller.memberships ?? [], stationId);
 }
@@ -570,7 +634,12 @@ export function callerPermissions(
  * grant at most station manager.
  */
 function grantCeiling(caller: Caller, stationId: string | null): number {
-  if (!caller.memberships) return stationId ? roleRank.station_manager : 0;
+  if (!caller.memberships) {
+    const keyCeiling = stationId ? roleRank.station_manager : 0;
+    if (!caller.keyCreatorMemberships) return keyCeiling;
+    const creatorRole = highestRole(caller.keyCreatorMemberships, stationId);
+    return Math.min(keyCeiling, creatorRole ? roleRank[creatorRole] : 0);
+  }
   const role = highestRole(caller.memberships, stationId);
   return role ? roleRank[role] : 0;
 }

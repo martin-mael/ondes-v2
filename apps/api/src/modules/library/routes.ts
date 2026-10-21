@@ -19,7 +19,6 @@ import {
   updateCuesSchema,
   uuidSchema,
 } from '@ondes/shared';
-import type { Storage } from '@ondes/storage';
 import { z } from 'zod';
 
 // Library read/update API (#17), under /api/v1/stations/:stationId/…
@@ -32,9 +31,6 @@ import { z } from 'zod';
 
 export interface LibraryDeps {
   db: Db;
-  storage: Pick<Storage, 'delete'>;
-  /** Objects a delete left in the bucket after its commit; a sweep removes them later. */
-  onOrphanedObjects?: (keys: string[]) => void;
 }
 
 export interface RequestContext {
@@ -106,9 +102,9 @@ export const libraryRoutes: LibraryRoute[] = [
     method: 'DELETE',
     url: `${STATION}/assets/:assetId`,
     permission: write,
-    handler: async ({ db, storage, onOrphanedObjects }, ctx, request) => {
-      const released = await deleteAsset(db, storage, ctx, assetId(request));
-      if (released.orphaned.length > 0) onOrphanedObjects?.(released.orphaned);
+    handler: async ({ db }, ctx, request) => {
+      // Released objects are queued; the worker's storage sweep deletes them later.
+      await deleteAsset(db, ctx, assetId(request));
       return { status: 204 };
     },
   },

@@ -1,7 +1,7 @@
 // Helpers for the api's integration tests (`*.int.test.ts`). Not for production code.
 import { createTestDatabase, type TestDatabase } from '@ondes/db/testing';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
-import { type AppOptions, buildApp } from '../../app.ts';
+import { buildApp } from '../../app.ts';
 import type { AuthConfig } from '../../plugins/auth.ts';
 import { createMemoryMailer, type MailMessage } from '../../plugins/mail.ts';
 import { totpCode } from './totp.ts';
@@ -28,7 +28,6 @@ export interface TestApp {
 export async function createTestApp(
   auth: Partial<AuthConfig> = {},
   routes?: (app: FastifyInstance) => void,
-  extra: Pick<AppOptions, 'storage'> = {},
 ): Promise<TestApp> {
   const tdb = await createTestDatabase();
   const mailer = createMemoryMailer();
@@ -37,7 +36,6 @@ export async function createTestApp(
     mail: { mailer },
     auth: { ...TEST_AUTH_CONFIG, ...auth },
     fastify: { logger: false },
-    ...extra,
   });
   routes?.(app);
   await app.ready();

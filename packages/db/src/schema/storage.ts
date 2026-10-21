@@ -1,5 +1,15 @@
 import { sql } from 'drizzle-orm';
-import { bigint, check, pgTable, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import {
+  bigint,
+  check,
+  index,
+  integer,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uuid,
+} from 'drizzle-orm/pg-core';
 import { organization } from './tenancy.ts';
 
 // Storage accounting (#17, follow-up of #7): the Postgres side of @ondes/storage's `QuotaStore`
@@ -43,4 +53,27 @@ export const orgStorageUsage = pgTable(
       .$onUpdate(() => new Date()),
   },
   (t) => [check('org_storage_usage_used_check', sql`${t.usedBytes} >= 0`)],
+);
+
+/**
+ * Objects whose last reference was released, waiting to be deleted from the bucket. Deletes
+ * never run inline: `sweepStorageDeletions` removes an object only after a grace period, under
+ * a row lock, and only if nothing references it again (a new reference cancels the row, see
+ * `addReference`). Failed deletes stay here and are retried, so nothing is silently orphaned.
+ */
+export const storageDeletion = pgTable(
+  'storage_deletion',
+  {
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organization.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    releasedAt: timestamp('released_at', { withTimezone: true }).notNull().defaultNow(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+  },
+  (t) => [
+    primaryKey({ name: 'storage_deletion_pkey', columns: [t.orgId, t.key] }),
+    index('storage_deletion_released_idx').on(t.releasedAt),
+  ],
 );

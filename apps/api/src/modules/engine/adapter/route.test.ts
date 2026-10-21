@@ -37,13 +37,15 @@ afterEach(async () => {
 });
 
 describe('engine events route', () => {
-  const handler = (token?: string) =>
+  const TOKEN = 't0ken';
+  const auth = { authorization: `Bearer ${TOKEN}` };
+  const handler = (token = TOKEN) =>
     createEngineEventsHandler({ ingestFor: engines.ingestFor, token });
 
   it('ingests a valid batch', async () => {
     const res = await handler()({
       stationId: engine.stationId,
-      headers: {},
+      headers: auth,
       body: engine.log,
     });
     expect(res).toEqual({ status: 200, body: { published: 1, duplicates: 0 } });
@@ -53,21 +55,21 @@ describe('engine events route', () => {
   it('answers 400 on a batch that breaks the contract', async () => {
     const res = await handler()({
       stationId: engine.stationId,
-      headers: {},
+      headers: auth,
       body: [{ ...engine.log[0], type: 'nope' }],
     });
     expect(res.status).toBe(400);
   });
 
   it('answers 404 for an unknown station and 409 for a mismatched one', async () => {
-    expect((await handler()({ stationId: 'nope', headers: {}, body: [] })).status).toBe(404);
+    expect((await handler()({ stationId: 'nope', headers: auth, body: [] })).status).toBe(404);
     const other = new StationEngines();
     other.add(
       createStationEngine({ stationId: 'other', baseUrl: engine.url, publish: async () => {} }),
     );
-    const res = await createEngineEventsHandler({ ingestFor: other.ingestFor })({
+    const res = await createEngineEventsHandler({ ingestFor: other.ingestFor, token: TOKEN })({
       stationId: 'other',
-      headers: {},
+      headers: auth,
       body: engine.log,
     });
     expect(res.status).toBe(409);
@@ -75,19 +77,17 @@ describe('engine events route', () => {
 
   it('answers 503 when it cannot publish, so the engine retries', async () => {
     failPublish = true;
-    const res = await handler()({ stationId: engine.stationId, headers: {}, body: engine.log });
+    const res = await handler()({ stationId: engine.stationId, headers: auth, body: engine.log });
     expect(res.status).toBe(503);
   });
 
-  it('checks the bearer token when configured', async () => {
-    const h = handler('t0ken');
+  it('always requires the bearer token', async () => {
+    const h = handler();
     expect((await h({ stationId: engine.stationId, headers: {}, body: [] })).status).toBe(401);
-    const ok = await h({
-      stationId: engine.stationId,
-      headers: { authorization: 'Bearer t0ken' },
-      body: [],
-    });
-    expect(ok.status).toBe(200);
+    const wrong = { authorization: 'Bearer nope!' };
+    expect((await h({ stationId: engine.stationId, headers: wrong, body: [] })).status).toBe(401);
+    expect((await h({ stationId: engine.stationId, headers: auth, body: [] })).status).toBe(200);
+    expect(() => createEngineEventsHandler({ ingestFor: engines.ingestFor, token: '' })).toThrow();
   });
 
   it('registers on a Fastify-shaped router', async () => {
@@ -97,12 +97,12 @@ describe('engine events route', () => {
     >();
     registerEngineEventRoutes(
       { post: (path, handler) => routes.set(path, handler) },
-      { ingestFor: engines.ingestFor },
+      { ingestFor: engines.ingestFor, token: TOKEN },
     );
     const route = routes.get(ENGINE_EVENTS_ROUTE);
     let code = 0;
     const body = await route?.(
-      { params: { stationId: engine.stationId }, headers: {}, body: engine.log },
+      { params: { stationId: engine.stationId }, headers: auth, body: engine.log },
       { code: (c: number) => (code = c) },
     );
     expect(code).toBe(200);

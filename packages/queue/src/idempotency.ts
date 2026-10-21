@@ -1,19 +1,8 @@
 import { createHash } from 'node:crypto';
+import { stableStringify } from '@ondes/shared';
 
-/** JSON with object keys sorted, so equal payloads hash the same whatever their key order. */
-export function stableStringify(value: unknown): string {
-  return JSON.stringify(value, (_key, v: unknown) => {
-    if (v && typeof v === 'object' && !Array.isArray(v)) {
-      const obj = v as Record<string, unknown>;
-      return Object.fromEntries(
-        Object.keys(obj)
-          .sort()
-          .map((k) => [k, obj[k]]),
-      );
-    }
-    return v;
-  });
-}
+/** Re-exported for existing callers; lives in `@ondes/shared`. */
+export { stableStringify };
 
 /** Default idempotency key: `<job>:<sha256 of the canonical payload>`. */
 export function defaultIdempotencyKey(jobName: string, payload: unknown): string {

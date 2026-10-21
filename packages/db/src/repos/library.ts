@@ -29,7 +29,7 @@ import {
   updateAssetSchema,
   updateCuesSchema,
 } from '@ondes/shared';
-import { orgPrefix, releaseStoredObject, type Storage } from '@ondes/storage';
+import { orgPrefix, releaseStoredObject } from '@ondes/storage';
 import { and, asc, desc, eq, exists, ilike, lt, notInArray, or, type SQL, sql } from 'drizzle-orm';
 import { auditDiff, withAudit } from '../audit.ts';
 import type { Db, Executor, Tx } from '../client.ts';
@@ -44,7 +44,7 @@ import {
   tag,
 } from '../schema/library.ts';
 import { type StationScope, whereStation } from '../tenant.ts';
-import { createPostgresQuotaStore } from './storage.ts';
+import { createPostgresQuotaStore, scheduleStorageDeletion } from './storage.ts';
 import type { StationContext } from './tenancy.ts';
 
 // Library repositories (#17). Reads take a station scope and filter on it; mutations go through
@@ -63,11 +63,13 @@ export class LibraryConflictError extends Error {
   }
 }
 
-/** Stored objects an operation removed from the bucket, and those it couldn't (orphans). */
+/**
+ * Stored objects an operation released for good (no reference left in the org). They're
+ * queued in `storage_deletion` and removed from the bucket by `sweepStorageDeletions` after a
+ * grace period; nothing is deleted inline.
+ */
 export interface ReleasedObjects {
-  deleted: string[];
-  /** Left in the bucket by a failed delete; `reconcileOrgUsage` and a sweep pick them up. */
-  orphaned: string[];
+  scheduled: string[];
 }
 
 // --- Assets ------------------------------------------------------------------------------
@@ -211,13 +213,12 @@ export async function updateAsset(
 }
 
 /**
- * Deletes an asset and everything attached to it, releasing its stored objects: an object is
- * deleted from the bucket only when no other asset of the org references it. The database
- * side commits first; a failed bucket delete leaves an orphan (reported), never a dangling row.
+ * Deletes an asset and everything attached to it, releasing its stored objects. An object no
+ * other asset of the org references is queued for deletion; `sweepStorageDeletions` removes
+ * it from the bucket after a grace period, unless something references it again first.
  */
 export async function deleteAsset(
   db: Db,
-  storage: Pick<Storage, 'delete'>,
   ctx: StationContext,
   id: string,
 ): Promise<ReleasedObjects> {
@@ -240,13 +241,13 @@ export async function deleteAsset(
     });
     return pending;
   });
-  return deleteObjects(storage, pending);
+  return { scheduled: pending };
 }
 
 /**
  * Drops one reference per key through `releaseStoredObject`, against a quota store bound to
- * the transaction. Bucket deletes are collected, not run: the caller runs them after commit
- * ({@link deleteObjects}), so a rollback never leaves rows pointing at a deleted object.
+ * the transaction. Keys whose last reference went are queued for deletion in the same
+ * transaction, so a rollback cancels both.
  */
 async function releaseKeys(tx: Tx, scope: StationScope, keys: string[]): Promise<string[]> {
   const store = createPostgresQuotaStore(tx);
@@ -257,20 +258,8 @@ async function releaseKeys(tx: Tx, scope: StationScope, keys: string[]): Promise
     },
   };
   for (const key of keys) await releaseStoredObject(deferred, store, scope.orgId, key);
+  await scheduleStorageDeletion(tx, scope.orgId, pending);
   return pending;
-}
-
-async function deleteObjects(
-  storage: Pick<Storage, 'delete'>,
-  keys: string[],
-): Promise<ReleasedObjects> {
-  const results = await Promise.allSettled(keys.map((key) => storage.delete(key)));
-  const released: ReleasedObjects = { deleted: [], orphaned: [] };
-  results.forEach((result, i) => {
-    const key = keys[i] as string;
-    (result.status === 'fulfilled' ? released.deleted : released.orphaned).push(key);
-  });
-  return released;
 }
 
 // --- Files -------------------------------------------------------------------------------
@@ -298,7 +287,6 @@ export async function listAssetFiles(
  */
 export async function putAssetFile(
   db: Db,
-  storage: Pick<Storage, 'delete'>,
   ctx: StationContext,
   assetId: string,
   input: CreateAssetFile,
@@ -337,7 +325,7 @@ export async function putAssetFile(
     });
     return { file: toAssetFile(row), pending };
   });
-  return { file, released: await deleteObjects(storage, pending) };
+  return { file, released: { scheduled: pending } };
 }
 
 // --- Cues --------------------------------------------------------------------------------
