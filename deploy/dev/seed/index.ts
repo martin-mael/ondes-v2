@@ -1,7 +1,8 @@
 // Dev seed entry point: `pnpm dev:seed` (reads the root .env if present).
 //
 // Applies migrations, then creates a demo org, station and user (owner of the org) so a fresh
-// dev database is usable right away. Idempotent: rows are looked up by slug/email first and
+// dev database is usable right away, plus a fixture log for that station (log-fixture.ts).
+// Idempotent: rows are looked up by slug/email first and
 // only created (through the audited repositories) when missing, so it can run on every
 // `pnpm dev:up`.
 
@@ -14,9 +15,11 @@ import {
   findUserByEmail,
   listMemberships,
   resolveOrgScope,
+  resolveStationScope,
   runMigrations,
 } from '../../../packages/db/src/index.ts';
 import type { Actor } from '../../../packages/shared/src/index.ts';
+import { seedLogFixture } from './log-fixture.ts';
 
 export const demo = {
   org: { slug: 'vandale', name: 'Vandale Radio' },
@@ -49,9 +52,14 @@ async function seed(databaseUrl: string): Promise<void> {
       await addMembership(db, { actor, scope }, { level: 'org', userId: user.id, role: 'owner' });
     }
 
+    const stationScope = await resolveStationScope(db, org.id, st.id);
+    const fixture = await seedLogFixture(db, actor, stationScope, st.timezone, {
+      force: process.env.LOG_FIXTURE_FORCE === '1',
+    });
+
     console.log(
       `dev:seed: org "${org.slug}" (${org.id}), station "${st.slug}" (${st.id}, ${st.timezone}), ` +
-        `user ${user.email} (owner).`,
+        `user ${user.email} (owner); ${fixture}.`,
     );
   } finally {
     await close();

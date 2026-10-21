@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import { engineSourceSchema } from './engine.ts';
+import {
+  localDateSchema,
+  logItemChangeSchema,
+  logItemSchema,
+  logUpdateCauseSchema,
+} from './log.ts';
 
 /**
  * Real-time events: what the api publishes on the RabbitMQ events fanout (`@ondes/queue`
@@ -137,10 +143,49 @@ export const engineRealtimeEventSchema = z.discriminatedUnion('type', [
 export type EngineRealtimeEvent = z.infer<typeof engineRealtimeEventSchema>;
 
 // ---------------------------------------------------------------------------------------
+// Log (#100). Published after the change is committed. Consumers refetch the range over HTTP
+// (`GET …/log?from&to`) rather than patching from events: events are transient (no replay).
+
+/** Some of the station's log changed between `from` and `to` (planned times, UTC). */
+export const logUpdatedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('log.updated'),
+  data: z.object({
+    from: isoTime,
+    to: isoTime,
+    /** The log days touched, at their new version. */
+    days: z.array(
+      z.object({ logDayId: z.uuid(), localDate: localDateSchema, version: z.int().min(1) }),
+    ),
+    cause: logUpdateCauseSchema,
+  }),
+});
+
+/** One item was edited. Followed by the `log.updated` covering it. */
+export const logItemChangedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('log.item.changed'),
+  data: z.object({
+    itemId: z.uuid(),
+    logDayId: z.uuid(),
+    change: logItemChangeSchema,
+    /** The item after the change; null once deleted. */
+    item: logItemSchema.nullable(),
+  }),
+});
+
+export const logRealtimeEventSchema = z.discriminatedUnion('type', [
+  logUpdatedEventSchema,
+  logItemChangedEventSchema,
+]);
+export type LogRealtimeEvent = z.infer<typeof logRealtimeEventSchema>;
+
+// ---------------------------------------------------------------------------------------
 // Every real-time event. Add other domains' schemas to this union.
 
 export const realtimeEventSchema = z.discriminatedUnion('type', [
   ...engineRealtimeEventSchema.options,
+  ...logRealtimeEventSchema.options,
 ]);
 export type RealtimeEvent = z.infer<typeof realtimeEventSchema>;
 export type RealtimeEventType = RealtimeEvent['type'];
