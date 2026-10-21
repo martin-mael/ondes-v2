@@ -18,6 +18,8 @@ pnpm dev:down          # stop, keep the data
 pnpm dev:reset         # stop and delete all volumes
 ```
 
+The seeded user, `dev@ondes.localhost` (owner of the demo org), has no password: sign up in the web app with that email to claim it, then confirm it from the email in Mailpit (<http://127.0.0.1:8025>). "Forgot password" sends nothing to an account that never signed up.
+
 The compose project is called `ondes-dev`, so containers and volumes are prefixed with it.
 
 Every port is bound to **127.0.0.1 only**. Nothing is reachable from other machines on your network.
