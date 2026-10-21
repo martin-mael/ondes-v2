@@ -444,14 +444,26 @@ function EntryButton({
       data-testid="calendar-entry"
       onClick={() => onSelect(entry)}
       className={cn(
-        'flex min-w-0 flex-col overflow-hidden rounded-md border-l-4 bg-card px-1.5 py-0.5 text-left text-[0.7rem] leading-tight hover:bg-muted',
-        entry.kind === 'cancelled' && 'border-dashed opacity-60',
+        'relative flex min-w-0 flex-col overflow-hidden rounded-md bg-card py-0.5 pr-1.5 pl-2.5 text-left text-[0.7rem] leading-tight hover:bg-muted',
+        entry.kind === 'cancelled' && 'opacity-60',
         conflict && 'ring-2 ring-destructive',
         className,
       )}
-      style={{ borderLeftColor: colour ?? 'var(--border)', ...style }}
+      style={style}
       {...rest}
     >
+      {/* The show's colour: a strip, not a border, so its inner edge stays straight while the
+          rounded corners clip its outer ones. Dashed for a cancelled airing. */}
+      <span
+        aria-hidden
+        className="absolute inset-y-0 left-0 w-1"
+        style={{
+          background:
+            entry.kind === 'cancelled'
+              ? `repeating-linear-gradient(to bottom, ${colour ?? 'var(--border)'} 0 4px, transparent 4px 7px)`
+              : (colour ?? 'var(--border)'),
+        }}
+      />
       <span className="flex items-start gap-1">
         <span
           aria-hidden
