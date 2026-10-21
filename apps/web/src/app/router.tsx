@@ -10,6 +10,8 @@ import {
 } from '@tanstack/react-router';
 import { toast } from 'sonner';
 import { z } from 'zod';
+import { librarySearchParamsSchema } from '../features/library/filters.ts';
+import { LibraryPage } from '../features/library/library-page.tsx';
 import { CategoriesPage } from '../features/rotation/categories/categories-page.tsx';
 import {
   EditCategoryPage,
@@ -168,6 +170,14 @@ const dashboardRoute = createRoute({
   component: DashboardPage,
 });
 
+// Library (#23): search, facets, bulk edits, uploads; filters and the open asset in the URL.
+const libraryRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'library',
+  validateSearch: librarySearchParamsSchema,
+  component: LibraryPage,
+});
+
 // Music rotation: categories (#37).
 const categoriesRoute = createRoute({
   getParentRoute: () => stationRoute,
@@ -207,6 +217,7 @@ const routeTree = rootRoute.addChildren([
     accountRoute,
     stationRoute.addChildren([
       dashboardRoute,
+      libraryRoute,
       categoriesRoute,
       newCategoryRoute,
       categoryRoute,

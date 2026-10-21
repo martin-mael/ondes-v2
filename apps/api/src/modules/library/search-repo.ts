@@ -23,12 +23,13 @@ import {
   getPlayoutGain,
   type LibraryFacets,
   type LibraryFacetsQuery,
+  type LibraryFilter,
   type LibraryItem,
   type LibrarySearch,
   type LibrarySearchPage,
   libraryFacetsQuerySchema,
+  libraryFilterSchema,
   librarySearchSchema,
-  type ParsedLibraryFilter,
   type Tag,
   type TagKey,
   VALIDITIES,
@@ -187,14 +188,14 @@ function parseJson(value: unknown): Tag[] {
 export async function matchingIds(
   db: Executor,
   scope: StationScope,
-  filter: ParsedLibraryFilter,
+  filter: LibraryFilter,
   limit: number,
   at = new Date(),
 ): Promise<string[]> {
   const rows = await db
     .select({ id: asset.id })
     .from(asset)
-    .where(filterSql(compileFilter(scope, filter, at)))
+    .where(filterSql(compileFilter(scope, libraryFilterSchema.parse(filter), at)))
     .orderBy(asset.id)
     .limit(limit);
   return rows.map((r) => r.id);
