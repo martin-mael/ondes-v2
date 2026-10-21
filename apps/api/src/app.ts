@@ -15,6 +15,7 @@ import {
   engineLifecyclePlugin,
 } from './modules/engine/lifecycle/plugin.ts';
 import { type InvitationsOptions, invitationsRoutes } from './modules/invitations/routes.ts';
+import { peaksPlugin } from './modules/library/peaks-plugin.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
@@ -38,7 +39,7 @@ export interface AppOptions {
   alerts?: AlertsPluginOptions;
   /** Playout cache (#31): readiness API and cache alerts. */
   cache?: CachePluginOptions;
-  /** Media storage. Optional so tests that don't upload can skip S3; without it, no upload routes. */
+  /** Media storage. Optional so tests that don't upload can skip S3; without it, no upload or peaks routes. */
   storage?: Storage;
   /** Upload route settings beyond `storage` (tests). */
   uploads?: Omit<UploadPluginOptions, 'storage'>;
@@ -98,6 +99,8 @@ export async function buildApp(options: AppOptions) {
   await app.register(cachePlugin, options.cache ?? {});
   if (options.storage) {
     await app.register(uploadPlugin, { ...options.uploads, storage: options.storage });
+    // Waveform peaks (#22): GET …/assets/:assetId/peaks.
+    await app.register(peaksPlugin, { storage: options.storage });
   }
 
   return app;
