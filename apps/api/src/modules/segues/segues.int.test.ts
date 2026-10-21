@@ -6,6 +6,7 @@ import {
   createAsset,
   createOrganization,
   createStation,
+  deleteAsset,
   island,
   logItem,
   markIslandFailed,
@@ -821,6 +822,25 @@ describe('invalidation triggers', () => {
       { params: { stationId, assetId }, query: {}, body },
     );
   };
+  /**
+   * The library refuses to delete an asset a segue or a coming log item still uses (#23,
+   * 409 `asset_in_use`). A delete that happens anyway (directly in the database, an admin
+   * fix) still announces `asset.deleted`: the sync must cope.
+   */
+  const forceDelete = async (assetId: string) => {
+    await expect(library('DELETE', '/assets/:assetId', assetId)).rejects.toMatchObject({
+      code: 'asset_in_use',
+    });
+    await deleteAsset(t.tdb.db, { actor: system, scope }, assetId);
+    published.length = 0;
+    return segueSync.handleEvent({
+      id: crypto.randomUUID(),
+      stationId,
+      at: new Date().toISOString(),
+      type: 'asset.deleted',
+      data: { assetId },
+    });
+  };
   /** Library event → consumer, as the durable queue would deliver it. */
   const deliver = async (type: RealtimeEvent['type']) => {
     const events = take(type);
@@ -915,10 +935,7 @@ describe('invalidation triggers', () => {
     const vt5 = await newAsset(scope, 'VT5', 4, 'vt');
     segue = await ok<Segue>(await call('programmer', 'PUT', `/segues/${segue.id}`, lanes(vt5)));
     expect(segue.status).toBe('ready');
-    published.length = 0;
-    expect((await library('DELETE', '/assets/:assetId', vt5)).status).toBe(204);
-    expect(take('asset.deleted').map((e) => e.data)).toEqual([{ assetId: vt5 }]);
-    const result = await deliver('asset.deleted');
+    const result = await forceDelete(vt5);
     expect(result?.removed.map((r) => r.id)).toEqual([segue.island?.id]);
     const after = await ok<Segue>(await call('programmer', 'GET', `/segues/${segue.id}`));
     expect(after).toMatchObject({
@@ -933,9 +950,7 @@ describe('invalidation triggers', () => {
   });
 
   it('detaches a segue whose B asset is deleted', async () => {
-    published.length = 0;
-    expect((await library('DELETE', '/assets/:assetId', assets.G as string)).status).toBe(204);
-    await deliver('asset.deleted');
+    await forceDelete(assets.G as string);
     const after = await ok<Segue>(await call('programmer', 'GET', `/segues/${segue.id}`));
     expect(after).toMatchObject({
       status: 'detached',

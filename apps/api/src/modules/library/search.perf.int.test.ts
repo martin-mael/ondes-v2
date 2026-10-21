@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import {
   createOrganization,
   createStation,
@@ -147,13 +147,11 @@ describe(`library search on ${ASSETS} assets`, () => {
   // What the migration costs on a populated library: each CREATE INDEX holds a SHARE lock on
   // its table (writes wait) while it builds. Rebuilt here from the migration's own statements.
   it('builds the search indexes in seconds (migration lock time)', async () => {
-    const file = readFileSync(
-      new URL(
-        '../../../../../packages/db/migrations/20261021145106_library-search.sql',
-        import.meta.url,
-      ),
-      'utf8',
-    );
+    // Found by name: the timestamp prefix changes when the migration is regenerated.
+    const dir = new URL('../../../../../packages/db/migrations/', import.meta.url);
+    const name = readdirSync(dir).find((f) => f.endsWith('_library-search.sql'));
+    if (!name) throw new Error('library-search migration not found');
+    const file = readFileSync(new URL(name, dir), 'utf8');
     const statements = file
       .split('--> statement-breakpoint')
       .map((s) => s.replace(/^--.*$/gm, '').trim())
