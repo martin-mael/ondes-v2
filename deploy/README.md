@@ -12,6 +12,7 @@ Requirements: Docker with Compose v2.24+ (Docker Desktop or OrbStack on macOS).
 cp .env.example .env   # app-side settings (DATABASE_URL, S3_*, ...)
 pnpm dev:up            # start all services and wait until they're healthy
 pnpm dev:seed          # migrate, then create the demo org, station and user
+pnpm dev:seed:audio    # optional: synthesised audio for the fixture assets (below)
 pnpm dev:ps            # status of each service
 pnpm dev:logs          # follow logs (add a service name: pnpm dev:logs icecast)
 pnpm dev:down          # stop, keep the data
@@ -19,6 +20,13 @@ pnpm dev:reset         # stop and delete all volumes
 ```
 
 The seeded user, `dev@ondes.localhost` (owner of the demo org), has no password: sign up in the web app with that email to claim it, then confirm it from the email in Mailpit (<http://127.0.0.1:8025>). "Forgot password" sends nothing to an account that never signed up.
+
+`dev:seed` also writes a fixture log whose assets (songs, jingles, VTs, a bed, an episode) have no audio, so the audio route returns 404 for them. `pnpm dev:seed:audio` (`dev/seed/audio.ts`) synthesises a file for each one that has no playout copy: a chord per song, a voice-like tone for VTs and jingles, a soft pad for the bed, at the asset's duration with a little silence at each end. It stores the master and the playout copy (ingest's own transcode) and registers them, then enqueues loudness, autocue and peaks through their backfills, which the worker of `pnpm dev` runs within a minute. Skips assets that already have audio, so it can be rerun. It needs ffmpeg/ffprobe on the PATH (or `FFMPEG_PATH`/`FFPROBE_PATH`), and RabbitMQ (`RABBITMQ_URL`). To use the worker image's ffmpeg, as ingest does:
+
+```sh
+docker build --target ffmpeg -t ondes-ffmpeg:dev -f deploy/docker/worker.Dockerfile .   # once
+PATH=$PWD/apps/worker/test/bin:$PATH pnpm dev:seed:audio
+```
 
 The compose project is called `ondes-dev`, so containers and volumes are prefixed with it.
 

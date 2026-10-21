@@ -2,6 +2,7 @@
 //
 // Applies migrations, then creates a demo org, station and user (owner of the org) so a fresh
 // dev database is usable right away, plus a fixture log for that station (log-fixture.ts).
+// Its assets have no audio; `pnpm dev:seed:audio` (audio.ts) gives them some.
 // Idempotent: rows are looked up by slug/email first and
 // only created (through the audited repositories) when missing, so it can run on every
 // `pnpm dev:up`.
@@ -66,9 +67,11 @@ async function seed(databaseUrl: string): Promise<void> {
   }
 }
 
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
-  console.error('dev:seed: DATABASE_URL is not set. Copy .env.example to .env first.');
-  process.exit(1);
+if (import.meta.main) {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    console.error('dev:seed: DATABASE_URL is not set. Copy .env.example to .env first.');
+    process.exit(1);
+  }
+  await seed(databaseUrl);
 }
-await seed(databaseUrl);
