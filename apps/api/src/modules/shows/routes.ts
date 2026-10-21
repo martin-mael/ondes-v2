@@ -7,6 +7,7 @@ import {
   listEpisodesQuerySchema,
   localDateSchema,
   putSlotExceptionSchema,
+  showHostCandidateListSchema,
   showListSchema,
   showOccurrencesQuerySchema,
   showOccurrencesResponseSchema,
@@ -127,6 +128,18 @@ export async function showsRoutes(app: FastifyInstance) {
       await repo.deleteShow(app.db, ctx(request), request.params.showId);
       return reply.code(204).send();
     },
+  );
+
+  /** Who the host picker offers. `show:write`: only it changes hosts. */
+  r.get(
+    '/stations/:stationId/show-hosts',
+    {
+      preHandler: write,
+      schema: { params: stationParams, response: { 200: showHostCandidateListSchema } },
+    },
+    async (request) => ({
+      items: await repo.listHostCandidates(app.db, stationScopeOf(request)),
+    }),
   );
 
   // --- Slots ---

@@ -285,4 +285,22 @@ describe.skipIf(!enabled)('upload api (integration)', () => {
     const res = await api('POST', '/uploads', { filename: 'a.wav', sizeBytes: 10 }, presenter);
     expect(res.statusCode).toBe(403);
   });
+
+  it('lets presenters (show:write_own) upload episodes, and only act on their own', async () => {
+    const episode = { filename: 'ep.wav', sizeBytes: 10, assetType: 'episode' };
+    const mine = await api('POST', '/uploads', episode, presenter);
+    expect(mine.statusCode, mine.body).toBe(201);
+    const id = (mine.json() as Upload).id;
+    const parts = await api('POST', `/uploads/${id}/parts`, { partNumbers: [1] }, presenter);
+    expect(parts.statusCode, parts.body).toBe(200);
+    expect((await api('POST', `/uploads/${id}/abort`, undefined, presenter)).statusCode).toBe(200);
+
+    // Someone else's episode upload, or a song: still library:write.
+    const theirs = (await api('POST', '/uploads', episode)).json() as Upload;
+    expect(
+      (await api('POST', `/uploads/${theirs.id}/abort`, undefined, presenter)).statusCode,
+    ).toBe(403);
+    const song = (await create(10)).id;
+    expect((await api('DELETE', `/uploads/${song}`, undefined, presenter)).statusCode).toBe(403);
+  });
 });
