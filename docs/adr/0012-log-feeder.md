@@ -55,7 +55,7 @@ Consequences:
 - Every sync costs one `GET /v1/state` and two queries (the log window, then media for its assets). That's every 5 s per station, plus events.
 - Additive contract changes:
   - alert types `feeder.items_skipped` and `feeder.log_empty`;
-  - real-time event `feeder.item.skipped` (for as-run, #30; `engine:read`).
+  - real-time event `feeder.item.passed_over` (`engine:read`): items that will not air, for the log-vs-as-run view (#53). As-run (#30) records only what aired and does not consume it.
 - When the log runs dry the feeder pushes nothing and raises `feeder.log_empty`; the template's safety source takes over on its own (#34). The feeder never clears or skips to hand over.
 - Follow-ups:
   - `POST /v1/schedule` in the contract, the template and the adapter, then the feeder: schedule `hard` items when they enter the window, and again after a boot.

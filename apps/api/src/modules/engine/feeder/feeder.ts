@@ -5,7 +5,7 @@ import {
   type EnginePushItem,
   type EnginePushSegment,
   type EngineState,
-  type FeederItemSkippedEvent,
+  type FeederItemPassedOverEvent,
   type LogItem,
   type LogSegmentPart,
   type PlayoutGainStation,
@@ -91,8 +91,8 @@ export type FeederDeps = {
       options?: { reason?: string },
     ): Promise<unknown>;
   };
-  /** Real-time events (`feeder.item.skipped`). */
-  publish?(event: FeederItemSkippedEvent): Promise<void>;
+  /** Real-time events (`feeder.item.passed_over`). */
+  publish?(event: FeederItemPassedOverEvent): Promise<void>;
   /** Still the station's only feeder? Checked before every change to the engine queue. */
   owns?(): Promise<boolean>;
   now?(): number;
@@ -133,7 +133,7 @@ export function createStationFeeder(deps: FeederDeps) {
   const pushed = new Map<string, { fingerprint: string; trimMs: number }>();
   /** Log items (and segments) that went on air during this boot. */
   const aired = new Set<string>();
-  /** Items planned but passed over, until a later item airs (then `feeder.item.skipped`). */
+  /** Items planned but passed over, until a later item airs (then `feeder.item.passed_over`). */
   const pendingSkips = new Map<string, { reason: SkipReason | 'dropped'; item: LogItem }>();
   const reported = new Set<string>();
   /** Asset files the engine refused (422), until when they're skipped. */
@@ -322,7 +322,7 @@ export function createStationFeeder(deps: FeederDeps) {
     }
   }
 
-  /** `feeder.item.skipped` for passed-over items once a later item is on air. */
+  /** `feeder.item.passed_over` for passed-over items once a later item is on air. */
   async function reportSkips(plan: FeedPlan, entries: FeedEntry[], items: Map<string, LogItem>) {
     for (const { entry, reason } of plan.skipped) {
       const item = items.get(entry.id);
@@ -346,9 +346,10 @@ export function createStationFeeder(deps: FeederDeps) {
             id: eventId(scope.stationId, itemId, bootId),
             stationId: scope.stationId,
             at: new Date(now()).toISOString(),
-            type: 'feeder.item.skipped',
+            type: 'feeder.item.passed_over',
             data: {
               itemId,
+              logDayId: item.logDayId,
               segmentId: item.kind === 'segment' ? item.id : null,
               plannedStart: item.plannedStart,
               reason,
@@ -557,7 +558,7 @@ function fingerprintOf(body: EnginePushItem | EnginePushSegment): string {
 /** Deterministic uuid (v4 layout) from the skipped item and the boot. */
 function eventId(stationId: string, itemId: string, bootId: string | null): string {
   const h = createHash('sha256')
-    .update(`feeder.item.skipped:${stationId}:${itemId}:${bootId ?? ''}`)
+    .update(`feeder.item.passed_over:${stationId}:${itemId}:${bootId ?? ''}`)
     .digest('hex');
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${((Number.parseInt(h[16] as string, 16) & 3) | 8).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }

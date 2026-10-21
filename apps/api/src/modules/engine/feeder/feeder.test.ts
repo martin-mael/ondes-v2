@@ -5,7 +5,7 @@ import type {
   EnginePushSegment,
   EngineQueuedRequest,
   EngineState,
-  FeederItemSkippedEvent,
+  FeederItemPassedOverEvent,
   LogItem,
   RaiseAlert,
 } from '@ondes/shared';
@@ -172,7 +172,7 @@ let fetches: string[];
 let syncs: number;
 let raised: RaiseAlert[];
 let resolved: string[];
-let published: FeederItemSkippedEvent[];
+let published: FeederItemPassedOverEvent[];
 let owner: boolean;
 
 function setLog(
@@ -336,7 +336,7 @@ describe('station feeder', () => {
     await f.sync();
     expect(published).toMatchObject([
       {
-        type: 'feeder.item.skipped',
+        type: 'feeder.item.passed_over',
         data: { itemId: items[1]?.id, reason: 'not_cached', bootId: 'boot-1' },
       },
     ]);

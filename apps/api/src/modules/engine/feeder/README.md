@@ -9,7 +9,7 @@ Keeps each station's engine queue a few items ahead of air, following the publis
 | Planner | `plan.ts` | Pure. Engine state + log around now → which entries to have queued, in order, with their trims; `diffQueue` compares that with the engine queue. |
 | Push bodies | `push.ts` | Pure. One log item (or segment) + its media → `POST /v1/queue` / `POST /v1/segment` body: cache path, biased cue points, fades, crossfades, gain, ICY metadata. |
 | Repo | `repo.ts` | The log around now (published days only) and, in one query, each asset's playout file, cues, loudness and cache state. |
-| Feeder | `feeder.ts` | One station: `sync()` reads the state and the log, plans, removes and pushes. Alerts, urgent fetches, `feeder.item.skipped`. |
+| Feeder | `feeder.ts` | One station: `sync()` reads the state and the log, plans, removes and pushes. Alerts, urgent fetches, `feeder.item.passed_over`. |
 | Leases | `leases.ts` | One feeder per station across replicas: a session-level advisory lock per station on one reserved connection. |
 | Service, plugin | `service.ts`, `plugin.ts` | `app.feeder`: lease rounds, the tick, fanout events → the right feeder. |
 
@@ -72,9 +72,12 @@ Keeps each station's engine queue a few items ahead of air, following the publis
     played; `details.items`.
   - `feeder.log_empty` (warning, critical after 15 min): nothing queued, to push or held. The
     safety playlist plays (#34 owns it; the feeder never clears or skips to hand over).
-- **`feeder.item.skipped`** (real-time event, `engine:read`): published once a later item went on
-  air, per skipped item (every part of a skipped segment). Deterministic id per
-  (station, item, boot). For the as-run log (#30).
+- **`feeder.item.passed_over`** (real-time event, `engine:read`): published once a later item
+  went on air, per passed-over item (every part of a passed-over segment), with its reason.
+  Deterministic id per (station, item, boot).
+  - It is not as-run's `skipped` outcome (an item that aired under 5 s). As-run (#30) records
+    only what aired and doesn't consume this event; the log-vs-as-run view (#53) can.
+  - The event is transient: nothing stores the reason yet.
 
 ## Triggers and replicas
 

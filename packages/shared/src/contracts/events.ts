@@ -312,16 +312,18 @@ export type AssetIngestedEvent = z.infer<typeof assetIngestedEventSchema>;
 /**
  * A log item will not air: a later item went on air, or the feeder dropped it to meet an
  * anchor. Published once per item and engine boot; the id is deterministic in
- * `(station, item, boot)`, so a durable consumer can dedupe. `reason`: `not_cached` (not in
- * the playout cache), `unresolvable` (the engine refused the file), `no_media_file` (no
- * playout file), `dropped` (removed by a soft or hard anchor).
+ * `(station, item, boot)`, so a durable consumer can dedupe. Not the as-run `skipped` outcome
+ * (an item that aired under 5 s, #30): a passed-over item never aired and has no as-run row.
+ * `reason`: `not_cached` (not in the playout cache), `unresolvable` (the engine refused the
+ * file), `no_media_file` (no playout file), `dropped` (removed by a soft or hard anchor).
  */
-export const feederItemSkippedEventSchema = z.object({
+export const feederItemPassedOverEventSchema = z.object({
   ...envelope,
-  type: z.literal('feeder.item.skipped'),
+  type: z.literal('feeder.item.passed_over'),
   data: z.object({
     itemId: z.uuid(),
-    /** The segment it belongs to, when a whole island chain is skipped. */
+    logDayId: z.uuid(),
+    /** The segment it belongs to, when a whole island chain is passed over. */
     segmentId: z.uuid().nullable(),
     plannedStart: isoTime,
     reason: z.enum(['not_cached', 'unresolvable', 'no_media_file', 'dropped']),
@@ -329,10 +331,10 @@ export const feederItemSkippedEventSchema = z.object({
   }),
 });
 
-export type FeederItemSkippedEvent = z.infer<typeof feederItemSkippedEventSchema>;
+export type FeederItemPassedOverEvent = z.infer<typeof feederItemPassedOverEventSchema>;
 
 export const feederRealtimeEventSchema = z.discriminatedUnion('type', [
-  feederItemSkippedEventSchema,
+  feederItemPassedOverEventSchema,
 ]);
 
 export const realtimeEventSchema = z.discriminatedUnion('type', [
@@ -378,7 +380,7 @@ export const realtimeEventPermissions = {
   'asset.ingested': 'library:read',
   'upload.updated': 'library:write',
   // Feeder (#29): items that won't air.
-  'feeder.item.skipped': 'engine:read',
+  'feeder.item.passed_over': 'engine:read',
 } as const satisfies Record<RealtimeEventType, Permission>;
 
 /** Permission needed to receive `type` over SSE; `null` for types the contract doesn't declare. */

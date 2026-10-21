@@ -19,7 +19,7 @@ import { createTestDatabase, type TestDatabase } from '@ondes/db/testing';
 import {
   type Actor,
   type EngineRealtimeEvent,
-  type FeederItemSkippedEvent,
+  type FeederItemPassedOverEvent,
   playoutRelPath,
 } from '@ondes/shared';
 import { contentKey } from '@ondes/storage';
@@ -66,7 +66,7 @@ let station: StationEngine;
 let feeder: StationFeeder;
 let ticker: NodeJS.Timeout;
 const received: EngineRealtimeEvent[] = [];
-const skips: FeederItemSkippedEvent[] = [];
+const skips: FeederItemPassedOverEvent[] = [];
 const fetches: string[] = [];
 let items: { id: string; assetId: string; sha256: string }[] = [];
 let uncached: { id: string; fileId: string };
