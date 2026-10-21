@@ -1,8 +1,11 @@
 import {
   type AsRunEntry,
+  type AssetType,
   asRunListSchema,
   assetDetailSchema,
   assetPageSchema,
+  assetTypeSchema,
+  categoryListSchema,
   type InsertLogItem,
   type ListAssetsQuery,
   type LocalDate,
@@ -12,6 +15,8 @@ import {
   logEditResultSchema,
   logRangeResponseSchema,
   type ReplaceLogItem,
+  relaxedRuleSchema,
+  uuidSchema,
 } from '@ondes/shared';
 import { queryOptions } from '@tanstack/react-query';
 import { z } from 'zod';
@@ -42,6 +47,59 @@ const logRangeWire = isoWire(logRangeResponseSchema);
 const editWire = isoWire(logEditResultSchema);
 const dayWire = isoWire(logDayResponseSchema);
 const asRunWire = isoWire(asRunListSchema);
+
+// The two calls below belong to work landing in the same wave as this screen. Their contracts
+// aren't on main yet, so these are the subsets read here, mirroring them field for field:
+// - `pickResponseSchema` (packages/shared/src/contracts/rotation-rules.ts, #38);
+// - `librarySearchPageSchema` (packages/shared/src/contracts/library-search.ts, #23).
+// Swap them for the imports once both are merged. A 404 means the route isn't there (yet):
+// callers fall back to the plain library list.
+
+const ruleViolationWire = z.object({ ruleId: z.string(), kind: z.string(), detail: z.string() });
+const pickWire = z.object({
+  picks: z.array(
+    z.object({
+      asset: z
+        .object({
+          id: uuidSchema,
+          title: z.string(),
+          artists: z.array(z.string()),
+          durationMs: z.int().nullable(),
+        })
+        .nullable(),
+      relaxed: z.array(relaxedRuleSchema),
+      candidates: z.int(),
+      ranked: z
+        .array(
+          z.object({
+            assetId: uuidSchema,
+            title: z.string(),
+            artists: z.array(z.string()),
+            position: z.int(),
+            violations: z.array(ruleViolationWire),
+            picked: z.boolean(),
+          }),
+        )
+        .optional(),
+    }),
+  ),
+});
+export type RulePick = z.infer<typeof pickWire>['picks'][number];
+export type RankedCandidate = NonNullable<RulePick['ranked']>[number];
+
+const librarySearchWire = z.object({
+  items: z.array(
+    z.object({
+      id: uuidSchema,
+      type: assetTypeSchema,
+      title: z.string(),
+      artists: z.array(z.string()),
+      durationMs: z.int().nullable(),
+    }),
+  ),
+  nextCursor: z.string().nullable(),
+});
+export type LibraryHit = z.infer<typeof librarySearchWire>['items'][number];
 
 const params = (query: Record<string, string | number | undefined>) => {
   const search = new URLSearchParams();
@@ -98,6 +156,41 @@ export const timelineApi = {
     } while (cursor);
     return items;
   },
+  categories: (stationId: string, signal?: AbortSignal) =>
+    request(`${station(stationId)}/categories`, { schema: categoryListSchema, signal }),
+  /** #38: the rules engine's pick for one slot, with every candidate's verdicts. */
+  pick: async (stationId: string, slot: { categoryId: string; at: string }) => {
+    const { picks } = await request(`${station(stationId)}/rotation/pick`, {
+      body: { slots: [slot], explain: true },
+      schema: pickWire,
+    });
+    const pick = picks[0];
+    if (!pick) throw new Error('empty pick response');
+    return pick;
+  },
+  /**
+   * #23: assets of `type` whose length is in `[minMs, maxMs]`, over the whole library, shortest
+   * first (the caller ranks them by distance to its target).
+   */
+  searchByDuration: (
+    stationId: string,
+    query: { type: AssetType; q?: string; minMs: number; maxMs: number },
+    signal?: AbortSignal,
+  ) =>
+    request(`${station(stationId)}/library/search`, {
+      body: {
+        filter: {
+          types: [query.type],
+          ...(query.q ? { q: query.q } : {}),
+          durationMs: { min: Math.max(0, query.minMs), max: query.maxMs },
+        },
+        sort: 'duration',
+        direction: 'asc',
+        limit: 200,
+      },
+      schema: librarySearchWire,
+      signal,
+    }),
   searchAssets: (stationId: string, query: ListAssetsQuery, signal?: AbortSignal) =>
     request(
       `${station(stationId)}/assets?${params(query as Record<string, string | number | undefined>)}`,
@@ -110,9 +203,14 @@ export const timelineApi = {
     }),
 };
 
-/** Where an `<audio>` element plays an asset from (a redirect to its playout copy). */
-export const assetAudioUrl = (stationId: string, assetId: string) =>
-  `${API_BASE}${station(stationId)}/assets/${encodeURIComponent(assetId)}/audio`;
+/**
+ * Where an `<audio>` element plays an asset from (a redirect to its playout copy). With the
+ * playout copy's sha256 the URL names that version: a replaced file gets a new URL.
+ */
+export const assetAudioUrl = (stationId: string, assetId: string, playoutSha256?: string) =>
+  `${API_BASE}${station(stationId)}/assets/${encodeURIComponent(assetId)}/audio${
+    playoutSha256 ? `?v=${playoutSha256}` : ''
+  }`;
 
 export const logKey = (stationId: string) => ['stations', stationId, 'log'] as const;
 

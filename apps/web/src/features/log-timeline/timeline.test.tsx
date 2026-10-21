@@ -1,9 +1,9 @@
-import type { Asset, AssetDetail, LogDay, LogItem, MyOrg } from '@ondes/shared';
+import type { LogDay, LogItem, MyOrg } from '@ondes/shared';
 import { act, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeEventSource } from '../../app/testing/fake-event-source.ts';
 import { type ApiRoute, orgs, renderApp, signedIn, stationId } from '../../app/testing/render.tsx';
-import { asRunEntry, logItem } from './testing.ts';
+import { asRunEntry, assetDetail, libraryAsset, logItem } from './testing.ts';
 
 // The timeline on the whole app with a fake api and SSE stream: the day grouped by hour in
 // station time, the on-air item from the as-run and its live updates, passed-over items,
@@ -324,8 +324,8 @@ describe('log timeline', () => {
   });
 
   it('offers replacements that fit the slot, closest first', async () => {
-    const fits = asset('a1', 'Confluence', 203_000);
-    const tooLong = asset('a2', 'Fete des Lumieres', 282_100);
+    const fits = libraryAsset('a1', 'Confluence', 203_000);
+    const tooLong = libraryAsset('a2', 'Fete des Lumieres', 282_100);
     const { screen, user } = renderApp(
       `${base}/log`,
       routes('programmer', {
@@ -355,13 +355,13 @@ describe('log timeline', () => {
   });
 
   it('replaces through the api, keeping timing and lock, the slot sized from the asset', async () => {
-    const fits = asset('a1', 'Confluence', 203_000);
+    const fits = libraryAsset('a1', 'Confluence', 203_000);
     let body: unknown;
     const { screen, user } = renderApp(
       `${base}/log`,
       routes('programmer', {
         [`GET ${base}/assets`]: [200, { items: [fits], nextCursor: null }],
-        [`GET ${base}/assets/${fits.id}`]: [200, detail(fits)],
+        [`GET ${base}/assets/${fits.id}`]: [200, assetDetail(fits)],
         [`PUT ${base}/log/items/${later.id}`]: (b) => {
           body = b;
           return [...result(later)] as [number, unknown];
@@ -388,14 +388,14 @@ describe('log timeline', () => {
   });
 
   it('inserts a jingle after an item', async () => {
-    const jingle = { ...asset('b1', 'Station ID', 8_000), type: 'jingle' as const };
+    const jingle = { ...libraryAsset('b1', 'Station ID', 8_000), type: 'jingle' as const };
     let body: unknown;
     let searched = '';
     const { screen, user } = renderApp(
       `${base}/log`,
       routes('programmer', {
         [`GET ${base}/assets`]: [200, { items: [jingle], nextCursor: null }],
-        [`GET ${base}/assets/${jingle.id}`]: [200, detail(jingle)],
+        [`GET ${base}/assets/${jingle.id}`]: [200, assetDetail(jingle)],
         [`POST ${base}/log/items`]: (b) => {
           body = b;
           return [201, { item: later, days: [day] }];
@@ -453,41 +453,3 @@ describe('log timeline', () => {
     await waitFor(() => expect(status).toEqual({ status: 'published' }));
   });
 });
-
-function asset(suffix: string, title: string, durationMs: number): Asset {
-  return {
-    id: `01a15ddf-0000-7000-8000-0000000003${suffix}`,
-    orgId: orgs[0]?.id ?? '',
-    stationId,
-    type: 'song',
-    title,
-    artists: ['Bellecour Sound System'],
-    album: null,
-    year: null,
-    isrc: null,
-    version: null,
-    durationMs,
-    explicit: false,
-    startAt: null,
-    killAt: null,
-    notes: null,
-    metadata: {},
-    sourceFilename: null,
-    normalizeLoudness: true,
-    gainOverrideDb: null,
-    createdAt: new Date(NOW),
-    updatedAt: new Date(NOW),
-  };
-}
-
-function detail(a: Asset): AssetDetail {
-  return {
-    ...a,
-    files: [],
-    cues: null,
-    loudness: null,
-    playoutGain: { gainDb: 0, source: 'unmeasured', limitedByPeak: false },
-    analysis: null,
-    tags: [],
-  };
-}

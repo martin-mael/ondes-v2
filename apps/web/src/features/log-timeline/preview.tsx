@@ -13,7 +13,7 @@ import {
 } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/ui/button';
-import { assetAudioUrl, assetDetailQuery } from './api.ts';
+import { assetAudioUrl, assetDetailQuery, timelineApi } from './api.ts';
 import { useTimelineT } from './messages.ts';
 import { cueInSeconds, PREVIEW_TAIL_S, transitionPlan } from './model.ts';
 
@@ -44,7 +44,7 @@ interface Playing {
   label: string;
 }
 
-interface Preview {
+export interface Preview {
   playing: Playing | null;
   play(item: LogItem): void;
   playAsset(assetId: string, title: string): void;
@@ -54,19 +54,39 @@ interface Preview {
 
 const PreviewContext = createContext<Preview | null>(null);
 
-/** Seeks once the browser knows the media, then plays. */
+/**
+ * Loads `src` and plays it from `seconds` once the browser knows the media. The handlers are
+ * the element's single `on…` slots, so a new load or a stop replaces or clears them: nothing
+ * piles up and nothing from an old run fires.
+ */
 function startAt(audio: HTMLAudioElement, src: string, seconds: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    const onMeta = () => {
+    audio.onloadedmetadata = () => {
+      audio.onloadedmetadata = null;
       audio.currentTime = seconds;
       audio.play().then(resolve, reject);
     };
-    audio.addEventListener('loadedmetadata', onMeta, { once: true });
-    audio.addEventListener('error', () => reject(new Error('audio error')), { once: true });
+    audio.onerror = () => reject(new Error('audio error'));
     audio.src = src;
     audio.load();
   });
 }
+
+function silence(audio: HTMLAudioElement) {
+  audio.onloadedmetadata = null;
+  audio.onerror = null;
+  audio.onended = null;
+  audio.pause();
+  audio.removeAttribute('src');
+}
+
+/** One listening run: a stop or a newer run aborts it, and its continuations check it. */
+interface Run {
+  id: number;
+  abort: AbortController;
+}
+
+const live = (r: Run) => !r.abort.signal.aborted;
 
 export function PreviewProvider({
   stationId,
@@ -80,34 +100,47 @@ export function PreviewProvider({
   const [playing, setPlaying] = useState<Playing | null>(null);
   const audios = useRef<[HTMLAudioElement, HTMLAudioElement] | null>(null);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const run = useRef(0);
+  const run = useRef<Run>({ id: 0, abort: new AbortController() });
 
   const elements = useCallback(() => {
     audios.current ??= [new Audio(), new Audio()];
     return audios.current;
   }, []);
 
-  const stop = useCallback(() => {
-    run.current++;
+  /** Ends the current run (if any) and starts a new one. */
+  const next = useCallback((): Run => {
+    run.current.abort.abort();
     for (const timer of timers.current) clearTimeout(timer);
     timers.current = [];
-    for (const audio of audios.current ?? []) {
-      audio.pause();
-      audio.removeAttribute('src');
-    }
-    setPlaying(null);
+    for (const audio of audios.current ?? []) silence(audio);
+    run.current = { id: run.current.id + 1, abort: new AbortController() };
+    return run.current;
   }, []);
-  useEffect(() => stop, [stop]);
 
-  const cues = useCallback(
-    async (assetId: string) =>
-      (await queryClient.fetchQuery(assetDetailQuery(stationId, assetId))).cues,
+  const stop = useCallback(() => {
+    next();
+    setPlaying(null);
+  }, [next]);
+  // Unmount: abort pending fetches and silence both elements.
+  useEffect(() => () => void next(), [next]);
+
+  /** The asset's cues and playout version, from the cache or the api (aborted with the run). */
+  const media = useCallback(
+    async (assetId: string, r: Run) => {
+      const key = assetDetailQuery(stationId, assetId).queryKey;
+      const detail =
+        queryClient.getQueryData<Awaited<ReturnType<typeof timelineApi.asset>>>(key) ??
+        (await timelineApi.asset(stationId, assetId, r.abort.signal));
+      queryClient.setQueryData(key, detail);
+      const sha = detail.files.find((f) => f.role === 'playout')?.sha256;
+      return { cues: detail.cues, url: assetAudioUrl(stationId, assetId, sha) };
+    },
     [queryClient, stationId],
   );
 
   const failed = useCallback(
-    (id: number) => {
-      if (id !== run.current) return;
+    (r: Run) => {
+      if (!live(r)) return;
       toast.error(t('preview.failed'));
       stop();
     },
@@ -117,16 +150,19 @@ export function PreviewProvider({
   const playAudible = useCallback(
     (a: Audible | null) => {
       if (!a?.assetId) return;
-      stop();
-      const id = run.current;
+      const assetId = a.assetId;
+      const r = next();
       setPlaying({ label: t('preview.playing', { title: titleOf(a) || t('untitled') }) });
       const [audio] = elements();
-      void cues(a.assetId)
-        .then((c) => startAt(audio, assetAudioUrl(stationId, a.assetId ?? ''), cueInSeconds(a, c)))
-        .catch(() => failed(id));
-      audio.onended = () => id === run.current && stop();
+      void media(assetId, r)
+        .then(({ cues, url }) => {
+          if (!live(r)) return;
+          audio.onended = () => live(r) && stop();
+          return startAt(audio, url, cueInSeconds(a, cues));
+        })
+        .catch(() => failed(r));
     },
-    [cues, elements, failed, stationId, stop, t],
+    [elements, failed, media, next, stop, t],
   );
   const play = useCallback((item: LogItem) => playAudible(audibleOf(item, 'first')), [playAudible]);
   const playAsset = useCallback(
@@ -149,8 +185,7 @@ export function PreviewProvider({
       if (!a?.assetId || !b?.assetId) return;
       const aId = a.assetId;
       const bId = b.assetId;
-      stop();
-      const id = run.current;
+      const r = next();
       setPlaying({
         label: t('preview.transition', {
           from: titleOf(a) || t('untitled'),
@@ -158,28 +193,29 @@ export function PreviewProvider({
         }),
       });
       const [outgoing, incoming] = elements();
-      void Promise.all([cues(aId), cues(bId)])
-        .then(async ([ca, cb]) => {
-          if (id !== run.current) return;
-          const plan = transitionPlan(a, ca, b, cb);
+      void Promise.all([media(aId, r), media(bId, r)])
+        .then(async ([ma, mb]) => {
+          if (!live(r)) return;
+          const plan = transitionPlan(a, ma.cues, b, mb.cues);
           // Load the incoming file first so it starts on time.
-          incoming.src = assetAudioUrl(stationId, bId);
+          incoming.onerror = () => failed(r);
+          incoming.src = mb.url;
           incoming.load();
-          await startAt(outgoing, assetAudioUrl(stationId, aId), plan.fromS);
-          if (id !== run.current) return;
+          await startAt(outgoing, ma.url, plan.fromS);
+          if (!live(r)) return;
           const leadMs = (plan.switchS - plan.fromS) * 1000;
           timers.current.push(
             setTimeout(() => {
-              if (id !== run.current) return;
+              if (!live(r)) return;
               incoming.currentTime = plan.intoS;
-              incoming.play().catch(() => failed(id));
+              incoming.play().catch(() => failed(r));
             }, leadMs),
-            setTimeout(() => id === run.current && stop(), leadMs + PREVIEW_TAIL_S * 1000),
+            setTimeout(() => live(r) && stop(), leadMs + PREVIEW_TAIL_S * 1000),
           );
         })
-        .catch(() => failed(id));
+        .catch(() => failed(r));
     },
-    [cues, elements, failed, stationId, stop, t],
+    [elements, failed, media, next, stop, t],
   );
 
   const value = useMemo(

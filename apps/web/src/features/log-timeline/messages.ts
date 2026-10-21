@@ -130,9 +130,32 @@ const en = {
   'picker.delta': '{delta} vs slot',
   'picker.noResults': 'Nothing matches.',
   'picker.rulesHint':
-    'Rotation rules don’t filter these suggestions yet: check separation before you pick.',
+    'The library list doesn’t check the rotation rules: check separation before you pick.',
   'picker.choose': 'Choose',
   'picker.listen': 'Listen to {title}',
+
+  'picker.rulesSource':
+    'Candidates from the rules engine for this slot: the pick first, then those that respect every rule.',
+  'picker.source': 'Suggestions',
+  'picker.source.rules': 'Rules',
+  'picker.source.library': 'Library',
+  'picker.category': 'Category',
+  'picker.relaxed': 'To fill this slot, the rules engine relaxed:',
+  'picker.bestPick': 'Rules pick',
+  'picker.eligible': 'Respects every rule',
+  'picker.pickFailed': 'The rules engine couldn’t suggest anything: pick from the library.',
+
+  'rule.song_rest': 'Song rest',
+  'rule.max_plays': 'Max plays per day and week',
+  'rule.search_depth': 'Search depth',
+  'rule.artist_separation': 'Artist separation',
+  'rule.title_separation': 'Title separation',
+  'rule.album_separation': 'Album separation',
+  'rule.same_hour_yesterday': 'Not the same hour as yesterday',
+  'rule.tag_run': 'Tag run limit',
+  'rule.segue_ban': 'Segue ban',
+  'rule.max_tag_per_hour': 'Max tag per hour',
+  'rule.flow': 'Tempo and energy flow',
 
   'preview.playing': 'Listening: {title}',
   'preview.transition': 'Transition: {from} → {to}',
@@ -196,7 +219,7 @@ const fr: Record<TimelineMessageKey, string> = {
   'col.duration': 'Durée',
 
   'kind.song': 'Titre',
-  'kind.vt': 'Voice track',
+  'kind.vt': 'Voix enregistrée',
   'kind.jingle': 'Jingle',
   'kind.bed': 'Tapis',
   'kind.episode': 'Épisode',
@@ -275,9 +298,32 @@ const fr: Record<TimelineMessageKey, string> = {
   'picker.delta': '{delta} par rapport au créneau',
   'picker.noResults': 'Aucun résultat.',
   'picker.rulesHint':
-    'Les règles de rotation ne filtrent pas encore ces suggestions : vérifiez la séparation avant de choisir.',
+    'La liste de la médiathèque ne vérifie pas les règles de rotation : vérifiez la séparation avant de choisir.',
   'picker.choose': 'Choisir',
   'picker.listen': 'Écouter {title}',
+
+  'picker.rulesSource':
+    'Candidats du moteur de règles pour ce créneau : son choix d’abord, puis ceux qui respectent toutes les règles.',
+  'picker.source': 'Suggestions',
+  'picker.source.rules': 'Règles',
+  'picker.source.library': 'Médiathèque',
+  'picker.category': 'Catégorie',
+  'picker.relaxed': 'Pour remplir ce créneau, le moteur de règles a assoupli :',
+  'picker.bestPick': 'Choix des règles',
+  'picker.eligible': 'Respecte toutes les règles',
+  'picker.pickFailed': 'Le moteur de règles n’a rien proposé : choisissez dans la médiathèque.',
+
+  'rule.song_rest': 'Repos du titre',
+  'rule.max_plays': 'Passages max par jour et par semaine',
+  'rule.search_depth': 'Profondeur de recherche',
+  'rule.artist_separation': 'Séparation des artistes',
+  'rule.title_separation': 'Séparation des titres',
+  'rule.album_separation': 'Séparation des albums',
+  'rule.same_hour_yesterday': 'Pas à la même heure que la veille',
+  'rule.tag_run': 'Tag à la suite',
+  'rule.segue_ban': 'Enchaînement interdit',
+  'rule.max_tag_per_hour': 'Tag max par heure',
+  'rule.flow': 'Fluidité tempo et énergie',
 
   'preview.playing': 'Écoute : {title}',
   'preview.transition': 'Enchaînement : {from} → {to}',
@@ -303,7 +349,8 @@ export function useTimelineT(): TimelineT {
   const { locale } = useI18n();
   return useCallback(
     (key: TimelineMessageKey, params?: Record<string, string | number>) =>
-      messages[locale][key].replace(/\{(\w+)\}/g, (match, name: string) =>
+      // A key built at runtime (`rule.<kind>` from a newer api) may be missing: it shows as is.
+      (messages[locale][key] ?? key).replace(/\{(\w+)\}/g, (match, name: string) =>
         params && name in params ? String(params[name]) : match,
       ),
     [locale],

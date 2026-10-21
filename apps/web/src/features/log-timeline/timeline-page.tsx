@@ -1,5 +1,4 @@
 import {
-  type Asset,
   addDays,
   type LocalDate,
   type LogEditResult,
@@ -35,7 +34,13 @@ import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert, useErrorMessage } from '../../app/forms.tsx';
 import { asRunDayQuery, assetDetailQuery, logDayQuery, logKey, timelineApi } from './api.ts';
-import { AssetPickerDialog, INSERT_KINDS, isPickKind, type PickKind } from './asset-picker.tsx';
+import {
+  AssetPickerDialog,
+  INSERT_KINDS,
+  isPickKind,
+  type PickedAsset,
+  type PickKind,
+} from './asset-picker.tsx';
 import { DayStrip } from './day-strip.tsx';
 import { type ItemAction, ItemRow, itemTitle } from './item-row.tsx';
 import { type TimelineMessageKey, type TimelineT, useTimelineT } from './messages.ts';
@@ -174,8 +179,8 @@ function Timeline() {
   const edit = useMutation({
     mutationFn: async (
       op:
-        | { type: 'insert'; placement: LogPlacement; kind: PickKind; asset: Asset }
-        | { type: 'replace'; item: LogItem; kind: PickKind; asset: Asset }
+        | { type: 'insert'; placement: LogPlacement; kind: PickKind; asset: PickedAsset }
+        | { type: 'replace'; item: LogItem; kind: PickKind; asset: PickedAsset }
         | { type: 'move'; item: LogItem; placement: LogPlacement }
         | { type: 'lock'; item: LogItem; locked: boolean }
         | { type: 'delete'; item: LogItem },
@@ -187,7 +192,7 @@ function Timeline() {
           const body = {
             kind: op.kind,
             assetId: op.asset.id,
-            plannedDurationMs: slotMs(op.asset.durationMs, detail.cues),
+            plannedDurationMs: slotMs(detail.durationMs, detail.cues),
           };
           if (op.type === 'insert') {
             return timelineApi.insert(stationId, { placement: op.placement, item: body });
@@ -484,6 +489,7 @@ function Timeline() {
             : INSERT_KINDS
         }
         targetMs={editing?.type === 'replace' ? editing.item.plannedDurationMs : undefined}
+        at={editing?.type === 'replace' ? editing.item.plannedStart : undefined}
         exclude={editing?.type === 'replace' ? editing.item.assetId : null}
         pending={edit.isPending}
         onPick={(asset, kind) => {
