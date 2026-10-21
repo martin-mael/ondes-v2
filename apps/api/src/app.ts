@@ -11,6 +11,7 @@ import { type AlertsPluginOptions, alertsPlugin } from './modules/alerts/plugin.
 import { type AsRunPluginOptions, asRunPlugin } from './modules/asrun/plugin.ts';
 import { authRoutes } from './modules/auth/routes.ts';
 import { type CachePluginOptions, cachePlugin } from './modules/cache/plugin.ts';
+import { type FeederPluginOptions, feederPlugin } from './modules/engine/feeder/plugin.ts';
 import {
   type EngineLifecyclePluginOptions,
   engineLifecyclePlugin,
@@ -47,6 +48,8 @@ export interface AppOptions {
   cache?: CachePluginOptions;
   /** Safety playlist and emergency file (#34): alert interval, event queue (tests). */
   safety?: SafetyPluginOptions;
+  /** Log feeder (#29), on when the api manages engines and has RabbitMQ. `false` turns it off. */
+  feeder?: FeederPluginOptions | false;
   /** Media storage. Optional so tests that don't upload can skip S3; without it, no upload or peaks routes. */
   storage?: Storage;
   /** Upload route settings beyond `storage` (tests). */
@@ -113,6 +116,10 @@ export async function buildApp(options: AppOptions) {
   await app.register(cachePlugin, options.cache ?? {});
   // Safety playlist and emergency file (#34): routes, on-air source, fallback alerts.
   await app.register(safetyPlugin, options.safety ?? {});
+  // Log feeder (#29): keeps each station's engine queue ahead of air, one replica per station.
+  if (lifecycle && options.rabbit && options.feeder !== false) {
+    await app.register(feederPlugin, options.feeder ?? {});
+  }
   if (options.storage) {
     await app.register(uploadPlugin, { ...options.uploads, storage: options.storage });
     // Waveform peaks (#22): GET …/assets/:assetId/peaks.

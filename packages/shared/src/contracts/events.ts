@@ -333,12 +333,44 @@ export type AsRunRealtimeEvent = z.infer<typeof asRunRealtimeEventSchema>;
 // ---------------------------------------------------------------------------------------
 // Every real-time event. Add other domains' schemas to this union.
 
+// ---------------------------------------------------------------------------------------
+// Feeder (#29): what the just-in-time feeder decided, for the as-run log (#30) and the UI.
+
+/**
+ * A log item will not air: a later item went on air, or the feeder dropped it to meet an
+ * anchor. Published once per item and engine boot; the id is deterministic in
+ * `(station, item, boot)`, so a durable consumer can dedupe. Not the as-run `skipped` outcome
+ * (an item that aired under 5 s, #30): a passed-over item never aired and has no as-run row.
+ * `reason`: `not_cached` (not in the playout cache), `unresolvable` (the engine refused the
+ * file), `no_media_file` (no playout file), `dropped` (removed by a soft or hard anchor).
+ */
+export const feederItemPassedOverEventSchema = z.object({
+  ...envelope,
+  type: z.literal('feeder.item.passed_over'),
+  data: z.object({
+    itemId: z.uuid(),
+    logDayId: z.uuid(),
+    /** The segment it belongs to, when a whole island chain is passed over. */
+    segmentId: z.uuid().nullable(),
+    plannedStart: isoTime,
+    reason: z.enum(['not_cached', 'unresolvable', 'no_media_file', 'dropped']),
+    bootId: z.string().nullable(),
+  }),
+});
+
+export type FeederItemPassedOverEvent = z.infer<typeof feederItemPassedOverEventSchema>;
+
+export const feederRealtimeEventSchema = z.discriminatedUnion('type', [
+  feederItemPassedOverEventSchema,
+]);
+
 export const realtimeEventSchema = z.discriminatedUnion('type', [
   ...engineRealtimeEventSchema.options,
   ...logRealtimeEventSchema.options,
   ...alertRealtimeEventSchema.options,
   ...libraryRealtimeEventSchema.options,
   ...asRunRealtimeEventSchema.options,
+  ...feederRealtimeEventSchema.options,
 ]);
 export type RealtimeEvent = z.infer<typeof realtimeEventSchema>;
 export type RealtimeEventType = RealtimeEvent['type'];
@@ -378,6 +410,8 @@ export const realtimeEventPermissions = {
   // As-run (#30): history and now playing, for everyone who reads the log.
   'asrun.started': 'log:read',
   'asrun.ended': 'log:read',
+  // Feeder (#29): items that won't air.
+  'feeder.item.passed_over': 'engine:read',
 } as const satisfies Record<RealtimeEventType, Permission>;
 
 /** Permission needed to receive `type` over SSE; `null` for types the contract doesn't declare. */

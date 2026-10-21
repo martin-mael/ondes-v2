@@ -69,6 +69,13 @@ export const alertTypes = {
   engineSafetyEmpty: 'engine.safety_empty',
   /** The station has no emergency file in the engine's cache (#34). */
   engineEmergencyMissing: 'engine.emergency_missing',
+  /**
+   * The feeder passes over log items it can't play (not in the playout cache, or refused by the
+   * engine) in its window; `details.items` (#29). One per station, resolved once none is left.
+   */
+  feederItemsSkipped: 'feeder.items_skipped',
+  /** Nothing from the log is queued or coming: the safety playlist plays (#29). */
+  feederLogEmpty: 'feeder.log_empty',
 } as const;
 
 /**
