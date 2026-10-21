@@ -133,7 +133,11 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
   const [errors, setErrors] = useState<FieldErrors>({});
   const [formError, setFormError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
-  const [selected, setSelected] = useState<number | null>(null);
+  // The version the draft is based on: sent with each save, refreshed after it.
+  const [version, setVersion] = useState(clock?.version ?? 0);
+  const [conflict, setConflict] = useState(false);
+  // Keyed by the slot's key, so it follows the slot through moves and removals.
+  const [selectedKey, setSelectedKey] = useState<number | null>(null);
   const update = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
   const setItems = (fn: (items: Item[]) => Item[]) =>
     setDraft((d) => ({ ...d, items: fn(d.items) }));
@@ -157,6 +161,10 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
     const name = id ? byId.get(id)?.name : undefined;
     return slot.label ?? name ?? t(`kind.${slot.kind}`);
   };
+
+  const selected = draft.items.findIndex((i) => i.key === selectedKey);
+  const select = (index: number | null) =>
+    setSelectedKey(index === null ? null : (draft.items[index]?.key ?? null));
 
   const setSlot = (index: number, slot: ClockSlot) =>
     setItems((items) => items.map((it, i) => (i === index ? { ...it, slot } : it)));
@@ -192,8 +200,9 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
     setPending(true);
     try {
       const saved = clock
-        ? await clocksApi.update(stationId, clock.id, parsed.data)
+        ? await clocksApi.update(stationId, clock.id, { ...parsed.data, version })
         : await clocksApi.create(stationId, parsed.data);
+      setVersion(saved.version);
       queryClient.setQueryData(clockKeys.one(stationId, saved.id), saved);
       await queryClient.invalidateQueries({ queryKey: clockKeys.all(stationId) });
       toast.success(clock ? t('editor.saved') : t('editor.created'));
@@ -204,7 +213,9 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
         });
       }
     } catch (error) {
-      if (isApiError(error, 'clock_name_taken')) {
+      if (isApiError(error, 'edit_conflict')) {
+        setConflict(true);
+      } else if (isApiError(error, 'clock_name_taken')) {
         setErrors({ name: [{ message: t('editor.nameTaken') }] });
       } else if (isApiError(error, 'unknown_category') || isApiError(error, 'unknown_asset')) {
         setFormError(t('editor.unknownReference'));
@@ -213,6 +224,23 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
       }
     } finally {
       setPending(false);
+    }
+  };
+
+  /** Drops the draft for the clock as saved elsewhere. */
+  const reload = async () => {
+    if (!clock) return;
+    try {
+      const latest = await queryClient.fetchQuery({
+        ...clockQuery(stationId, clock.id),
+        staleTime: 0,
+      });
+      setDraft(draftOf(latest));
+      setVersion(latest.version);
+      setConflict(false);
+      setSelectedKey(null);
+    } catch (error) {
+      setFormError(error);
     }
   };
 
@@ -278,6 +306,17 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
           </Button>
         </div>
       </div>
+      {conflict && (
+        <Alert variant="destructive">
+          <CircleAlertIcon />
+          <AlertDescription className="flex flex-wrap items-center gap-3">
+            {t('editor.conflict')}
+            <Button variant="outline" size="sm" onClick={reload}>
+              {t('editor.reload')}
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
       {typeof formError === 'string' ? (
         <Alert variant="destructive">
           <CircleAlertIcon />
@@ -380,7 +419,7 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
                   estimate={estimate}
                   categories={categoryList}
                   selected={selected}
-                  onSelect={setSelected}
+                  onSelect={select}
                   onChange={setSlot}
                   onMove={move}
                   onDuplicate={(i) =>
@@ -429,9 +468,9 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
                     estimate={estimate}
                     colors={colors}
                     names={slotName}
-                    highlight={selected}
+                    highlight={selected === -1 ? null : selected}
                   />
-                  <Warnings t={t} warnings={estimate.warnings} onSelect={setSelected} />
+                  <Warnings t={t} warnings={estimate.warnings} onSelect={select} />
                 </>
               ) : (
                 <Spinner />
@@ -662,7 +701,11 @@ function SlotFields({
             id={id('mode')}
             size="sm"
             value={slot.mode}
-            onChange={(e) => onChange({ ...slot, mode: vtSlotModeSchema.parse(e.target.value) })}
+            onChange={(e) => {
+              const mode = vtSlotModeSchema.parse(e.target.value);
+              // A placeholder keeps no category: the api drops it anyway.
+              onChange({ ...slot, mode, ...(mode === 'placeholder' ? { categoryId: null } : {}) });
+            }}
           >
             {vtSlotModeSchema.options.map((mode) => (
               <NativeSelectOption key={mode} value={mode}>
@@ -902,16 +945,25 @@ function PreviewCard({
   categories: ReadonlyMap<string, CategoryListItem>;
 }) {
   const t = useClockT();
-  const [preview, setPreview] = useState<ClockPreview | null>(null);
+  // The sample with the clock it was drawn from: an edit since makes it stale.
+  const [sample, setSample] = useState<{
+    preview: ClockPreview;
+    slots: ClockSlot[];
+    key: string;
+  } | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
+  const key = JSON.stringify({ target, slots });
+  const stale = sample !== null && sample.key !== key;
+  const preview = sample?.preview ?? null;
 
   const generate = async () => {
     if (target === null) return;
     setPending(true);
     setError(null);
     try {
-      setPreview(await clocksApi.preview(stationId, { targetDurationMs: target, slots }));
+      const drawn = await clocksApi.preview(stationId, { targetDurationMs: target, slots });
+      setSample({ preview: drawn, slots, key });
     } catch (e) {
       setError(e);
     } finally {
@@ -937,8 +989,13 @@ function PreviewCard({
           {preview ? t('preview.again') : t('preview.generate')}
         </Button>
         {error ? <FormAlert error={error} /> : null}
-        {preview && (
-          <>
+        {sample && preview && (
+          <div className={cn('flex flex-col gap-3', stale && 'opacity-50')}>
+            {stale && (
+              <p role="status" className="text-sm font-medium text-foreground">
+                {t('preview.stale')}
+              </p>
+            )}
             <p className="text-xs text-muted-foreground">
               {byRules ? t('preview.picker.rules') : t('preview.picker.random')}
             </p>
@@ -952,7 +1009,7 @@ function PreviewCard({
               </TableHeader>
               <TableBody>
                 {preview.items.map((item) => {
-                  const slot = slots[item.slotIndex];
+                  const slot = sample.slots[item.slotIndex];
                   const categoryId = slot ? slotCategoryId(slot) : null;
                   const category = categoryId ? categories.get(categoryId) : undefined;
                   return (
@@ -991,7 +1048,7 @@ function PreviewCard({
                 target: formatMs(preview.estimate.targetMs),
               })}
             </p>
-          </>
+          </div>
         )}
       </CardContent>
     </Card>

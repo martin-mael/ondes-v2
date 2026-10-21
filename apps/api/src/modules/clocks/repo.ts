@@ -14,11 +14,12 @@ import {
 } from '@ondes/db';
 import { resolveCategory } from '@ondes/scheduling';
 import {
+  type CategoryDetail,
   type Clock,
   type ClockDetail,
   type ClockList,
   type ClockPreview,
-  type ClockPreviewItem,
+  type ClockPreviewAsset,
   type ClockPreviewQuery,
   type ClockSlot,
   type CreateClock,
@@ -41,9 +42,12 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { HttpError } from '../../plugins/errors.ts';
 import { getCategory, type LibraryCandidate, loadCandidates } from '../rotation/repo.ts';
 import {
-  type PreviewPicker,
-  type PreviewPlacement,
+  type FixedPlacement,
+  findPickSlots,
+  type PickRequest,
+  type PickSlotsFn,
   randomPicker,
+  rulesPicker,
   seededRandom,
 } from './preview.ts';
 
@@ -84,7 +88,8 @@ function toSlotRow(slot: ClockSlot, position: number, clockId: string, scope: St
     kind: slot.kind,
     label: slot.label,
     durationMs: slot.durationMs,
-    categoryId: 'categoryId' in slot ? slot.categoryId : null,
+    // Not `slot.categoryId`: a placeholder VT keeps no category (and none is checked).
+    categoryId: slotCategoryId(slot),
     assetId: slot.kind === 'asset' ? slot.assetId : null,
     vtMode: slot.kind === 'vt' ? slot.mode : null,
     timing: slot.kind === 'marker' ? slot.timing : null,
@@ -103,6 +108,7 @@ function toClock(row: ClockRow, slots: ClockSlot[]): Clock {
     color: row.color,
     targetDurationMs: row.targetDurationMs,
     slots,
+    version: row.version,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -261,102 +267,90 @@ export async function estimateDraft(db: Db, scope: StationScope, draft: DraftClo
 // --- Preview -----------------------------------------------------------------------------
 
 export interface PreviewOptions {
-  /** #38's picker; the random fallback without it. */
-  picker?: PreviewPicker;
+  /**
+   * #38's `pickSlots`: found at runtime by default (`findPickSlots`); `null` forces the random
+   * fallback.
+   */
+  pickSlots?: PickSlotsFn | null;
+}
+
+interface PreviewInput {
+  targetDurationMs: number;
+  slots: ClockSlot[];
+  at?: Date | undefined;
+  seed?: string | undefined;
 }
 
 /**
- * A plausible sample hour: each picking slot filled from its category, each asset slot with
- * its asset, timed with the real lengths. Same seed and library, same picks (random picker).
+ * A plausible sample hour, in two passes. First the clock's own estimate (category averages,
+ * markers, fills) gives each slot its air time; the category slots are picked at those times,
+ * in one batch, with the hour's fixed items as history. Then the hour is retimed with the real
+ * lengths. Fill slots stay elastic: the generator back-times them (#46), so the preview shows
+ * the stretch they cover rather than one track.
  */
 async function preview(
   db: Db,
   scope: StationScope,
-  input: {
-    targetDurationMs: number;
-    slots: ClockSlot[];
-    at?: Date | undefined;
-    seed?: string | undefined;
-  },
+  input: PreviewInput,
   options: PreviewOptions,
 ): Promise<ClockPreview> {
   const at = input.at ?? new Date();
   const seed = input.seed ?? crypto.randomUUID().slice(0, 8);
   const refs = await loadReferences(db, scope, input.slots);
+  const planned = estimateWith(refs, input);
+  const airsAt = (index: number) => new Date(at.getTime() + (planned.slots[index]?.startMs ?? 0));
 
-  let candidates: Promise<LibraryCandidate[]> | undefined;
-  const members = new Map<string, Promise<LibraryCandidate[]>>();
-  const membersOf = (categoryId: string, when: Date) => {
-    let list = members.get(categoryId);
-    if (!list) {
-      candidates ??= loadCandidates(db, scope);
-      list = Promise.all([getCategory(db, scope, categoryId, when), candidates]).then(
-        ([detail, all]) =>
-          resolveCategory(detail, all, when)
-            .members.filter((m) => m.schedulable)
-            .map((m) => m.asset),
-      );
-      members.set(categoryId, list);
-    }
-    return list;
-  };
-  const picker = options.picker ?? randomPicker(membersOf, seededRandom(seed));
-
-  const fixed = await fixedAssets(db, scope, input.slots);
-  const history: PreviewPlacement[] = [];
-  const items: Omit<ClockPreviewItem, 'startMs' | 'durationMs'>[] = [];
-  let elapsed = 0;
+  const library = await loadCandidates(db, scope);
+  const byId = new Map(library.map((c) => [c.id, c]));
+  const fixed = new Map<number, FixedPlacement>();
+  const requests: PickRequest[] = [];
   for (const [slotIndex, slot] of input.slots.entries()) {
-    const startsAt = new Date(at.getTime() + elapsed);
-    const item: (typeof items)[number] = {
-      slotIndex,
-      kind: slot.kind,
-      asset: null,
-      source: null,
-      problem: null,
-      relaxedRules: [],
-    };
+    if (slot.kind === 'asset') {
+      const asset = slot.assetId ? byId.get(slot.assetId) : undefined;
+      if (asset) fixed.set(slotIndex, { asset, at: airsAt(slotIndex) });
+      continue;
+    }
+    if (slot.kind === 'fill') continue;
     const categoryId = slotCategoryId(slot);
-    let picked: LibraryCandidate | undefined;
-    if (slot.kind === 'asset' && slot.assetId) {
-      picked = fixed.get(slot.assetId);
-      if (picked) item.source = 'fixed';
-    } else if (categoryId && refs.categories.has(categoryId)) {
-      const pick = await picker.pick({ categoryId, slotIndex, at: startsAt, history });
-      if (pick) {
-        picked = pick.asset;
-        item.source = picker.source;
-        item.relaxedRules = pick.relaxedRules;
-      } else {
-        item.problem = 'empty_category';
-      }
+    // Unknown categories (deleted, another station's) carry a `missing_reference` warning.
+    if (categoryId && refs.categories.has(categoryId)) {
+      requests.push({ categoryId, slotIndex, at: airsAt(slotIndex) });
     }
-    if (picked) {
-      item.asset = {
-        id: picked.id,
-        type: picked.type,
-        title: picked.title,
-        artists: picked.artists,
-        durationMs: picked.durationMs,
-      };
-      history.push({ asset: picked, categoryId, slotIndex, startsAt });
-      elapsed += picked.durationMs ?? 0;
-    } else {
-      elapsed += slot.durationMs ?? 0;
-    }
-    items.push(item);
   }
 
-  // Time the hour with the picked lengths rather than the slots' nominal ones. Unsized fills
-  // stay elastic. A picked asset has its category's type, so reference warnings are the
-  // clock's own.
+  const pickSlots = options.pickSlots === undefined ? await findPickSlots() : options.pickSlots;
+  const picker = pickSlots
+    ? rulesPicker(pickSlots, db, scope, {
+        seed,
+        assetTypeOf: (id) => refs.categories.get(id)?.assetType ?? 'song',
+      })
+    : randomPicker(membersAt(db, scope, library), seededRandom(seed));
+  const picks = await picker.pickAll(requests, [...fixed.values()]);
+  const picked = new Map(requests.map((r, i) => [r.slotIndex, picks[i] ?? null]));
+
+  const items = input.slots.map((slot, slotIndex) => {
+    const pick = picked.get(slotIndex);
+    const placement = fixed.get(slotIndex);
+    const asset = pick?.asset ?? (placement ? summaryOf(placement.asset) : null);
+    return {
+      slotIndex,
+      kind: slot.kind,
+      asset,
+      source: pick ? picker.source : placement ? ('fixed' as const) : null,
+      problem: pick === null ? ('empty_category' as const) : null,
+      relaxedRules: pick?.relaxedRules ?? [],
+    };
+  });
+
+  // Retime with the picked lengths rather than the slots' nominal ones. A picked asset has its
+  // category's type, so reference warnings are the clock's own.
   const timed = input.slots.map((slot, i) =>
-    items[i]?.asset && slot.kind !== 'fill' ? { ...slot, durationMs: null } : slot,
+    items[i]?.asset ? { ...slot, durationMs: null } : slot,
   );
   const estimate = estimateClock({ ...input, slots: timed }, (slot, i) => {
-    const picked = items[i]?.asset;
-    return picked && slot.kind !== 'fill'
-      ? { exists: true, durationMs: picked.durationMs, assetType: picked.type }
+    const asset = items[i]?.asset;
+    return asset
+      ? { exists: true, durationMs: asset.durationMs, assetType: asset.type }
       : referenceOf(refs, slot);
   });
 
@@ -372,30 +366,27 @@ async function preview(
   };
 }
 
-/** The assets asset slots name, in this station, as candidates. */
-async function fixedAssets(db: Db, scope: StationScope, slots: readonly ClockSlot[]) {
-  const ids = [
-    ...new Set(slots.flatMap((s) => (s.kind === 'asset' && s.assetId ? [s.assetId] : []))),
-  ];
-  const found = new Map<string, LibraryCandidate>();
-  if (ids.length === 0) return found;
-  const rows = await db
-    .select({
-      id: asset.id,
-      type: asset.type,
-      title: asset.title,
-      artists: asset.artists,
-      year: asset.year,
-      explicit: asset.explicit,
-      durationMs: asset.durationMs,
-      startAt: asset.startAt,
-      killAt: asset.killAt,
-      addedAt: asset.createdAt,
-    })
-    .from(asset)
-    .where(and(whereStation(asset, scope), inArray(asset.id, ids)));
-  for (const row of rows) found.set(row.id, { ...row, tags: [] });
-  return found;
+const summaryOf = (asset: LibraryCandidate): ClockPreviewAsset => ({
+  id: asset.id,
+  type: asset.type,
+  title: asset.title,
+  artists: asset.artists,
+  durationMs: asset.durationMs,
+});
+
+/** Schedulable members of a category at an instant (start/kill windows), for random picks. */
+function membersAt(db: Db, scope: StationScope, library: LibraryCandidate[]) {
+  const details = new Map<string, Promise<CategoryDetail>>();
+  return async (categoryId: string, when: Date) => {
+    let detail = details.get(categoryId);
+    if (!detail) {
+      detail = getCategory(db, scope, categoryId, when);
+      details.set(categoryId, detail);
+    }
+    return resolveCategory(await detail, library, when)
+      .members.filter((m) => m.schedulable)
+      .map((m) => m.asset);
+  };
 }
 
 export async function previewClock(
@@ -421,10 +412,12 @@ export async function previewDraft(
 
 // --- Mutations ---------------------------------------------------------------------------
 
-function isUniqueViolation(err: unknown): boolean {
+/** A unique violation of the station's clock names (not of any other unique key). */
+function isNameTaken(err: unknown): boolean {
   let current: unknown = err;
   while (current && typeof current === 'object') {
-    if ((current as { code?: string }).code === '23505') return true;
+    const pg = current as { code?: string; constraint_name?: string };
+    if (pg.code === '23505' && pg.constraint_name === 'clock_station_name_key') return true;
     current = (current as { cause?: unknown }).cause;
   }
   return false;
@@ -435,7 +428,7 @@ async function mutate<T>(db: Db, ctx: StationContext, fn: Parameters<typeof with
   try {
     return await withAudit(db, ctx, fn);
   } catch (error) {
-    if (isUniqueViolation(error)) {
+    if (isNameTaken(error)) {
       throw new HttpError(409, 'clock_name_taken', 'a clock of this station has this name');
     }
     throw error;
@@ -514,13 +507,25 @@ export async function updateClock(
   id: string,
   patch: UpdateClock,
 ): Promise<ClockDetail> {
-  const { slots, ...fields } = updateClockSchema.parse(patch);
+  const { slots, version, ...fields } = updateClockSchema.parse(patch);
   await mutate(db, ctx, async (tx, audit) => {
-    const before = await loadClock(tx, ctx.scope, id);
-    // Always written, so a slots-only edit moves `updatedAt` too.
+    // Locked until commit: a concurrent save waits here, then sees the new version.
+    const [locked] = await tx
+      .select()
+      .from(clock)
+      .where(and(eq(clock.id, id), whereStation(clock, ctx.scope)))
+      .for('update');
+    if (!locked) throw new NotFoundError('clock', id);
+    if (locked.version !== version) {
+      throw new HttpError(409, 'edit_conflict', 'the clock was changed since this version', {
+        version: locked.version,
+      });
+    }
+    const before = toClock(locked, (await slotsOf(tx, ctx.scope, [id])).get(id) ?? []);
+    // Always written, so a slots-only edit moves `updatedAt` and `version` too.
     const [after] = await tx
       .update(clock)
-      .set({ ...fields, updatedAt: new Date() })
+      .set({ ...fields, version: locked.version + 1, updatedAt: new Date() })
       .where(and(eq(clock.id, id), whereStation(clock, ctx.scope)))
       .returning();
     if (!after) throw new NotFoundError('clock', id);

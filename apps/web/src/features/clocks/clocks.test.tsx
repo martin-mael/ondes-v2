@@ -10,7 +10,7 @@ import {
   slotCategoryId,
 } from '@ondes/shared';
 import { fireEvent, waitFor, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   type ApiCall,
   type ApiRoute,
@@ -86,7 +86,7 @@ const savedSlots = [
   slot({ kind: 'category', categoryId: gold }),
   slot({ kind: 'vt' }),
 ];
-const detail = (slots: ClockSlot[] = savedSlots): ClockDetail => ({
+const detail = (slots: ClockSlot[] = savedSlots, version = 3): ClockDetail => ({
   id: clockId,
   orgId: orgs[0]?.id ?? '',
   stationId,
@@ -95,6 +95,7 @@ const detail = (slots: ClockSlot[] = savedSlots): ClockDetail => ({
   color: '#3366ff',
   targetDurationMs: 60 * MIN,
   slots,
+  version,
   estimate: estimate({ targetDurationMs: 60 * MIN, slots }),
   createdAt: new Date(at),
   updatedAt: new Date(at),
@@ -217,8 +218,95 @@ describe('clocks', () => {
 
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(lastCall(calls, 'PATCH', `${base}/${clockId}`)).toBeDefined());
-    const body = lastCall(calls, 'PATCH', `${base}/${clockId}`)?.body as { slots: ClockSlot[] };
+    const body = lastCall(calls, 'PATCH', `${base}/${clockId}`)?.body as {
+      slots: ClockSlot[];
+      version: number;
+    };
+    expect(body.version).toBe(3);
     expect(body.slots.map((s) => s.kind)).toEqual(['jingle', 'marker', 'vt', 'category']);
+  });
+
+  it('sends the saved version next time, and reports a conflicting save', async () => {
+    let saves = 0;
+    const { screen, user, calls } = renderApp(
+      `${base}/${clockId}`,
+      asProgrammer({
+        [`GET ${base}/${clockId}`]: [200, detail(savedSlots, 7)],
+        [`PATCH ${base}/${clockId}`]: (body) => {
+          saves++;
+          return saves === 1
+            ? [200, detail((body as { slots: ClockSlot[] }).slots, 4)]
+            : [409, { error: 'edit_conflict', message: 'changed', details: { version: 7 } }];
+        },
+      }),
+    );
+    const name = await screen.findByLabelText('Name');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(saves).toBe(1));
+    await user.type(name, ' 2');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(screen.getByText(/Someone saved this clock while you were editing it/)).toBeVisible(),
+    );
+    const patches = calls.filter((c) => c.method === 'PATCH').map((c) => c.body);
+    // The loaded version, then the one the first save returned.
+    expect(patches.map((b) => (b as { version: number }).version)).toEqual([7, 4]);
+
+    // Reload drops the draft for the saved clock and its version.
+    await user.click(screen.getByRole('button', { name: 'Reload the clock' }));
+    await waitFor(() => expect(screen.queryByText(/Someone saved this clock/)).toBeNull());
+    expect(screen.getByLabelText('Name')).toHaveValue('Daytime');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(saves).toBe(3));
+    expect(
+      (lastCall(calls, 'PATCH', `${base}/${clockId}`)?.body as { version: number }).version,
+    ).toBe(7);
+  });
+
+  it('deletes the clock after confirmation', async () => {
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+    const { screen, user, calls, history } = renderApp(
+      `${base}/${clockId}`,
+      asProgrammer({
+        [`GET ${base}/${clockId}`]: [200, detail()],
+        [`DELETE ${base}/${clockId}`]: [204],
+        [`GET ${base}`]: [200, { items: [] }],
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    expect(confirm).toHaveBeenCalledWith('Delete this clock? The weekly grid will lose it.');
+    await waitFor(() => expect(history.location.pathname).toBe(base));
+    expect(lastCall(calls, 'DELETE', `${base}/${clockId}`)).toBeDefined();
+    expect(await screen.findByText('No clock yet. Create one to design an hour.')).toBeVisible();
+    vi.unstubAllGlobals();
+  });
+
+  it('drops the promo category when a voice track becomes a placeholder', async () => {
+    const { screen, user, calls } = renderApp(
+      `${base}/${clockId}`,
+      asProgrammer({
+        [`GET ${base}/${clockId}`]: [
+          200,
+          detail([slot({ kind: 'vt', mode: 'promo', categoryId: ids })]),
+        ],
+        [`PATCH ${base}/${clockId}`]: (body) => [
+          200,
+          detail((body as { slots: ClockSlot[] }).slots),
+        ],
+      }),
+    );
+    const vt = within(await screen.findByRole('listitem', { name: '1. Voice track' }));
+    await waitFor(() => expect(vt.getByLabelText('Category')).toHaveValue(ids));
+    await user.selectOptions(vt.getByLabelText('Voice track'), 'Record later');
+    expect(vt.queryByLabelText('Category')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(lastCall(calls, 'PATCH', `${base}/${clockId}`)).toBeDefined());
+    expect(
+      (lastCall(calls, 'PATCH', `${base}/${clockId}`)?.body as { slots: unknown[] }).slots,
+    ).toEqual([
+      { kind: 'vt', mode: 'placeholder', categoryId: null, label: null, durationMs: null },
+    ]);
   });
 
   it('duplicates and removes slots', async () => {
@@ -317,6 +405,18 @@ describe('clocks', () => {
       slots: savedSlots,
     });
     expect(screen.getByRole('button', { name: 'Another sample' })).toBeVisible();
+    expect(screen.queryByRole('status')).toBeNull();
+
+    // Editing the clock marks the sample stale, still labelled from the clock it came from.
+    await user.click(
+      within(screen.getByRole('listitem', { name: '1. Timing marker' })).getByRole('button', {
+        name: 'Remove the slot',
+      }),
+    );
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'The clock changed since this sample: generate it again.',
+    );
+    expect(table.getByText('Top')).toBeVisible();
   });
 
   it('duplicates the clock from the editor', async () => {

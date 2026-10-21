@@ -8,6 +8,7 @@ import {
   logKindForSlot,
   type SlotReference,
   slotCategoryId,
+  updateClockSchema,
 } from './clocks.ts';
 
 const cat = '0199f6a0-0000-7000-8000-000000000001';
@@ -15,7 +16,9 @@ const jingles = '0199f6a0-0000-7000-8000-000000000002';
 const asset = '0199f6a0-0000-7000-8000-000000000003';
 const MIN = 60_000;
 
+const other = '0199f6a0-0000-7000-8000-000000000004';
 const refs: Record<string, SlotReference> = {
+  [other]: { exists: true, durationMs: MIN, assetType: 'other' },
   [cat]: { exists: true, durationMs: 4 * MIN, assetType: 'song' },
   [jingles]: { exists: true, durationMs: 10_000, assetType: 'jingle' },
   [asset]: { exists: true, durationMs: 2 * MIN, assetType: 'song' },
@@ -48,6 +51,12 @@ describe('clock slots', () => {
       targetDurationMs: 3_600_000,
       slots: [],
     });
+  });
+
+  it('needs the edited version on update', () => {
+    expect(updateClockSchema.safeParse({ name: 'X' }).success).toBe(false);
+    expect(updateClockSchema.safeParse({ version: 2 }).success).toBe(false);
+    expect(updateClockSchema.parse({ version: 2, name: 'X' })).toEqual({ version: 2, name: 'X' });
   });
 
   it('rejects unknown kinds and out-of-range offsets', () => {
@@ -185,5 +194,50 @@ describe('estimateClock', () => {
       ['unknown_duration', 3],
       ['missing_reference', 4],
     ]);
+  });
+
+  it('flags assets of a type the log cannot place, and deleted fill categories', () => {
+    const missing = '0199f6a0-0000-7000-8000-0000000000ff';
+    const e = estimate(
+      [
+        { kind: 'category', categoryId: other },
+        { kind: 'asset', assetId: other },
+        { kind: 'fill', categoryId: missing },
+        { kind: 'fill' },
+      ],
+      2 * MIN,
+    );
+    expect(e.warnings.map((w) => [w.code, w.slotIndex])).toEqual([
+      ['unsupported_asset_type', 0],
+      ['unsupported_asset_type', 1],
+      ['missing_reference', 2],
+    ]);
+  });
+
+  it('times a partial clock with markers', () => {
+    // 40 minutes before a show: a song, the news at :20 (hard), songs, a fill to the end.
+    const e = estimate(
+      [
+        song,
+        { kind: 'fill' },
+        { kind: 'marker', offsetMs: 20 * MIN, timing: 'hard' },
+        { kind: 'asset', assetId: asset },
+        song,
+        song,
+        { kind: 'fill' },
+      ],
+      40 * MIN,
+    );
+    expect(e.slots.map((s) => [s.startMs / MIN, s.durationMs / MIN])).toEqual([
+      [0, 4],
+      [4, 16],
+      [20, 0],
+      [20, 2],
+      [22, 4],
+      [26, 4],
+      [30, 10],
+    ]);
+    expect(e.totalMs).toBe(40 * MIN);
+    expect(e.warnings).toEqual([]);
   });
 });

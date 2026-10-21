@@ -112,7 +112,10 @@ export const clockSlotSchema = z.discriminatedUnion('kind', [
 export type ClockSlot = z.infer<typeof clockSlotSchema>;
 export type ClockSlotInput = z.input<typeof clockSlotSchema>;
 
-/** The category a slot picks from, if its kind picks from one. */
+/**
+ * The category a slot picks from, if its kind picks from one. The only category a slot keeps:
+ * a placeholder VT's `categoryId` is dropped when stored.
+ */
 export function slotCategoryId(slot: ClockSlot): string | null {
   switch (slot.kind) {
     case 'category':
@@ -203,6 +206,8 @@ export type SlotEstimate = z.infer<typeof slotEstimateSchema>;
  * - `missing_reference`: no category or asset chosen, or it was deleted.
  * - `wrong_asset_type`: a jingle or promo VT slot points at a category of another type.
  * - `unknown_duration`: no length to go by (empty category, asset or live slot without one).
+ * - `unsupported_asset_type`: a category or asset slot holds `other` assets, which have no log
+ *   item kind (`logKindForSlot`): the generator can't place them.
  */
 export const clockWarningCodeSchema = z.enum([
   'over_target',
@@ -214,6 +219,7 @@ export const clockWarningCodeSchema = z.enum([
   'missing_reference',
   'wrong_asset_type',
   'unknown_duration',
+  'unsupported_asset_type',
 ]);
 export type ClockWarningCode = z.infer<typeof clockWarningCodeSchema>;
 
@@ -265,11 +271,19 @@ export function estimateClock(
       slot.kind === 'category' ||
       slot.kind === 'asset' ||
       slot.kind === 'jingle' ||
+      (slot.kind === 'fill' && slot.categoryId !== null) ||
       (slot.kind === 'vt' && slot.mode === 'promo');
     if (wantsRef && !ref?.exists) warnings.push({ code: 'missing_reference', slotIndex: i });
     const expected = expectedAssetType(slot);
     if (ref?.exists && expected && ref.assetType !== expected) {
       warnings.push({ code: 'wrong_asset_type', slotIndex: i });
+    }
+    if (
+      ref?.exists &&
+      (slot.kind === 'category' || slot.kind === 'asset') &&
+      logKindForSlot(slot.kind, ref.assetType ?? undefined) === null
+    ) {
+      warnings.push({ code: 'unsupported_asset_type', slotIndex: i });
     }
     if (slot.durationMs !== null) return { durationMs: slot.durationMs, source: 'nominal' };
     if (slot.kind === 'fill') return { durationMs: 0, source: 'fill' };
@@ -356,6 +370,8 @@ export const clockSchema = z.object({
   /** How long the clock should last: an hour, or less for a partial clock. */
   targetDurationMs: z.int(),
   slots: z.array(clockSlotSchema),
+  /** Bumped on every save; `PATCH` sends the version it edited (optimistic concurrency). */
+  version: z.int().min(1),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -386,10 +402,23 @@ export const createClockSchema = z.object({
 });
 export type CreateClock = z.input<typeof createClockSchema>;
 
+/**
+ * `PATCH …/clocks/:id`. `version` is the clock's version the edit is based on; when the clock
+ * changed since, the api answers 409 `edit_conflict` and saves nothing.
+ */
 export const updateClockSchema = z
-  .object(clockFields)
-  .partial()
-  .refine((patch) => Object.values(patch).some((v) => v !== undefined), 'empty update');
+  .object({ version: z.int().min(1), ...clockFields })
+  .partial({
+    name: true,
+    description: true,
+    color: true,
+    targetDurationMs: true,
+    slots: true,
+  })
+  .refine(
+    ({ version: _, ...patch }) => Object.values(patch).some((v) => v !== undefined),
+    'empty update',
+  );
 export type UpdateClock = z.input<typeof updateClockSchema>;
 
 /** `POST …/clocks/:id/duplicate`. Without a name, the copy is named after the original. */

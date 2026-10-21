@@ -1,6 +1,8 @@
 import {
   addMembership,
   auditLog,
+  clockSlot,
+  createApiKey,
   createAsset,
   createOrganization,
   createStation,
@@ -22,7 +24,9 @@ import type {
 import { and, asc, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestApp, signUpAndLogin, type TestApp } from '../auth/testing.ts';
-import { loadClock, previewDraft } from './repo.ts';
+import type { PickSlotsFn } from './preview.ts';
+import { findPickSlots } from './preview.ts';
+import { loadClock, previewDraft, updateClock } from './repo.ts';
 
 // The clocks API on the real app: CRUD, estimates from category averages, permissions,
 // tenant isolation, audit, and a sample-hour preview from the real library.
@@ -36,6 +40,8 @@ let otherScope: StationScope;
 const cookies = { programmer: '', presenter: '', outsider: '' };
 const ids: Record<string, string> = {};
 let otherCategory: string;
+/** A station API key with `clock:read` only: the read-only principal. */
+let readOnlyKey: string;
 
 async function asset(name: string, input: Partial<CreateAsset>) {
   const created = await createAsset(
@@ -45,6 +51,15 @@ async function asset(name: string, input: Partial<CreateAsset>) {
   );
   ids[name] = created.id;
   return created.id;
+}
+
+function readOnly(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: object) {
+  return t.app.inject({
+    method,
+    url: `/api/v1/stations/${scope.stationId}${url}`,
+    headers: { authorization: `Bearer ${readOnlyKey}` },
+    ...(payload ? { payload } : {}),
+  });
 }
 
 function call(
@@ -73,6 +88,13 @@ beforeAll(async () => {
     { slug: 'clk-fm', name: 'FM', timezone: 'Europe/Paris' },
   );
   scope = await resolveStationScope(db, org.id, st.id);
+  readOnlyKey = (
+    await createApiKey(
+      db,
+      { actor: system, scope: orgScope },
+      { name: 'read only', stationId: st.id, scopes: ['clock:read'] },
+    )
+  ).token;
 
   // Songs of 3 and 5 minutes (average 4), two jingles of 10 s, a sponsor message of 30 s.
   const songs = await Promise.all([
@@ -151,6 +173,7 @@ const hour = (): ClockSlotInput[] => [
 
 describe('clocks API', () => {
   let clockId: string;
+  let version: number;
 
   it('creates a clock with its slots, an estimate and an audit row', async () => {
     const res = await call('programmer', 'POST', '/clocks', {
@@ -161,7 +184,8 @@ describe('clocks API', () => {
     expect(res.statusCode).toBe(201);
     const body = res.json<ClockDetail>();
     clockId = body.id;
-    expect(body).toMatchObject({ name: 'Daytime', targetDurationMs: 60 * MIN });
+    version = body.version;
+    expect(body).toMatchObject({ name: 'Daytime', targetDurationMs: 60 * MIN, version: 1 });
     expect(body.slots).toHaveLength(19);
     expect(body.slots[2]).toEqual({
       kind: 'category',
@@ -176,7 +200,11 @@ describe('clocks API', () => {
     // The fill takes the last 6 minutes.
     expect(body.estimate.slots[18]).toMatchObject({ durationMs: 6 * MIN, source: 'fill' });
     expect(body.estimate.totalMs).toBe(60 * MIN);
-    expect(body.estimate.warnings).toEqual([{ code: 'gap', slotIndex: 11, ms: 50_000 }]);
+    // The sponsor is an `other` asset, which the log can't place.
+    expect(body.estimate.warnings).toEqual([
+      { code: 'unsupported_asset_type', slotIndex: 9 },
+      { code: 'gap', slotIndex: 11, ms: 50_000 },
+    ]);
 
     const audit = await auditRows(clockId);
     expect(audit.map((a) => a.action)).toEqual(['clock.create']);
@@ -203,19 +231,53 @@ describe('clocks API', () => {
   it('updates the slots with an audit diff, and warns about an overfilled hour', async () => {
     const slots = [...hour().slice(0, -1), ...Array.from({ length: 3 }, () => hour()[2])];
     const res = await call('programmer', 'PATCH', `/clocks/${clockId}`, {
+      version,
       slots: slots as object[],
       description: 'Weekday daytime',
     });
     expect(res.statusCode).toBe(200);
     const body = res.json<ClockDetail>();
     expect(body.description).toBe('Weekday daytime');
+    expect(body.version).toBe(version + 1);
+    version = body.version;
     // 30:00 + 9 songs × 4 min = 66:00.
     expect(body.estimate.totalMs).toBe(66 * MIN);
     expect(body.estimate.warnings).toContainEqual({ code: 'over_target', ms: 6 * MIN });
 
     const update = (await auditRows(clockId)).at(-1);
     expect(update?.action).toBe('clock.update');
-    expect(Object.keys(update?.diff ?? {}).sort()).toEqual(['description', 'slots']);
+    expect(Object.keys(update?.diff ?? {}).sort()).toEqual(['description', 'slots', 'version']);
+  });
+
+  it('refuses an edit based on an older version, saving nothing', async () => {
+    const res = await call('programmer', 'PATCH', `/clocks/${clockId}`, {
+      version: version - 1,
+      name: 'Stale',
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: 'edit_conflict', details: { version } });
+    expect((await loadClock(t.tdb.db, scope, clockId)).name).toBe('Daytime');
+  });
+
+  it('serialises two saves of the same version: one wins, the other conflicts', async () => {
+    const ctx = { actor: system, scope };
+    const slots = (await loadClock(t.tdb.db, scope, clockId)).slots;
+    const results = await Promise.allSettled([
+      updateClock(t.tdb.db, ctx, clockId, { version, slots, description: 'A' }),
+      updateClock(t.tdb.db, ctx, clockId, { version, slots, description: 'B' }),
+    ]);
+    const won = results.filter((r) => r.status === 'fulfilled');
+    const lost = results.filter((r) => r.status === 'rejected');
+    expect(won).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    expect((lost[0] as PromiseRejectedResult).reason).toMatchObject({
+      statusCode: 409,
+      code: 'edit_conflict',
+    });
+    const saved = await loadClock(t.tdb.db, scope, clockId);
+    expect(saved.version).toBe(version + 1);
+    expect(saved.slots).toEqual(slots);
+    version = saved.version;
   });
 
   it('estimates a draft without saving it', async () => {
@@ -235,11 +297,10 @@ describe('clocks API', () => {
     const body = res.json<ClockPreview>();
     expect(body.seed).toBe('abc');
     expect(body.items).toHaveLength(21);
+    // #38's rules engine when this build has it, random picks otherwise.
+    const source = (await findPickSlots()) ? 'rules' : 'random';
     const songs = body.items.filter((i) => i.kind === 'category');
-    expect(songs.every((i) => i.source === 'random' && i.asset?.type === 'song')).toBe(true);
-    // Four songs in the category: no repeat until they're all used.
-    expect(new Set(songs.slice(0, 4).map((i) => i.asset?.id)).size).toBe(4);
-    expect(songs[4]?.relaxedRules).toEqual(['no_repeat_in_hour']);
+    expect(songs.every((i) => i.source === source && i.asset?.type === 'song')).toBe(true);
     expect(body.items[1]).toMatchObject({ kind: 'jingle', asset: { type: 'jingle' } });
     expect(body.items[9]).toMatchObject({ source: 'fixed', asset: { title: 'Sponsor' } });
     expect(body.items[10]).toMatchObject({ kind: 'vt', asset: null, durationMs: 30_000 });
@@ -272,42 +333,115 @@ describe('clocks API', () => {
     expect(body.estimate.warnings).toContainEqual({ code: 'unknown_duration', slotIndex: 0 });
   });
 
-  it('uses the rules picker when given one', async () => {
+  it('picks at random without the rules engine: no repeats until the category is used up', async () => {
     const preview = await previewDraft(
       t.tdb.db,
       scope,
-      { slots: [{ kind: 'category', categoryId: ids.Gold }] },
-      {
-        picker: {
-          source: 'rules',
-          pick: async ({ categoryId }) =>
-            categoryId === ids.Gold
+      { slots: hour(), seed: 'abc' },
+      { pickSlots: null },
+    );
+    const songs = preview.items.filter((i) => i.kind === 'category');
+    expect(songs.every((i) => i.source === 'random')).toBe(true);
+    // Four songs in the category.
+    expect(new Set(songs.slice(0, 4).map((i) => i.asset?.id)).size).toBe(4);
+    expect(songs[4]?.relaxedRules).toEqual(['no_repeat_in_hour']);
+    // The fill isn't a pick: it stretches to the end of the hour.
+    expect(preview.items[18]).toMatchObject({ kind: 'fill', asset: null, source: null });
+    const end = preview.items[18];
+    expect((end?.startMs ?? 0) + (end?.durationMs ?? 0)).toBe(60 * MIN);
+  });
+
+  it('asks the rules engine for the hour, at the estimated times, with the fixed items', async () => {
+    const calls: Parameters<PickSlotsFn>[] = [];
+    const pickSlots: PickSlotsFn = async (...args) => {
+      calls.push(args);
+      return {
+        picks: args[2].slots.map((s) => ({
+          asset:
+            s.categoryId === ids.Gold
               ? {
-                  asset: {
-                    id: ids['Song B'] as string,
-                    type: 'song',
-                    title: 'Song B',
-                    artists: ['Song B'],
-                    year: null,
-                    explicit: false,
-                    durationMs: 5 * MIN,
-                    startAt: null,
-                    killAt: null,
-                    addedAt: new Date(),
-                    tags: [],
-                  },
-                  relaxedRules: ['artist_separation'],
+                  id: ids['Song B'] as string,
+                  title: 'Song B',
+                  artists: ['Song B'],
+                  durationMs: 5 * MIN,
                 }
               : null,
-        },
+          relaxed: [{ rule: 'artist_separation' }],
+        })),
+      };
+    };
+    const airsAt = new Date('2026-10-25T09:00:00Z');
+    const preview = await previewDraft(
+      t.tdb.db,
+      scope,
+      {
+        at: airsAt,
+        seed: 's1',
+        slots: [
+          { kind: 'jingle', categoryId: ids.IDs },
+          { kind: 'asset', assetId: ids.Sponsor },
+          { kind: 'marker', offsetMs: 5 * MIN, timing: 'hard' },
+          { kind: 'category', categoryId: ids.Gold },
+          { kind: 'fill', categoryId: ids.Gold },
+        ],
       },
+      { pickSlots },
     );
-    expect(preview.items[0]).toMatchObject({
-      source: 'rules',
-      asset: { title: 'Song B' },
+    expect(calls).toHaveLength(1);
+    const [, callScope, input, options] = calls[0] as Parameters<PickSlotsFn>;
+    expect(callScope).toEqual(scope);
+    // Air times from the clock's estimate: the ID at :00, the song after the :05 marker. The
+    // fill isn't picked.
+    expect(input).toEqual({
+      seed: 's1',
+      slots: [
+        { categoryId: ids.IDs, at: airsAt.toISOString() },
+        { categoryId: ids.Gold, at: new Date(airsAt.getTime() + 5 * MIN).toISOString() },
+      ],
+    });
+    expect(options?.history).toEqual([
+      expect.objectContaining({
+        assetId: ids.Sponsor,
+        type: 'other',
+        at: new Date(airsAt.getTime() + 10_000),
+      }),
+    ]);
+    expect(preview.items.map((i) => [i.kind, i.source, i.asset?.title ?? null])).toEqual([
+      ['jingle', null, null],
+      ['asset', 'fixed', 'Sponsor'],
+      ['marker', null, null],
+      ['category', 'rules', 'Song B'],
+      ['fill', null, null],
+    ]);
+    expect(preview.items[0]?.problem).toBe('empty_category');
+    expect(preview.items[3]).toMatchObject({
       relaxedRules: ['artist_separation'],
+      startMs: 5 * MIN,
       durationMs: 5 * MIN,
     });
+  });
+
+  it('times a partial clock with markers', async () => {
+    const res = await call('programmer', 'POST', '/clocks/estimate', {
+      targetDurationMs: 40 * MIN,
+      slots: [
+        { kind: 'category', categoryId: ids.Gold },
+        { kind: 'fill' },
+        { kind: 'marker', offsetMs: 20 * MIN, timing: 'hard', label: 'News' },
+        { kind: 'asset', assetId: ids.Sponsor },
+        { kind: 'category', categoryId: ids.Gold },
+        { kind: 'marker', offsetMs: 40 * MIN, timing: 'soft', capMs: MIN },
+      ],
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<ClockEstimate>();
+    expect(body.slots.map((s) => s.startMs / 1000)).toEqual([0, 240, 1200, 1200, 1230, 2400]);
+    expect(body.slots[1]).toMatchObject({ durationMs: 16 * MIN, source: 'fill' });
+    // 15:30 of silence before the soft marker at the end; the sponsor is of type `other`.
+    expect(body.warnings).toEqual([
+      { code: 'unsupported_asset_type', slotIndex: 3 },
+      { code: 'gap', slotIndex: 5, ms: 930_000 },
+    ]);
   });
 
   it('duplicates a clock under a free name', async () => {
@@ -375,6 +509,7 @@ describe('clocks API', () => {
   it('keeps tenants apart', async () => {
     // Another station's category can't be used in a slot.
     const res = await call('programmer', 'PATCH', `/clocks/${clockId}`, {
+      version,
       slots: [{ kind: 'category', categoryId: otherCategory }],
     });
     expect(res.statusCode).toBe(400);
@@ -392,12 +527,55 @@ describe('clocks API', () => {
     const own = (path: string, method: 'GET' | 'PATCH' | 'DELETE' = 'GET', body?: object) =>
       call('outsider', method, path, body, otherScope.stationId);
     expect((await own(`/clocks/${clockId}`)).statusCode).toBe(404);
-    expect((await own(`/clocks/${clockId}`, 'PATCH', { name: 'Stolen' })).statusCode).toBe(404);
+    expect((await own(`/clocks/${clockId}`, 'PATCH', { version, name: 'Stolen' })).statusCode).toBe(
+      404,
+    );
     expect((await own(`/clocks/${clockId}`, 'DELETE')).statusCode).toBe(404);
     expect(
       (await call('outsider', 'POST', `/clocks/${clockId}/duplicate`, {}, otherScope.stationId))
         .statusCode,
     ).toBe(404);
+  });
+
+  it('never stores a category on a placeholder voice track, even another station one', async () => {
+    const res = await call('programmer', 'PATCH', `/clocks/${clockId}`, {
+      version,
+      slots: [{ kind: 'vt', mode: 'placeholder', categoryId: otherCategory }],
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<ClockDetail>();
+    version = body.version;
+    expect(body.slots).toEqual([
+      { kind: 'vt', mode: 'placeholder', categoryId: null, label: null, durationMs: null },
+    ]);
+    const rows = await t.tdb.db
+      .select({ categoryId: clockSlot.categoryId })
+      .from(clockSlot)
+      .where(eq(clockSlot.clockId, clockId));
+    expect(rows).toEqual([{ categoryId: null }]);
+    // As a promo, the same category is checked and refused.
+    const promo = await call('programmer', 'PATCH', `/clocks/${clockId}`, {
+      version,
+      slots: [{ kind: 'vt', mode: 'promo', categoryId: otherCategory }],
+    });
+    expect(promo.statusCode).toBe(400);
+    expect(promo.json().error).toBe('unknown_category');
+  });
+
+  it('lets a read-only principal read and preview, never write', async () => {
+    expect((await readOnly('GET', '/clocks')).statusCode).toBe(200);
+    expect((await readOnly('GET', `/clocks/${clockId}`)).statusCode).toBe(200);
+    expect((await readOnly('POST', '/clocks/estimate', { slots: [] })).statusCode).toBe(200);
+    expect((await readOnly('POST', '/clocks/preview', { slots: [] })).statusCode).toBe(200);
+    const writes = [
+      await readOnly('POST', '/clocks', { name: 'RO' }),
+      await readOnly('PATCH', `/clocks/${clockId}`, { version, name: 'RO' }),
+      await readOnly('PATCH', `/clocks/${clockId}`, { version, slots: [] }),
+      await readOnly('POST', `/clocks/${clockId}/duplicate`, {}),
+      await readOnly('DELETE', `/clocks/${clockId}`),
+    ];
+    expect(writes.map((r) => r.statusCode)).toEqual([403, 403, 403, 403, 403]);
+    expect((await loadClock(t.tdb.db, scope, clockId)).version).toBe(version);
   });
 
   it('deletes with an audit row', async () => {

@@ -1,5 +1,5 @@
 {
-  "id": "ffbfc38f-7546-4703-bcd3-26de0b2ad964",
+  "id": "67bb6f8f-e465-4af3-80ed-de92f2d19be7",
   "prevId": "551847da-bdf2-44a3-93b4-dbd02122b7b7",
   "version": "7",
   "dialect": "postgresql",
@@ -1247,6 +1247,13 @@
           "notNull": true,
           "default": 3600000
         },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1319,6 +1326,10 @@
         "clock_target_check": {
           "name": "clock_target_check",
           "value": "\"clock\".\"target_duration_ms\" between 60000 and 21600000"
+        },
+        "clock_version_check": {
+          "name": "clock_version_check",
+          "value": "\"clock\".\"version\" >= 1"
         }
       },
       "isRLSEnabled": false

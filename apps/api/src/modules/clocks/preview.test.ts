@@ -1,22 +1,24 @@
+import type { Db, StationScope } from '@ondes/db';
 import { describe, expect, it } from 'vitest';
 import type { LibraryCandidate } from '../rotation/repo.ts';
-import { type PreviewPlacement, randomPicker, seededRandom } from './preview.ts';
+import { type PickSlotsFn, randomPicker, rulesPicker, seededRandom } from './preview.ts';
 
-const song = (id: string): LibraryCandidate => ({
+const song = (id: string, type: LibraryCandidate['type'] = 'song'): LibraryCandidate => ({
   id,
-  type: 'song',
+  type,
   title: id,
-  artists: [],
+  artists: [`${id} artist`],
   year: null,
   explicit: false,
   durationMs: 180_000,
   startAt: null,
   killAt: null,
   addedAt: new Date(0),
-  tags: [],
+  tags: [{ key: 'style', value: 'house' }],
 });
-const members = ['a', 'b', 'c'].map(song);
+const members = ['a', 'b', 'c'].map((id) => song(id));
 const at = new Date('2026-10-25T10:00:00Z');
+const later = (min: number) => new Date(at.getTime() + min * 60_000);
 
 describe('seededRandom', () => {
   it('repeats for a seed and differs across seeds', () => {
@@ -30,26 +32,103 @@ describe('seededRandom', () => {
 });
 
 describe('randomPicker', () => {
-  it('avoids repeats while fresh members are left, then relaxes', async () => {
+  const requests = (n: number) =>
+    Array.from({ length: n }, (_, slotIndex) => ({
+      categoryId: 'c',
+      slotIndex,
+      at: later(slotIndex),
+    }));
+
+  it('avoids repeats (fixed items included) while fresh members are left, then relaxes', async () => {
     const picker = randomPicker(async () => members, seededRandom('s'));
-    const history: PreviewPlacement[] = [];
-    for (let slotIndex = 0; slotIndex < 3; slotIndex++) {
-      const pick = await picker.pick({ categoryId: 'c', slotIndex, at, history });
-      expect(pick?.relaxedRules).toEqual([]);
-      history.push({
-        asset: pick?.asset as LibraryCandidate,
-        categoryId: 'c',
-        slotIndex,
-        startsAt: at,
-      });
-    }
-    expect(new Set(history.map((h) => h.asset.id))).toEqual(new Set(['a', 'b', 'c']));
-    const fourth = await picker.pick({ categoryId: 'c', slotIndex: 3, at, history });
-    expect(fourth?.relaxedRules).toEqual(['no_repeat_in_hour']);
+    const picks = await picker.pickAll(requests(3), [
+      { asset: members[0] as LibraryCandidate, at },
+    ]);
+    expect(new Set(picks.slice(0, 2).map((p) => p?.asset.id))).toEqual(new Set(['b', 'c']));
+    expect(picks[0]?.relaxedRules).toEqual([]);
+    expect(picks[2]?.relaxedRules).toEqual(['no_repeat_in_hour']);
   });
 
-  it('returns null for an empty category', async () => {
-    const picker = randomPicker(async () => [], Math.random);
-    expect(await picker.pick({ categoryId: 'c', slotIndex: 0, at, history: [] })).toBeNull();
+  it('resolves members at each slot time', async () => {
+    const seen: Date[] = [];
+    const picker = randomPicker(async (_, when) => {
+      seen.push(when);
+      return when >= later(1) ? [] : members;
+    }, Math.random);
+    const picks = await picker.pickAll(requests(2), []);
+    expect(seen).toEqual([at, later(1)]);
+    expect(picks[1]).toBeNull();
+  });
+});
+
+describe('rulesPicker', () => {
+  const db = {} as Db;
+  const scope = { orgId: 'o', stationId: 's' } as StationScope;
+
+  it('picks the whole hour in one call, with the fixed items as history', async () => {
+    const calls: Parameters<PickSlotsFn>[] = [];
+    const pickSlots: PickSlotsFn = async (...args) => {
+      calls.push(args);
+      return {
+        picks: [
+          {
+            asset: { id: 'b', title: 'B', artists: ['X'], durationMs: 200_000 },
+            relaxed: [{ rule: 'artist_separation', reason: 'only one artist' }],
+          },
+          { asset: null, relaxed: [] },
+        ],
+      };
+    };
+    const picker = rulesPicker(pickSlots, db, scope, {
+      seed: 'abc',
+      assetTypeOf: (id) => (id === 'ids' ? 'jingle' : 'song'),
+    });
+    expect(picker.source).toBe('rules');
+    const picks = await picker.pickAll(
+      [
+        { categoryId: 'gold', slotIndex: 1, at: later(1) },
+        { categoryId: 'ids', slotIndex: 3, at: later(5) },
+      ],
+      [{ asset: song('fixed', 'other'), at }],
+    );
+    expect(picks).toEqual([
+      {
+        asset: { id: 'b', type: 'song', title: 'B', artists: ['X'], durationMs: 200_000 },
+        relaxedRules: ['artist_separation'],
+      },
+      null,
+    ]);
+    expect(calls).toHaveLength(1);
+    const [, , input, options] = calls[0] as Parameters<PickSlotsFn>;
+    expect(input).toEqual({
+      slots: [
+        { categoryId: 'gold', at: later(1).toISOString() },
+        { categoryId: 'ids', at: later(5).toISOString() },
+      ],
+      seed: 'abc',
+    });
+    expect(options?.history).toEqual([
+      {
+        assetId: 'fixed',
+        type: 'other',
+        title: 'fixed',
+        artists: ['fixed artist'],
+        album: null,
+        tags: [{ key: 'style', value: 'house' }],
+        at,
+      },
+    ]);
+  });
+
+  it('skips the call when nothing is to be picked', async () => {
+    const picker = rulesPicker(
+      async () => {
+        throw new Error('called');
+      },
+      db,
+      scope,
+      { seed: 's', assetTypeOf: () => 'song' },
+    );
+    expect(await picker.pickAll([], [])).toEqual([]);
   });
 });

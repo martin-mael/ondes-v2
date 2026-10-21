@@ -37,6 +37,8 @@ export const clock = pgTable(
     description: text('description'),
     color: text('color'),
     targetDurationMs: integer('target_duration_ms').notNull().default(3_600_000),
+    /** Bumped on every save: the api refuses an edit based on an older version. */
+    version: integer('version').notNull().default(1),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
@@ -53,6 +55,7 @@ export const clock = pgTable(
     unique('clock_id_org_station_key').on(t.id, t.orgId, t.stationId),
     uniqueIndex('clock_station_name_key').on(t.stationId, sql`lower(${t.name})`),
     check('clock_target_check', sql`${t.targetDurationMs} between 60000 and 21600000`),
+    check('clock_version_check', sql`${t.version} >= 1`),
   ],
 );
 

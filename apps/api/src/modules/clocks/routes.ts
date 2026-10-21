@@ -15,21 +15,16 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
-import type { PreviewPicker } from './preview.ts';
 import * as repo from './repo.ts';
 
 // Clocks API (#39), under /api/v1/stations/:stationId/clocks. Reads (estimates and previews
-// included) need `clock:read`, edits `clock:write`; every edit writes an audit row.
+// included) need `clock:read`, edits `clock:write`; every edit writes an audit row. Previews
+// pick with #38's rules engine when this build has it (preview.ts), at random otherwise.
 
 const stationParams = z.object({ stationId: z.string() });
 const clockParams = stationParams.extend({ clockId: uuidSchema });
 
-export interface ClocksOptions {
-  /** #38's picker for previews; a random category member without it. */
-  previewPicker?: (request: FastifyRequest) => PreviewPicker | undefined;
-}
-
-export async function clocksRoutes(app: FastifyInstance, options: ClocksOptions = {}) {
+export async function clocksRoutes(app: FastifyInstance) {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const read = app.requirePermission('clock', 'read');
   const write = app.requirePermission('clock', 'write');
@@ -37,10 +32,6 @@ export async function clocksRoutes(app: FastifyInstance, options: ClocksOptions 
     actor: actorOf(request),
     scope: stationScopeOf(request),
   });
-  const previewOptions = (request: FastifyRequest): repo.PreviewOptions => {
-    const picker = options.previewPicker?.(request);
-    return picker ? { picker } : {};
-  };
 
   r.get(
     '/stations/:stationId/clocks',
@@ -86,8 +77,7 @@ export async function clocksRoutes(app: FastifyInstance, options: ClocksOptions 
         response: { 200: clockPreviewSchema },
       },
     },
-    (request) =>
-      repo.previewDraft(app.db, stationScopeOf(request), request.body, previewOptions(request)),
+    (request) => repo.previewDraft(app.db, stationScopeOf(request), request.body),
   );
 
   r.get(
@@ -107,13 +97,7 @@ export async function clocksRoutes(app: FastifyInstance, options: ClocksOptions 
       },
     },
     (request) =>
-      repo.previewClock(
-        app.db,
-        stationScopeOf(request),
-        request.params.clockId,
-        request.query,
-        previewOptions(request),
-      ),
+      repo.previewClock(app.db, stationScopeOf(request), request.params.clockId, request.query),
   );
 
   r.patch(

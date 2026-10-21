@@ -6,10 +6,12 @@ CREATE TABLE "clock" (
 	"description" text,
 	"color" text,
 	"target_duration_ms" integer DEFAULT 3600000 NOT NULL,
+	"version" integer DEFAULT 1 NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "clock_id_org_station_key" UNIQUE("id","org_id","station_id"),
-	CONSTRAINT "clock_target_check" CHECK ("clock"."target_duration_ms" between 60000 and 21600000)
+	CONSTRAINT "clock_target_check" CHECK ("clock"."target_duration_ms" between 60000 and 21600000),
+	CONSTRAINT "clock_version_check" CHECK ("clock"."version" >= 1)
 );
 --> statement-breakpoint
 CREATE TABLE "clock_slot" (

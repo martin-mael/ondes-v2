@@ -32,6 +32,9 @@ const en = {
   'editor.created': 'Clock created.',
   'editor.deleted': 'Clock deleted.',
   'editor.nameTaken': 'Another clock already has this name.',
+  'editor.conflict':
+    'Someone saved this clock while you were editing it. Reload it to see their version (your unsaved changes will be lost).',
+  'editor.reload': 'Reload the clock',
   'editor.unknownReference': 'Some slots point at categories or assets that no longer exist.',
   'editor.general': 'General',
   'field.name': 'Name',
@@ -104,11 +107,14 @@ const en = {
   'warning.missing_reference': 'Slot {slot}: no category or asset chosen.',
   'warning.wrong_asset_type': 'Slot {slot}: the category holds another type of asset.',
   'warning.unknown_duration': 'Slot {slot}: no length to go by (empty category?).',
+  'warning.unsupported_asset_type':
+    'Slot {slot}: assets of type "other" can\'t be scheduled; use a song, jingle, bed or voice track.',
 
   'preview.title': 'Sample hour',
   'preview.help': 'Fills each slot from the real library to check the clock sounds right.',
   'preview.generate': 'Generate',
   'preview.again': 'Another sample',
+  'preview.stale': 'The clock changed since this sample: generate it again.',
   'preview.picker.rules': 'Picked with the rotation rules.',
   'preview.picker.random': 'Random picks from each category (rotation rules not applied).',
   'preview.emptyCategory': 'Nothing to pick',
@@ -147,6 +153,9 @@ const fr: Record<ClockMessageKey, string> = {
   'editor.created': 'Horloge créée.',
   'editor.deleted': 'Horloge supprimée.',
   'editor.nameTaken': 'Une autre horloge porte déjà ce nom.',
+  'editor.conflict':
+    'Quelqu’un a enregistré cette horloge pendant que vous la modifiiez. Rechargez-la pour voir sa version (vos modifications non enregistrées seront perdues).',
+  'editor.reload': 'Recharger l’horloge',
   'editor.unknownReference':
     'Certaines cases pointent vers des catégories ou des éléments qui n’existent plus.',
   'editor.general': 'Général',
@@ -221,12 +230,15 @@ const fr: Record<ClockMessageKey, string> = {
   'warning.missing_reference': 'Case {slot} : aucune catégorie ni élément choisi.',
   'warning.wrong_asset_type': 'Case {slot} : la catégorie contient un autre type d’élément.',
   'warning.unknown_duration': 'Case {slot} : durée inconnue (catégorie vide ?).',
+  'warning.unsupported_asset_type':
+    'Case {slot} : les éléments de type « autre » ne peuvent pas être programmés ; utilisez un titre, un jingle, un fond ou un voice track.',
 
   'preview.title': 'Heure type',
   'preview.help':
     'Remplit chaque case depuis la médiathèque réelle pour vérifier que l’horloge sonne juste.',
   'preview.generate': 'Générer',
   'preview.again': 'Autre tirage',
+  'preview.stale': 'L’horloge a changé depuis ce tirage : générez-le à nouveau.',
   'preview.picker.rules': 'Tirage selon les règles de rotation.',
   'preview.picker.random':
     'Tirage au hasard dans chaque catégorie (règles de rotation non appliquées).',
