@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import {
   addMembership,
+  asRunEntry,
   assetFile,
   auditLog,
   createAsset,
   createOrganization,
   createStation,
+  feederPush,
   logItem,
   resolveOrgScope,
   resolveStationScope,
@@ -22,9 +24,11 @@ import {
 } from '@ondes/queue';
 import {
   type Actor,
+  addDays,
   LOG_TRANSITION_MS,
   type LogItem,
   type LogRangeResponse,
+  localDateOf,
   type RealtimeEvent,
   realtimeEventSchema,
 } from '@ondes/shared';
@@ -686,6 +690,84 @@ describe('log timing, concurrency and status', () => {
     expect(bad.statusCode).toBe(422);
     expect(bad.json().error).toBe('sample_rate_mismatch');
     expect((await call('programmer', 'POST', '/log/items', item(44_100))).statusCode).toBe(201);
+  });
+});
+
+describe('log edits leave the past alone', () => {
+  // Days relative to the real clock: the guard compares planned starts with now.
+  const today = localDateOf(new Date(), 'Europe/Paris');
+  const yesterday = addDays(today, -1);
+  const tomorrow = addDays(today, 1);
+  let past: string[] = [];
+  let future: string[] = [];
+
+  beforeAll(async () => {
+    for (const localDate of [yesterday, tomorrow]) {
+      await writeLogDay(
+        t.tdb.db,
+        { actor: system, scope },
+        {
+          localDate,
+          status: 'published',
+          items: [song(songs[0] as string), song(songs[1] as string), song(songs[2] as string)],
+          cause: 'fixture',
+        },
+      );
+    }
+    const ids = async (localDate: string) => {
+      const { startsAt, endsAt } = localDayBounds(localDate, 'Europe/Paris');
+      return (await range(startsAt.toISOString(), endsAt.toISOString())).items
+        .filter((i) => Date.parse(i.plannedStart) >= startsAt.getTime())
+        .map((i) => i.id);
+    };
+    past = await ids(yesterday);
+    future = await ids(tomorrow);
+    const startedAt = new Date(Date.now() - 86_400_000);
+    // Yesterday's first item aired (as-run); its second was pushed to the engine.
+    await t.tdb.db.insert(asRunEntry).values({
+      ...scope,
+      eventId: randomUUID(),
+      bootId: 'boot-guard',
+      seq: 1,
+      source: 'log',
+      logItemId: past[0],
+      startedAt,
+    });
+    await t.tdb.db.insert(feederPush).values([
+      { ...scope, bootId: 'boot-guard', entryId: past[1] as string, fingerprint: 'x' },
+      // Pushed ahead of air: still editable, the feeder re-plans.
+      { ...scope, bootId: 'boot-guard', entryId: future[0] as string, fingerprint: 'y' },
+    ]);
+  });
+
+  it('refuses replace, move, lock and delete of aired and on-air items', async () => {
+    for (const id of [past[0], past[1]] as string[]) {
+      const attempts = [
+        call('programmer', 'PUT', `/log/items/${id}`, {
+          kind: 'song',
+          assetId: songs[3],
+          plannedDurationMs: 30_000,
+        }),
+        call('programmer', 'POST', `/log/items/${id}/move`, { placement: { after: past[2] } }),
+        call('programmer', 'PUT', `/log/items/${id}/lock`, { locked: true }),
+        call('programmer', 'DELETE', `/log/items/${id}`),
+      ];
+      for (const res of await Promise.all(attempts)) {
+        expect(res.statusCode, res.body).toBe(409);
+        expect(res.json().error).toBe('log_item_aired');
+      }
+    }
+  });
+
+  it('still edits items that only sit in the engine queue, or never aired', async () => {
+    const queued = await call('programmer', 'PUT', `/log/items/${future[0]}/lock`, {
+      locked: true,
+    });
+    expect(queued.statusCode, queued.body).toBe(200);
+    const unplayed = await call('programmer', 'PUT', `/log/items/${past[2]}/lock`, {
+      locked: true,
+    });
+    expect(unplayed.statusCode, unplayed.body).toBe(200);
   });
 });
 
