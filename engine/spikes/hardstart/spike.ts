@@ -23,6 +23,8 @@ const MAX_ITEM = process.env.MAX_ITEM ? Number(process.env.MAX_ITEM) : undefined
 const TAIL = process.env.TAIL ? Number(process.env.TAIL) : undefined;
 /** Planning model: seconds added per transition (the spike measured one 20 ms frame). */
 const TRANSITION_LAG = Number(process.env.TRANSITION_LAG ?? 0);
+/** A re-plan never shortens the last song below this, seconds. */
+const MIN_SONG = Number(process.env.MIN_SONG ?? 10);
 const LATE = Number(process.env.LATE ?? 45);
 const EARLY = Number(process.env.EARLY ?? 95);
 const STRETCH_EARLY = Number(process.env.STRETCH_EARLY ?? 6);
@@ -409,7 +411,7 @@ async function runLane(lane: Lane): Promise<LaneResult> {
       if (musicFree) {
         const withoutBed = tail + overlap(music, episode) - TRANSITION_LAG;
         if (withoutBed <= music.maxLen || lane.bed !== 'fit') {
-          const len = Math.min(music.maxLen, Math.max(30, withoutBed));
+          const len = Math.min(music.maxLen, Math.max(MIN_SONG, withoutBed));
           change = `${music.id} ${music.len.toFixed(3)} -> ${len.toFixed(3)} s`;
           setLen(music, len);
           if (bed) {

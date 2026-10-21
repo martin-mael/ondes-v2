@@ -12,16 +12,27 @@ reports are in `results/`.
 # The full hour, all lanes at once (about 60 min).
 docker compose -f engine/spikes/hardstart/compose.yml run --rm --use-aliases driver
 
-# A 3-minute smoke run: the last 3 songs, capped at 40 s, smaller offsets.
+# The compressed hour (about 10 min): the last 40 s of every song, smaller offsets.
+TAIL=40 LATE=10 EARLY=25 STRETCH_EARLY=1 SOFT_CAP=5 RUN_NAME=tail40 \
+  docker compose -f engine/spikes/hardstart/compose.yml run --rm --use-aliases driver
+
+# The same with the planning model's one frame per transition.
+TAIL=40 LATE=10 EARLY=25 TRANSITION_LAG=0.02 RUN_NAME=tail40-lag \
+  docker compose -f engine/spikes/hardstart/compose.yml run --rm --use-aliases driver
+
+# A 3-minute smoke run: the last 3 songs, capped at 40 s.
 ITEMS=3 MAX_ITEM=40 LATE=10 EARLY=25 STRETCH_EARLY=1 SOFT_CAP=5 RUN_NAME=dev \
   docker compose -f engine/spikes/hardstart/compose.yml run --rm --use-aliases driver
 
 # Push deadline: how late can the feeder push the next item? (reuses four engines)
-LANES=jit-5,jit-2.5,jit-1,jit-0.3 ITEMS=4 MAX_ITEM=40 RUN_NAME=jit \
+LANES=jit-5,jit-2.5,jit-1,jit-0.3 ITEMS=6 TAIL=40 RUN_NAME=jit \
   docker compose -f engine/spikes/hardstart/compose.yml run --rm --use-aliases driver
 
 docker compose -f engine/spikes/hardstart/compose.yml down -v
 ```
+
+Keep the machine awake with the lid open: a sleeping Mac freezes Docker Desktop and voids
+the run. Two runs can go at once under different project names (`-p ondes-spike-hardstart-jit`).
 
 The project is self-contained (`ondes-spike-hardstart`, no published ports, no Icecast),
 so it neither needs nor disturbs the shared `ondes-dev` stack. The first run generates the
@@ -62,7 +73,7 @@ than time (an earlier show overran); "early" lanes have 95 s too little (a song 
 ## How it measures
 
 - **Audio timeline, not `time()`.** Liquidsoap computes each 20 ms frame some time after its
-  nominal instant (median ~50 ms here, up to ~130 ms), and that delay jitters. The audio
+  nominal instant (median 43–62 ms here, up to ~200 ms), and that delay jitters. The audio
   itself is a steady stream, so the ground truth is the audio timeline: frame *n* plays at
   `origin + n × 20 ms` (plus the output's constant latency, which no engine controls). The
   engine estimates `origin` from the least delayed frame and stamps every event with
