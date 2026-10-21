@@ -12,7 +12,8 @@ import type { Actor } from '@ondes/shared';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cookieHeader, lastToken, signUpAndLogin } from '../auth/testing.ts';
-import { createInvitationsTestApp } from './testing.ts';
+import { MAX_FAILED_CHECKS, recheckDomains } from './service.ts';
+import { createInvitationsTestApp, fakeResolver } from './testing.ts';
 
 // Team onboarding (#113) through the real api: domain rules (auto-join, request-to-join,
 // review list), bulk invitation lists, invite links, and the station-manager / API-key caps.
@@ -227,13 +228,79 @@ describe('email-domain rules', () => {
         role: 'owner',
       },
     );
+    // Adding works (it doesn't reveal who owns the domain); verifying fails like a missing record.
     const res = await api('POST', `/orgs/${other.id}/domains`, otherOwner.cookie, {
       domain: DOMAIN,
+      policy: 'request',
+      defaultGrant: { level: 'org', role: 'admin' },
+    });
+    expect(res.statusCode).toBe(201);
+    t.dns.set(DOMAIN, [...(t.dns.get(DOMAIN) ?? []), [res.json().dnsRecord]]);
+    const verify = await api(
+      'POST',
+      `/orgs/${other.id}/domains/${res.json().id}/verify`,
+      otherOwner.cookie,
+      { method: 'dns' },
+    );
+    expect(verify.statusCode).toBe(422);
+    expect(verify.json()).toMatchObject({
+      error: 'verification_failed',
+      message: `${DOMAIN} couldn't be verified`,
+    });
+  });
+
+  it('auto-join never grants org roles', async () => {
+    const res = await api('POST', `/orgs/${orgId}/domains`, owner.cookie, {
+      domain: 'admins.example',
       policy: 'auto_join',
       defaultGrant: { level: 'org', role: 'admin' },
     });
-    expect(res.statusCode).toBe(409);
-    expect(res.json().error).toBe('domain_taken');
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error).toBe('auto_join_role_too_high');
+    const asRequest = await api('POST', `/orgs/${orgId}/domains`, owner.cookie, {
+      domain: 'admins.example',
+      policy: 'request',
+      defaultGrant: { level: 'org', role: 'admin' },
+    });
+    expect(asRequest.statusCode).toBe(201);
+    const switched = await api(
+      'PATCH',
+      `/orgs/${orgId}/domains/${asRequest.json().id}`,
+      owner.cookie,
+      { policy: 'auto_join' },
+    );
+    expect(switched.statusCode).toBe(422);
+  });
+
+  it('a pre-existing account asks instead of self-joining an auto-join domain', async () => {
+    const early = await signUpAndLogin(t, 'early@crew.example');
+    const created = await api('POST', `/orgs/${orgId}/domains`, owner.cookie, {
+      domain: 'crew.example',
+      policy: 'auto_join',
+      defaultGrant: { level: 'station', stationId: stationA, role: 'viewer' },
+    });
+    t.dns.set('crew.example', [[created.json().dnsRecord]]);
+    await api('POST', `/orgs/${orgId}/domains/${created.json().id}/verify`, owner.cookie, {
+      method: 'dns',
+    });
+    const joinable = await api('GET', '/me/joinable-orgs', early.cookie);
+    expect(joinable.json()).toMatchObject([{ orgId, policy: 'request' }]);
+    const res = await api('POST', `/me/joinable-orgs/${orgId}/join`, early.cookie);
+    expect(res.json().status).toBe('requested');
+    expect(await membershipsOf(early.userId)).toEqual([]);
+  });
+
+  it('API keys cannot manage domain rules or decide requests', async () => {
+    const key = await api('POST', `/orgs/${orgId}/api-keys`, owner.cookie, {
+      name: 'domains bot',
+      scopes: ['member:*'],
+    });
+    const headers = { authorization: `Bearer ${key.json().token}` };
+    for (const url of [`/orgs/${orgId}/domains`, `/orgs/${orgId}/join-requests`]) {
+      const res = await t.app.inject({ method: 'GET', url: `/api/v1${url}`, headers });
+      expect(res.statusCode, url).toBe(403);
+      expect(res.json().error).toBe('session_required');
+    }
   });
 
   it('request-to-join: email confirmation, request, approve and refuse', async () => {
@@ -273,12 +340,14 @@ describe('email-domain rules', () => {
     const eve = await signUpAndLogin(t, 'eve@lecollectif.fr');
     await api('POST', `/me/joinable-orgs/${orgId}/join`, eve.cookie);
 
-    const queue = await api('GET', `/orgs/${orgId}/join-requests?status=pending`, owner.cookie);
-    expect(queue.json().map((r: { email: string }) => r.email)).toEqual([
+    const queue = (await api('GET', `/orgs/${orgId}/join-requests?status=pending`, owner.cookie))
+      .json()
+      .filter((r: { domainId: string }) => r.domainId === id);
+    expect(queue.map((r: { email: string }) => r.email)).toEqual([
       'dan@lecollectif.fr',
       'eve@lecollectif.fr',
     ]);
-    const [danRequest, eveRequest] = queue.json();
+    const [danRequest, eveRequest] = queue;
     expect((await api('GET', `/orgs/${orgId}/join-requests`, manager.cookie)).statusCode).toBe(403);
 
     const approved = await api(
@@ -306,6 +375,10 @@ describe('email-domain rules', () => {
       (await api('POST', `/orgs/${orgId}/join-requests/${eveRequest.id}/approve`, owner.cookie, {}))
         .statusCode,
     ).toBe(409);
+    // A refused user can't ask again straight away (no request spam).
+    const again = await api('POST', `/me/joinable-orgs/${orgId}/join`, eve.cookie);
+    expect(again.statusCode).toBe(429);
+    expect(again.json().error).toBe('request_cooldown');
 
     for (const action of ['join_request.create', 'join_request.approve', 'join_request.refuse']) {
       expect((await auditActions(action)).length, action).toBeGreaterThan(0);
@@ -419,8 +492,40 @@ describe('invitation lists', () => {
     });
   });
 
+  it('shows inviter emails only to people who can invite', async () => {
+    const programmer = await signUpAndLogin(t, 'prog@ops.test');
+    await addMembership(
+      t.tdb.db,
+      { actor: system, scope },
+      { level: 'station', userId: programmer.userId, stationId: stationA, role: 'programmer' },
+    );
+    const listed = await api('GET', `/stations/${stationA}/invitation-lists`, programmer.cookie);
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()[0].inviter).toEqual({ id: owner.userId, name: 'owner', email: null });
+  });
+
+  it('parallel sends share the hourly budget', async () => {
+    // 12 per hour in this suite; 3 already sent, so 9 left: only one of two lists of 5 fits.
+    const send = (prefix: string) =>
+      api('POST', `/orgs/${orgId}/invitation-lists/send`, owner.cookie, {
+        format: 'emails',
+        text: Array.from({ length: 5 }, (_, i) => `${prefix}${i}@ops.test`).join('\n'),
+        role: 'viewer',
+        stationId: stationB,
+      });
+    const results = await Promise.all([send('par-a'), send('par-b')]);
+    expect(results.map((r) => r.statusCode).sort()).toEqual([201, 429]);
+    // An in-flight send may count one row twice for a moment (created, not yet released from
+    // its reservation): the budget errs on the strict side, never the loose one.
+    const refused = results.find((r) => r.statusCode === 429)?.json().details;
+    expect(refused.requested).toBe(5);
+    expect(refused.remaining).toBeLessThanOrEqual(4);
+    const audits = await auditActions('invitation_list.send');
+    expect(audits.at(-1)?.diff).toMatchObject({ sent: { to: 5 }, completed: { to: true } });
+  });
+
   it('rate-limits sending per org', async () => {
-    // 12 per hour in this suite; 3 already sent.
+    // 8 sent so far, 4 left.
     const text = Array.from({ length: 10 }, (_, i) => `bulk${i}@ops.test`).join('\n');
     const res = await api('POST', `/orgs/${orgId}/invitation-lists/send`, owner.cookie, {
       format: 'emails',
@@ -431,7 +536,7 @@ describe('invitation lists', () => {
     expect(res.statusCode).toBe(429);
     expect(res.json()).toMatchObject({
       error: 'rate_limited',
-      details: { remaining: 9, requested: 10 },
+      details: { remaining: 4, requested: 10 },
     });
   });
 });
@@ -606,6 +711,66 @@ describe('invite links', () => {
     expect(row?.useCount).toBe(0);
   });
 
+  it('parallel joins never go past maxUses', async () => {
+    const link = await createLink({
+      grant: { level: 'station', stationId: stationB, role: 'viewer' },
+      maxUses: 2,
+    });
+    const users = await Promise.all(
+      [1, 2, 3, 4].map((i) => signUpAndLogin(t, `rush${i}@night.test`)),
+    );
+    const results = await Promise.all(users.map((u) => join(u.cookie, link.token)));
+    expect(results.map((r) => r.statusCode).sort()).toEqual([200, 200, 410, 410]);
+    const [row] = await t.tdb.db
+      .select()
+      .from(inviteLink)
+      .where(eq(inviteLink.id, link.inviteLink.id));
+    expect(row?.useCount).toBe(2);
+  });
+
+  it("stops working when its creator can't grant the role any more", async () => {
+    const temp = await signUpAndLogin(t, 'temp-admin@ops.test');
+    const membership = await addMembership(
+      t.tdb.db,
+      { actor: system, scope },
+      { level: 'org', userId: temp.userId, role: 'admin' },
+    );
+    const res = await api('POST', `/orgs/${orgId}/invite-links`, temp.cookie, {
+      grant: { level: 'station', stationId: stationB, role: 'programmer' },
+    });
+    expect(res.statusCode).toBe(201);
+    const { removeMembership } = await import('@ondes/db');
+    await removeMembership(t.tdb.db, { actor: system, scope }, membership.id);
+
+    const user = await signUpAndLogin(t, 'orphan@night.test');
+    const joined = await join(user.cookie, res.json().token);
+    expect(joined.statusCode).toBe(410);
+    expect(joined.json().error).toBe('invite_link_invalid');
+    expect(await membershipsOf(user.userId)).toEqual([]);
+  });
+
+  it('stops working when the API key that made it is revoked', async () => {
+    const key = await api('POST', `/orgs/${orgId}/api-keys`, owner.cookie, {
+      name: 'event bot',
+      scopes: ['member:*'],
+    });
+    const made = await t.app.inject({
+      method: 'POST',
+      url: `/api/v1/orgs/${orgId}/invite-links`,
+      headers: { authorization: `Bearer ${key.json().token}` },
+      payload: { grant: { level: 'station', stationId: stationB, role: 'viewer' } },
+    });
+    expect(made.json().inviteLink.createdByApiKeyId).toBe(key.json().apiKey.id);
+    const first = await signUpAndLogin(t, 'bot1@night.test');
+    expect((await join(first.cookie, made.json().token)).statusCode).toBe(200);
+
+    await api('DELETE', `/orgs/${orgId}/api-keys/${key.json().apiKey.id}`, owner.cookie);
+    const second = await signUpAndLogin(t, 'bot2@night.test');
+    const res = await join(second.cookie, made.json().token);
+    expect(res.statusCode).toBe(410);
+    expect(res.json().error).toBe('invite_link_invalid');
+  });
+
   it('needs a signed-in user', async () => {
     expect(
       (await api('POST', '/invite-links/join', undefined, { token: 'x'.repeat(43) })).statusCode,
@@ -639,5 +804,80 @@ describe('API keys', () => {
       role: 'admin',
     });
     expect(preview.json().rows[0].reason).toBe('role_too_high');
+  });
+});
+
+describe('domain re-checks', () => {
+  const deps = () => ({
+    db: t.app.db,
+    mailer: t.app.mailer,
+    auth: t.app.auth,
+    log: t.app.log,
+    resolver: fakeResolver(t.dns),
+  });
+  // A negative interval makes every verified domain due on each call.
+  const recheck = () => recheckDomains(deps(), { everyMs: -60_000 });
+
+  const verifiedDomain = async (domain: string) => {
+    const created = await api('POST', `/orgs/${orgId}/domains`, owner.cookie, {
+      domain,
+      policy: 'auto_join',
+      defaultGrant: { level: 'station', stationId: stationB, role: 'viewer' },
+    });
+    t.dns.set(domain, [[created.json().dnsRecord]]);
+    const verified = await api(
+      'POST',
+      `/orgs/${orgId}/domains/${created.json().id}/verify`,
+      owner.cookie,
+      { method: 'dns' },
+    );
+    expect(verified.json().status).toBe('active');
+    return created.json().id as string;
+  };
+  const statusOf = async (id: string) =>
+    (await api('GET', `/orgs/${orgId}/domains`, owner.cookie))
+      .json()
+      .find((d: { id: string }) => d.id === id).status;
+
+  it(`unverifies a domain after ${MAX_FAILED_CHECKS} failed checks in a row, and tells the owners`, async () => {
+    const id = await verifiedDomain('recheck.example');
+    await recheck();
+    expect(await statusOf(id)).toBe('active');
+
+    t.dns.delete('recheck.example');
+    for (let i = 1; i < MAX_FAILED_CHECKS; i++) await recheck();
+    expect(await statusOf(id)).toBe('active');
+    await recheck();
+    expect(await statusOf(id)).toBe('unverified');
+    expect(t.outbox.findLast((m) => m.to === 'owner@ops.test')?.subject).toBe(
+      'recheck.example is no longer verified',
+    );
+    expect(await auditActions('org_domain.unverify')).toHaveLength(1);
+
+    // No longer verified: a new user at the domain isn't auto-joined.
+    const late = await signUpAndLogin(t, 'late@recheck.example');
+    expect(await membershipsOf(late.userId)).toEqual([]);
+  });
+
+  it('a record back in time resets the count', async () => {
+    const id = await verifiedDomain('flaky.example');
+    const record = t.dns.get('flaky.example') ?? [];
+    t.dns.delete('flaky.example');
+    for (let i = 1; i < MAX_FAILED_CHECKS; i++) await recheck();
+    t.dns.set('flaky.example', record);
+    await recheck();
+    t.dns.delete('flaky.example');
+    await recheck();
+    expect(await statusOf(id)).toBe('active');
+  });
+
+  it('re-checks when a rule is resumed', async () => {
+    const id = await verifiedDomain('resume.example');
+    await api('PATCH', `/orgs/${orgId}/domains/${id}`, owner.cookie, { paused: true });
+    t.dns.delete('resume.example');
+    const res = await api('PATCH', `/orgs/${orgId}/domains/${id}`, owner.cookie, { paused: false });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe('verification_lost');
+    expect(await statusOf(id)).toBe('unverified');
   });
 });

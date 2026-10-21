@@ -4,6 +4,7 @@ import {
   getOrganization,
   getStation,
   invitation,
+  invitationSendReservation,
   inviteLink,
   joinRequest,
   listStations,
@@ -23,6 +24,8 @@ import {
   createInviteLinkSchema,
   createOrgDomainSchema,
   type DomainCandidate,
+  type DomainJoinPolicy,
+  expandScopes,
   type Grant,
   type Invitation,
   type InvitationListInput,
@@ -48,7 +51,7 @@ import {
   type VerifyOrgDomain,
   verifyOrgDomainSchema,
 } from '@ondes/shared';
-import { and, count, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, count, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { HttpError } from '../../plugins/errors.ts';
 import { sendTemplate } from '../../plugins/mail.ts';
@@ -74,6 +77,7 @@ import {
 } from './domains.ts';
 import {
   autoJoinedTemplate,
+  domainUnverifiedTemplate,
   domainVerificationTemplate,
   joinRequestDecisionTemplate,
   joinRequestTemplate,
@@ -81,26 +85,31 @@ import {
 import { parseCsvList, parseEmailList, type RawListRow } from './parse.ts';
 import {
   activeRulesForDomain,
+  claimDomainCheck,
   claimInviteLinkUse,
   domainCandidates,
+  domainsDueForCheck,
   findDomainByEmailToken,
   findInviteLinkByToken,
+  findUsableApiKey,
   getInviteLink,
   getJoinRequest,
   getOrgDomain,
   type InviteLinkRow,
   insertInviteLink,
   inviteLinkStatus,
+  lastRefusal,
   listInviteLinks,
   listJoinRequests,
   listOrgDomains,
+  membershipsByEmail,
   type OrgDomainRow,
   orgAdminRecipients,
+  pendingInvitationKeys,
   pendingRequestOrgs,
   setDomainEmailToken,
   toInviteLink,
   toOrgDomain,
-  verifiedDomainOwner,
   wasEverMember,
 } from './repo.ts';
 
@@ -125,6 +134,12 @@ export const DEFAULT_LIMITS: InvitationsLimits = { maxListRows: 500, invitations
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const DOMAIN_EMAIL_TTL_MS = 48 * HOUR_MS;
+/** Email-confirmed domains are confirmed again after a year. */
+const EMAIL_VERIFICATION_TTL_MS = 365 * DAY_MS;
+/** Failed DNS re-checks in a row before a domain loses its verification. */
+export const MAX_FAILED_CHECKS = 3;
+/** After a refusal, the same user can ask the same org again only after this. */
+const REQUEST_COOLDOWN_MS = 30 * DAY_MS;
 
 const AUTO_JOIN: Actor = { type: 'system', name: 'domain-auto-join' };
 const DOMAIN_VERIFY: Actor = { type: 'system', name: 'domain-verification' };
@@ -193,6 +208,115 @@ async function inviterName(deps: AuthDeps, actor: Actor, fallback: string): Prom
 // --- Email-domain rules ------------------------------------------------------------------
 // Org level only, for owners and admins: station roles never hold `member:manage` on the org.
 
+/** Auto-join never hands out org roles: owners and admins go through request and approval. */
+function assertAutoJoinGrant(policy: DomainJoinPolicy, role: Role) {
+  if (policy === 'auto_join' && roleRank[role] > roleRank.station_manager) {
+    throw new HttpError(
+      422,
+      'auto_join_role_too_high',
+      `auto-join grants station roles only; use request-to-join for ${role}`,
+    );
+  }
+}
+
+/**
+ * Whether a verified domain still proves out: the TXT record for DNS-verified domains, the
+ * confirmation's age for email-verified ones (they're confirmed again yearly).
+ */
+async function stillVerified(deps: InvitationsDeps, row: OrgDomainRow): Promise<boolean> {
+  if (!row.verifiedAt) return false;
+  if (row.verificationMethod === 'email') {
+    return row.verifiedAt.getTime() + EMAIL_VERIFICATION_TTL_MS > Date.now();
+  }
+  return hasVerificationRecord(deps.resolver, row.domain, row.dnsToken);
+}
+
+/** Drops a domain's verification (the rule stops applying) and tells the owners and admins. */
+async function unverify(deps: AuthDeps, row: OrgDomainRow, reason: string): Promise<void> {
+  const scope = await resolveOrgScope(deps.db, row.orgId);
+  const done = await withAudit(deps.db, { actor: DOMAIN_VERIFY, scope }, async (tx, audit) => {
+    const [updated] = await tx
+      .update(orgDomain)
+      .set({ verifiedAt: null, verificationMethod: null, failedChecks: 0 })
+      .where(and(eq(orgDomain.id, row.id), isNotNull(orgDomain.verifiedAt)))
+      .returning();
+    await audit({
+      action: 'org_domain.unverify',
+      entity: { type: 'org_domain', id: row.id },
+      diff: { verifiedAt: { from: row.verifiedAt, to: null }, reason: { from: null, to: reason } },
+    });
+    return updated !== undefined;
+  });
+  if (!done) return;
+  const org = await getOrganization(deps.db, scope);
+  for (const to of await orgAdminRecipients(deps.db, scope)) {
+    await sendTemplate(deps.mailer, to, domainUnverifiedTemplate, {
+      orgName: org.name,
+      domain: row.domain,
+      reason,
+      link: link(deps, `/orgs/${row.orgId}/settings/domains`),
+    });
+  }
+}
+
+/** Before resuming a rule or changing its policy: the domain must still be verified. */
+async function requireStillVerified(deps: InvitationsDeps, row: OrgDomainRow): Promise<void> {
+  if (!row.verifiedAt || (await stillVerified(deps, row))) return;
+  const reason = row.verificationMethod === 'email' ? 'confirmation_expired' : 'record_missing';
+  await unverify(deps, row, reason);
+  throw new HttpError(409, 'verification_lost', `${row.domain} has to be verified again`, {
+    reason,
+    expectedRecord: toOrgDomain(row).dnsRecord,
+  });
+}
+
+/**
+ * Periodic re-check of verified domains (`recheckIntervalMs` in the routes options). A DNS
+ * domain whose record is gone `MAX_FAILED_CHECKS` times in a row, or an email confirmation older
+ * than a year, loses its verification; owners and admins are emailed. DNS outages don't count.
+ */
+export async function recheckDomains(
+  deps: InvitationsDeps,
+  options: { everyMs: number; batch?: number } = { everyMs: DAY_MS },
+): Promise<{ checked: number; unverified: number }> {
+  const cutoff = new Date(Date.now() - options.everyMs);
+  let checked = 0;
+  let unverified = 0;
+  for (const due of await domainsDueForCheck(deps.db, cutoff, options.batch ?? 100)) {
+    const row = await claimDomainCheck(deps.db, due.id, cutoff);
+    if (!row) continue;
+    checked++;
+    let ok: boolean;
+    try {
+      ok = await stillVerified(deps, row);
+    } catch (err) {
+      deps.log.warn({ err, domain: row.domain }, 'domain re-check skipped: DNS unavailable');
+      continue;
+    }
+    if (ok) {
+      if (row.failedChecks > 0) {
+        await deps.db.update(orgDomain).set({ failedChecks: 0 }).where(eq(orgDomain.id, row.id));
+      }
+      continue;
+    }
+    if (row.verificationMethod === 'email') {
+      await unverify(deps, row, 'confirmation_expired');
+      unverified++;
+      continue;
+    }
+    const [counted] = await deps.db
+      .update(orgDomain)
+      .set({ failedChecks: sql`${orgDomain.failedChecks} + 1` })
+      .where(eq(orgDomain.id, row.id))
+      .returning({ failedChecks: orgDomain.failedChecks });
+    if ((counted?.failedChecks ?? 0) >= MAX_FAILED_CHECKS) {
+      await unverify(deps, row, 'record_missing');
+      unverified++;
+    }
+  }
+  return { checked, unverified };
+}
+
 export async function listDomains(deps: AuthDeps, scope: OrgScope): Promise<OrgDomain[]> {
   return (await listOrgDomains(deps.db, scope)).map(toOrgDomain);
 }
@@ -218,14 +342,7 @@ export async function addDomain(
       `${parsed.domain} is a public email provider: anyone can get an address there`,
     );
   }
-  const owner = await verifiedDomainOwner(deps.db, parsed.domain);
-  if (owner && owner !== scope.orgId) {
-    throw new HttpError(
-      409,
-      'domain_taken',
-      `${parsed.domain} is verified by another organization`,
-    );
-  }
+  assertAutoJoinGrant(parsed.policy, parsed.defaultGrant.role);
   const stationId = await grantStationId(deps, scope, parsed.defaultGrant);
   requireGrantable(caller, parsed.defaultGrant.role, stationId);
 
@@ -260,7 +377,7 @@ export async function addDomain(
 }
 
 export async function updateDomain(
-  deps: AuthDeps,
+  deps: InvitationsDeps,
   caller: Caller,
   scope: OrgScope,
   domainId: string,
@@ -269,6 +386,14 @@ export async function updateDomain(
   const parsed = updateOrgDomainSchema.parse(input);
   requirePermissionOn(caller, null, 'member:manage');
   const before = await domainOf(deps, scope, domainId);
+  assertAutoJoinGrant(
+    parsed.policy ?? before.policy,
+    parsed.defaultGrant?.role ?? before.defaultRole,
+  );
+  const resuming = parsed.paused === false && before.pausedAt !== null;
+  if (resuming || (parsed.policy && parsed.policy !== before.policy)) {
+    await requireStillVerified(deps, before);
+  }
   const set: Partial<typeof orgDomain.$inferInsert> = {};
   if (parsed.policy) set.policy = parsed.policy;
   if (parsed.defaultGrant) {
@@ -336,9 +461,7 @@ export async function verifyDomain(
 
   if (parsed.method === 'dns') {
     if (!(await hasVerificationRecord(deps.resolver, row.domain, row.dnsToken))) {
-      throw new HttpError(422, 'verification_failed', `no matching TXT record on ${row.domain}`, {
-        expectedRecord: toOrgDomain(row).dnsRecord,
-      });
+      throw cantVerify(row);
     }
     return markVerified(deps, { actor: caller.actor, scope }, row, 'dns');
   }
@@ -371,6 +494,11 @@ export async function confirmDomainEmail(deps: AuthDeps, token: string): Promise
   return markVerified(deps, { actor: DOMAIN_VERIFY, scope }, row, 'email');
 }
 
+const cantVerify = (row: OrgDomainRow) =>
+  new HttpError(422, 'verification_failed', `${row.domain} couldn't be verified`, {
+    expectedRecord: toOrgDomain(row).dnsRecord,
+  });
+
 async function markVerified(
   deps: AuthDeps,
   ctx: { actor: Actor; scope: OrgScope },
@@ -387,6 +515,8 @@ async function markVerified(
           emailTokenHash: null,
           emailTokenExpiresAt: null,
           emailTokenSentTo: null,
+          lastCheckedAt: new Date(),
+          failedChecks: 0,
         })
         .where(and(eq(orgDomain.id, row.id), isNull(orgDomain.verifiedAt)))
         .returning();
@@ -403,9 +533,8 @@ async function markVerified(
       return toOrgDomain(updated);
     });
   } catch (err) {
-    if (isUniqueViolation(err)) {
-      throw new HttpError(409, 'domain_taken', `${row.domain} is verified by another organization`);
-    }
+    // Another org verified it. Same answer as a missing record: it doesn't say who owns what.
+    if (isUniqueViolation(err)) throw cantVerify(row);
     throw err;
   }
 }
@@ -480,10 +609,8 @@ export async function autoJoin(deps: AuthDeps, target: User): Promise<void> {
   if (!found?.auth?.emailVerifiedAt) return;
   const member = found.user;
   for (const { rule, orgName } of await activeRulesForDomain(deps.db, emailDomain(member.email))) {
-    if (rule.policy !== 'auto_join' || !rule.verifiedAt || member.createdAt < rule.verifiedAt)
-      continue;
     const scope = await resolveOrgScope(deps.db, rule.orgId);
-    if (await wasEverMember(deps.db, scope, member.id)) continue;
+    if ((await effectivePolicy(deps, scope, rule, member)) !== 'auto_join') continue;
     const ctx = { actor: AUTO_JOIN, scope };
     const joined = await withAudit(deps.db, ctx, async (tx, audit) => {
       // Serializes with a concurrent sign-in of the same user doing the same.
@@ -520,18 +647,27 @@ export async function autoJoin(deps: AuthDeps, target: User): Promise<void> {
 const ALREADY_JOINED = new Error('already joined');
 
 /**
- * The rule's policy as it applies to this user: someone who was a member before (and was
- * removed) has to ask again rather than walk back in.
+ * The rule's policy as it applies to this user. Auto-join only for accounts created after the
+ * domain was verified (older ones are never added silently: they ask, or an admin adds them
+ * from the review list), never for someone who was a member before (and was removed), and
+ * never with an org role (rules made before that cap, or edited in the database).
  */
 async function effectivePolicy(
   deps: AuthDeps,
   scope: OrgScope,
   rule: OrgDomainRow,
-  userId: string,
-) {
-  if (rule.policy === 'auto_join' && !(await wasEverMember(deps.db, scope, userId)))
-    return 'auto_join';
-  return 'request';
+  member: User,
+): Promise<DomainJoinPolicy> {
+  if (
+    rule.policy !== 'auto_join' ||
+    !rule.verifiedAt ||
+    member.createdAt < rule.verifiedAt ||
+    roleRank[rule.defaultRole] > roleRank.station_manager ||
+    (await wasEverMember(deps.db, scope, member.id))
+  ) {
+    return 'request';
+  }
+  return 'auto_join';
 }
 
 /** Orgs the signed-in user may join (auto-join) or ask to join through their email domain. */
@@ -546,7 +682,7 @@ export async function joinableOrgs(deps: AuthDeps, userId: string): Promise<Join
       orgId: rule.orgId,
       orgName,
       domainId: rule.id,
-      policy: await effectivePolicy(deps, scope, rule, current.id),
+      policy: await effectivePolicy(deps, scope, rule, current),
       requestPending: pending.has(rule.orgId),
     });
   }
@@ -574,7 +710,7 @@ export async function joinOrg(
     throw new HttpError(409, 'already_member', `you're already a member of ${orgName}`);
   }
 
-  if ((await effectivePolicy(deps, scope, rule, current.id)) === 'auto_join') {
+  if ((await effectivePolicy(deps, scope, rule, current)) === 'auto_join') {
     await withAudit(deps.db, ctx, async (tx, audit) => {
       await addMembership(
         tx,
@@ -592,6 +728,19 @@ export async function joinOrg(
       });
     });
     return { status: 'joined' };
+  }
+
+  const refused = await lastRefusal(
+    deps.db,
+    scope,
+    current.id,
+    new Date(Date.now() - REQUEST_COOLDOWN_MS),
+  );
+  if (refused) {
+    const retryAt = new Date(refused.getTime() + REQUEST_COOLDOWN_MS);
+    throw new HttpError(429, 'request_cooldown', 'your last request was refused, ask again later', {
+      retryAt: retryAt.toISOString(),
+    });
   }
 
   let requestId: string;
@@ -795,24 +944,10 @@ export async function previewInvitationList(
     throw new HttpError(404, 'not_found', `station ${defaultStation} not found`);
   }
 
-  // Who's already in, and what's already pending, for the emails in the list.
+  // Who's already in, and what's already pending, for the emails in the list: two queries.
   const emails = [...new Set(raw.map((r) => r.email.toLowerCase()))];
-  const members = new Map<string, { stationId: string | null; role: Role }[]>();
-  if (emails.length > 0) {
-    const users = await deps.db
-      .select({ id: user.id, email: user.email })
-      .from(user)
-      .where(inArray(sql`lower(${user.email})`, emails));
-    for (const u of users) {
-      members.set(u.email.toLowerCase(), await userMembershipsInOrg(deps.db, u.id, scope));
-    }
-  }
-  const pending = new Set(
-    (await listInvitations(deps.db, scope))
-      .map(toInvitation)
-      .filter((i) => i.status === 'pending')
-      .map((i) => `${i.email}|${i.stationId}`),
-  );
+  const members = await membershipsByEmail(deps.db, scope, emails);
+  const pending = await pendingInvitationKeys(deps.db, scope, emails);
 
   const seen = new Set<string>();
   const rows: InvitationListRow[] = raw.map((r) => {
@@ -900,47 +1035,98 @@ export async function sendInvitationList(
   const valid = preview.rows.filter((r) => r.status === 'valid');
   const skipped = preview.rows.filter((r) => r.status !== 'valid');
 
-  const [recent] = await deps.db
-    .select({ n: count() })
-    .from(invitation)
-    .where(
-      and(whereOrg(invitation, scope), gt(invitation.createdAt, new Date(Date.now() - HOUR_MS))),
-    );
-  const budget = limits.invitationsPerHour - (recent?.n ?? 0);
-  if (valid.length > budget) {
-    throw new HttpError(
-      429,
-      'rate_limited',
-      `this organization can send ${Math.max(budget, 0)} more invitations this hour`,
-      {
-        remaining: Math.max(budget, 0),
-        requested: valid.length,
-      },
-    );
-  }
-
+  const reservationId = await reserveSendBudget(deps, scope, valid.length, limits);
   const sent: Invitation[] = [];
-  for (const row of valid) {
-    if (!row.role) continue;
-    sent.push(
-      await createInvitation(deps, caller, scope, {
-        ...(row.stationId
-          ? { level: 'station', stationId: row.stationId, role: row.role as StationRole }
-          : { level: 'org', role: row.role as OrgRole }),
-        email: row.email,
-        expiresInDays: parsed.expiresInDays,
-      }),
-    );
-  }
-  await withAudit(deps.db, { actor: caller.actor, scope }, async (_tx, audit) => {
-    await audit({
-      action: 'invitation_list.send',
-      entity: { type: 'organization', id: scope.orgId },
-      stationId: routeStationId,
-      diff: { sent: { from: null, to: sent.length }, skipped: { from: null, to: skipped.length } },
+  let completed = false;
+  try {
+    for (const row of valid) {
+      if (!row.role) continue;
+      sent.push(
+        await createInvitation(deps, caller, scope, {
+          ...(row.stationId
+            ? { level: 'station', stationId: row.stationId, role: row.role as StationRole }
+            : { level: 'org', role: row.role as OrgRole }),
+          email: row.email,
+          expiresInDays: parsed.expiresInDays,
+        }),
+      );
+      // The invitation now counts by itself: hand its reserved slot back.
+      await deps.db
+        .update(invitationSendReservation)
+        .set({ remaining: sql`greatest(${invitationSendReservation.remaining} - 1, 0)` })
+        .where(eq(invitationSendReservation.id, reservationId));
+    }
+    completed = true;
+  } finally {
+    await deps.db
+      .delete(invitationSendReservation)
+      .where(eq(invitationSendReservation.id, reservationId));
+    // Written even when a row fails halfway, so the log says how far the list got.
+    await withAudit(deps.db, { actor: caller.actor, scope }, async (_tx, audit) => {
+      await audit({
+        action: 'invitation_list.send',
+        entity: { type: 'organization', id: scope.orgId },
+        stationId: routeStationId,
+        diff: {
+          sent: { from: null, to: sent.length },
+          skipped: { from: null, to: skipped.length },
+          completed: { from: null, to: completed },
+          ...(completed ? {} : { unsent: { from: null, to: valid.length - sent.length } }),
+        },
+      });
     });
-  });
+  }
   return { sent, skipped };
+}
+
+/**
+ * Reserves `wanted` invitations of the org's hourly budget. Under a per-org advisory lock, so
+ * parallel sends see each other: the budget counts invitations created in the last hour plus
+ * the slots other sends have reserved and not used yet. Returns the reservation to release.
+ */
+async function reserveSendBudget(
+  deps: AuthDeps,
+  scope: OrgScope,
+  wanted: number,
+  limits: InvitationsLimits,
+): Promise<string> {
+  return deps.db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${`invitation-budget:${scope.orgId}`}))`,
+    );
+    const since = new Date(Date.now() - HOUR_MS);
+    const [created] = await tx
+      .select({ n: count() })
+      .from(invitation)
+      .where(and(whereOrg(invitation, scope), gt(invitation.createdAt, since)));
+    const [reserved] = await tx
+      .select({ n: sql<number>`coalesce(sum(${invitationSendReservation.remaining}), 0)::int` })
+      .from(invitationSendReservation)
+      .where(
+        and(
+          whereOrg(invitationSendReservation, scope),
+          gt(invitationSendReservation.createdAt, since),
+        ),
+      );
+    const remaining = Math.max(
+      limits.invitationsPerHour - (created?.n ?? 0) - (reserved?.n ?? 0),
+      0,
+    );
+    if (wanted > remaining) {
+      throw new HttpError(
+        429,
+        'rate_limited',
+        `this organization can send ${remaining} more invitations this hour`,
+        { remaining, requested: wanted },
+      );
+    }
+    const [row] = await tx
+      .insert(invitationSendReservation)
+      .values({ orgId: scope.orgId, remaining: wanted })
+      .returning({ id: invitationSendReservation.id });
+    if (!row) throw new Error('insert returned no row');
+    return row.id;
+  });
 }
 
 /** The invitation list view: filters, and who invited whom. */
@@ -949,6 +1135,8 @@ export async function listInvitationsWithInviter(
   scope: OrgScope,
   routeStationId: string | null,
   query: { status?: string; stationId?: string; invitedBy?: string; email?: string },
+  /** Inviters' emails only for people who manage invitations; others see names. */
+  showInviterEmails: boolean,
 ) {
   const all = (await listInvitations(deps.db, scope)).map(toInvitation);
   const stationId = routeStationId ?? query.stationId;
@@ -962,13 +1150,13 @@ export async function listInvitationsWithInviter(
   const inviterIds = [
     ...new Set(filtered.map((i) => i.invitedBy).filter((id): id is string => !!id)),
   ];
-  const inviters = new Map<string, { id: string; name: string; email: string }>();
+  const inviters = new Map<string, { id: string; name: string; email: string | null }>();
   if (inviterIds.length > 0) {
     for (const u of await deps.db
       .select({ id: user.id, name: user.name, email: user.email })
       .from(user)
       .where(inArray(user.id, inviterIds))) {
-      inviters.set(u.id, u);
+      inviters.set(u.id, showInviterEmails ? u : { ...u, email: null });
     }
   }
   return filtered.map((i) => ({
@@ -1012,6 +1200,7 @@ export async function createInviteLink(
         maxUses: parsed.maxUses ?? null,
         restrictToDomains: parsed.restrictToDomains,
         createdBy: caller.actor.type === 'user' ? caller.actor.userId : null,
+        createdByApiKeyId: caller.actor.type === 'api_key' ? caller.actor.apiKeyId : null,
       });
       await audit({
         action: 'invite_link.create',
@@ -1078,10 +1267,63 @@ async function usableLink(deps: AuthDeps, token: string): Promise<InviteLinkRow>
   return row;
 }
 
+/**
+ * The link's creator, as they are now: a link never grants more than whoever made it may still
+ * grant. A removed or demoted user, or a revoked or expired API key (itself capped by its own
+ * creator), stops the link working.
+ */
+async function linkCreator(
+  deps: AuthDeps,
+  scope: OrgScope,
+  row: InviteLinkRow,
+): Promise<Caller | null> {
+  if (row.createdByApiKeyId) {
+    const key = await findUsableApiKey(deps.db, row.createdByApiKeyId);
+    if (!key || key.orgId !== scope.orgId) return null;
+    return {
+      actor: { type: 'api_key', apiKeyId: key.id },
+      memberships: null,
+      keyPermissions: expandScopes(key.scopes),
+      keyStationId: key.stationId,
+      keyCreatorMemberships: key.createdBy
+        ? await userMembershipsInOrg(deps.db, key.createdBy, scope)
+        : null,
+    };
+  }
+  if (row.createdBy) {
+    return {
+      actor: userActor(row.createdBy),
+      memberships: await userMembershipsInOrg(deps.db, row.createdBy, scope),
+      keyPermissions: null,
+    };
+  }
+  return null;
+}
+
+async function requireCreatorStillGrants(
+  deps: AuthDeps,
+  scope: OrgScope,
+  row: InviteLinkRow,
+): Promise<void> {
+  const creator = await linkCreator(deps, scope, row);
+  if (
+    !creator ||
+    !callerPermissions(creator, row.stationId).has('member:invite') ||
+    roleRank[row.role] > grantCeiling(creator, row.stationId)
+  ) {
+    throw new HttpError(
+      410,
+      'invite_link_invalid',
+      "this link's creator can no longer grant this role",
+    );
+  }
+}
+
 /** What a link's landing page shows. */
 export async function inviteLinkInfo(deps: AuthDeps, token: string) {
   const row = await usableLink(deps, token);
   const scope = await resolveOrgScope(deps.db, row.orgId);
+  await requireCreatorStillGrants(deps, scope, row);
   const org = await getOrganization(deps.db, scope);
   return {
     orgName: org.name,
@@ -1114,6 +1356,7 @@ export async function joinWithInviteLink(deps: AuthDeps, userId: string, token: 
       );
     }
   }
+  await requireCreatorStillGrants(deps, scope, row);
   const ctx = { actor: userActor(current.id), scope };
   await withAudit(deps.db, ctx, async (tx, audit) => {
     const claimed = await claimInviteLinkUse(tx, row.id);

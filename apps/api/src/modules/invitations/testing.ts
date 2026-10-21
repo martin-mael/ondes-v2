@@ -30,7 +30,7 @@ export async function createInvitationsTestApp(
     db: { client: tdb },
     mail: { mailer },
     auth: TEST_AUTH_CONFIG,
-    invitations: { resolver: fakeResolver(dns), limits },
+    invitations: { resolver: fakeResolver(dns), limits, recheckIntervalMs: 0 },
     fastify: { logger: false },
   });
   await app.ready();

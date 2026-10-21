@@ -4,8 +4,18 @@ import { HttpError } from '../../plugins/errors.ts';
 
 // Email-domain helpers: the public-provider blocklist and the DNS TXT ownership check.
 
+/** Public providers the package misses (Tuta's domains, only some of which it lists). */
+export const EXTRA_PUBLIC_DOMAINS = [
+  'tuta.com',
+  'tuta.io',
+  'tutamail.com',
+  'tutanota.com',
+  'tutanota.de',
+  'keemail.me',
+];
+
 /** Public and disposable email providers (gmail.com, outlook.com, proton.me, …). Pinned package. */
-const publicDomains: ReadonlySet<string> = new Set(freeEmailDomains);
+const publicDomains: ReadonlySet<string> = new Set([...freeEmailDomains, ...EXTRA_PUBLIC_DOMAINS]);
 
 /** True for a public provider or one of its subdomains (`mail.gmail.com`). */
 export function isPublicEmailDomain(domain: string): boolean {

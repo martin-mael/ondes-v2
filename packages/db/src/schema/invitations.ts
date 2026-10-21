@@ -12,12 +12,13 @@ import {
   index,
   integer,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import { organization, station, user } from './tenancy.ts';
+import { apiKey, organization, station, user } from './tenancy.ts';
 
 // Team onboarding (#113): email-domain rules, shareable invite links and join requests.
 // Contracts: packages/shared/src/contracts/invitations.ts. Single and bulk invitations reuse
@@ -65,6 +66,9 @@ export const orgDomain = pgTable(
     verifiedAt: timestamp('verified_at', { withTimezone: true }),
     verificationMethod: text('verification_method').$type<DomainVerificationMethod>(),
     pausedAt: timestamp('paused_at', { withTimezone: true }),
+    /** Last periodic re-check of a verified domain, and the failures in a row since. */
+    lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+    failedChecks: integer('failed_checks').notNull().default(0),
     createdBy: uuid('created_by').references(() => user.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -102,7 +106,11 @@ export const inviteLink = pgTable(
     useCount: integer('use_count').notNull().default(0),
     /** Only users whose email is at one of the org's verified domains may join. */
     restrictToDomains: boolean('restrict_to_domains').notNull().default(false),
+    /** Who made it: a user, or an API key. Their current rights cap every join. */
     createdBy: uuid('created_by').references(() => user.id, { onDelete: 'set null' }),
+    createdByApiKeyId: uuid('created_by_api_key_id').references(() => apiKey.id, {
+      onDelete: 'set null',
+    }),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     createdAt: createdAt(),
   },
@@ -146,5 +154,43 @@ export const joinRequest = pgTable(
       .on(t.orgId, t.userId)
       .where(sql`${t.status} = 'pending'`),
     check('join_request_status_check', sql`${t.status} in ('pending', 'approved', 'refused')`),
+  ],
+);
+
+/**
+ * Everyone who ever held a membership in an org, filled by a trigger on `membership` inserts
+ * (migration `org-member-history`). Domain rules don't let a removed member back in on their own.
+ */
+export const orgMemberHistory = pgTable(
+  'org_member_history',
+  {
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organization.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    firstJoinedAt: timestamp('first_joined_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.userId] })],
+);
+
+/**
+ * Invitations a list send has reserved but not created yet, so parallel sends can't overrun an
+ * org's hourly budget. Taken under a per-org advisory lock; old rows don't count.
+ */
+export const invitationSendReservation = pgTable(
+  'invitation_send_reservation',
+  {
+    id: id(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organization.id, { onDelete: 'cascade' }),
+    remaining: integer('remaining').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('invitation_send_reservation_org_id_idx').on(t.orgId, t.createdAt),
+    check('invitation_send_reservation_remaining_check', sql`${t.remaining} >= 0`),
   ],
 );

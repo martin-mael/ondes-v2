@@ -62,3 +62,24 @@ export const autoJoinedTemplate = defineTemplate<{ name: string; orgName: string
 
 Your email address lets you into ${orgName} on Ondes: you're now ${roleName(role)}.`,
 });
+
+export const domainUnverifiedTemplate = defineTemplate<{
+  orgName: string;
+  domain: string;
+  /** `record_missing` or `confirmation_expired`. */
+  reason: string;
+  link: string;
+}>({
+  subject: ({ domain }) => `${domain} is no longer verified`,
+  text: ({ orgName, domain, reason, link }) =>
+    `${
+      reason === 'confirmation_expired'
+        ? `The confirmation that ${domain} belongs to ${orgName} is more than a year old.`
+        : `The ondes-verify TXT record of ${domain} has been missing for several checks in a row.`
+    } Until the domain is verified again, its rule doesn't let anyone join ${orgName}. Existing
+members stay.
+
+Verify it again:
+
+${link}`,
+});

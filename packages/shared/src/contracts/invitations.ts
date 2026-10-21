@@ -214,7 +214,8 @@ export const invitationListQuerySchema = z.object({
 });
 
 export const invitationWithInviterSchema = invitationSchema.extend({
-  inviter: z.object({ id: uuidSchema, name: z.string(), email: z.string() }).nullable(),
+  /** `email` only for callers who can invite (`member:invite`); others get names. */
+  inviter: z.object({ id: uuidSchema, name: z.string(), email: z.string().nullable() }).nullable(),
 });
 
 // --- Invite links ------------------------------------------------------------------------
@@ -233,6 +234,8 @@ export const inviteLinkSchema = z.object({
   restrictToDomains: z.boolean(),
   status: inviteLinkStatusSchema,
   createdBy: uuidSchema.nullable(),
+  /** Set for links made with an API key. */
+  createdByApiKeyId: uuidSchema.nullable(),
   revokedAt: z.date().nullable(),
   createdAt: z.date(),
 });

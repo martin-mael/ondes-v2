@@ -15,10 +15,16 @@ const fakeResolver = (records: Record<string, string[][]>): TxtResolver => ({
 });
 
 describe('isPublicEmailDomain', () => {
-  it.each(['gmail.com', 'outlook.com', 'proton.me', 'yahoo.fr', 'laposte.net', 'mail.gmail.com'])(
-    'refuses %s',
-    (domain) => expect(isPublicEmailDomain(domain)).toBe(true),
-  );
+  it.each([
+    'gmail.com',
+    'outlook.com',
+    'proton.me',
+    'yahoo.fr',
+    'laposte.net',
+    'mail.gmail.com',
+    'tutanota.com',
+    'tuta.com',
+  ])('refuses %s', (domain) => expect(isPublicEmailDomain(domain)).toBe(true));
 
   it('accepts an organization domain', () => {
     expect(isPublicEmailDomain('vandaleradio.org')).toBe(false);

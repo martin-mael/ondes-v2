@@ -1,12 +1,14 @@
 import {
-  auditLog,
+  apiKey,
   type Executor,
+  invitation,
   inviteLink,
   joinRequest,
   membership,
   type OrgScope,
   organization,
   orgDomain,
+  orgMemberHistory,
   user,
   userAuth,
   whereOrg,
@@ -19,7 +21,20 @@ import type {
   Role,
   User,
 } from '@ondes/shared';
-import { and, asc, eq, gt, inArray, isNotNull, isNull, notExists, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  notExists,
+  or,
+  sql,
+} from 'drizzle-orm';
 import { randomToken, sha256 } from '../auth/crypto.ts';
 import { verificationRecord } from './domains.ts';
 
@@ -70,18 +85,6 @@ export async function getOrgDomain(
     .from(orgDomain)
     .where(and(eq(orgDomain.id, domainId), whereOrg(orgDomain, scope)));
   return row;
-}
-
-/** The org that verified `domain`, if any (a verified domain has one owner). */
-export async function verifiedDomainOwner(
-  db: Executor,
-  domain: string,
-): Promise<string | undefined> {
-  const [row] = await db
-    .select({ orgId: orgDomain.orgId })
-    .from(orgDomain)
-    .where(and(eq(orgDomain.domain, domain), isNotNull(orgDomain.verifiedAt)));
-  return row?.orgId;
 }
 
 /** Verified, unpaused rules for `domain`, with their org's name. Not tenant-scoped: by email. */
@@ -176,8 +179,8 @@ export async function domainCandidates(
 }
 
 /**
- * Whether the user ever had a membership in the org (every membership is created through the
- * audited `addMembership`). Someone who was removed isn't let back in by a domain rule.
+ * Whether the user ever had a membership in the org (`org_member_history`, filled by a trigger
+ * on every membership insert). Someone who was removed isn't let back in by a domain rule.
  */
 export async function wasEverMember(
   db: Executor,
@@ -185,17 +188,115 @@ export async function wasEverMember(
   userId: string,
 ): Promise<boolean> {
   const [row] = await db
-    .select({ id: auditLog.id })
-    .from(auditLog)
+    .select({ userId: orgMemberHistory.userId })
+    .from(orgMemberHistory)
+    .where(and(eq(orgMemberHistory.orgId, scope.orgId), eq(orgMemberHistory.userId, userId)));
+  return row !== undefined;
+}
+
+/**
+ * Verified domains due for a re-check (last checked before `cutoff`), oldest first. Not
+ * tenant-scoped: the periodic job goes over every org.
+ */
+export async function domainsDueForCheck(
+  db: Executor,
+  cutoff: Date,
+  limit: number,
+): Promise<OrgDomainRow[]> {
+  return db
+    .select()
+    .from(orgDomain)
     .where(
       and(
-        eq(auditLog.orgId, scope.orgId),
-        eq(auditLog.action, 'membership.create'),
-        sql`${auditLog.diff} -> 'userId' ->> 'to' = ${userId}`,
+        isNotNull(orgDomain.verifiedAt),
+        or(isNull(orgDomain.lastCheckedAt), lt(orgDomain.lastCheckedAt, cutoff)),
       ),
     )
-    .limit(1);
-  return row !== undefined;
+    .orderBy(sql`${orgDomain.lastCheckedAt} asc nulls first`)
+    .limit(limit);
+}
+
+/** Claims a due re-check, so concurrent api replicas don't check the same domain twice. */
+export async function claimDomainCheck(
+  db: Executor,
+  domainId: string,
+  cutoff: Date,
+): Promise<OrgDomainRow | undefined> {
+  const [row] = await db
+    .update(orgDomain)
+    .set({ lastCheckedAt: new Date() })
+    .where(
+      and(
+        eq(orgDomain.id, domainId),
+        isNotNull(orgDomain.verifiedAt),
+        or(isNull(orgDomain.lastCheckedAt), lt(orgDomain.lastCheckedAt, cutoff)),
+      ),
+    )
+    .returning();
+  return row;
+}
+
+/** A user's memberships in the org, for each of these (lowercase) emails that has an account. */
+export async function membershipsByEmail(
+  db: Executor,
+  scope: OrgScope,
+  emails: string[],
+): Promise<Map<string, { stationId: string | null; role: Role }[]>> {
+  const out = new Map<string, { stationId: string | null; role: Role }[]>();
+  if (emails.length === 0) return out;
+  const rows = await db
+    .select({ email: user.email, stationId: membership.stationId, role: membership.role })
+    .from(membership)
+    .innerJoin(user, eq(user.id, membership.userId))
+    .where(and(whereOrg(membership, scope), inArray(sql`lower(${user.email})`, emails)));
+  for (const r of rows) {
+    const key = r.email.toLowerCase();
+    out.set(key, [...(out.get(key) ?? []), { stationId: r.stationId, role: r.role }]);
+  }
+  return out;
+}
+
+/** `email|stationId` of the org's pending invitations for these emails. */
+export async function pendingInvitationKeys(
+  db: Executor,
+  scope: OrgScope,
+  emails: string[],
+): Promise<Set<string>> {
+  if (emails.length === 0) return new Set();
+  const rows = await db
+    .select({ email: invitation.email, stationId: invitation.stationId })
+    .from(invitation)
+    .where(
+      and(
+        whereOrg(invitation, scope),
+        inArray(sql`lower(${invitation.email})`, emails),
+        isNull(invitation.acceptedAt),
+        isNull(invitation.revokedAt),
+        gt(invitation.expiresAt, sql`now()`),
+      ),
+    );
+  return new Set(rows.map((r) => `${r.email.toLowerCase()}|${r.stationId}`));
+}
+
+/** A usable API key (not revoked, not expired), by id. */
+export async function findUsableApiKey(db: Executor, apiKeyId: string) {
+  const [row] = await db
+    .select({
+      id: apiKey.id,
+      orgId: apiKey.orgId,
+      stationId: apiKey.stationId,
+      scopes: apiKey.scopes,
+      createdBy: apiKey.createdBy,
+    })
+    .from(apiKey)
+    .where(
+      and(
+        eq(apiKey.id, apiKeyId),
+        isNull(apiKey.revokedAt),
+        sql`(${apiKey.expiresAt} is null or ${apiKey.expiresAt} > now())`,
+      ),
+    );
+  return row;
 }
 
 // --- Join requests -----------------------------------------------------------------------
@@ -237,6 +338,29 @@ export async function getJoinRequest(
     .innerJoin(user, eq(user.id, joinRequest.userId))
     .where(and(eq(joinRequest.id, requestId), whereOrg(joinRequest, scope)));
   return row;
+}
+
+/** When the user was last refused by the org, if after `since`. */
+export async function lastRefusal(
+  db: Executor,
+  scope: OrgScope,
+  userId: string,
+  since: Date,
+): Promise<Date | null> {
+  const [row] = await db
+    .select({ at: joinRequest.decidedAt })
+    .from(joinRequest)
+    .where(
+      and(
+        whereOrg(joinRequest, scope),
+        eq(joinRequest.userId, userId),
+        eq(joinRequest.status, 'refused'),
+        gt(joinRequest.decidedAt, since),
+      ),
+    )
+    .orderBy(desc(joinRequest.decidedAt))
+    .limit(1);
+  return row?.at ?? null;
 }
 
 /** Org ids where the user has a pending request. */

@@ -47,7 +47,14 @@ export interface InvitationsOptions {
   /** DNS resolver for TXT verification. Tests pass a fake. */
   resolver?: TxtResolver;
   limits?: Partial<service.InvitationsLimits>;
+  /**
+   * How often verified domains are re-checked (DNS record, email confirmation age). Default a
+   * day; `0` turns the background re-check off (tests call `service.recheckDomains`).
+   */
+  recheckIntervalMs?: number;
 }
+
+const HOUR_MS = 60 * 60 * 1000;
 
 const orgParams = z.object({ orgId: z.string() });
 const stationParams = z.object({ stationId: z.string() });
@@ -78,13 +85,31 @@ export async function invitationsRoutes(app: FastifyInstance, options: Invitatio
     return 'stationId' in scope ? (scope.stationId as string) : null;
   };
 
-  app.auth.onUserVerified(({ user }) =>
-    service.autoJoin({ db: app.db, mailer: app.mailer, auth: app.auth, log: app.log }, user),
-  );
+  const appDeps: service.InvitationsDeps = {
+    db: app.db,
+    mailer: app.mailer,
+    auth: app.auth,
+    log: app.log,
+    resolver,
+  };
+  app.auth.onUserVerified(({ user }) => service.autoJoin(appDeps, user));
+
+  // Background re-check of verified domains. Each replica ticks; a domain is claimed by one.
+  const recheckEvery = options.recheckIntervalMs ?? 24 * HOUR_MS;
+  if (recheckEvery > 0) {
+    const tick = () =>
+      service
+        .recheckDomains(appDeps, { everyMs: recheckEvery })
+        .catch((err) => app.log.error({ err }, 'domain re-check failed'));
+    const timer = setInterval(tick, Math.min(recheckEvery, HOUR_MS));
+    timer.unref();
+    app.addHook('onClose', async () => clearInterval(timer));
+  }
 
   // --- Email-domain rules (org level) ----------------------------------------------------
 
-  const manage = { preHandler: app.requirePermission('member', 'manage') };
+  // Owners and admins themselves: API keys can't manage domain rules or decide requests.
+  const manage = { preHandler: [app.requireUser, app.requirePermission('member', 'manage')] };
 
   r.get(
     '/orgs/:orgId/domains',
@@ -325,6 +350,7 @@ export async function invitationsRoutes(app: FastifyInstance, options: Invitatio
           orgScopeOf(request),
           routeStationId(request),
           request.query,
+          request.permissions?.has('member:invite') ?? false,
         ),
     );
 
