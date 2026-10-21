@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { alertSeveritySchema, alertStatusSchema, silenceSettingsSchema } from './alerts.ts';
+import type { Permission } from './auth.ts';
 import { engineSourceSchema } from './engine.ts';
 import { assetIngestedDataSchema, uploadUpdatedDataSchema } from './library-jobs.ts';
 import {
@@ -313,3 +314,63 @@ export const realtimeEventSchema = z.discriminatedUnion('type', [
 ]);
 export type RealtimeEvent = z.infer<typeof realtimeEventSchema>;
 export type RealtimeEventType = RealtimeEvent['type'];
+
+// ---------------------------------------------------------------------------------------
+// Who may see what (#9). The SSE plugin forwards only the types declared here, each to the
+// subscribers of its station that hold the listed permission, re-serialised through the
+// type's schema (undeclared fields are dropped). A new event type must be added to this map:
+// the type checker refuses a missing entry, and the plugin drops undeclared types.
+// The browser fanout is best-effort: anything with side effects uses a durable queue.
+
+export const realtimeEventPermissions = {
+  'engine.up': 'engine:read',
+  'engine.down': 'engine:read',
+  'engine.booted': 'engine:read',
+  'engine.track.started': 'engine:read',
+  'engine.track.ended': 'engine:read',
+  'engine.live.connected': 'engine:read',
+  'engine.live.disconnected': 'engine:read',
+  'engine.live.gate': 'engine:read',
+  'engine.blank.detected': 'engine:read',
+  'engine.blank.recovered': 'engine:read',
+  'engine.restart_storm': 'engine:read',
+  // Log (#100): the timeline refetches the changed range.
+  'log.updated': 'log:read',
+  'log.item.changed': 'log:read',
+  // Alerts (#33): the dashboard and alert list.
+  'alert.raised': 'alert:read',
+  'alert.reopened': 'alert:read',
+  'alert.escalated': 'alert:read',
+  'alert.acknowledged': 'alert:read',
+  'alert.resolved': 'alert:read',
+  'alert.silence_settings.updated': 'alert:read',
+  // Library (#18): new assets for every reader; upload progress only for those who upload.
+  'asset.ingested': 'library:read',
+  'upload.updated': 'library:write',
+} as const satisfies Record<RealtimeEventType, Permission>;
+
+/** Permission needed to receive `type` over SSE; `null` for types the contract doesn't declare. */
+export function eventReadPermission(type: string): Permission | null {
+  return Object.hasOwn(realtimeEventPermissions, type)
+    ? realtimeEventPermissions[type as RealtimeEventType]
+    : null;
+}
+
+// ---------------------------------------------------------------------------------------
+// Stream-only events (#9). The api emits these itself on each SSE connection; they never go
+// through the fanout, have no station and no `id` (so they don't move `Last-Event-ID`).
+
+/** The api's current time, sent on connect and periodically. Clients derive their clock skew. */
+export const serverClockEventSchema = z.object({
+  type: z.literal('server.clock'),
+  at: isoTime,
+});
+export type ServerClockEvent = z.infer<typeof serverClockEventSchema>;
+
+/** Everything a browser can receive on `GET /api/v1/stations/:stationId/events`. */
+export const streamEventSchema = z.discriminatedUnion('type', [
+  ...realtimeEventSchema.options,
+  serverClockEventSchema,
+]);
+export type StreamEvent = z.infer<typeof streamEventSchema>;
+export type StreamEventType = StreamEvent['type'];

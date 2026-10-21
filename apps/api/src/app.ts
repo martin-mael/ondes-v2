@@ -17,11 +17,13 @@ import { type InvitationsOptions, invitationsRoutes } from './modules/invitation
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
+import { orgRoutes } from './modules/orgs/routes.ts';
 import { type AuthConfig, authPlugin } from './plugins/auth.ts';
 import { type DbPluginOptions, dbPlugin } from './plugins/db.ts';
 import { errorsPlugin } from './plugins/errors.ts';
 import { type MailPluginOptions, mailPlugin } from './plugins/mail.ts';
 import { type RabbitPluginOptions, rabbitPlugin } from './plugins/rabbit.ts';
+import { type SseOptions, ssePlugin } from './plugins/sse.ts';
 
 export interface AppOptions {
   db: DbPluginOptions;
@@ -39,6 +41,8 @@ export interface AppOptions {
   uploads?: Omit<UploadPluginOptions, 'storage'>;
   /** Team onboarding (#113): DNS resolver and sending limits. */
   invitations?: InvitationsOptions;
+  /** Real-time stream tuning (tests shorten the timers). */
+  sse?: Partial<SseOptions>;
   fastify?: FastifyServerOptions;
 }
 
@@ -62,6 +66,9 @@ export async function buildApp(options: AppOptions) {
     .get('/api/v1/health', { schema: { response: { 200: healthResponseSchema } } }, () => health());
   await app.register(authRoutes, { prefix: '/api/v1' });
   await app.register(invitationsRoutes, { prefix: '/api/v1', ...options.invitations });
+  await app.register(orgRoutes, { prefix: '/api/v1' });
+  // Streams the RabbitMQ event fanout (when configured) at /api/v1/stations/:stationId/events.
+  await app.register(ssePlugin, options.sse ?? {});
   // Library routes carry their full /api/v1/stations/:stationId path.
   await app.register(libraryPlugin);
   await app.register(logRoutes, { prefix: '/api/v1' });
