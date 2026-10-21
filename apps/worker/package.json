@@ -6,7 +6,8 @@
     "dev": "node --watch src/main.ts",
     "start": "node src/main.ts",
     "typecheck": "tsc --noEmit -p .",
-    "loudness:backfill": "node --env-file-if-exists=../../.env src/jobs/loudness/backfill.ts"
+    "loudness:backfill": "node --env-file-if-exists=../../.env src/jobs/loudness/backfill.ts",
+    "autocue:backfill": "node --env-file-if-exists=../../.env src/jobs/autocue/backfill.ts"
   },
   "dependencies": {
     "@ondes/db": "workspace:*",

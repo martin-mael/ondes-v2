@@ -1,5 +1,6 @@
 export * from './contracts/alerts.ts';
 export * from './contracts/auth.ts';
+export * from './contracts/autocue.ts';
 export * from './contracts/engine.ts';
 export * from './contracts/errors.ts';
 export * from './contracts/events.ts';
