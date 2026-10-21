@@ -15,7 +15,7 @@ import {
   engineLifecyclePlugin,
 } from './modules/engine/lifecycle/plugin.ts';
 import { type InvitationsOptions, invitationsRoutes } from './modules/invitations/routes.ts';
-import { peaksPlugin } from './modules/library/peaks-plugin.ts';
+import { type PeaksPluginOptions, peaksPlugin } from './modules/library/peaks-plugin.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
@@ -43,6 +43,8 @@ export interface AppOptions {
   storage?: Storage;
   /** Upload route settings beyond `storage` (tests). */
   uploads?: Omit<UploadPluginOptions, 'storage'>;
+  /** Peaks route settings beyond `storage` (tests). */
+  peaks?: Omit<PeaksPluginOptions, 'storage'>;
   /** Team onboarding (#113): DNS resolver and sending limits. */
   invitations?: InvitationsOptions;
   /** Real-time stream tuning (tests shorten the timers). */
@@ -100,7 +102,7 @@ export async function buildApp(options: AppOptions) {
   if (options.storage) {
     await app.register(uploadPlugin, { ...options.uploads, storage: options.storage });
     // Waveform peaks (#22): GET …/assets/:assetId/peaks.
-    await app.register(peaksPlugin, { storage: options.storage });
+    await app.register(peaksPlugin, { ...options.peaks, storage: options.storage });
   }
 
   return app;

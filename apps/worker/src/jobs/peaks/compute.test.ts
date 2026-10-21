@@ -1,5 +1,6 @@
 import { decodePeaks, encodePeaks, peaksPointOfSample, peaksPointSamples } from '@ondes/shared';
 import { describe, expect, it } from 'vitest';
+import WaveformData from 'waveform-data';
 import { computePeaks, PeaksAccumulator, reducePeaks, toInt8 } from './compute.ts';
 
 // Peak maths on synthetic signals: hand-checked points, then sines whose envelope is known.
@@ -134,5 +135,30 @@ describe('computePeaks', () => {
     expect(decoded.levels.map((l) => Array.from(l.values))).toEqual(
       peaks.levels.map((l) => Array.from(l.values)),
     );
+  });
+});
+
+describe('audiowaveform compatibility', () => {
+  it('each level reads in waveform-data.js (the peaks.js reader) as the same peaks', () => {
+    const left = sine(3000, 25_000, 300);
+    const right = sine(3000, 6000, 41, 5);
+    const peaks = decodePeaks(
+      encodePeaks(computePeaks(interleave(left, right), { channels: 2, sampleRate: 44_100 })),
+    );
+    for (const level of peaks.levels) {
+      const waveform = WaveformData.create(level.dat.slice().buffer);
+      expect(waveform).toMatchObject({
+        sample_rate: 44_100,
+        scale: level.samplesPerPoint,
+        length: level.points,
+        channels: 2,
+        bits: 8,
+      });
+      for (const ch of [0, 1]) {
+        const expected = pairs(level.values, 2, ch);
+        expect(waveform.channel(ch).min_array()).toEqual(expected.map(([lo]) => lo));
+        expect(waveform.channel(ch).max_array()).toEqual(expected.map(([, hi]) => hi));
+      }
+    }
   });
 });

@@ -1,4 +1,4 @@
-import { PEAKS_FORMAT_VERSION } from '@ondes/shared';
+import { PEAKS_FILE_EXTENSION, peaksStoragePrefix } from '@ondes/shared';
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { Executor } from '../client.ts';
@@ -17,14 +17,15 @@ export interface PeaksCandidate {
 
 /**
  * A page of the station's assets that have a playout copy and no peaks file for it in the
- * current format: the peaks file's key isn't `peaksStorageKey(orgId, playoutSha256)`, which
- * the query rebuilds (`org/<orgId>/peaks/v<version>/<sha256>.peaks`).
+ * current format: the peaks file's key isn't `peaksStorageKey(orgId, playoutSha256)`.
  */
 export async function listAssetsNeedingPeaks(
   db: Executor,
   scope: StationScope,
   options: { after?: string; limit?: number } = {},
 ): Promise<PeaksCandidate[]> {
+  // `peaksStorageKey`, built per row from the station's org prefix and the playout hash.
+  const prefix = peaksStoragePrefix(scope.orgId);
   return db
     .select({ assetId: assetFile.assetId, playoutSha256: assetFile.sha256 })
     .from(assetFile)
@@ -42,8 +43,7 @@ export async function listAssetsNeedingPeaks(
         eq(assetFile.role, 'playout'),
         options.after ? gt(assetFile.assetId, options.after) : undefined,
         sql`${peaksFile.storageKey} is distinct from
-          ('org/' || ${assetFile.orgId} || '/peaks/v' || ${String(PEAKS_FORMAT_VERSION)}
-            || '/' || ${assetFile.sha256} || '.peaks')`,
+          (${prefix} || ${assetFile.sha256} || ${PEAKS_FILE_EXTENSION})`,
       ),
     )
     .orderBy(asc(assetFile.assetId))

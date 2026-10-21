@@ -1,9 +1,9 @@
-import { uuidSchema } from '@ondes/shared';
+import { type PeaksJobPayload, peaksRepairIdempotencyKey, uuidSchema } from '@ondes/shared';
 import type { Storage } from '@ondes/storage';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { stationScopeOf } from '../../plugins/auth.ts';
-import { getAssetPeaks } from './peaks-service.ts';
+import { getAssetPeaks, type PeaksDeps, peaksJob } from './peaks-service.ts';
 import { toErrorResult } from './routes.ts';
 
 // `GET /api/v1/stations/:stationId/assets/:assetId/peaks` (#22), behind
@@ -11,13 +11,29 @@ import { toErrorResult } from './routes.ts';
 
 export interface PeaksPluginOptions {
   storage: Storage;
+  /** Overrides the RabbitMQ publisher of repair jobs (tests). Default: `app.rabbit.jobs`. */
+  enqueueRepair?: (payload: PeaksJobPayload) => Promise<void>;
 }
 
 const paramsSchema = z.object({ assetId: uuidSchema });
 
 /** Mounts the peaks route. Registered by `buildApp` when it has a `storage`. */
 export async function peaksPlugin(app: FastifyInstance, options: PeaksPluginOptions) {
-  const deps = { db: app.db, storage: options.storage };
+  const deps: PeaksDeps = {
+    db: app.db,
+    storage: options.storage,
+    enqueueRepair:
+      options.enqueueRepair ??
+      (async (payload) => {
+        // Without RabbitMQ (some tests), a missing file stays a 404.
+        if (!app.hasDecorator('rabbit')) return;
+        await app.rabbit.jobs.enqueue(peaksJob, payload, {
+          idempotencyKey: peaksRepairIdempotencyKey(payload, new Date()),
+          orgId: payload.orgId,
+          stationId: payload.stationId,
+        });
+      }),
+  };
   app.get('/api/v1/stations/:stationId/assets/:assetId/peaks', {
     preHandler: app.requirePermission('library', 'read'),
     handler: async (request, reply) => {

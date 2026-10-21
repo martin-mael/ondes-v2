@@ -11,10 +11,16 @@ import { uuidSchema } from './tenancy.ts';
 //
 // ## The peaks file (format version 1)
 //
-// A small container holding one BBC audiowaveform `.dat` (version 2) blob per zoom level, so a
-// level can be handed as is to waveform-data.js / peaks.js
-// (`WaveformData.create(level.dat.slice().buffer)`), or read with {@link decodePeaks}. All
-// integers are little-endian.
+// The route serves a small container (`ODPK`), not a bare `.dat`: clients parse it with
+// {@link decodePeaks} first. It holds one BBC audiowaveform `.dat` (version 2) blob per zoom
+// level, and each level's `dat` can then go to waveform-data.js / peaks.js as is
+// (`WaveformData.create(level.dat.slice().buffer)`; tested against waveform-data 4.5.2 in
+// apps/worker/src/jobs/peaks/compute.test.ts).
+//
+// The issue asked for audiowaveform `.dat`/JSON files at two zoom levels. One container keeps
+// it to one request, one object, one ETag and one record per asset (the editors need both
+// levels at once), with the exact length in samples that `.dat` doesn't carry. JSON would be
+// about four times larger. All integers are little-endian.
 //
 //   offset  size  field
 //   0       4     magic "ODPK" (ASCII)
@@ -27,7 +33,8 @@ import { uuidSchema } from './tenancy.ts';
 //                 u32 byte offset of the level's `.dat` blob, u32 its byte length
 //   …             the `.dat` blobs
 //
-// Each `.dat` blob (audiowaveform's binary format, version 2):
+// Each `.dat` blob (audiowaveform's binary format, version 2: "Binary data format" in
+// https://github.com/bbc/audiowaveform/blob/master/doc/DataFormat.md):
 //
 //   0   i32 version (2)   4   u32 flags (1: 8-bit values)   8   i32 sample rate
 //   12  i32 samples per point   16  u32 point count   20  i32 channels
@@ -57,16 +64,27 @@ export const PEAKS_LEVELS = [256, 4096] as const;
 export const PEAKS_MIME_TYPE = 'application/vnd.ondes.peaks';
 export const PEAKS_CODEC = 'ondes-peaks';
 
+export const PEAKS_FILE_EXTENSION = '.peaks';
+
+/** Prefix of an org's peaks keys in a format version: `org/<orgId>/peaks/v<version>/`. */
+export function peaksStoragePrefix(
+  orgId: string,
+  formatVersion: number = PEAKS_FORMAT_VERSION,
+): string {
+  return `org/${orgId}/peaks/v${formatVersion}/`;
+}
+
 /**
  * Storage key of an asset's peaks: content-addressed by the playout copy's hash and the format
  * version (the file is a pure function of both), so assets sharing a playout copy share it.
+ * `org/<orgId>/peaks/v<version>/<playoutSha256>.peaks`.
  */
 export function peaksStorageKey(
   orgId: string,
   playoutSha256: string,
   formatVersion: number = PEAKS_FORMAT_VERSION,
 ): string {
-  return `org/${orgId}/peaks/v${formatVersion}/${playoutSha256}.peaks`;
+  return `${peaksStoragePrefix(orgId, formatVersion)}${playoutSha256}${PEAKS_FILE_EXTENSION}`;
 }
 
 // --- Encoding ----------------------------------------------------------------------------
@@ -233,3 +251,12 @@ export type PeaksJobPayload = z.infer<typeof peaksJobPayloadSchema>;
 /** Explicit key: each playout copy of an asset gets its peaks once per format version. */
 export const peaksIdempotencyKey = (payload: PeaksJobPayload) =>
   `peaks:${payload.assetId}:${payload.playoutSha256}:v${PEAKS_FORMAT_VERSION}`;
+
+/**
+ * Key of a repair job: the api enqueues one when a recorded peaks file is missing from the
+ * bucket. The plain key already succeeded (`once` mode would drop it), so repairs get their
+ * own, one per asset and hour (`at` is truncated to the hour): repeated requests for a missing
+ * file enqueue it once.
+ */
+export const peaksRepairIdempotencyKey = (payload: PeaksJobPayload, at: Date) =>
+  `${peaksIdempotencyKey(payload)}:repair:${at.toISOString().slice(0, 13)}`;

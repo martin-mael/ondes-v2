@@ -219,6 +219,11 @@ describe.skipIf(!enabled)('peaks job (integration)', () => {
     return { asset, payload, file };
   }
 
+  const storageObjects = async (orgId: string) =>
+    (await tdb.sql<{ key: string }[]>`select key from storage_object where org_id = ${orgId}`).map(
+      (row) => row.key,
+    );
+
   const peaksFile = async (scope: StationScope, assetId: string) =>
     (await listAssetFiles(tdb.db, scope, assetId)).find((f) => f.role === 'peaks');
 
@@ -282,6 +287,75 @@ describe.skipIf(!enabled)('peaks job (integration)', () => {
     );
     expect(logs).toMatchObject([{ level: 'warn', msg: 'peaks: playout copy not decodable' }]);
     expect(await peaksFile(scope, asset.id)).toBeUndefined();
+  });
+
+  it('records and writes nothing when the playout copy is replaced mid-job', async () => {
+    const scope = await tenant();
+    const { asset, payload } = await ingested(scope, 'stereo');
+    const ctx = { actor: system, scope };
+    const racing: PeaksDeps = {
+      ...deps,
+      // A re-ingest lands after the peaks were computed, before they are recorded.
+      beforeRecord: async () => {
+        await putAssetFile(tdb.db, ctx, asset.id, {
+          role: 'playout',
+          storageKey: contentKey({ orgId: scope.orgId, sha256: 'e'.repeat(64), ext: 'flac' }),
+          sha256: 'e'.repeat(64),
+          sizeBytes: 1,
+          codec: 'flac',
+          sampleRate: 44_100,
+          flacBlockSize: 1024,
+        });
+      },
+    };
+    expect(await generateAssetPeaks(racing, payload)).toBe('stale');
+    expect(await peaksFile(scope, asset.id)).toBeUndefined();
+    // Not written either: nothing in the bucket that no one references.
+    expect(await storage.head(peaksStorageKey(scope.orgId, payload.playoutSha256))).toBeNull();
+    expect(await storageObjects(scope.orgId)).not.toContain(
+      peaksStorageKey(scope.orgId, payload.playoutSha256),
+    );
+  });
+
+  it('rewrites an object swept between finding it and charging it', async () => {
+    const scope = await tenant();
+    const first = await ingested(scope, 'stereo');
+    expect(await generateAssetPeaks(deps, first.payload)).toBe('stored');
+    const key = peaksStorageKey(scope.orgId, first.payload.playoutSha256);
+    const second = await ingested(scope, 'stereo', first.file);
+    const sweeping: PeaksDeps = {
+      ...deps,
+      // What a sweep could do if the first asset had just been deleted.
+      beforeRecord: async () => storage.delete(key),
+    };
+    expect(await generateAssetPeaks(sweeping, second.payload)).toBe('stored');
+    const head = await storage.head(key);
+    expect(head?.metadata.sha256).toBe((await peaksFile(scope, second.asset.id))?.sha256);
+    // Two decodes through the worker image's ffmpeg (`docker run` each).
+  }, 60_000);
+
+  it('restores a recorded peaks file missing from the bucket', async () => {
+    const scope = await tenant();
+    const { asset, payload } = await ingested(scope, 'stereo');
+    expect(await generateAssetPeaks(deps, payload)).toBe('stored');
+    const recorded = await peaksFile(scope, asset.id);
+    const key = peaksStorageKey(scope.orgId, payload.playoutSha256);
+    await storage.delete(key);
+    expect(await generateAssetPeaks(deps, payload)).toBe('stored');
+    expect((await storage.head(key))?.metadata.sha256).toBe(recorded?.sha256);
+    // Same bytes, so the record is untouched.
+    expect(await peaksFile(scope, asset.id)).toEqual(recorded);
+    expect(await generateAssetPeaks(deps, payload)).toBe('current');
+    // Two decodes through the worker image's ffmpeg (`docker run` each).
+  }, 60_000);
+
+  it('retries a short download instead of giving up on the file', async () => {
+    const scope = await tenant();
+    const { payload, file } = await ingested(scope, 'stereo');
+    // The bucket holds fewer bytes than the asset recorded.
+    const bytes = await readFile(files.stereo as string);
+    await storage.put(file.storageKey, bytes.subarray(0, 100));
+    await expect(generateAssetPeaks(deps, payload)).rejects.toThrow(/downloaded 100 of/);
   });
 
   it('backfills the assets without current peaks', async () => {

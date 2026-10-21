@@ -10,7 +10,8 @@ const playoutSha = 'a'.repeat(64);
 describe('currentPeaksFile', () => {
   it('returns the peaks file computed from the current playout copy', () => {
     const peaks = file('peaks', 'b'.repeat(64), peaksStorageKey(org, playoutSha));
-    expect(currentPeaksFile([file('playout', playoutSha, 'x'), peaks], org)).toBe(peaks);
+    const playout = file('playout', playoutSha, 'x');
+    expect(currentPeaksFile([playout, peaks], org)).toEqual({ peaks, playout });
   });
 
   it('ignores peaks of a replaced playout copy or an older format', () => {

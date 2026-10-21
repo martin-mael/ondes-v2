@@ -1,6 +1,8 @@
 import { parseArgs } from 'node:util';
-import { createDb, type Db, listAssetsNeedingPeaks, listAutocueStations } from '@ondes/db';
+import { createDb, type Db, listAllStationScopes, listAssetsNeedingPeaks } from '@ondes/db';
 import { connectQueue, createJobPublisher, type JobPublisher } from '@ondes/queue';
+import { uuidSchema } from '@ondes/shared';
+import { z } from 'zod';
 import { enqueuePeaks } from './trigger.ts';
 
 // Peaks backfill (#22): enqueues a `peaks` job for every asset whose playout copy has no peaks
@@ -26,8 +28,7 @@ export async function backfillPeaks(
 ): Promise<Record<string, number>> {
   const wanted = options.stationIds ? new Set(options.stationIds) : undefined;
   const counts: Record<string, number> = {};
-  // Every station (system-only list; its engine settings aren't used here).
-  for (const { scope } of await listAutocueStations(deps.db)) {
+  for (const scope of await listAllStationScopes(deps.db)) {
     if (wanted && !wanted.has(scope.stationId)) continue;
     let count = 0;
     let after: string | undefined;
@@ -56,6 +57,8 @@ if (import.meta.main) {
       'dry-run': { type: 'boolean', default: false },
     },
   });
+  const stationIds = z.array(uuidSchema).optional().safeParse(values.station);
+  if (!stationIds.success) throw new Error('--station takes station ids (UUIDs)');
   const databaseUrl = process.env.DATABASE_URL;
   const rabbitUrl = process.env.RABBITMQ_URL;
   if (!databaseUrl) throw new Error('DATABASE_URL is not set');
@@ -66,7 +69,7 @@ if (import.meta.main) {
   try {
     const counts = await backfillPeaks(
       { db: database.db, jobs },
-      { stationIds: values.station, dryRun: values['dry-run'] },
+      { stationIds: stationIds.data, dryRun: values['dry-run'] },
     );
     console.log(
       JSON.stringify({ level: 'info', msg: 'peaks backfill', dryRun: values['dry-run'], counts }),

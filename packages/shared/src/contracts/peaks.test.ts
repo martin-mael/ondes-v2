@@ -7,7 +7,9 @@ import {
   peaksPointCount,
   peaksPointOfSample,
   peaksPointSamples,
+  peaksRepairIdempotencyKey,
   peaksStorageKey,
+  peaksStoragePrefix,
 } from './peaks.ts';
 
 const sha = 'a'.repeat(64);
@@ -99,8 +101,19 @@ describe('sample mapping', () => {
 describe('keys', () => {
   it('addresses the file by playout hash and format version', () => {
     expect(peaksStorageKey(org, sha)).toBe(`org/${org}/peaks/v1/${sha}.peaks`);
+    expect(peaksStorageKey(org, sha).startsWith(peaksStoragePrefix(org))).toBe(true);
     expect(
       peaksIdempotencyKey({ orgId: org, stationId: org, assetId: org, playoutSha256: sha }),
     ).toBe(`peaks:${org}:${sha}:v1`);
+  });
+});
+
+describe('repair keys', () => {
+  it('give one repair per asset and hour', () => {
+    const payload = { orgId: org, stationId: org, assetId: org, playoutSha256: sha };
+    const at = (iso: string) => peaksRepairIdempotencyKey(payload, new Date(iso));
+    expect(at('2026-10-21T15:05:00Z')).toBe(`peaks:${org}:${sha}:v1:repair:2026-10-21T15`);
+    expect(at('2026-10-21T15:59:59Z')).toBe(at('2026-10-21T15:00:00Z'));
+    expect(at('2026-10-21T16:00:00Z')).not.toBe(at('2026-10-21T15:00:00Z'));
   });
 });

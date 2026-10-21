@@ -16,6 +16,7 @@ import {
   encodePeaks,
   PEAKS_CODEC,
   PEAKS_MIME_TYPE,
+  type PeaksJobPayload,
   peaksStorageKey,
 } from '@ondes/shared';
 import { contentKey, createS3Storage, loadStorageConfig, type Storage } from '@ondes/storage';
@@ -36,6 +37,8 @@ let t: TestApp;
 let storage: Storage;
 let scope: StationScope;
 let otherStation: string;
+let otherOrgScope: StationScope;
+const repairs: PeaksJobPayload[] = [];
 const cookies: Record<string, string> = {};
 
 beforeAll(async () => {
@@ -48,6 +51,11 @@ beforeAll(async () => {
     mail: { mailer },
     auth: TEST_AUTH_CONFIG,
     storage,
+    peaks: {
+      enqueueRepair: async (payload) => {
+        repairs.push(payload);
+      },
+    },
     fastify: { logger: false },
   });
   await app.ready();
@@ -75,6 +83,13 @@ beforeAll(async () => {
     )
   ).id;
   scope = await resolveStationScope(tdb.db, org.id, st.id);
+  const otherOrg = await createOrganization(tdb.db, system, { slug: 'peaks-org-2', name: 'Org 2' });
+  const otherOrgSt = await createStation(
+    tdb.db,
+    { actor: system, scope: await resolveOrgScope(tdb.db, otherOrg.id) },
+    { slug: 'peaks-fm-2', name: 'FM 2', timezone: 'Europe/Paris' },
+  );
+  otherOrgScope = await resolveStationScope(tdb.db, otherOrg.id, otherOrgSt.id);
   for (const role of ['presenter', 'viewer'] as const) {
     const { userId, cookie } = await signUpAndLogin(t, `${role}@peaks.test`);
     await addMembership(
@@ -97,7 +112,8 @@ afterAll(() => t?.close());
 const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
 /** An asset with a playout copy (not stored: the route never reads it) and, if asked, peaks. */
-async function asset(withPeaks: boolean) {
+async function asset(withPeaks: boolean, owner: StationScope = scope) {
+  const scope = owner;
   const ctx = { actor: system, scope };
   const created = await createAsset(t.tdb.db, ctx, { type: 'song', title: 'Waves' });
   const playoutSha = sha(randomBytes(32));
@@ -187,6 +203,25 @@ describe.skipIf(!enabled)('peaks route (integration)', () => {
       flacBlockSize: 1024,
     });
     expect((await get(peaksUrl(a.id))).statusCode).toBe(404);
+  });
+
+  it('hides an asset of another org', async () => {
+    const theirs = await asset(true, otherOrgScope);
+    expect((await get(peaksUrl(theirs.id))).statusCode).toBe(404);
+  });
+
+  it('404s a recorded file missing from the bucket and enqueues its repair', async () => {
+    const a = await asset(true);
+    await storage.delete(peaksStorageKey(scope.orgId, a.playoutSha));
+    const res = await get(peaksUrl(a.id));
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toMatchObject({ error: 'not_found', message: /recomputing/ });
+    expect(repairs).toContainEqual({
+      orgId: scope.orgId,
+      stationId: scope.stationId,
+      assetId: a.id,
+      playoutSha256: a.playoutSha,
+    });
   });
 
   it('is station-scoped and needs library read', async () => {
