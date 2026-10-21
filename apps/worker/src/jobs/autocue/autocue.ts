@@ -26,6 +26,7 @@ import {
   stableStringify,
 } from '@ondes/shared';
 import type { Storage } from '@ondes/storage';
+import { announce, assetUpdatedEvent, type PublishEvent } from '../_events/asset-updated.ts';
 import { isFileError, type Tools } from '../ingest/ffmpeg.ts';
 import { type DetectedCues, detectCues, type FixedCues } from './detect.ts';
 import { analyseFile } from './frames.ts';
@@ -51,6 +52,8 @@ export interface AutocueDeps {
   /** Scratch space for the download. Default: the OS temp dir. */
   tmpDir?: string;
   log?(entry: Record<string, unknown>): void;
+  /** Publishes `asset.updated` once cues are stored (#55). */
+  publish?: PublishEvent;
 }
 
 export interface AutocueRun {
@@ -153,6 +156,11 @@ export async function autocue(
         analyzerVersion,
         ...(detected ? { points, flags: detected.flags } : { unmeasurable: reason }),
       });
+      await announce(
+        deps.publish,
+        assetUpdatedEvent(scope.stationId, payload.assetId, ['cues']),
+        log,
+      );
       return cues;
     } catch (error) {
       // Deleted while we listened.

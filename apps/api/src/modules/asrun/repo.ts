@@ -437,12 +437,16 @@ export async function getOnAir(db: Executor, scope: StationScope): Promise<AsRun
   return row && !row.endedAt ? toEntry(row) : null;
 }
 
-/** When each asset last started airing before `before` (rotation rules, #38). */
+/**
+ * When each asset last started airing before `before` (rotation rules, #38). With `since`, only
+ * airings from then on count (assets without one are absent).
+ */
 export async function lastAiredByAsset(
   db: Executor,
   scope: StationScope,
   assetIds: readonly string[],
   before = new Date(),
+  since?: Date,
 ): Promise<Map<string, Date>> {
   if (assetIds.length === 0) return new Map();
   const rows = await db
@@ -453,6 +457,7 @@ export async function lastAiredByAsset(
         whereStation(asRunEntry, scope),
         inArray(asRunEntry.assetId, [...assetIds]),
         lt(asRunEntry.startedAt, before),
+        since ? gte(asRunEntry.startedAt, since) : undefined,
       ),
     )
     .groupBy(asRunEntry.assetId);

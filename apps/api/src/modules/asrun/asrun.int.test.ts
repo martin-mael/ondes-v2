@@ -672,6 +672,15 @@ describe('queries', () => {
       new Date(t0 + 7_200_000),
     );
     expect(byAsset.get(s.assetId)?.toISOString()).toBe(new Date(t0 + 3_600_000).toISOString());
+    // `since` bounds the search: nothing aired in [t0 + 1 h + 1 ms, t0 + 2 h).
+    const bounded = await repo.lastAiredByAsset(
+      tdb.db,
+      st.scope,
+      [s.assetId],
+      new Date(t0 + 7_200_000),
+      new Date(t0 + 3_600_001),
+    );
+    expect(bounded.size).toBe(0);
     const byArtist = await repo.lastAiredByArtist(
       tdb.db,
       st.scope,

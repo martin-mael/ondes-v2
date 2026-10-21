@@ -1,3 +1,4 @@
+import { localDateSchema } from '@ondes/shared';
 import type { QueryClient } from '@tanstack/react-query';
 import {
   createRootRouteWithContext,
@@ -10,12 +11,21 @@ import {
 } from '@tanstack/react-router';
 import { toast } from 'sonner';
 import { z } from 'zod';
+import { EditClockPage, NewClockPage } from '../features/clocks/clock-editor-page.tsx';
+import { ClocksPage } from '../features/clocks/clocks-page.tsx';
+import { librarySearchParamsSchema } from '../features/library/filters.ts';
+import { LibraryPage } from '../features/library/library-page.tsx';
+import { TimelinePage } from '../features/log-timeline/timeline-page.tsx';
 import { CategoriesPage } from '../features/rotation/categories/categories-page.tsx';
 import {
   EditCategoryPage,
   NewCategoryPage,
 } from '../features/rotation/categories/category-editor-page.tsx';
+import { RulesPage } from '../features/rotation/rules/rules-page.tsx';
 import { SafetyPage } from '../features/settings/safety/safety-page.tsx';
+import { CalendarPage, calendarViews } from '../features/shows/calendar-page.tsx';
+import { ShowPage } from '../features/shows/show-page.tsx';
+import { ShowsPage } from '../features/shows/shows-page.tsx';
 import { AcceptInvitationPage } from './auth/accept-invitation-page.tsx';
 import { AccountPage } from './auth/account-page.tsx';
 import { AuthLayout } from './auth/auth-layout.tsx';
@@ -168,6 +178,14 @@ const dashboardRoute = createRoute({
   component: DashboardPage,
 });
 
+// Library (#23): search, facets, bulk edits, uploads; filters and the open asset in the URL.
+const libraryRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'library',
+  validateSearch: librarySearchParamsSchema,
+  component: LibraryPage,
+});
+
 // Music rotation: categories (#37).
 const categoriesRoute = createRoute({
   getParentRoute: () => stationRoute,
@@ -187,10 +205,68 @@ const categoryRoute = createRoute({
   component: EditCategoryPage,
 });
 
+// Music rotation: separation and rotation rules (#38).
+const rotationRulesRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'rotation/rules',
+  component: RulesPage,
+});
+
+// Clocks (#39).
+const clocksRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'clocks',
+  component: ClocksPage,
+});
+
+const newClockRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'clocks/new',
+  component: NewClockPage,
+});
+
+const clockRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'clocks/$clockId',
+  component: EditClockPage,
+});
+
+// Shows (#45): list, calendar, show page.
+const showsRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'shows',
+  component: ShowsPage,
+});
+
+const showsCalendarRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'shows/calendar',
+  validateSearch: z.object({
+    view: z.enum(calendarViews).optional().catch(undefined),
+    date: localDateSchema.optional().catch(undefined),
+    show: z.uuid().optional().catch(undefined),
+  }),
+  component: CalendarPage,
+});
+
+const showRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'shows/$showId',
+  component: ShowPage,
+});
+
 const safetySettingsRoute = createRoute({
   getParentRoute: () => stationRoute,
   path: '/settings/safety',
   component: SafetyPage,
+});
+
+// The log timeline (#51): one station-local day, `?date=YYYY-MM-DD` (default: today).
+const logRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'log',
+  validateSearch: z.object({ date: localDateSchema.optional().catch(undefined) }),
+  component: TimelinePage,
 });
 
 const routeTree = rootRoute.addChildren([
@@ -207,10 +283,19 @@ const routeTree = rootRoute.addChildren([
     accountRoute,
     stationRoute.addChildren([
       dashboardRoute,
+      libraryRoute,
       categoriesRoute,
       newCategoryRoute,
       categoryRoute,
+      rotationRulesRoute,
+      clocksRoute,
+      newClockRoute,
+      clockRoute,
+      showsRoute,
+      showsCalendarRoute,
+      showRoute,
       safetySettingsRoute,
+      logRoute,
     ]),
   ]),
 ]);

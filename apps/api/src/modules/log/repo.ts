@@ -1,9 +1,11 @@
 import {
+  asRunEntry,
   asset,
   assetFile,
   auditDiff,
   type Db,
   type Executor,
+  feederPush,
   logDay,
   logItem,
   type MutationContext,
@@ -351,6 +353,7 @@ export async function replaceLogItem(
     checkAnchor(parsed.anchorAt ? new Date(parsed.anchorAt) : null, day);
     const layout = await loadDays(tx, ctx.scope, [day]);
     const { groups, index, row: before } = layout.editable(day.id, itemId, { unlocked: true });
+    await assertNotAired(tx, ctx.scope, before);
     const snapshot = { ...before };
     const oldParts = groups[index]?.slice(1) ?? [];
     if (oldParts.length) {
@@ -396,6 +399,7 @@ export async function moveLogItem(
     const target = await resolvePlacement(tx, ctx.scope, placement);
     const layout = await loadDays(tx, ctx.scope, [fromDay, target.day]);
     const { groups, index, row } = layout.editable(fromDay.id, itemId, { unlocked: true });
+    await assertNotAired(tx, ctx.scope, row);
     checkAnchor(row.anchorAt, target.day);
     const snapshot = { ...row };
     const [group] = groups.splice(index, 1);
@@ -422,6 +426,7 @@ export async function deleteLogItem(
     const { day } = await lockItem(tx, ctx.scope, itemId);
     const layout = await loadDays(tx, ctx.scope, [day]);
     const { groups, index, row } = layout.editable(day.id, itemId, { unlocked: true });
+    await assertNotAired(tx, ctx.scope, row);
     const snapshot = { ...row };
     const [group] = groups.splice(index, 1);
     if (!group) throw new NotFoundError('log_item', itemId);
@@ -455,6 +460,7 @@ export async function lockLogItem(
     const { day } = await lockItem(tx, ctx.scope, itemId);
     const layout = await loadDays(tx, ctx.scope, [day]);
     const { groups, index, row } = layout.editable(day.id, itemId, { unlocked: false });
+    await assertNotAired(tx, ctx.scope, row);
     const was = row.locked;
     for (const r of groups[index] ?? []) {
       if (r.locked === locked) continue;
@@ -886,6 +892,54 @@ async function findItem(
  * move may have taken the item elsewhere by the time the day is ours: re-read it under the
  * day lock and follow it if it moved.
  */
+/**
+ * A pushed item planned to start more than this long ago is taken as on air or played, even
+ * before its as-run entry arrives.
+ */
+export const AIRED_MARGIN_MS = 60_000;
+
+/**
+ * Manual edits leave the past alone: an item (or island) that aired or is on air is refused
+ * with 409 `log_item_aired`. Aired means an as-run entry of it or of one of its parts, a feeder
+ * push record marked aired, or a feeder push whose planned start is over `AIRED_MARGIN_MS` ago.
+ * The feeder never changes what's on air either (ADR 0012).
+ */
+async function assertNotAired(
+  tx: Tx,
+  scope: StationScope,
+  row: Pick<Row, 'id' | 'plannedStart'>,
+  now = new Date(),
+): Promise<void> {
+  const [ran] = await tx
+    .select({ id: asRunEntry.id })
+    .from(asRunEntry)
+    .where(
+      and(
+        whereStation(asRunEntry, scope),
+        or(eq(asRunEntry.logItemId, row.id), eq(asRunEntry.segmentId, row.id)),
+      ),
+    )
+    .limit(1);
+  if (ran) throw airedError();
+  const started = row.plannedStart.getTime() < now.getTime() - AIRED_MARGIN_MS;
+  const [pushed] = await tx
+    .select({ aired: feederPush.aired })
+    .from(feederPush)
+    .where(
+      and(
+        whereStation(feederPush, scope),
+        eq(feederPush.entryId, row.id),
+        ...(started ? [] : [eq(feederPush.aired, true)]),
+      ),
+    )
+    .limit(1);
+  if (pushed) throw airedError();
+}
+
+function airedError() {
+  return new HttpError(409, 'log_item_aired', 'the item aired or is on air; it can’t change');
+}
+
 async function lockItem(
   tx: Tx,
   scope: StationScope,

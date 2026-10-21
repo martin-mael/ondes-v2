@@ -11,6 +11,7 @@ import { type AlertsPluginOptions, alertsPlugin } from './modules/alerts/plugin.
 import { type AsRunPluginOptions, asRunPlugin } from './modules/asrun/plugin.ts';
 import { authRoutes } from './modules/auth/routes.ts';
 import { type CachePluginOptions, cachePlugin } from './modules/cache/plugin.ts';
+import { clocksRoutes } from './modules/clocks/routes.ts';
 import { type FeederPluginOptions, feederPlugin } from './modules/engine/feeder/plugin.ts';
 import {
   type EngineLifecyclePluginOptions,
@@ -18,12 +19,16 @@ import {
 } from './modules/engine/lifecycle/plugin.ts';
 import { type SafetyPluginOptions, safetyPlugin } from './modules/engine/safety/plugin.ts';
 import { type InvitationsOptions, invitationsRoutes } from './modules/invitations/routes.ts';
+import { audioPlugin } from './modules/library/audio-plugin.ts';
 import { type PeaksPluginOptions, peaksPlugin } from './modules/library/peaks-plugin.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
+import { librarySearchRoutes } from './modules/library/search-routes.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
 import { rotationRoutes } from './modules/rotation/routes.ts';
+import { rotationRulesRoutes } from './modules/rotation/rules/routes.ts';
+import { type SeguesPluginOptions, seguesPlugin } from './modules/segues/plugin.ts';
 import { showsRoutes } from './modules/shows/routes.ts';
 import { type AuthConfig, authPlugin } from './plugins/auth.ts';
 import { type DbPluginOptions, dbPlugin } from './plugins/db.ts';
@@ -44,6 +49,8 @@ export interface AppOptions {
   alerts?: AlertsPluginOptions;
   /** As-run (#30): the durable queue name (tests). */
   asrun?: AsRunPluginOptions;
+  /** Segues (#55): the durable queue name (tests). */
+  segues?: SeguesPluginOptions;
   /** Playout cache (#31): readiness API and cache alerts. */
   cache?: CachePluginOptions;
   /** Safety playlist and emergency file (#34): alert interval, event queue (tests). */
@@ -88,11 +95,22 @@ export async function buildApp(options: AppOptions) {
   await app.register(ssePlugin, options.sse ?? {});
   // Library routes carry their full /api/v1/stations/:stationId path.
   await app.register(libraryPlugin);
+  // Library screen (#23): search, facets, bulk edits, asset activity.
+  // Bulk edits announce `asset.updated` / `asset.deleted` like the single-asset routes (#55).
+  const rabbit = app.hasDecorator('rabbit') ? app.rabbit : undefined;
+  await app.register(librarySearchRoutes, {
+    prefix: '/api/v1',
+    ...(rabbit ? { publish: (event) => rabbit.events.publish(event) } : {}),
+  });
   await app.register(logRoutes, { prefix: '/api/v1' });
   // As-run (#30): `GET …/asrun`, engine track events -> as-run entries (durable queue).
   await app.register(asRunPlugin, options.asrun ?? {});
   await app.register(showsRoutes, { prefix: '/api/v1' });
+  // Segues and islands (#55): routes, and log/asset events -> island re-sync (durable queue).
+  await app.register(seguesPlugin, options.segues ?? {});
   await app.register(rotationRoutes, { prefix: '/api/v1' });
+  await app.register(rotationRulesRoutes, { prefix: '/api/v1' });
+  await app.register(clocksRoutes, { prefix: '/api/v1' });
   // Engine lifecycle (#35): engine routes, the internal engine events route, engines at boot.
   if (options.engine) await app.register(engineLifecyclePlugin, options.engine);
   // Alerts (#33): `app.alerts`, its routes under /api/v1, engine events -> alerts. Registered
@@ -124,6 +142,8 @@ export async function buildApp(options: AppOptions) {
     await app.register(uploadPlugin, { ...options.uploads, storage: options.storage });
     // Waveform peaks (#22): GET …/assets/:assetId/peaks.
     await app.register(peaksPlugin, { ...options.peaks, storage: options.storage });
+    // Asset previews (#51): GET …/assets/:assetId/audio.
+    await app.register(audioPlugin, { storage: options.storage });
   }
 
   return app;

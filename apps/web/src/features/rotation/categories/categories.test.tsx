@@ -314,6 +314,28 @@ describe('categories', () => {
     expect(await screen.findByText(/No category yet/)).toBeVisible();
   });
 
+  it('asks before leaving with unsaved changes, and not once they are saved', async () => {
+    const { screen, user, history } = renderApp(
+      `${base}/${categoryId}`,
+      asProgrammer({
+        [`GET ${base}/${categoryId}`]: [200, detail],
+        [`POST ${base}/preview`]: [200, preview()],
+        [`PATCH ${base}/${categoryId}`]: (body) => [200, { ...detail, ...(body as object) }],
+        [`GET ${base}`]: [200, { items: [] }],
+      }),
+    );
+    await user.type(await screen.findByLabelText('Name'), ' 2');
+    await user.click(screen.getByText('All categories'));
+    expect(await screen.findByRole('dialog', { name: 'Leave without saving?' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Stay' }));
+    expect(history.location.pathname).toBe(`${base}/${categoryId}`);
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect((await screen.findAllByText('Category saved.')).length).toBeGreaterThan(0);
+    await user.click(screen.getByText('All categories'));
+    await waitFor(() => expect(history.location.pathname).toBe(base));
+  });
+
   it('refuses an empty name before calling the api', async () => {
     const { screen, user, calls } = renderApp(
       `${base}/new`,

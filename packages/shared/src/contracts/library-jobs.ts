@@ -120,6 +120,11 @@ export const createUploadSchema = z.object({
   sizeBytes: z.int().min(1).max(MAX_UPLOAD_BYTES),
   contentType: z.string().trim().min(1).max(200).optional(),
   assetType: assetTypeSchema.default('song'),
+  /**
+   * For callers without `library:write` (presenters, #45): the show the episode upload is for.
+   * They may upload `episode` files for the shows they host only.
+   */
+  showId: uuidSchema.optional(),
 });
 export type CreateUpload = z.input<typeof createUploadSchema>;
 

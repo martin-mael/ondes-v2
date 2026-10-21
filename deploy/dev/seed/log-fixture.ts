@@ -1,7 +1,7 @@
 // Fixture log (#100): yesterday, today and tomorrow (station-local) for the demo station, so
 // the feeder, as-run, timeline and dashboard have a realistic log before the generator (#50).
 // Called from index.ts (`pnpm dev:seed`). Creates the fixture's assets (metadata only, no
-// audio files: ingest is #18) and writes each day only if it has no items yet, so manual
+// audio files: `pnpm dev:seed:audio` adds them, see audio.ts) and writes each day only if it has no items yet, so manual
 // edits survive a re-seed. `LOG_FIXTURE_FORCE=1 pnpm dev:seed` rewrites the days.
 
 import {
@@ -14,7 +14,7 @@ import { addDays, localDateOf } from '../../../apps/api/src/modules/log/time.ts'
 import { createAsset, type Db, type StationScope } from '../../../packages/db/src/index.ts';
 import type { Actor } from '../../../packages/shared/src/index.ts';
 
-const FIXTURE_PREFIX = 'fixture/log/';
+export const FIXTURE_PREFIX = 'fixture/log/';
 
 export async function seedLogFixture(
   db: Db,

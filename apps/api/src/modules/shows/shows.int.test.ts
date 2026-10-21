@@ -1,5 +1,6 @@
 import {
   addMembership,
+  asset,
   auditLog,
   createAsset,
   createOrganization,
@@ -155,6 +156,18 @@ describe('shows', () => {
 
     const list = await ok<{ items: Show[] }>(await call('viewer', 'GET', '/shows'));
     expect(list.items.map((s) => s.id)).toContain(created.id);
+  });
+
+  it('lists who may host: station members, to show:write only', async () => {
+    const list = await ok<{ items: { userId: string; name: string }[] }>(
+      await call('programmer', 'GET', '/show-hosts'),
+    );
+    const ids = list.items.map((h) => h.userId);
+    for (const who of ['programmer', 'host', 'presenter', 'viewer']) {
+      expect(ids).toContain(users[who]?.userId);
+    }
+    expect(ids).not.toContain(users.outsider?.userId);
+    expect((await call('host', 'GET', '/show-hosts')).statusCode).toBe(403);
   });
 
   it('refuses hosts who are not members of the station, and an http artwork url', async () => {
@@ -800,8 +813,12 @@ describe('episode audio and numbers', () => {
       201,
     );
     expect(e.status).toBe('ready');
+    // The api refuses to delete audio an episode still needs (#23)...
     const del = await call('programmer', 'DELETE', `/assets/${audio.id}`);
-    expect(del.statusCode, del.body).toBe(204);
+    expect(del.statusCode, del.body).toBe(409);
+    expect(del.json().error).toBe('asset_in_use');
+    // ...and a delete that bypasses it still can't leave a ready episode without audio.
+    await t.tdb.db.delete(asset).where(eq(asset.id, audio.id));
     const after = await ok<Episode>(await call('viewer', 'GET', `/shows/${s.id}/episodes/${e.id}`));
     expect(after).toMatchObject({ assetId: null, status: 'planned' });
     // And the database refuses `ready` without audio, whoever writes it.

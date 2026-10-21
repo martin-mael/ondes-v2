@@ -2,3 +2,4 @@
 // show slot recurrence (#44).
 export * from './categories/index.ts';
 export * from './recurrence/index.ts';
+export * from './rules/index.ts';

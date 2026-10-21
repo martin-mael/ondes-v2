@@ -52,9 +52,23 @@ export async function withAudit<T>(
 
 /** Inserts one audit row. Prefer `withAudit`, which ties it to the mutation's transaction. */
 export async function writeAudit(db: Db | Tx, ctx: MutationContext, entry: AuditEntry) {
+  await db.insert(auditLog).values(auditRow(ctx, entry));
+}
+
+/**
+ * Inserts one audit row per entry, a thousand per statement: bulk edits, which audit each
+ * entity they change. Call it inside the mutation's transaction.
+ */
+export async function writeAuditMany(db: Db | Tx, ctx: MutationContext, entries: AuditEntry[]) {
+  for (let i = 0; i < entries.length; i += 1000) {
+    await db.insert(auditLog).values(entries.slice(i, i + 1000).map((e) => auditRow(ctx, e)));
+  }
+}
+
+function auditRow(ctx: MutationContext, entry: AuditEntry): typeof auditLog.$inferInsert {
   const scope = ctx.scope;
   const scopeStationId = scope && 'stationId' in scope ? scope.stationId : null;
-  await db.insert(auditLog).values({
+  return {
     orgId: entry.orgId !== undefined ? entry.orgId : (scope?.orgId ?? null),
     stationId: entry.stationId !== undefined ? entry.stationId : scopeStationId,
     actorType: ctx.actor.type,
@@ -63,7 +77,7 @@ export async function writeAudit(db: Db | Tx, ctx: MutationContext, entry: Audit
     entityType: entry.entity.type,
     entityId: entry.entity.id,
     diff: entry.diff ?? {},
-  });
+  };
 }
 
 function actorId(actor: Actor): string {

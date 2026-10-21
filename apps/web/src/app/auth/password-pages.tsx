@@ -5,10 +5,10 @@ import { MailCheckIcon } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '@/ui/button';
 import { FieldGroup } from '@/ui/field';
-import { Spinner } from '@/ui/spinner';
 import { authApi } from '../api/auth.ts';
 import { FormAlert, TextField, useZodForm } from '../forms.tsx';
 import { useI18n } from '../i18n/i18n.tsx';
+import { DelayedSpinner } from '../pending.tsx';
 import { AuthCard, linkClass } from './auth-layout.tsx';
 import { resetSession } from './session.ts';
 
@@ -50,7 +50,7 @@ export function ForgotPasswordPage() {
               autoFocus
             />
             <Button type="submit" disabled={form.pending}>
-              {form.pending && <Spinner />}
+              <DelayedSpinner when={form.pending} />
               {t('auth.forgot.submit')}
             </Button>
           </FieldGroup>
@@ -93,7 +93,7 @@ export function ResetPasswordPage() {
               autoFocus
             />
             <Button type="submit" disabled={form.pending}>
-              {form.pending && <Spinner />}
+              <DelayedSpinner when={form.pending} />
               {t('auth.reset.submit')}
             </Button>
           </FieldGroup>

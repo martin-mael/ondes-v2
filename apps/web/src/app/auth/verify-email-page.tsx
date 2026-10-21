@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 import { getRouteApi, Link, Navigate } from '@tanstack/react-router';
 import { Button } from '@/ui/button';
-import { Spinner } from '@/ui/spinner';
 import { authApi } from '../api/auth.ts';
 import { FormAlert } from '../forms.tsx';
 import { useI18n } from '../i18n/i18n.tsx';
+import { DelayedSpinner } from '../pending.tsx';
 import { AuthCard } from './auth-layout.tsx';
 
 const route = getRouteApi('/_auth/verify-email');
@@ -40,7 +40,7 @@ export function VerifyEmailPage() {
         </div>
       ) : (
         <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Spinner />
+          <DelayedSpinner when />
           {t('auth.verify.pending')}
         </p>
       )}
