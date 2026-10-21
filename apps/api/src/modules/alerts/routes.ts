@@ -59,10 +59,14 @@ export async function alertRoutes(app: FastifyInstance) {
         throw new HttpError(409, 'alert_resolved', 'the alert is already resolved');
       }
       if (current.acknowledgedAt) return current;
-      return (
-        (await app.alerts.acknowledge(scope, actorOf(request), alertId)) ??
-        repo.getAlert(app.db, scope, alertId)
-      );
+      const acknowledged = await app.alerts.acknowledge(scope, actorOf(request), alertId);
+      if (acknowledged) return acknowledged;
+      // Changed in between: resolved (409), or acknowledged by someone else (200).
+      const now = await repo.getAlert(app.db, scope, alertId);
+      if (now.status === 'resolved') {
+        throw new HttpError(409, 'alert_resolved', 'the alert is already resolved');
+      }
+      return now;
     },
   );
 

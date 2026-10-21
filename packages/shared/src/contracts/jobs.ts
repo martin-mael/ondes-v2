@@ -10,8 +10,10 @@ import { z } from 'zod';
  * Work lanes, each backed by its own queue so bulk work never delays urgent work.
  * - `high`: engine-related work and renders a listener can hear (island render, cache sync).
  * - `bulk`: background analysis and imports (loudness, autocue, peaks, dedupe).
+ * - `notify`: notifications sent by the api itself (alert emails, later webhooks). Consumed
+ *   by the api, never by the worker, which only consumes its own jobs' lanes.
  */
-export const jobLaneSchema = z.enum(['high', 'bulk']);
+export const jobLaneSchema = z.enum(['high', 'bulk', 'notify']);
 export type JobLane = z.infer<typeof jobLaneSchema>;
 
 /**

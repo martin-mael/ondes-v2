@@ -1,10 +1,14 @@
 import {
   alert,
+  alertEngineBoot,
+  alertEventSeen,
+  alertNotification,
   type Db,
   type Executor,
   membership,
   NotFoundError,
   type StationScope,
+  type StoredAlertAction,
   silenceSetting,
   station,
   type Tx,
@@ -27,17 +31,19 @@ import {
   silenceSettingsSchema,
   type UpdateSilenceSettings,
 } from '@ondes/shared';
-import { and, desc, eq, inArray, isNotNull, isNull, lt, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from 'drizzle-orm';
 
-// Alert queries (#33). Every function takes the station scope, except the escalation sweep,
-// a system job over all stations that hands each row's scope back to the caller.
+// Alert queries (#33). Every function takes the station scope, except the system sweeps
+// (escalation, pending actions, reconcile, emails), which hand each row's scope back.
 
 type AlertRow = typeof alert.$inferSelect;
+type RaiseData = ReturnType<typeof raiseAlertSchema.parse>;
 
 export function toAlert(row: AlertRow): Alert {
   return {
     ...row,
     status: row.resolvedAt ? 'resolved' : 'open',
+    action: row.action ? { ...row.action, updatedAt: new Date(row.action.updatedAt) } : null,
   };
 }
 
@@ -45,67 +51,128 @@ const openAlert = (scope: StationScope, dedupeKey: string) =>
   and(whereStation(alert, scope), eq(alert.dedupeKey, dedupeKey), isNull(alert.resolvedAt));
 
 const higher = (a: AlertSeverity, b: AlertSeverity) => alertSeverityRank[a] > alertSeverityRank[b];
+const max = (a: AlertSeverity, b: AlertSeverity) => (higher(a, b) ? a : b);
+const later = (a: Date, b: Date) => (a > b ? a : b);
+
+const pendingAction = (name: string | undefined, now: Date): StoredAlertAction | null =>
+  name ? { name, state: 'pending', attempts: 0, error: null, updatedAt: now.toISOString() } : null;
 
 export type RaiseResult =
   /** A new alert was opened. */
   | { kind: 'raised'; alert: Alert }
+  /** The same problem came back within the reopen window: the last alert is open again. */
+  | { kind: 'reopened'; alert: Alert }
   /** The open alert went up in severity. */
   | { kind: 'escalated'; alert: Alert; previousSeverity: AlertSeverity }
   /** Same alert again: one more occurrence, nothing else changed. */
-  | { kind: 'repeated'; alert: Alert };
+  | { kind: 'repeated'; alert: Alert }
+  /** The problem was observed before the last resolve of this key (a late event): ignored. */
+  | { kind: 'stale' };
+
+export type RaiseOptions = {
+  now: Date;
+  /** When the problem was observed (an event's time). Defaults to `now`. */
+  occurredAt?: Date;
+  /** A key resolved less than this long ago is reopened instead of raised anew. */
+  reopenWithinMs: number;
+};
+
+/** Thrown inside a raise transaction that lost a race; the caller retries the transaction. */
+export const RAISE_RACE = Symbol('raise race');
 
 /**
- * Opens an alert, or counts one more occurrence of the open alert with the same dedupe key.
- * A higher severity escalates the open alert; a lower one never lowers it. Safe under
- * concurrency: the partial unique index on open alerts decides who opens it.
+ * Opens an alert, reopens the last one with the same key (resolved within the reopen window),
+ * or counts one more occurrence of the open one. A higher severity escalates the open alert;
+ * a lower one never lowers it. Runs inside the caller's transaction; throws `RAISE_RACE` when
+ * a concurrent raise won (partial unique index), and the caller retries.
  */
-export async function raiseAlert(
-  db: Db,
+export async function raiseIn(
+  tx: Tx,
   scope: StationScope,
   input: RaiseAlert,
-  now = new Date(),
+  options: RaiseOptions,
 ): Promise<RaiseResult> {
   const data = raiseAlertSchema.parse(input);
-  for (let attempt = 0; ; attempt++) {
-    const result = await db.transaction(async (tx) => {
-      const [current] = await tx
-        .select()
-        .from(alert)
-        .where(openAlert(scope, data.dedupeKey))
-        .for('update');
-      if (current) return bump(tx, current, data, now);
+  const { now } = options;
+  const at = options.occurredAt ?? now;
 
-      const [created] = await tx
-        .insert(alert)
-        .values({
-          orgId: scope.orgId,
-          stationId: scope.stationId,
-          type: data.type,
-          severity: data.severity,
-          dedupeKey: data.dedupeKey,
-          title: data.title,
-          message: data.message ?? null,
-          details: data.details ?? {},
-          raisedAt: now,
-          lastSeenAt: now,
-          ...escalation(data, now),
-        })
-        .onConflictDoNothing()
-        .returning();
-      return created ? ({ kind: 'raised', alert: toAlert(created) } as const) : null;
-    });
-    if (result) return result;
-    // Another raise opened it between our select and insert: bump that one.
-    if (attempt >= 2) throw new Error(`could not raise alert ${data.dedupeKey}`);
+  const [current] = await tx
+    .select()
+    .from(alert)
+    .where(openAlert(scope, data.dedupeKey))
+    .for('update');
+  if (current) return bump(tx, current, data, at, now);
+
+  const [last] = await tx
+    .select()
+    .from(alert)
+    .where(and(whereStation(alert, scope), eq(alert.dedupeKey, data.dedupeKey)))
+    .orderBy(desc(alert.id))
+    .limit(1)
+    .for('update');
+  if (last?.resolvedAt && options.occurredAt && last.resolvedAt >= at) return { kind: 'stale' };
+
+  if (last?.resolvedAt && at.getTime() - last.resolvedAt.getTime() < options.reopenWithinMs) {
+    const severity = max(last.severity, data.severity);
+    const [row] = await tx
+      .update(alert)
+      .set({
+        resolvedAt: null,
+        resolution: null,
+        acknowledgedAt: null,
+        acknowledgedBy: null,
+        severity,
+        escalatedAt: higher(severity, last.severity) ? now : last.escalatedAt,
+        occurrences: sql`${alert.occurrences} + 1`,
+        lastSeenAt: at,
+        title: data.title,
+        message: data.message ?? last.message,
+        details: { ...last.details, ...data.details },
+        action: pendingAction(data.action, now),
+        ...escalation(data, severity, at),
+      })
+      .where(eq(alert.id, last.id))
+      .returning()
+      .catch(raceOnUniqueViolation);
+    if (!row) throw RAISE_RACE;
+    return { kind: 'reopened', alert: toAlert(row) };
   }
+
+  const [created] = await tx
+    .insert(alert)
+    .values({
+      orgId: scope.orgId,
+      stationId: scope.stationId,
+      type: data.type,
+      severity: data.severity,
+      dedupeKey: data.dedupeKey,
+      title: data.title,
+      message: data.message ?? null,
+      details: data.details ?? {},
+      raisedAt: at,
+      lastSeenAt: at,
+      action: pendingAction(data.action, now),
+      ...escalation(data, data.severity, at),
+    })
+    .onConflictDoNothing()
+    .returning();
+  if (!created) throw RAISE_RACE;
+  return { kind: 'raised', alert: toAlert(created) };
 }
 
-function escalation(data: ReturnType<typeof raiseAlertSchema.parse>, now: Date) {
-  if (!data.escalate || !higher(data.escalate.to, data.severity)) {
+function raceOnUniqueViolation(error: unknown): never {
+  const e = error as { code?: string; cause?: { code?: string } };
+  if (e.code === '23505' || e.cause?.code === '23505') throw RAISE_RACE;
+  throw error;
+}
+
+/** The time-based escalation of a raise, counted from `from` (when the problem started). */
+function escalation(data: RaiseData, severity: AlertSeverity, from: Date) {
+  if (!data.escalate || !higher(data.escalate.to, severity)) {
     return { escalateAt: null, escalateTo: null };
   }
   return {
-    escalateAt: new Date(now.getTime() + data.escalate.afterSeconds * 1000),
+    escalateAt: new Date(from.getTime() + data.escalate.afterSeconds * 1000),
     escalateTo: data.escalate.to,
   };
 }
@@ -113,7 +180,8 @@ function escalation(data: ReturnType<typeof raiseAlertSchema.parse>, now: Date) 
 async function bump(
   tx: Tx,
   current: AlertRow,
-  data: ReturnType<typeof raiseAlertSchema.parse>,
+  data: RaiseData,
+  at: Date,
   now: Date,
 ): Promise<RaiseResult> {
   const escalates = higher(data.severity, current.severity);
@@ -123,7 +191,7 @@ async function bump(
     .update(alert)
     .set({
       occurrences: sql`${alert.occurrences} + 1`,
-      lastSeenAt: now,
+      lastSeenAt: later(current.lastSeenAt, at),
       details: { ...current.details, ...data.details },
       ...(escalates
         ? {
@@ -135,7 +203,7 @@ async function bump(
         : {}),
       ...(escalates && pendingDone ? { escalateAt: null, escalateTo: null } : {}),
       // An escalation schedule on a repeat raise only applies if none is pending.
-      ...(!current.escalateAt && !escalates ? escalation(data, now) : {}),
+      ...(!current.escalateAt && !escalates ? escalation(data, current.severity, at) : {}),
     })
     .where(eq(alert.id, current.id))
     .returning();
@@ -145,17 +213,34 @@ async function bump(
     : { kind: 'repeated', alert: toAlert(row) };
 }
 
-/** Resolves the open alert with this dedupe key, if any. */
-export async function resolveAlert(
+export type ResolveResult = Alert | null | 'stale';
+
+/**
+ * Resolves the open alert with this dedupe key, if any. With `occurredAt` (an event's time),
+ * an open alert last raised after it stays open: the resolve is older than the problem.
+ */
+export async function resolveIn(
   db: Executor,
   scope: StationScope,
   dedupeKey: string,
   resolution: string,
-  now = new Date(),
-): Promise<Alert | null> {
+  options: { now: Date; occurredAt?: Date },
+): Promise<ResolveResult> {
+  const [current] = await db
+    .select({ lastSeenAt: alert.lastSeenAt })
+    .from(alert)
+    .where(openAlert(scope, dedupeKey))
+    .for('update');
+  if (!current) return null;
+  if (options.occurredAt && current.lastSeenAt > options.occurredAt) return 'stale';
   const [row] = await db
     .update(alert)
-    .set({ resolvedAt: now, resolution, escalateAt: null, escalateTo: null })
+    .set({
+      resolvedAt: options.occurredAt ?? options.now,
+      resolution,
+      escalateAt: null,
+      escalateTo: null,
+    })
     .where(openAlert(scope, dedupeKey))
     .returning();
   return row ? toAlert(row) : null;
@@ -209,6 +294,16 @@ export async function getAlert(db: Executor, scope: StationScope, alertId: strin
   return toAlert(row);
 }
 
+/** An alert by id across stations, with its scope (system jobs: emails, actions). */
+export async function findAlert(
+  db: Executor,
+  alertId: string,
+): Promise<{ scope: StationScope; alert: Alert } | null> {
+  const [row] = await db.select().from(alert).where(eq(alert.id, alertId));
+  // The ids were just read from the alert row.
+  return row ? { scope: unsafeScope(row.orgId, row.stationId), alert: toAlert(row) } : null;
+}
+
 /** Newest first. Cursor = the last alert id of the previous page (ids are UUIDv7). */
 export async function listAlerts(
   db: Executor,
@@ -242,7 +337,8 @@ export type DueEscalation = {
 
 /**
  * Applies every time-based escalation that is due, across stations (a system sweep). Rows
- * locked by another replica's sweep are skipped, so each escalation happens once.
+ * locked by another replica's sweep are skipped, so each escalation happens once. A failed
+ * action goes back to pending, for one more attempt.
  */
 export async function escalateDue(db: Db, now = new Date()): Promise<DueEscalation[]> {
   return db.transaction(async (tx) => {
@@ -255,12 +351,22 @@ export async function escalateDue(db: Db, now = new Date()): Promise<DueEscalati
     for (const current of due) {
       const to = current.escalateTo;
       const escalates = to !== null && higher(to, current.severity);
+      const retryAction =
+        escalates && current.action?.state === 'failed'
+          ? {
+              action: {
+                ...current.action,
+                state: 'pending' as const,
+                updatedAt: now.toISOString(),
+              },
+            }
+          : {};
       const [row] = await tx
         .update(alert)
         .set({
           escalateAt: null,
           escalateTo: null,
-          ...(escalates ? { severity: to, escalatedAt: now } : {}),
+          ...(escalates ? { severity: to, escalatedAt: now, ...retryAction } : {}),
         })
         .where(eq(alert.id, current.id))
         .returning();
@@ -276,6 +382,137 @@ export async function escalateDue(db: Db, now = new Date()): Promise<DueEscalati
   });
 }
 
+// --- Actions -----------------------------------------------------------------------------
+
+/**
+ * Claims an open alert's pending action (pending -> running). Null if it isn't pending any
+ * more: another replica claimed it, or the alert resolved (never act on a problem that is
+ * gone, e.g. skip a healthy item after the silence ended).
+ */
+export async function claimAction(
+  db: Executor,
+  alertId: string,
+  now = new Date(),
+): Promise<{ scope: StationScope; alert: Alert } | null> {
+  const [row] = await db
+    .update(alert)
+    .set({
+      action: sql`${alert.action} || jsonb_build_object('state', 'running', 'attempts', coalesce((${alert.action} ->> 'attempts')::int, 0) + 1, 'updatedAt', ${now.toISOString()}::text)`,
+    })
+    .where(
+      and(
+        eq(alert.id, alertId),
+        isNull(alert.resolvedAt),
+        sql`${alert.action} ->> 'state' = 'pending'`,
+      ),
+    )
+    .returning();
+  return row ? { scope: unsafeScope(row.orgId, row.stationId), alert: toAlert(row) } : null;
+}
+
+export async function finishAction(
+  db: Executor,
+  alertId: string,
+  outcome: { state: 'done' | 'failed'; error: string | null },
+  now = new Date(),
+): Promise<void> {
+  const patch = JSON.stringify({ ...outcome, updatedAt: now.toISOString() });
+  await db
+    .update(alert)
+    .set({ action: sql`${alert.action} || ${patch}::jsonb` })
+    .where(and(eq(alert.id, alertId), sql`${alert.action} ->> 'state' = 'running'`));
+}
+
+/** Open alerts with a pending action, oldest first (optionally of one station). */
+export async function pendingActions(
+  db: Executor,
+  stationId?: string,
+): Promise<Array<{ alertId: string; stationId: string; name: string }>> {
+  const rows = await db
+    .select({ alertId: alert.id, stationId: alert.stationId, action: alert.action })
+    .from(alert)
+    .where(
+      and(
+        isNull(alert.resolvedAt),
+        sql`${alert.action} ->> 'state' = 'pending'`,
+        stationId ? eq(alert.stationId, stationId) : undefined,
+      ),
+    )
+    .orderBy(alert.id)
+    .limit(100);
+  return rows.flatMap((r) =>
+    r.action ? [{ alertId: r.alertId, stationId: r.stationId, name: r.action.name }] : [],
+  );
+}
+
+// --- Event bookkeeping (the durable consumer) --------------------------------------------
+
+/** Records an event as applied. False if it already was (a redelivery). */
+export async function claimEvent(
+  tx: Executor,
+  eventId: string,
+  stationId: string,
+): Promise<boolean> {
+  const rows = await tx
+    .insert(alertEventSeen)
+    .values({ eventId, stationId })
+    .onConflictDoNothing()
+    .returning({ eventId: alertEventSeen.eventId });
+  return rows.length > 0;
+}
+
+export async function pruneSeenEvents(db: Executor, before: Date): Promise<void> {
+  await db.delete(alertEventSeen).where(lt(alertEventSeen.seenAt, before));
+}
+
+/** Notes an engine boot for the station; the newest one (by time) wins. */
+export async function noteEngineBoot(
+  db: Executor,
+  scope: StationScope,
+  bootId: string,
+  at: Date,
+): Promise<void> {
+  await db
+    .insert(alertEngineBoot)
+    .values({ stationId: scope.stationId, orgId: scope.orgId, bootId, bootedAt: at })
+    .onConflictDoUpdate({
+      target: alertEngineBoot.stationId,
+      set: { bootId, bootedAt: at },
+      setWhere: and(ne(alertEngineBoot.bootId, bootId), lt(alertEngineBoot.bootedAt, at)),
+    });
+}
+
+/** Whether an event of `bootId` at `at` belongs to a boot older than the newest one seen. */
+export async function isStaleBoot(
+  db: Executor,
+  scope: StationScope,
+  bootId: string | null,
+  at: Date,
+): Promise<boolean> {
+  if (!bootId) return false;
+  const [row] = await db
+    .select()
+    .from(alertEngineBoot)
+    .where(eq(alertEngineBoot.stationId, scope.stationId));
+  return !!row && row.bootId !== bootId && at < row.bootedAt;
+}
+
+/** Open alerts of these types not seen since `seenBefore`, across stations (reconcile). */
+export async function quietOpenAlerts(
+  db: Executor,
+  types: string[],
+  seenBefore: Date,
+): Promise<Array<{ scope: StationScope; alert: Alert }>> {
+  const rows = await db
+    .select()
+    .from(alert)
+    .where(
+      and(isNull(alert.resolvedAt), inArray(alert.type, types), lt(alert.lastSeenAt, seenBefore)),
+    )
+    .limit(500);
+  return rows.map((row) => ({ scope: unsafeScope(row.orgId, row.stationId), alert: toAlert(row) }));
+}
+
 /** The scope of a station known only by id (engine events). Null if there is none. */
 export async function stationScopeById(
   db: Executor,
@@ -288,6 +525,8 @@ export async function stationScopeById(
   // The ids were just read from the station row.
   return row ? unsafeScope(row.orgId, stationId) : null;
 }
+
+// --- Notifications -----------------------------------------------------------------------
 
 /** Roles that may manage alerts: they get the emails. */
 const managerRoles = (Object.keys(rolePermissions) as Role[]).filter((role) =>
@@ -316,6 +555,73 @@ export async function alertRecipients(
       ),
     )
     .orderBy(user.email);
+}
+
+/** What the email job already did for this alert at this severity (a retried job). */
+export async function notificationsOf(
+  db: Executor,
+  alertId: string,
+  severity: AlertSeverity,
+): Promise<{ sent: Set<string>; suppressed: boolean }> {
+  const rows = await db
+    .select({ email: alertNotification.email, status: alertNotification.status })
+    .from(alertNotification)
+    .where(and(eq(alertNotification.alertId, alertId), eq(alertNotification.severity, severity)));
+  return {
+    sent: new Set(rows.filter((r) => r.status === 'sent').map((r) => r.email)),
+    suppressed: rows.some((r) => r.status === 'suppressed'),
+  };
+}
+
+export async function recordNotification(
+  db: Executor,
+  target: Alert,
+  severity: AlertSeverity,
+  entry: { email: string; status: 'sent' | 'suppressed'; reason?: string },
+): Promise<void> {
+  await db
+    .insert(alertNotification)
+    .values({
+      alertId: target.id,
+      orgId: target.orgId,
+      stationId: target.stationId,
+      type: target.type,
+      severity,
+      email: entry.email,
+      status: entry.status,
+      reason: entry.reason ?? null,
+    })
+    .onConflictDoNothing();
+}
+
+/**
+ * Whether another alert of the same (station, type) was emailed at this severity or above
+ * since `since`: the cooldown against flapping.
+ */
+export async function emailedRecently(
+  db: Executor,
+  target: Alert,
+  severity: AlertSeverity,
+  since: Date,
+): Promise<boolean> {
+  const atLeast = (Object.keys(alertSeverityRank) as AlertSeverity[]).filter(
+    (s) => alertSeverityRank[s] >= alertSeverityRank[severity],
+  );
+  const [row] = await db
+    .select({ id: alertNotification.id })
+    .from(alertNotification)
+    .where(
+      and(
+        eq(alertNotification.stationId, target.stationId),
+        eq(alertNotification.type, target.type),
+        ne(alertNotification.alertId, target.id),
+        eq(alertNotification.status, 'sent'),
+        inArray(alertNotification.severity, atLeast),
+        gte(alertNotification.createdAt, since),
+      ),
+    )
+    .limit(1);
+  return !!row;
 }
 
 // --- Silence settings --------------------------------------------------------------------
@@ -347,7 +653,8 @@ export async function getSilenceSettings(
 
 /**
  * Saves a patch: `maxSeconds` / `thresholdDb` into `station.engine_settings.blank` (other
- * engine settings untouched), the rest into `silence_setting`. Run it in a transaction.
+ * engine settings untouched), the rest into `silence_setting`. Omitted fields keep their
+ * value. Run it in a transaction.
  */
 export async function updateSilenceSettings(
   db: Executor,
@@ -355,7 +662,8 @@ export async function updateSilenceSettings(
   patch: UpdateSilenceSettings,
 ): Promise<{ before: SilenceSettings; after: SilenceSettings }> {
   const before = await getSilenceSettings(db, scope);
-  const after = silenceSettingsSchema.parse({ ...before, ...patch });
+  const defined = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+  const after = silenceSettingsSchema.parse({ ...before, ...defined });
   if (patch.maxSeconds !== undefined || patch.thresholdDb !== undefined) {
     const blank = { maxSeconds: after.maxSeconds, thresholdDb: after.thresholdDb };
     await db
@@ -373,17 +681,4 @@ export async function updateSilenceSettings(
       .onConflictDoUpdate({ target: silenceSetting.stationId, set: own });
   }
   return { before, after };
-}
-
-/** Adds keys to an alert's details (what an automatic action did). No event. */
-export async function mergeAlertDetails(
-  db: Executor,
-  scope: StationScope,
-  alertId: string,
-  details: Record<string, unknown>,
-): Promise<void> {
-  await db
-    .update(alert)
-    .set({ details: sql`${alert.details} || ${JSON.stringify(details)}::jsonb` })
-    .where(and(whereStation(alert, scope), eq(alert.id, alertId)));
 }

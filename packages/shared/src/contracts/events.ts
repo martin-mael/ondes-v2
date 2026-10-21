@@ -140,6 +140,7 @@ export type EngineRealtimeEvent = z.infer<typeof engineRealtimeEventSchema>;
 // ---------------------------------------------------------------------------------------
 // Alerts (#33). `data` is a snapshot of the alert after the change (API shape in
 // `contracts/alerts.ts`, with ISO times). A repeat raise of an open alert publishes nothing.
+// These are for the UI (best effort): side effects run from durable consumers (ADR 0006).
 
 const alertSnapshotSchema = z.object({
   alertId: z.uuid(),
@@ -156,12 +157,27 @@ const alertSnapshotSchema = z.object({
   acknowledgedBy: z.uuid().nullable(),
   resolvedAt: isoTime.nullable(),
   resolution: z.string().nullable(),
+  action: z
+    .object({
+      name: z.string(),
+      state: z.enum(['pending', 'running', 'done', 'failed']),
+      attempts: z.int().nonnegative(),
+      error: z.string().nullable(),
+    })
+    .nullable(),
 });
 export type AlertSnapshot = z.infer<typeof alertSnapshotSchema>;
 
 export const alertRaisedEventSchema = z.object({
   ...envelope,
   type: z.literal('alert.raised'),
+  data: alertSnapshotSchema,
+});
+
+/** The same problem came back shortly after it was resolved: the alert is open again. */
+export const alertReopenedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('alert.reopened'),
   data: alertSnapshotSchema,
 });
 
@@ -196,6 +212,7 @@ export const alertSilenceSettingsUpdatedEventSchema = z.object({
 
 export const alertRealtimeEventSchema = z.discriminatedUnion('type', [
   alertRaisedEventSchema,
+  alertReopenedEventSchema,
   alertEscalatedEventSchema,
   alertAcknowledgedEventSchema,
   alertResolvedEventSchema,

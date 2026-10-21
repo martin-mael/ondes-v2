@@ -18,108 +18,161 @@ export function engineBlankSettings(settings: SilenceSettings) {
   return { maxSeconds: settings.maxSeconds, thresholdDb: settings.thresholdDb };
 }
 
-/** The engine commands the silence action needs. */
-export type SilenceActionEngine = Pick<EngineAdapter, 'skip' | 'clear'>;
+/** The engine commands the silence action and the reconcile need. */
+export type AlertEngine = Pick<EngineAdapter, 'skip' | 'clear' | 'state'>;
+
+/** Silence action -> alert action name. */
+export const silenceActions = {
+  skip: 'engine.skip',
+  safety: 'engine.safety',
+} as const satisfies Record<Exclude<SilenceAction, 'none'>, string>;
 
 export type EngineAlertsOptions = {
   db: Db;
   alerts: AlertService;
-  /** The station's engine adapter, if this api runs it (#35's registry). */
-  engineFor?: (stationId: string) => SilenceActionEngine | undefined;
+  /** The station's engine adapter, if this process holds it (#35's `app.stationEngines`). */
+  engineFor?: (stationId: string) => AlertEngine | undefined;
   logger: Logger;
 };
 
-/** What the action did, stored in the alert's `details.action`. */
-export type SilenceActionOutcome = {
-  action: SilenceAction;
-  result: 'done' | 'failed' | 'no_engine' | 'none';
-  error?: string;
-};
-
 /**
- * Turns engine events from the fanout (#28) into alerts:
+ * Engine events (#28) -> alerts. Runs from the durable `alerts` consumer (one api replica at
+ * a time, events in order per station, deduplicated on the event id):
  *
- * - `engine.blank.detected`: raise `engine.silence` and run the station's silence action
- *   (skip, or fall back to the safety playlist). With an action, the alert is a warning that
- *   escalates to critical after `escalateAfterSeconds` of continued silence. Without one, it
- *   is critical at once.
- * - `engine.blank.recovered`, `engine.booted`: resolve it (a new boot starts a new blank
- *   detector: silence on the new boot is detected again).
+ * - `engine.blank.detected`: raise `engine.silence` with the station's silence action. With an
+ *   action, the alert is a warning that escalates to critical after `escalateAfterSeconds` of
+ *   continued silence; without one, critical at once.
+ * - `engine.blank.recovered`, `engine.booted`: resolve it (a new boot has a fresh detector,
+ *   which fires again if it is still silent).
  * - `engine.down` / `engine.up`: raise / resolve `engine.down`.
  *
- * The action runs only when this call opened the alert, so a redelivered event or a second
- * api replica never skips twice.
+ * Late events are ignored rather than applied out of order: an event from an older engine boot
+ * than the newest one seen, a raise older than the key's last resolve, a resolve older than
+ * the last raise. The action itself is registered with the alert service, so it runs on a
+ * replica that holds the station's engine, once (claimed in the database), and only while
+ * the alert is still open.
  */
-export function createEngineAlertHandler(options: EngineAlertsOptions) {
+export function createEngineAlerts(options: EngineAlertsOptions) {
   const { db, alerts, logger } = options;
+  const engineFor = options.engineFor ?? (() => undefined);
 
-  async function runSilenceAction(
-    stationId: string,
-    action: SilenceAction,
-  ): Promise<SilenceActionOutcome> {
-    if (action === 'none') return { action, result: 'none' };
-    const engine = options.engineFor?.(stationId);
-    if (!engine) return { action, result: 'no_engine' };
-    try {
-      // Safety: an empty queue makes the engine's fallback pick the safety playlist; the
-      // skip ends the silent item now instead of at its end.
-      if (action === 'safety') await engine.clear();
-      await engine.skip();
-      return { action, result: 'done' };
-    } catch (error) {
-      logger.error({ err: error, stationId, action }, 'Silence action failed');
-      return { action, result: 'failed', error: (error as Error).message };
-    }
+  function requireEngine(stationId: string): AlertEngine {
+    const engine = engineFor(stationId);
+    if (!engine) throw new Error('engine not available on this replica');
+    return engine;
   }
 
-  return async function handle(event: RealtimeEvent): Promise<void> {
+  alerts.registerAction(silenceActions.skip, {
+    available: (stationId) => engineFor(stationId) !== undefined,
+    async run(scope) {
+      await requireEngine(scope.stationId).skip();
+    },
+  });
+  alerts.registerAction(silenceActions.safety, {
+    available: (stationId) => engineFor(stationId) !== undefined,
+    async run(scope) {
+      // An empty queue makes the engine's fallback pick the safety playlist; the skip ends the
+      // silent item now instead of at its end.
+      const engine = requireEngine(scope.stationId);
+      await engine.clear();
+      await engine.skip();
+    },
+  });
+
+  async function handle(event: RealtimeEvent): Promise<void> {
     if (!event.type.startsWith('engine.')) return;
     // Engines of stations that aren't in the database (tests, a stale container) are ignored.
     if (!uuidSchema.safeParse(event.stationId).success) return;
     const scope = await repo.stationScopeById(db, event.stationId);
     if (!scope) return;
+    const at = new Date(event.at);
+    const opts = { eventId: event.id, occurredAt: at };
 
     switch (event.type) {
+      case 'engine.booted':
+        await repo.noteEngineBoot(db, scope, event.data.bootId, at);
+        await alerts.resolve(scope, alertTypes.silence, { ...opts, reason: 'engine_restarted' });
+        return;
       case 'engine.blank.detected': {
+        if (await repo.isStaleBoot(db, scope, event.data.bootId, at)) return;
         const settings = await repo.getSilenceSettings(db, scope);
-        const acts = settings.action !== 'none';
-        const result = await alerts.raise(scope, {
-          type: alertTypes.silence,
-          severity: acts ? 'warning' : 'critical',
-          dedupeKey: alertTypes.silence,
-          title: 'Silence on air',
-          message: `The program output has been silent for ${settings.maxSeconds} s (below ${settings.thresholdDb} dBFS).`,
-          details: { bootId: event.data.bootId, detectedAt: event.at },
-          ...(acts
-            ? { escalate: { afterSeconds: settings.escalateAfterSeconds, to: 'critical' } }
-            : {}),
-        });
-        if (result.kind !== 'raised') return;
-        const outcome = await runSilenceAction(event.stationId, settings.action);
-        await repo.mergeAlertDetails(db, scope, result.alert.id, { action: outcome });
+        const action = settings.action === 'none' ? undefined : silenceActions[settings.action];
+        await alerts.raise(
+          scope,
+          {
+            type: alertTypes.silence,
+            severity: action ? 'warning' : 'critical',
+            dedupeKey: alertTypes.silence,
+            title: 'Silence on air',
+            message: `The program output has been silent for ${settings.maxSeconds} s (below ${settings.thresholdDb} dBFS).`,
+            details: { bootId: event.data.bootId, detectedAt: event.at },
+            action,
+            ...(action
+              ? { escalate: { afterSeconds: settings.escalateAfterSeconds, to: 'critical' } }
+              : {}),
+          },
+          opts,
+        );
         return;
       }
       case 'engine.blank.recovered':
-        await alerts.resolve(scope, alertTypes.silence, { reason: 'recovered' });
-        return;
-      case 'engine.booted':
-        await alerts.resolve(scope, alertTypes.silence, { reason: 'engine_restarted' });
+        if (await repo.isStaleBoot(db, scope, event.data.bootId, at)) return;
+        await alerts.resolve(scope, alertTypes.silence, { ...opts, reason: 'recovered' });
         return;
       case 'engine.down':
-        await alerts.raise(scope, {
-          type: alertTypes.engineDown,
-          severity: 'critical',
-          dedupeKey: alertTypes.engineDown,
-          title: 'Engine not responding',
-          message: `The station engine stopped answering its health check (${event.data.reason}). The stream may be off air.`,
-          details: { reason: event.data.reason, bootId: event.data.bootId },
-        });
+        await alerts.raise(
+          scope,
+          {
+            type: alertTypes.engineDown,
+            severity: 'critical',
+            dedupeKey: alertTypes.engineDown,
+            title: 'Engine not responding',
+            message: `The station engine stopped answering its health check (${event.data.reason}). The stream may be off air.`,
+            details: { reason: event.data.reason, bootId: event.data.bootId },
+          },
+          opts,
+        );
         return;
       case 'engine.up':
-        await alerts.resolve(scope, alertTypes.engineDown, { reason: 'engine_up' });
+        await repo.noteEngineBoot(db, scope, event.data.bootId, at);
+        await alerts.resolve(scope, alertTypes.engineDown, { ...opts, reason: 'engine_up' });
         return;
       default:
         return;
     }
-  };
+  }
+
+  /**
+   * Closes engine alerts whose recovery event was lost (a message dropped while no api ran):
+   * asks the station's engine, if this process holds it, about alerts not seen for
+   * `quietMs`. Answering at all resolves `engine.down`; not being blank resolves
+   * `engine.silence`.
+   */
+  async function reconcile(quietMs = 30_000): Promise<number> {
+    const quiet = await repo.quietOpenAlerts(
+      db,
+      [alertTypes.silence, alertTypes.engineDown],
+      new Date(Date.now() - quietMs),
+    );
+    let resolved = 0;
+    for (const { scope, alert } of quiet) {
+      const engine = engineFor(scope.stationId);
+      if (!engine) continue;
+      let blank: boolean;
+      try {
+        blank = (await engine.state()).blank;
+      } catch {
+        continue; // Still down, or unreachable: the health monitor reports it.
+      }
+      if (alert.type === alertTypes.silence && blank) continue;
+      const closed = await alerts.resolve(scope, alert.dedupeKey, { reason: 'reconciled' });
+      if (closed) {
+        resolved++;
+        logger.info({ stationId: scope.stationId, type: alert.type }, 'Alert reconciled');
+      }
+    }
+    return resolved;
+  }
+
+  return { handle, reconcile };
 }

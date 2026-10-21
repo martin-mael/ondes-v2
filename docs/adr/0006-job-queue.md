@@ -19,10 +19,12 @@ Names below use the default prefix `ondes`.
 |---|---|---|
 | `ondes.jobs` | direct exchange | routing key = lane |
 | `ondes.jobs.high`, `ondes.jobs.bulk` | quorum queues | one per lane, so bulk analysis never delays engine-related work |
+| `ondes.jobs.notify` | quorum queue | notifications the api sends itself (alert emails); consumed by the api, never by the worker (added by #33) |
 | `ondes.jobs.retry` | direct exchange | routing key = `<lane>.<delayMs>` |
 | `ondes.jobs.<lane>.retry.<delayMs>ms` | quorum queues with `x-message-ttl` | hold a failed job for its tier, then dead-letter it back to `ondes.jobs` with its lane as routing key |
 | `ondes.jobs.dead` | fanout exchange + quorum queue | the DLQ |
 | `ondes.events` | fanout exchange | real-time events; each subscriber binds an exclusive auto-delete queue |
+| `ondes.events.<name>` | quorum queue, single active consumer | a durable consumer of the events (`consumeEventsDurable`), e.g. `ondes.events.alerts` (added by #33) |
 
 - Retry tiers are 10 s, 1 min and 10 min; a job gets 4 attempts, then goes to the DLQ. One queue per tier (instead of per-message TTL) keeps expiry in FIFO order, which quorum queues require. The delay is part of the queue name because a queue's TTL can't change after declaration.
 - The worker acks a delivery only after its follow-up message (retry or dead letter) is confirmed. If publishing that fails, the delivery is requeued, and the lane queues' quorum `x-delivery-limit` (5) dead-letters a message that keeps crashing workers. Dead-lettering uses the at-least-once strategy.
@@ -33,9 +35,17 @@ Names below use the default prefix `ondes`.
   - (Revised in review of #110: the first version blocked on `succeeded` for every key, which silently dropped legitimate re-runs.)
 - Delivery is at least once. Handlers must be idempotent anyway, because a worker can die between finishing a handler and recording success.
 
+### Event transport (added by #33)
+Events on `ondes.events` have two kinds of consumers, with different guarantees:
+
+- **UI (SSE, dashboards): best-effort fanout.** `subscribeEvents` gives each api instance its own exclusive, auto-deleted, no-ack queue: every instance sees every event, concurrently, and misses what was published while it was down. Clients resync over HTTP. The SSE plugin relays an allowlist of event types to browsers, never everything on the exchange.
+- **Side effects (alerts, automatic actions, emails): durable competing consumers.** `consumeEventsDurable(name, …)` binds one durable quorum queue per `name` with `x-single-active-consumer`. Every api replica consumes it, one at a time is active (failover when it goes away), events arrive in publish order, are handled in order per key (the station) and acked once handled. Events published while no replica runs wait in the queue (TTL 1 h, capped at 100 000, oldest dropped). A handler that keeps failing is retried in process, then requeued. Delivery is at least once: handlers deduplicate on the event id (engine events have deterministic ids) and drop events older than the state they would change.
+- Work that must run *where something lives* (an engine command on the replica that holds the station's engine) is recorded in the database by the durable consumer and claimed there by whichever replica can run it, never sent through the fanout alone.
+- Never put a side effect on a `subscribeEvents` handler: with N replicas it runs N times, or zero times during a restart.
+
 ### Job registry
 The worker loads `apps/worker/src/jobs/<job>/index.ts`, whose default export is a `defineJob(...)` named after its folder. Adding a job never touches a shared file.
 
 ## Consequences
 - Job status lives behind `JobRunStore`. Production uses the Postgres store (`job_run` table in `packages/db`), whose partial unique index on in-flight keys makes duplicate detection atomic across worker replicas. The in-memory store is per-process and prunes finished runs (`maxFinishedRuns`), for tests and single-process dev only.
-- Events are transient: a subscriber that is down misses them, and clients resync over HTTP.
+- Fanout subscriptions are transient: a subscriber that is down misses events, and clients resync over HTTP. Durable event queues (`consumeEventsDurable`) are for consumers that must not miss them.

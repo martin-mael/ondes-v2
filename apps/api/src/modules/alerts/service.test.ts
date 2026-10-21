@@ -14,7 +14,7 @@ const alert: Alert = {
   dedupeKey: 'engine.silence',
   title: 'Silence on air',
   message: 'Silent for 10 s.',
-  details: { action: { action: 'skip', result: 'done' } },
+  details: { bootId: 'boot-1' },
   occurrences: 1,
   raisedAt: new Date('2026-10-25T00:30:00Z'),
   lastSeenAt: new Date('2026-10-25T00:30:00Z'),
@@ -25,6 +25,13 @@ const alert: Alert = {
   acknowledgedBy: null,
   resolvedAt: null,
   resolution: null,
+  action: {
+    name: 'engine.skip',
+    state: 'done',
+    attempts: 1,
+    error: null,
+    updatedAt: new Date('2026-10-25T00:30:01Z'),
+  },
 };
 
 describe('alert events', () => {

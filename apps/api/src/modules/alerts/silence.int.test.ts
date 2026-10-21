@@ -96,7 +96,7 @@ beforeAll(async () => {
     rabbit: { rabbit },
     mail: { mailer: createMemoryMailer() },
     auth: TEST_AUTH_CONFIG,
-    alerts: { engineFor: () => station.adapter, escalationIntervalMs: 0 },
+    alerts: { engineFor: () => station.adapter, sweepIntervalMs: 0 },
     fastify: { logger: false },
   });
   await app.ready();
@@ -201,7 +201,7 @@ describe('silence detection against Liquidsoap', () => {
     ).items;
     expect(alert).toMatchObject({
       status: 'resolved',
-      details: { action: { action: 'skip', result: 'done' } },
+      action: { name: 'engine.skip', state: 'done', attempts: 1 },
     });
   }, 60_000);
 });

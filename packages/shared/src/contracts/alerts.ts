@@ -5,9 +5,11 @@ import { uuidSchema } from './tenancy.ts';
 // packages/db/src/schema/alerts.ts. Modules add alert *types* (open strings, see
 // `alertTypeSchema`); they don't reshape the alert.
 //
-// Lifecycle: raised -> (escalated) -> resolved. Acknowledging is orthogonal: a user says
-// "I'm on it" while the alert stays open. At most one open alert per (station, dedupe key):
-// raising it again counts an occurrence instead of opening a second one.
+// Lifecycle: raised -> (escalated) -> resolved, and reopened when the same problem comes back
+// within the reopen window (flapping). Acknowledging is orthogonal: a user says "I'm on it"
+// while the alert stays open; escalation still raises the severity, but sends no email for
+// an acknowledged alert. At most one open alert per (station, dedupe key): raising it again
+// counts an occurrence instead of opening a second one.
 
 export const alertSeveritySchema = z.enum(['info', 'warning', 'critical']);
 export type AlertSeverity = z.infer<typeof alertSeveritySchema>;
@@ -43,7 +45,23 @@ export const alertTypes = {
   streamSourceMissing: 'stream.source_missing',
 } as const;
 
-/** Free-form context for the dashboard and emails (counts, ids, the action taken). */
+/**
+ * An automatic action attached to an alert (e.g. `engine.skip` on silence). Recorded in the
+ * database before it runs, then claimed and run once by an api replica that can run it.
+ * - `pending`: to run. `running`: claimed. `done` / `failed`: outcome of the last attempt.
+ * A `failed` action is retried once when the alert escalates; a `done` one isn't repeated.
+ */
+export const alertActionStateSchema = z.enum(['pending', 'running', 'done', 'failed']);
+export const alertActionSchema = z.object({
+  name: z.string().min(1).max(100),
+  state: alertActionStateSchema,
+  attempts: z.int().nonnegative(),
+  error: z.string().nullable(),
+  updatedAt: z.date(),
+});
+export type AlertAction = z.infer<typeof alertActionSchema>;
+
+/** Free-form context for the dashboard and emails (counts, ids, boot ids). */
 export const alertDetailsSchema = z.record(z.string(), z.unknown());
 export type AlertDetails = z.infer<typeof alertDetailsSchema>;
 
@@ -72,6 +90,7 @@ export const alertSchema = z.object({
   resolvedAt: z.date().nullable(),
   /** Why it closed: `recovered`, `engine_restarted`, ... */
   resolution: z.string().max(200).nullable(),
+  action: alertActionSchema.nullable(),
 });
 export type Alert = z.infer<typeof alertSchema>;
 
@@ -87,6 +106,11 @@ export const raiseAlertSchema = z.object({
   escalate: z
     .object({ afterSeconds: z.int().min(1).max(86_400), to: alertSeveritySchema })
     .optional(),
+  /**
+   * Automatic action to run once when the alert opens (or reopens), by name; the module that
+   * raises it registers the runner (see the api's alert service).
+   */
+  action: z.string().min(1).max(100).optional(),
 });
 export type RaiseAlert = z.input<typeof raiseAlertSchema>;
 
@@ -120,26 +144,47 @@ export type AlertList = z.infer<typeof alertListSchema>;
 export const silenceActionSchema = z.enum(['skip', 'safety', 'none']);
 export type SilenceAction = z.infer<typeof silenceActionSchema>;
 
+/** The fields, without defaults: the patch schema must not fill omitted ones. */
+const silenceSettingsFields = {
+  /** Seconds of silence before `blank.detected`. */
+  maxSeconds: z.number().min(1).max(300),
+  /** Below this level (dBFS) counts as silence. */
+  thresholdDb: z.number().min(-90).max(0),
+  action: silenceActionSchema,
+  /**
+   * After an action, the alert is a warning; still silent this long after, it escalates to
+   * critical. With `action: none` it is critical at once.
+   */
+  escalateAfterSeconds: z.int().min(5).max(3600),
+};
+
+export const SILENCE_DEFAULTS = {
+  maxSeconds: 10,
+  thresholdDb: -40,
+  action: 'skip',
+  escalateAfterSeconds: 60,
+} as const satisfies {
+  [K in keyof typeof silenceSettingsFields]: z.input<(typeof silenceSettingsFields)[K]>;
+};
+
 /**
  * Per-station silence detection. `maxSeconds` and `thresholdDb` are the engine template's
  * `blank.detect`: stored in `station.engine_settings.blank` (same ranges and defaults as the
  * template's settings), which the engine is rendered from. The rest is the app's own.
  */
 export const silenceSettingsSchema = z.object({
-  /** Seconds of silence before `blank.detected`. */
-  maxSeconds: z.number().min(1).max(300).default(10),
-  /** Below this level (dBFS) counts as silence. */
-  thresholdDb: z.number().min(-90).max(0).default(-40),
-  action: silenceActionSchema.default('skip'),
-  /**
-   * After an action, the alert is a warning; still silent this long after, it escalates to
-   * critical (and managers get an email). With `action: none` it is critical at once.
-   */
-  escalateAfterSeconds: z.int().min(5).max(3600).default(60),
+  maxSeconds: silenceSettingsFields.maxSeconds.default(SILENCE_DEFAULTS.maxSeconds),
+  thresholdDb: silenceSettingsFields.thresholdDb.default(SILENCE_DEFAULTS.thresholdDb),
+  action: silenceSettingsFields.action.default(SILENCE_DEFAULTS.action),
+  escalateAfterSeconds: silenceSettingsFields.escalateAfterSeconds.default(
+    SILENCE_DEFAULTS.escalateAfterSeconds,
+  ),
 });
 export type SilenceSettings = z.infer<typeof silenceSettingsSchema>;
 
-export const updateSilenceSettingsSchema = silenceSettingsSchema
+/** A partial update: omitted fields keep their value (no defaults here), `{}` is refused. */
+export const updateSilenceSettingsSchema = z
+  .strictObject(silenceSettingsFields)
   .partial()
   .refine((patch) => Object.values(patch).some((v) => v !== undefined), 'empty update');
 export type UpdateSilenceSettings = z.infer<typeof updateSilenceSettingsSchema>;
