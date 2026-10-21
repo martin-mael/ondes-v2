@@ -43,6 +43,55 @@
       "when": 1792569425256,
       "tag": "20261021075705_storage-deletion",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792580922530,
+      "tag": "20261021110842_log",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792582834689,
+      "tag": "20261021114034_engine-lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792582905400,
+      "tag": "20261021114145_alerts",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792582987472,
+      "tag": "20261021114307_streams",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792583018331,
+      "tag": "20261021114338_upload",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792583037484,
+      "tag": "20261021114357_org-invitations",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1792583057625,
+      "tag": "20261021114417_org-member-history",
+      "breakpoints": true
     }
   ]
 }

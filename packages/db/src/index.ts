@@ -5,6 +5,8 @@ export * from './migrate.ts';
 export * from './repos/jobs.ts';
 export * from './repos/library.ts';
 export * from './repos/storage.ts';
+export * from './repos/streams.ts';
 export * from './repos/tenancy.ts';
+export * from './repos/upload.ts';
 export * from './schema/index.ts';
 export * from './tenant.ts';

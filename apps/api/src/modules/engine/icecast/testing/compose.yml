@@ -1,0 +1,61 @@
+# Icecast integration test (#32): Icecast 2.5 running the generated config through
+# deploy/icecast/entrypoint.sh, a Liquidsoap source for the test station, and the one-shot
+# deploy/icecast/encode-assets.sh that encodes its fallback and intro files. Driven by
+# ../icecast.int.test.ts, which writes ./.rendered/config/icecast.xml and reads
+# ./.rendered/assets (the api's view of the assets volume).
+#
+# Its own project name and port, so it never touches the shared ondes-dev stack. The test
+# starts it and tears it down; by hand (IT_SOURCE_PASSWORD is the test station's source
+# password, which the test passes in):
+#
+#   docker compose -f apps/api/src/modules/engine/icecast/testing/compose.yml up -d --wait icecast
+#   docker compose -f apps/api/src/modules/engine/icecast/testing/compose.yml down -v
+
+name: ondes-icecast-it
+
+services:
+  icecast:
+    # Keep in sync with deploy/compose.dev.yml.
+    image: libretime/icecast:2.5.0-alpine
+    entrypoint: [sh, /ondes/entrypoint.sh]
+    restart: unless-stopped
+    environment:
+      # No ICECAST_SOURCE_PASSWORD: the global one is random (only per-station passwords work).
+      ICECAST_ADMIN_USER: admin
+      ICECAST_ADMIN_PASSWORD: ondes-it-admin
+      ICECAST_CONFIG_POLL_SECONDS: '1'
+      ICECAST_WATCHDOG_SECONDS: '2'
+    ports:
+      - 127.0.0.1:${ICECAST_IT_PORT:-18100}:8000
+    volumes:
+      - ../../../../../../../deploy/icecast/entrypoint.sh:/ondes/entrypoint.sh:ro
+      - ./.rendered/config:/config:ro
+      - ./.rendered/assets:/usr/share/icecast/web/_ondes:ro
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8000/status-json.xsl]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+
+  assets:
+    image: savonet/liquidsoap:v2.4.6
+    user: root
+    entrypoint: [sh, /ondes/encode-assets.sh]
+    environment:
+      JOBS: it/mp3:mp3:fallback it/mp3:mp3:intro it/aac:aac:fallback
+      # Empty inputs: test tones.
+    volumes:
+      - ../../../../../../../deploy/icecast:/ondes:ro
+      - ./.rendered/assets:/assets
+
+  source:
+    image: savonet/liquidsoap:v2.4.6
+    command: [/test/source.liq]
+    # Reconnects by itself when Icecast comes back (output.icecast retries).
+    environment:
+      ICECAST_SOURCE_PASSWORD: ${IT_SOURCE_PASSWORD:-unset}
+    volumes:
+      - ./source.liq:/test/source.liq:ro
+    depends_on:
+      icecast:
+        condition: service_healthy

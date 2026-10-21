@@ -1,0 +1,17 @@
+# Test-only changes to deploy/engine/docker-socket-proxy.compose.yml: the test runs on the
+# host, so the guard is also on a non-internal network and published on loopback. It also
+# lets the test reach engine control ports (published on 127.0.0.1) and the host gateway.
+services:
+  docker-proxy-guard:
+    restart: 'no'
+    environment:
+      GUARD_ALLOW_LOOPBACK_CONTROL: 'true'
+      GUARD_EXTRA_HOSTS: host.docker.internal:host-gateway
+    networks: [docker-api, docker-socket, published]
+    ports:
+      - 127.0.0.1:${ENGINE_LIFECYCLE_IT_DOCKER_PORT:-17190}:2375
+  docker-socket-proxy:
+    restart: 'no'
+
+networks:
+  published: {}

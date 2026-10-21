@@ -42,8 +42,10 @@ export type EngineEventsHandlerOptions = {
    * Required `Authorization: Bearer <token>` on event posts: the station's
    * `ENGINE_CONTROL_TOKEN`, which the station template (#27) sends with every batch. The
    * route is internal, but anything else on the Docker network must not forge as-run.
+   * Either one token for every station, or a lookup by station (the lifecycle, #35, gives
+   * each station its own; it may read the database); a station without a token is refused.
    */
-  token: string;
+  token: string | ((stationId: string) => string | undefined | Promise<string | undefined>);
   logger?: Logger;
 };
 
@@ -51,12 +53,15 @@ export function createEngineEventsHandler(
   options: EngineEventsHandlerOptions,
 ): (request: EngineEventsRequest) => Promise<EngineEventsResponse> {
   const logger = options.logger ?? silentLogger;
-  if (!options.token) throw new Error('engine events route: a token is required');
-  const expected = Buffer.from(`Bearer ${options.token}`);
+  const { token } = options;
+  if (!token) throw new Error('engine events route: a token is required');
+  const tokenFor = typeof token === 'string' ? () => token : token;
 
   return async ({ stationId, headers, body }) => {
+    const stationToken = await tokenFor(stationId);
+    const expected = Buffer.from(`Bearer ${stationToken ?? ''}`);
     const given = Buffer.from(String(headers.authorization ?? ''));
-    if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+    if (!stationToken || given.length !== expected.length || !timingSafeEqual(given, expected)) {
       return { status: 401, body: { error: 'unauthorized' } };
     }
     const ingest = options.ingestFor(stationId);

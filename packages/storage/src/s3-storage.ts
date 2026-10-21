@@ -161,14 +161,28 @@ export function createS3Storage(config: StorageConfig, options: S3StorageOptions
       return { uploadId: res.UploadId };
     },
 
-    presignUploadParts(key, uploadId, partNumbers, { expiresIn = DEFAULT_EXPIRES_IN } = {}) {
+    presignUploadParts(
+      key,
+      uploadId,
+      partNumbers,
+      { expiresIn = DEFAULT_EXPIRES_IN, contentLengths } = {},
+    ) {
       return Promise.all(
         partNumbers.map(async (partNumber) => {
           assertPartNumber(partNumber);
+          const contentLength = contentLengths?.[partNumber];
           const url = await getSignedUrl(
             client,
-            new UploadPartCommand({ Bucket, Key: key, UploadId: uploadId, PartNumber: partNumber }),
-            { expiresIn },
+            new UploadPartCommand({
+              Bucket,
+              Key: key,
+              UploadId: uploadId,
+              PartNumber: partNumber,
+              ContentLength: contentLength,
+            }),
+            contentLength === undefined
+              ? { expiresIn }
+              : { expiresIn, signableHeaders: new Set(['content-length']) },
           );
           return { partNumber, url };
         }),

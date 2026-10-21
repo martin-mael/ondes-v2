@@ -25,7 +25,7 @@ export type JobWorkerOptions = {
   jobs: readonly JobDefinition<any>[];
   /** Lanes to consume; defaults to the lanes of the registered jobs. */
   lanes?: readonly JobLane[];
-  /** Handlers running at once, per lane. Defaults: high 4, bulk 2. */
+  /** Handlers running at once, per lane. Defaults: high 4, bulk 2, notify 2. */
   concurrency?: Partial<Record<JobLane, number>>;
   logger?: Logger;
   now?: () => Date;
@@ -38,7 +38,7 @@ export type JobWorker = {
   close(): Promise<void>;
 };
 
-const DEFAULT_CONCURRENCY: Record<JobLane, number> = { high: 4, bulk: 2 };
+const DEFAULT_CONCURRENCY: Record<JobLane, number> = { high: 4, bulk: 2, notify: 2 };
 
 function errorMessage(error: unknown): string {
   if (error instanceof z.ZodError) return z.prettifyError(error);

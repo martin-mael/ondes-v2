@@ -33,6 +33,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      - run: pnpm --filter @ondes/web build
 
   integration:
     name: Integration tests
@@ -85,6 +86,12 @@ jobs:
         run: |
           docker compose -f deploy/compose.dev.yml up -d --wait garage
           docker compose -f deploy/compose.dev.yml run --rm garage-init
+      # The ingest tests (#18) run the worker image's own ffmpeg (7.1 with libsoxr), through
+      # the docker wrappers in apps/worker/test/bin.
+      - name: Build the worker image's ffmpeg stage
+        run: |
+          docker build --target ffmpeg -t ondes-ffmpeg:dev -f deploy/docker/worker.Dockerfile .
+          echo "$GITHUB_WORKSPACE/apps/worker/test/bin" >> "$GITHUB_PATH"
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:integration
 

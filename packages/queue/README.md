@@ -1,6 +1,6 @@
 # @ondes/queue
 
-RabbitMQ job framework: typed jobs, `high` / `bulk` lanes, TTL retry tiers, a dead-letter queue, idempotency keys and the real-time event fanout. Design and rationale: [`docs/adr/0006-job-queue.md`](../../docs/adr/0006-job-queue.md).
+RabbitMQ job framework: typed jobs, `high` / `bulk` / `notify` lanes, TTL retry tiers, a dead-letter queue, idempotency keys and the real-time event fanout. Design and rationale: [`docs/adr/0006-job-queue.md`](../../docs/adr/0006-job-queue.md).
 
 ## Adding a job
 Create `apps/worker/src/jobs/<job>/index.ts`; the worker discovers it at startup.
@@ -33,7 +33,11 @@ await jobs.enqueue(peaksJob, payload, { stationId });
 In the api, use `createRabbit()` from `apps/api/src/plugins/rabbit.ts`.
 
 ## Real-time events
-`createEventPublisher(rabbit, topology, schema)` and `subscribeEvents(rabbit, topology, schema, onEvent)`. Every subscriber receives every event.
+`createEventPublisher(rabbit, topology, schema)` and `subscribeEvents(rabbit, topology, schema, onEvent)`. Every subscriber receives every event, best effort: for the UI.
+
+For side effects (alerts, actions, emails), use `consumeEventsDurable(rabbit, topology, name, schema, onEvent, { keyOf })`: one durable queue per `name`, one active consumer at a time across processes, in order per key, acked once handled, kept while nobody consumes. Handlers must be idempotent (deduplicate on the event id). See "Event transport" in ADR 0006.
+
+The `notify` lane is for jobs the api consumes itself (alert emails): the worker only consumes the lanes of its own jobs.
 
 ## Job status
 `JobRunStore` records each run (`running`, `retrying`, `succeeded`, `dead`) and backs the admin job list (`store.list({ status: 'dead' })`). The worker uses `PostgresJobRunStore` from `@ondes/db`; `InMemoryJobRunStore` is for tests and single-process dev.

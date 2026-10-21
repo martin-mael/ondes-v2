@@ -1,4 +1,12 @@
+import { createS3Storage, loadStorageConfig } from '@ondes/storage';
 import { buildApp } from './app.ts';
+import {
+  createIcecastService,
+  type EngineLifecycleHooks,
+  icecastServiceConfigFromEnv,
+  type SourceAlerts,
+} from './modules/engine/icecast/index.ts';
+import { engineLifecycleConfigFromEnv } from './modules/engine/lifecycle/plugin.ts';
 import { authConfigFromEnv } from './plugins/auth.ts';
 import { dbConfigFromEnv } from './plugins/db.ts';
 import { mailConfigFromEnv } from './plugins/mail.ts';
@@ -12,8 +20,11 @@ if (!rabbitUrl) throw new Error('RABBITMQ_URL is not set');
 const app = await buildApp({
   db: { config: dbConfigFromEnv(env) },
   rabbit: { url: rabbitUrl },
+  storage: createS3Storage(loadStorageConfig(env)),
   mail: { config: mailConfigFromEnv(env) },
   auth: authConfigFromEnv(env),
+  // Station engines (#35), when ENGINE_DOCKER_URL points at the Docker socket proxy.
+  engine: engineLifecycleConfigFromEnv(env) ?? undefined,
   fastify: {
     logger: { level: env.LOG_LEVEL ?? 'info' },
     // Behind Caddy, rate limits key on the client IP from X-Forwarded-For. Default: trust
@@ -24,10 +35,24 @@ const app = await buildApp({
   },
 });
 
+// Icecast (#32): keeps its config in step with the stations (ICECAST_CONFIG_PATH) and records
+// listener counts (ICECAST_URL + admin credentials). See modules/engine/icecast/README.md.
+const icecast = createIcecastService({
+  db: app.db,
+  config: icecastServiceConfigFromEnv(env),
+  logger: app.log,
+  // #33's alert service and #35's engine lifecycle, when their plugins are registered.
+  alerts: (app as { alerts?: SourceAlerts }).alerts,
+  lifecycle: app.hasDecorator('engineLifecycle')
+    ? (app as unknown as { engineLifecycle: EngineLifecycleHooks }).engineLifecycle
+    : undefined,
+});
+icecast.start();
+
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
     app.log.info({ signal }, 'shutting down');
-    app.close().then(
+    Promise.all([icecast.stop(), app.close()]).then(
       () => process.exit(0),
       (err) => {
         app.log.error({ err }, 'shutdown failed');

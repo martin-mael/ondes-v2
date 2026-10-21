@@ -34,10 +34,11 @@ apps/
     jobs/<job>/         # one folder per job type: ingest, loudness, autocue, analysis,
                         # peaks, dedupe, cache-sync, log-generate, island-render, …
   web/src/
-    app/                # shell, routing, auth pages, layout, SSE client
+    app/                # shell, routing (router.tsx), auth pages, layout, api client,
+                        # SSE client (sse/), i18n
     features/<feature>/ # library, cue-editor, rotation, clocks, grid, shows,
                         # log-timeline, segue-editor, live, dashboard, settings
-    ui/                 # shared design-system components
+    ui/                 # shared design-system components (shadcn/ui on Base UI)
 packages/
   shared/src/
     contracts/<domain>.ts  # zod schemas + inferred types: API DTOs, events, job payloads
@@ -68,7 +69,8 @@ Created by #3. Packages are named `@ondes/<folder>` (e.g. `@ondes/shared`) and a
 - **Audit:** every mutation through the API writes an `audit_log` row.
 - **Jobs:** idempotent, keyed by content hash or `entity:version`; payloads defined in contracts; retries come from the queue framework, not ad-hoc loops.
 - **Engine:** Liquidsoap control ports are never exposed publicly. Node talks to the engine only through the engine adapter (`apps/api/src/modules/engine`).
-- **Real time:** SSE only, through the api's SSE plugin. Event names and payloads live in `packages/shared/src/contracts/events.ts`.
+- **Real time:** SSE only, through the api's SSE plugin. Event names and payloads live in `packages/shared/src/contracts/events.ts`; a new event type also needs its read permission in `realtimeEventPermissions` there (undeclared types are never forwarded). The browser fanout is best-effort: side effects go through durable queues. In the web app, read events with `useSse` / `useSseEvent` (`apps/web/src/app/sse/sse.tsx`).
+- **Web app:** `docs/adr/0009-ui.md`. Components come from the pinned shadcn CLI into `apps/web/src/ui/` (`pnpm dlx shadcn@4.22.1 add <name>` in `apps/web`, then `pnpm format`); don't hand-edit them for style. Base UI composes with `render={…}`, not `asChild`. A feature adds its route in `apps/web/src/app/router.tsx` (under `stationRoute`), a nav entry in `app/shell/nav.ts`, calls the api through `app/api/client.ts` with its contract schemas, and keeps UI strings in FR + EN.
 - **No paid/licensed components by default** (Stereo Tool, commercial AcoustID, Essentia models). Make them opt-in plugins.
 - **Naming:** files kebab-case; DB tables snake_case singular (`log_item`); API routes `/api/v1/stations/:stationId/...`.
 
@@ -84,7 +86,8 @@ Every PR must pass, locally and in CI:
 - `pnpm test:integration` when you touch db, queue, storage or engine: `*.int.test.ts` files, using the `deploy/compose.dev.yml` services.
 - Engine template changes: `pnpm test:engine` (`engine/tests/run.sh`: renders the station template for every settings combination in `engine/tests/template/combos.ts` and runs `liquidsoap --check` on each, in the Liquidsoap image pinned in `deploy/compose.dev.yml`). Needs Docker and `pnpm install`. Then `pnpm test:engine:template` (`engine/tests/template/README.md`): runs the rendered template and checks its control API and a seamless island segment. Needs Docker and `ffmpeg`.
 - Island splice regression test (`engine/tests/splice/README.md`): `pnpm test:engine:splice` (full matrix) or `pnpm test:engine:splice --quick` (FLAC cases, what CI runs). Needs Docker and `ffmpeg`. Run it when you touch islands, cue handling or the Liquidsoap version.
-- Run one package's tests with `pnpm vitest run apps/api`, or typecheck one package with `pnpm --filter @ondes/api typecheck`.
+- Ingest integration tests (`apps/worker/src/jobs/ingest`) run the worker image's ffmpeg (7.1 with libsoxr): `docker build --target ffmpeg -t ondes-ffmpeg:dev -f deploy/docker/worker.Dockerfile .` once, then `PATH=$PWD/apps/worker/test/bin:$PATH pnpm test:integration`. CI does the same.
+- Run one package's tests with `pnpm vitest run apps/api`, or typecheck one package with `pnpm --filter @ondes/api typecheck`. Web tests (`*.test.tsx`, happy-dom) are the `web` Vitest project: `pnpm vitest run --project web`.
 - **The dev stack is shared.** Every worktree talks to the same `ondes-dev` compose project on fixed localhost ports, so parallel sessions use the same Postgres, RabbitMQ, Garage, Icecast and Liquidsoap.
   - Start it with `pnpm dev:up`. It's idempotent and safe to run even if another session already started it.
   - **Never run `pnpm dev:down`, `pnpm dev:reset` or `docker compose … down` from a session**, and don't restart or recreate its services. You'd cut off every other session mid-test. Stopping the stack is for the human.

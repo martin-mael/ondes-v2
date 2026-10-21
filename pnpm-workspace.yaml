@@ -3,4 +3,5 @@ packages:
   - packages/*
 allowBuilds:
   esbuild: true
+  free-email-domains: false
 saveExact: true

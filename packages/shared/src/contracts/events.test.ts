@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { realtimeEventSchema } from './events.ts';
+import { eventReadPermission, realtimeEventSchema, streamEventSchema } from './events.ts';
 
 const envelope = {
   id: '0b9e3c84-6f1d-5a51-9a1e-3f0a4c7d2e10',
@@ -41,5 +41,24 @@ describe('realtimeEventSchema', () => {
     expect(
       realtimeEventSchema.safeParse({ ...envelope, type: 'track.started', data: {} }).success,
     ).toBe(false);
+  });
+});
+
+describe('eventReadPermission', () => {
+  it('maps every declared type to a permission, and nothing else', () => {
+    for (const option of realtimeEventSchema.options) {
+      expect(eventReadPermission(option.shape.type.value)).not.toBeNull();
+    }
+    expect(eventReadPermission('engine.track.started')).toBe('engine:read');
+    expect(eventReadPermission('station.deleted')).toBeNull();
+    expect(eventReadPermission('engine.undeclared')).toBeNull();
+    expect(eventReadPermission('toString')).toBeNull();
+  });
+});
+
+describe('streamEventSchema', () => {
+  it('accepts the server clock', () => {
+    const event = { type: 'server.clock', at: '2026-10-20T08:00:00.000Z' };
+    expect(streamEventSchema.parse(event)).toEqual(event);
   });
 });

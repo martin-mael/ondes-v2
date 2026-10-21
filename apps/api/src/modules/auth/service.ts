@@ -633,7 +633,7 @@ export function callerPermissions(
  * Highest role the caller may grant in a scope: their own. API keys never grant org roles and
  * grant at most station manager.
  */
-function grantCeiling(caller: Caller, stationId: string | null): number {
+export function grantCeiling(caller: Caller, stationId: string | null): number {
   if (!caller.memberships) {
     const keyCeiling = stationId ? roleRank.station_manager : 0;
     if (!caller.keyCreatorMemberships) return keyCeiling;

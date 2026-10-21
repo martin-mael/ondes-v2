@@ -283,10 +283,11 @@ export async function listAssetFiles(
 /**
  * Attaches a stored file to an asset in the given role, replacing the previous file of that
  * role. The new key is charged in the same transaction (once per org, however many assets
- * share it); the replaced key is released like on delete.
+ * share it); the replaced key is released like on delete. Pass a transaction to tie it to other
+ * writes (ingest creates the asset and both its files at once).
  */
 export async function putAssetFile(
-  db: Db,
+  db: Writer,
   ctx: StationContext,
   assetId: string,
   input: CreateAssetFile,

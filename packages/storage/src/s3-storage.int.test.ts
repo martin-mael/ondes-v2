@@ -90,6 +90,21 @@ describe.skipIf(!enabled)('S3 storage (integration)', () => {
     expect((await fetch(getUrl, { method: 'DELETE' })).ok).toBe(false);
   });
 
+  it('refuses a part whose size differs from the signed Content-Length', async () => {
+    const k = key('signed-parts.bin');
+    const { uploadId } = await storage.createMultipartUpload(k);
+    try {
+      const [part] = await storage.presignUploadParts(k, uploadId, [1], {
+        contentLengths: { 1: 1000 },
+      });
+      const url = part?.url as string;
+      expect((await fetch(url, { method: 'PUT', body: new Uint8Array(2000) })).ok).toBe(false);
+      expect((await fetch(url, { method: 'PUT', body: new Uint8Array(1000) })).status).toBe(200);
+    } finally {
+      await storage.abortMultipartUpload(k, uploadId);
+    }
+  });
+
   it('aborts a multipart upload', async () => {
     const k = key('aborted.bin');
     const { uploadId } = await storage.createMultipartUpload(k);
