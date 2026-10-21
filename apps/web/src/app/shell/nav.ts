@@ -1,6 +1,12 @@
 import type { Permission } from '@ondes/shared';
 import type { LinkProps } from '@tanstack/react-router';
-import { LayoutDashboardIcon, LifeBuoyIcon, ListMusicIcon, type LucideIcon } from 'lucide-react';
+import {
+  ClockIcon,
+  LayoutDashboardIcon,
+  LifeBuoyIcon,
+  ListMusicIcon,
+  type LucideIcon,
+} from 'lucide-react';
 import type { MessageKey } from '../i18n/messages.ts';
 
 // Station navigation in the sidebar. Features add one entry here when they add their route
@@ -29,6 +35,12 @@ export const stationNav: NavItem[] = [
     label: 'shell.nav.categories',
     icon: ListMusicIcon,
     permission: 'rotation:read',
+  },
+  {
+    to: '/stations/$stationId/clocks',
+    label: 'shell.nav.clocks',
+    icon: ClockIcon,
+    permission: 'clock:read',
   },
   {
     to: '/stations/$stationId/settings/safety',

@@ -433,8 +433,8 @@ export const clockPreviewSchema = z.object({
   items: z.array(clockPreviewItemSchema),
   /** The sample hour's timing, from the picked assets' real lengths. */
   estimate: clockEstimateSchema,
-  /** The instant the picks were made for (schedulable windows, rules). */
-  at: z.date(),
+  /** When the sample hour would air: what the picks were made for (windows, rules). */
+  airsAt: z.date(),
   seed: z.string(),
 });
 export type ClockPreview = z.infer<typeof clockPreviewSchema>;

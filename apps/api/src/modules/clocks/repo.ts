@@ -367,7 +367,7 @@ async function preview(
       durationMs: estimate.slots[i]?.durationMs ?? 0,
     })),
     estimate,
-    at,
+    airsAt: at,
     seed,
   };
 }
