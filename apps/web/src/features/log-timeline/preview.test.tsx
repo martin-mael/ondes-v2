@@ -39,12 +39,13 @@ const b = libraryAsset('b1', 'Incoming', 180_000);
 const sha = (c: string) => c.repeat(64);
 
 /** Answers `GET …/assets/:id` when the test says so; records aborts. */
-function controlledFetch() {
+function controlledFetch(withoutAudio: ReadonlySet<string> = new Set()) {
   const pending = new Map<string, { resolve: () => void; signal?: AbortSignal | null }>();
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const path = new URL(String(input), 'http://app.test').pathname;
     const assetId = path.split('/').at(-1) ?? '';
-    const body = assetId === a.id ? assetDetail(a, sha('a')) : assetDetail(b, sha('b'));
+    const [asset, char] = assetId === a.id ? [a, 'a'] : [b, 'b'];
+    const body = assetDetail(asset, withoutAudio.has(assetId) ? undefined : sha(char));
     return new Promise<Response>((resolve, reject) => {
       init?.signal?.addEventListener('abort', () =>
         reject(new DOMException('aborted', 'AbortError')),
@@ -199,7 +200,20 @@ describe('preview', () => {
     await act(async () => {
       incoming?.onerror?.();
     });
-    expect(error).toHaveBeenCalledWith('Can’t play this audio (no playout file yet?).');
+    expect(error).toHaveBeenCalledWith('Can’t play this audio.');
+    expect(view.preview.playing).toBeNull();
+  });
+
+  it('says so when an item has no audio file yet, without trying to play it', async () => {
+    const error = vi.spyOn(toast, 'error').mockImplementation(() => 0);
+    const { answer } = controlledFetch(new Set([a.id]));
+    const view = renderPreview();
+    act(() => view.preview.play(itemA));
+    await answer(a.id);
+    expect(error).toHaveBeenCalledWith(
+      'No audio file for this item yet: upload it in the library.',
+    );
+    expect(FakeAudio.all.every((audio) => !audio.play.mock.calls.length)).toBe(true);
     expect(view.preview.playing).toBeNull();
   });
 });

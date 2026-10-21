@@ -17,6 +17,9 @@ import { assetAudioUrl, assetDetailQuery, timelineApi } from './api.ts';
 import { useTimelineT } from './messages.ts';
 import { cueInSeconds, PREVIEW_TAIL_S, transitionPlan } from './model.ts';
 
+/** The asset has no playout copy yet: nothing to preview. */
+class NoAudioError extends Error {}
+
 // Listening in the timeline (#51): one item from its cue-in, or the transition between two
 // items as the log plans it (the outgoing item's last seconds, then the incoming one from its
 // cue-in at the planned start, both playing through the overlap). Two <audio> elements on the
@@ -133,15 +136,17 @@ export function PreviewProvider({
         (await timelineApi.asset(stationId, assetId, r.abort.signal));
       queryClient.setQueryData(key, detail);
       const sha = detail.files.find((f) => f.role === 'playout')?.sha256;
+      // No playout copy (never uploaded, or still ingesting): nothing to play, say so.
+      if (!sha) throw new NoAudioError();
       return { cues: detail.cues, url: assetAudioUrl(stationId, assetId, sha) };
     },
     [queryClient, stationId],
   );
 
   const failed = useCallback(
-    (r: Run) => {
+    (r: Run, error?: unknown) => {
       if (!live(r)) return;
-      toast.error(t('preview.failed'));
+      toast.error(t(error instanceof NoAudioError ? 'preview.noAudio' : 'preview.failed'));
       stop();
     },
     [stop, t],
@@ -160,7 +165,7 @@ export function PreviewProvider({
           audio.onended = () => live(r) && stop();
           return startAt(audio, url, cueInSeconds(a, cues));
         })
-        .catch(() => failed(r));
+        .catch((error: unknown) => failed(r, error));
     },
     [elements, failed, media, next, stop, t],
   );
@@ -213,7 +218,7 @@ export function PreviewProvider({
             setTimeout(() => live(r) && stop(), leadMs + PREVIEW_TAIL_S * 1000),
           );
         })
-        .catch(() => failed(r));
+        .catch((error: unknown) => failed(r, error));
     },
     [elements, failed, media, next, stop, t],
   );

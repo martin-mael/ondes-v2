@@ -161,7 +161,8 @@ const en = {
   'preview.playing': 'Listening: {title}',
   'preview.transition': 'Transition: {from} → {to}',
   'preview.stop': 'Stop',
-  'preview.failed': 'Can’t play this audio (no playout file yet?).',
+  'preview.failed': 'Can’t play this audio.',
+  'preview.noAudio': 'No audio file for this item yet: upload it in the library.',
 
   'error.log_item_locked': 'This item is locked: unlock it first.',
   'error.segment_part': 'Edit the island this item is a part of.',
@@ -331,7 +332,9 @@ const fr: Record<TimelineMessageKey, string> = {
   'preview.playing': 'Écoute : {title}',
   'preview.transition': 'Enchaînement : {from} → {to}',
   'preview.stop': 'Arrêter',
-  'preview.failed': 'Impossible de lire ce son (pas encore de fichier de diffusion ?).',
+  'preview.failed': 'Impossible de lire ce son.',
+  'preview.noAudio':
+    'Pas encore de fichier audio pour cet élément : importez-le dans la médiathèque.',
 
   'error.log_item_locked': 'Cet élément est verrouillé : déverrouillez-le d’abord.',
   'error.segment_part': 'Modifiez l’îlot dont cet élément fait partie.',

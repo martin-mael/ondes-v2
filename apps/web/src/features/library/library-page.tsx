@@ -238,7 +238,7 @@ export function LibraryPage() {
             onChange={(e) => setQ(e.target.value)}
           />
         </div>
-        <span className="text-muted-foreground tabular-nums" aria-live="polite">
+        <span className="text-sm text-muted-foreground tabular-nums" aria-live="polite">
           {countLabel}
         </span>
         <SavedFilters stationId={stationId} params={params} apply={update} />
@@ -289,7 +289,7 @@ export function LibraryPage() {
       <div className="flex min-h-0 flex-1 gap-4">
         <aside className="hidden w-56 shrink-0 flex-col gap-2 overflow-y-auto pr-1 md:flex">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold">{t('facets.title')}</h2>
+            <h2 className="text-sm font-semibold">{t('facets.title')}</h2>
             {hasFilters(params) && (
               <Button
                 variant="ghost"

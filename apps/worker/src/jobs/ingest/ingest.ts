@@ -385,14 +385,14 @@ async function download(storage: Storage, key: string, path: string) {
   return { sha256: hash.digest('hex'), sizeBytes };
 }
 
-async function hashFile(path: string) {
+export async function hashFile(path: string) {
   const hash = createHash('sha256');
   await pipeline(createReadStream(path), hash);
   return { sha256: hash.digest('hex'), sizeBytes: (await stat(path)).size };
 }
 
 /** Uploads the object unless the bucket already has it (same content key, same size). */
-async function ensureObject(
+export async function ensureObject(
   storage: Storage,
   key: string,
   path: string,
