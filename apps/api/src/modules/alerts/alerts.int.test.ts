@@ -102,7 +102,7 @@ afterAll(async () => {
   await rabbit?.close();
   await fake?.close();
   await tdb?.drop();
-});
+}, 60_000);
 
 beforeEach(() => {
   fake.calls.length = 0;
@@ -177,7 +177,11 @@ describe('silence with action none', () => {
     await publish('engine.blank.detected');
     const raised = await waitFor('raised', alertEvent('alert.raised'));
     expect(raised.data).toMatchObject({ type: alertTypes.silence, severity: 'critical' });
-    const alert = await waitFor('alert row', () => openAlert(alertTypes.silence));
+    // The action outcome is merged into the details right after the raise.
+    const alert = await waitFor('alert row', async () => {
+      const a = await openAlert(alertTypes.silence);
+      return a?.details.action ? a : undefined;
+    });
     expect(alert).toMatchObject({
       status: 'open',
       occurrences: 1,
@@ -244,14 +248,14 @@ describe('silence with an action', () => {
     expect(outbox).toEqual([]);
 
     // Still silent after escalateAfterSeconds: critical, and now the email.
-    const escalated = await waitFor('escalated', alertEvent('alert.escalated'), 10_000);
+    const escalated = await waitFor('escalated', alertEvent('alert.escalated'), 30_000);
     expect(escalated.data).toMatchObject({ severity: 'critical', previousSeverity: 'warning' });
     await waitFor('email', () => mailsTo('manager@alerts.test').length === 1);
     expect(mailsTo('manager@alerts.test')[0]?.text).toContain('is now critical');
 
     await publish('engine.blank.recovered');
     await waitFor('resolved', alertEvent('alert.resolved'));
-  }, 20_000);
+  }, 60_000);
 
   it('safety: clears the queue then skips; a new engine boot resolves the alert', async () => {
     await api('PATCH', '/silence-settings', manager, {

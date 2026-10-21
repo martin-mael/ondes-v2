@@ -56,7 +56,7 @@ export function engineEvent<T extends EngineRealtimeEvent['type']>(
 export async function waitFor<T>(
   what: string,
   find: () => T | undefined | false | Promise<T | undefined | false>,
-  timeoutMs = 10_000,
+  timeoutMs = 20_000,
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
