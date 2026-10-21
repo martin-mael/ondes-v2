@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { playoutGainDbSchema, playoutGainSchema } from './loudness.ts';
 import { uuidSchema } from './tenancy.ts';
 
 // Library contracts (#17): assets, their files, cues, loudness, analysis and tags. Mirrors
@@ -76,6 +77,10 @@ export const assetSchema = z.object({
   metadata: assetMetadataSchema,
   /** File name as uploaded, for the operator's reference. */
   sourceFilename: z.string().nullable(),
+  /** Loudness normalisation at playout (#19). Off: the file plays as it is (0 dB). */
+  normalizeLoudness: z.boolean(),
+  /** Fixed playout gain in dB, instead of the measured one (#19). */
+  gainOverrideDb: z.number().nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -96,6 +101,8 @@ const assetFields = {
   notes: z.string().max(10_000).nullable(),
   metadata: assetMetadataSchema,
   sourceFilename: z.string().max(1000).nullable(),
+  normalizeLoudness: z.boolean(),
+  gainOverrideDb: playoutGainDbSchema.nullable(),
 };
 
 function killAfterStart(asset: { startAt?: Date | null; killAt?: Date | null }): boolean {
@@ -117,6 +124,8 @@ export const createAssetSchema = z
     notes: assetFields.notes.optional(),
     metadata: assetFields.metadata.optional(),
     sourceFilename: assetFields.sourceFilename.optional(),
+    normalizeLoudness: assetFields.normalizeLoudness.optional(),
+    gainOverrideDb: assetFields.gainOverrideDb.optional(),
   })
   .refine(killAfterStart, { message: 'killAt must be after startAt', path: ['killAt'] });
 /** Metadata edits. `durationMs` and `sourceFilename` belong to ingest, not to this patch. */
@@ -299,6 +308,8 @@ export const assetLoudnessSchema = z.object({
   /** EBU R128 loudness range. */
   loudnessRangeLu: z.number().nullable(),
   truePeakDbtp: z.number().nullable(),
+  /** SHA-256 of the playout file that was measured (#19); `null` for older rows. */
+  playoutSha256: sha256HexSchema.nullable(),
   /** Tool that measured it: `ffmpeg-ebur128`, `libebur128`. */
   analyzer: z.string(),
   analyzerVersion: z.string(),
@@ -312,6 +323,11 @@ export const setLoudnessSchema = assetLoudnessSchema
     integratedLufs: z.number().min(-70).max(10),
     loudnessRangeLu: z.number().min(0).max(100).nullable().optional(),
     truePeakDbtp: z.number().min(-100).max(30).nullable().optional(),
+    /**
+     * The playout file measured. When given, the measurement is stored only if this is still
+     * the asset's playout file (`StaleMeasurementError` otherwise).
+     */
+    playoutSha256: sha256HexSchema.nullable().optional(),
     analyzer: z.string().min(1).max(100),
     analyzerVersion: z.string().min(1).max(100),
     confidence: confidenceSchema.nullable().optional(),
@@ -380,6 +396,8 @@ export const assetDetailSchema = assetSchema.extend({
   files: z.array(assetFileSchema),
   cues: assetCuesSchema.nullable(),
   loudness: assetLoudnessSchema.nullable(),
+  /** What the engine applies at playout, from the loudness, the overrides and the station. */
+  playoutGain: playoutGainSchema,
   analysis: assetAnalysisSchema.nullable(),
   tags: z.array(tagSchema),
 });
@@ -406,7 +424,8 @@ export const listAssetsQuerySchema = z.object({
 export type ListAssetsQuery = z.input<typeof listAssetsQuerySchema>;
 
 export const assetPageSchema = z.object({
-  items: z.array(assetSchema),
+  /** With the playout gain, as on the asset detail (#19). */
+  items: z.array(assetSchema.extend({ playoutGain: playoutGainSchema.optional() })),
   /** Pass as `cursor` for the next page; `null` on the last page. */
   nextCursor: uuidSchema.nullable(),
 });

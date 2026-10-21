@@ -49,6 +49,20 @@ export const alertTypes = {
   streamConfigInvalid: 'stream.config_invalid',
   /** Icecast's stats endpoint failed several polls in a row (#32). */
   streamIcecastUnreachable: 'stream.icecast_unreachable',
+  /** A log item starting within the hour isn't in the playout cache (#31). One per item. */
+  cacheItemMissing: 'cache.item_missing',
+  /** Something in the next 6 h isn't cached; `details.pctAirTime`, `firstMissingAt` (#31). */
+  cacheHorizonDegraded: 'cache.horizon_degraded',
+  /** The horizon doesn't fit the station's cache budget: some files wait (#31). */
+  cacheBudgetExceeded: 'cache.budget_exceeded',
+  /** A file the horizon needs isn't in storage (#31). One per file. */
+  cacheSourceMissing: 'cache.source_missing',
+  /** A stored file doesn't match its hash (#31). One per file. */
+  cacheChecksumMismatch: 'cache.checksum_mismatch',
+  /** The cache disk is under its free-space reserve: fetching paused (#31). */
+  cacheDiskLow: 'cache.disk_low',
+  /** The station's last cache-sync pass failed (`details.error`): nothing is being fetched (#31). */
+  cacheSyncFailing: 'cache.sync_failing',
 } as const;
 
 /**

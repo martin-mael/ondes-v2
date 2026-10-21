@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { discoverJobs } from './registry.ts';
+import { discoverJobs, discoverTriggers } from './registry.ts';
 
 const fixture = (path: string) => fileURLToPath(new URL(`./__fixtures__/${path}`, import.meta.url));
 
@@ -18,5 +18,17 @@ describe('discoverJobs', () => {
     await expect(
       discoverJobs(fileURLToPath(new URL('./jobs/', import.meta.url))),
     ).resolves.toBeInstanceOf(Array);
+  });
+});
+
+describe('discoverTriggers', () => {
+  it('collects the `triggers` export of every job folder', async () => {
+    const triggers = await discoverTriggers(fixture('jobs'));
+    expect(triggers.map((trigger) => trigger.queue)).toEqual(['worker.hello']);
+  });
+
+  it('accepts the real jobs folder', async () => {
+    const triggers = await discoverTriggers(fileURLToPath(new URL('./jobs/', import.meta.url)));
+    expect(triggers.map((trigger) => trigger.queue)).toContain('worker.loudness');
   });
 });

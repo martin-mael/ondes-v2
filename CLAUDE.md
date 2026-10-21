@@ -29,10 +29,11 @@ apps/
     plugins/            # fastify plugins: db, auth, rabbit, sse, errors
     modules/<module>/   # routes.ts, service.ts, repo.ts, *.test.ts
                         # auth, orgs, stations, library, engine, asrun, rotation,
-                        # clocks, shows, log, public, jobs, alerts
+                        # clocks, shows, log, public, jobs, alerts, cache
   worker/src/
     jobs/<job>/         # one folder per job type: ingest, loudness, autocue, analysis,
-                        # peaks, dedupe, cache-sync, log-generate, island-render, …
+                        # peaks, dedupe, cache-sync (+ cache-fetch, its urgent
+                        # one-file variant), log-generate, island-render, …
   web/src/
     app/                # shell, routing (router.tsx), auth pages, layout, api client,
                         # SSE client (sse/), i18n
@@ -67,7 +68,7 @@ Created by #3. Packages are named `@ondes/<folder>` (e.g. `@ondes/shared`) and a
 - **Tenancy:** every station-scoped table has `station_id` (and `org_id` where relevant). Repository functions take the tenant scope explicitly. Never query station data without it.
 - **Time:** store UTC (`timestamptz`); compute in the station's IANA timezone through `packages/shared/src/time`. Any scheduling code needs DST tests (last Sunday of March and October, Europe/Paris).
 - **Audit:** every mutation through the API writes an `audit_log` row.
-- **Jobs:** idempotent, keyed by content hash or `entity:version`; payloads defined in contracts; retries come from the queue framework, not ad-hoc loops.
+- **Jobs:** idempotent, keyed by content hash or `entity:version`; payloads defined in contracts; retries come from the queue framework, not ad-hoc loops. A job started by an event (e.g. `asset.ingested`) declares `export const triggers: JobTrigger[]` in its `index.ts` (`apps/worker/src/registry.ts`); the worker runs each on a durable event queue, so don't edit `main.ts` for it (ADR 0006, "Event transport").
 - **Engine:** Liquidsoap control ports are never exposed publicly. Node talks to the engine only through the engine adapter (`apps/api/src/modules/engine`).
 - **Real time:** SSE only, through the api's SSE plugin. Event names and payloads live in `packages/shared/src/contracts/events.ts`; a new event type also needs its read permission in `realtimeEventPermissions` there (undeclared types are never forwarded). The browser fanout is best-effort: side effects go through durable queues. In the web app, read events with `useSse` / `useSseEvent` (`apps/web/src/app/sse/sse.tsx`).
 - **Web app:** `docs/adr/0009-ui.md`. Components come from the pinned shadcn CLI into `apps/web/src/ui/` (`pnpm dlx shadcn@4.22.1 add <name>` in `apps/web`, then `pnpm format`); don't hand-edit them for style. Base UI composes with `render={…}`, not `asChild`. A feature adds its route in `apps/web/src/app/router.tsx` (under `stationRoute`), a nav entry in `app/shell/nav.ts`, calls the api through `app/api/client.ts` with its contract schemas, and keeps UI strings in FR + EN.
@@ -86,14 +87,27 @@ Every PR must pass, locally and in CI:
 - `pnpm test:integration` when you touch db, queue, storage or engine: `*.int.test.ts` files, using the `deploy/compose.dev.yml` services.
 - Engine template changes: `pnpm test:engine` (`engine/tests/run.sh`: renders the station template for every settings combination in `engine/tests/template/combos.ts` and runs `liquidsoap --check` on each, in the Liquidsoap image pinned in `deploy/compose.dev.yml`). Needs Docker and `pnpm install`. Then `pnpm test:engine:template` (`engine/tests/template/README.md`): runs the rendered template and checks its control API and a seamless island segment. Needs Docker and `ffmpeg`.
 - Island splice regression test (`engine/tests/splice/README.md`): `pnpm test:engine:splice` (full matrix) or `pnpm test:engine:splice --quick` (FLAC cases, what CI runs). Needs Docker and `ffmpeg`. Run it when you touch islands, cue handling or the Liquidsoap version.
-- Ingest integration tests (`apps/worker/src/jobs/ingest`) run the worker image's ffmpeg (7.1 with libsoxr): `docker build --target ffmpeg -t ondes-ffmpeg:dev -f deploy/docker/worker.Dockerfile .` once, then `PATH=$PWD/apps/worker/test/bin:$PATH pnpm test:integration`. CI does the same.
+- Ingest and autocue integration tests (`apps/worker/src/jobs/ingest`, `apps/worker/src/jobs/autocue`) run the worker image's ffmpeg (7.1 with libsoxr): `docker build --target ffmpeg -t ondes-ffmpeg:dev -f deploy/docker/worker.Dockerfile .` once, then `PATH=$PWD/apps/worker/test/bin:$PATH pnpm test:integration`. CI does the same.
 - Run one package's tests with `pnpm vitest run apps/api`, or typecheck one package with `pnpm --filter @ondes/api typecheck`. Web tests (`*.test.tsx`, happy-dom) are the `web` Vitest project: `pnpm vitest run --project web`.
 - **The dev stack is shared.** Every worktree talks to the same `ondes-dev` compose project on fixed localhost ports, so parallel sessions use the same Postgres, RabbitMQ, Garage, Icecast and Liquidsoap.
   - Start it with `pnpm dev:up`. It's idempotent and safe to run even if another session already started it.
   - **Never run `pnpm dev:down`, `pnpm dev:reset` or `docker compose … down` from a session**, and don't restart or recreate its services. You'd cut off every other session mid-test. Stopping the stack is for the human.
   - Integration tests stay isolated on the shared stack: a throwaway database per test file (`createTestDatabase`), random queue prefixes, random S3 keys. Keep it that way in new tests.
   - If you need extra containers (e.g. a spike's own engine), use your own compose project name and your own ports, like `engine/spikes/control` does.
-- CI (`.github/workflows/ci.yml`) runs lint, typecheck and unit tests, plus `pnpm test:integration` against Postgres 18 and RabbitMQ 4 service containers. `images.yml` builds the production images on every PR and pushes them to GHCR from `main`.
+- Integration tests are split into the projects of `vitest.integration.config.ts`: `core`, `engine` (tests that start their own Liquidsoap/Icecast compose project) and `worker` (worker jobs, which need the ffmpeg image above). `pnpm test:integration` runs all three; `pnpm test:integration --project worker` runs one. A new `*.int.test.ts` lands in `core` unless it's under `apps/worker/src` or `apps/api/src/modules/engine`; add it to `engine` in that config if it starts Liquidsoap.
+- CI (`.github/workflows/ci.yml`) runs only what a PR needs. A `changes` job (path filters) decides; on `main`, on manual runs and on a PR labelled `ci:full`, everything runs. To force a full run that gates a PR, add the `ci:full` label: it starts a new pull_request run on the PR head (other labels don't cancel the run in flight). `gh workflow run ci.yml --ref <branch>` is for ad-hoc runs only: it isn't the PR's pull_request run, so don't rely on it for the PR's `CI ok`.
+
+  | Job | Runs on a PR when it touches |
+  |---|---|
+  | Lint, typecheck, unit tests | always |
+  | Web build | `apps/web`, `packages/shared` |
+  | Integration (core) | `apps/api`, `packages`, `deploy/compose.dev.yml`, `deploy/dev` |
+  | Integration (engine) | same as core, plus everything that triggers the engine jobs |
+  | Integration (worker) | `apps/worker`, `apps/api/src/modules/library`, `packages`, `deploy/docker/worker.Dockerfile`, `deploy/compose.dev.yml`, `deploy/dev` |
+  | Engine templates, Engine island splice | `engine`, `apps/api/src/modules/engine/config`, `packages/shared`, `deploy/compose.dev.yml` |
+
+  Changes to `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.nvmrc`, `tsconfig.base.json` or `ci.yml` run every job. Skipped jobs report as skipped, not pending: **branch protection on `main` should require only the `CI ok` check** (never the individual jobs), which fails when any job failed or was cancelled. The repo has no branch protection rule yet. When you add a job, add it to `CI ok`'s `needs`; when you add a test folder, check the filters in the `changes` job cover it.
+- `images.yml` builds the production images on PRs only when their build inputs change (`deploy/docker`, any `package.json`, the lockfile, the workspace file, `.dockerignore`, `images.yml` itself) and pushes them to GHCR from `main`, where it runs on every commit. It isn't a required check.
 - Build a production image locally from the repo root: `docker build -f deploy/docker/api.Dockerfile .` (or `worker`). Images run the `.ts` sources directly (`docs/adr/0005-production-images.md`).
 
 If a command here is wrong, fix this file.

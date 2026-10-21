@@ -1,0 +1,1 @@
+ALTER TABLE "asset_loudness" ADD COLUMN "playout_sha256" text;
