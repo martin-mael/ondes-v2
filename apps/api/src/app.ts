@@ -11,6 +11,7 @@ import { type AlertsPluginOptions, alertsPlugin } from './modules/alerts/plugin.
 import { type AsRunPluginOptions, asRunPlugin } from './modules/asrun/plugin.ts';
 import { authRoutes } from './modules/auth/routes.ts';
 import { type CachePluginOptions, cachePlugin } from './modules/cache/plugin.ts';
+import { clocksRoutes } from './modules/clocks/routes.ts';
 import { type FeederPluginOptions, feederPlugin } from './modules/engine/feeder/plugin.ts';
 import {
   type EngineLifecyclePluginOptions,
@@ -95,6 +96,7 @@ export async function buildApp(options: AppOptions) {
   await app.register(showsRoutes, { prefix: '/api/v1' });
   await app.register(rotationRoutes, { prefix: '/api/v1' });
   await app.register(rotationRulesRoutes, { prefix: '/api/v1' });
+  await app.register(clocksRoutes, { prefix: '/api/v1' });
   // Engine lifecycle (#35): engine routes, the internal engine events route, engines at boot.
   if (options.engine) await app.register(engineLifecyclePlugin, options.engine);
   // Alerts (#33): `app.alerts`, its routes under /api/v1, engine events -> alerts. Registered

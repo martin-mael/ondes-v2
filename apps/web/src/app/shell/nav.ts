@@ -1,6 +1,7 @@
 import type { Permission } from '@ondes/shared';
 import type { LinkProps } from '@tanstack/react-router';
 import {
+  ClockIcon,
   LayoutDashboardIcon,
   LifeBuoyIcon,
   ListMusicIcon,
@@ -41,6 +42,12 @@ export const stationNav: NavItem[] = [
     label: 'shell.nav.rotationRules',
     icon: SlidersHorizontalIcon,
     permission: 'rotation:read',
+  },
+  {
+    to: '/stations/$stationId/clocks',
+    label: 'shell.nav.clocks',
+    icon: ClockIcon,
+    permission: 'clock:read',
   },
   {
     to: '/stations/$stationId/settings/safety',

@@ -10,6 +10,8 @@ import {
 } from '@tanstack/react-router';
 import { toast } from 'sonner';
 import { z } from 'zod';
+import { EditClockPage, NewClockPage } from '../features/clocks/clock-editor-page.tsx';
+import { ClocksPage } from '../features/clocks/clocks-page.tsx';
 import { CategoriesPage } from '../features/rotation/categories/categories-page.tsx';
 import {
   EditCategoryPage,
@@ -195,6 +197,25 @@ const rotationRulesRoute = createRoute({
   component: RulesPage,
 });
 
+// Clocks (#39).
+const clocksRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'clocks',
+  component: ClocksPage,
+});
+
+const newClockRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'clocks/new',
+  component: NewClockPage,
+});
+
+const clockRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'clocks/$clockId',
+  component: EditClockPage,
+});
+
 const safetySettingsRoute = createRoute({
   getParentRoute: () => stationRoute,
   path: '/settings/safety',
@@ -219,6 +240,9 @@ const routeTree = rootRoute.addChildren([
       newCategoryRoute,
       categoryRoute,
       rotationRulesRoute,
+      clocksRoute,
+      newClockRoute,
+      clockRoute,
       safetySettingsRoute,
     ]),
   ]),
