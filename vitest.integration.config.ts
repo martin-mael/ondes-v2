@@ -6,7 +6,10 @@ import { defineConfig } from 'vitest/config';
 //   engine: tests that start their own Liquidsoap/Icecast compose project (testing/compose.yml).
 //   worker: the worker's jobs, which run the worker image's ffmpeg (apps/worker/test/bin).
 //   core:   everything else (Postgres, RabbitMQ, Garage).
-const engine = ['apps/api/src/modules/engine/**/*.int.test.ts', 'apps/api/src/modules/alerts/silence.int.test.ts'];
+const engine = [
+  'apps/api/src/modules/engine/**/*.int.test.ts',
+  'apps/api/src/modules/alerts/silence.int.test.ts',
+];
 const worker = ['apps/worker/src/**/*.int.test.ts'];
 
 export default defineConfig({
