@@ -1,3 +1,4 @@
+import { localDateSchema } from '@ondes/shared';
 import type { QueryClient } from '@tanstack/react-query';
 import {
   createRootRouteWithContext,
@@ -16,6 +17,9 @@ import {
   NewCategoryPage,
 } from '../features/rotation/categories/category-editor-page.tsx';
 import { SafetyPage } from '../features/settings/safety/safety-page.tsx';
+import { CalendarPage, calendarViews } from '../features/shows/calendar-page.tsx';
+import { ShowPage } from '../features/shows/show-page.tsx';
+import { ShowsPage } from '../features/shows/shows-page.tsx';
 import { AcceptInvitationPage } from './auth/accept-invitation-page.tsx';
 import { AccountPage } from './auth/account-page.tsx';
 import { AuthLayout } from './auth/auth-layout.tsx';
@@ -187,6 +191,30 @@ const categoryRoute = createRoute({
   component: EditCategoryPage,
 });
 
+// Shows (#45): list, calendar, show page.
+const showsRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'shows',
+  component: ShowsPage,
+});
+
+const showsCalendarRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'shows/calendar',
+  validateSearch: z.object({
+    view: z.enum(calendarViews).optional().catch(undefined),
+    date: localDateSchema.optional().catch(undefined),
+    show: z.uuid().optional().catch(undefined),
+  }),
+  component: CalendarPage,
+});
+
+const showRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'shows/$showId',
+  component: ShowPage,
+});
+
 const safetySettingsRoute = createRoute({
   getParentRoute: () => stationRoute,
   path: '/settings/safety',
@@ -210,6 +238,9 @@ const routeTree = rootRoute.addChildren([
       categoriesRoute,
       newCategoryRoute,
       categoryRoute,
+      showsRoute,
+      showsCalendarRoute,
+      showRoute,
       safetySettingsRoute,
     ]),
   ]),

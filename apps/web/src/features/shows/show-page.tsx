@@ -1,0 +1,672 @@
+import { type Episode, localDateOf, type ShowOccurrence, type ShowSlot } from '@ondes/shared';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { getRouteApi, Link, useNavigate } from '@tanstack/react-router';
+import {
+  ArrowLeftIcon,
+  CalendarDaysIcon,
+  CircleAlertIcon,
+  PencilIcon,
+  PlusIcon,
+  RadioIcon,
+} from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { toast } from 'sonner';
+import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/ui/alert';
+import { Badge } from '@/ui/badge';
+import { Button } from '@/ui/button';
+import { Card, CardContent } from '@/ui/card';
+import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
+import { Spinner } from '@/ui/spinner';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/ui/table';
+import { isApiError } from '../../app/api/client.ts';
+import { FormAlert } from '../../app/forms.tsx';
+import { useI18n } from '../../app/i18n/i18n.tsx';
+import { type ShowAccess, useShowAccess } from './access.ts';
+import {
+  episodesQuery,
+  invalidateShows,
+  occurrencesQuery,
+  showQuery,
+  showsApi,
+  slotsQuery,
+} from './api.ts';
+import {
+  EpisodeDialog,
+  EpisodeStatusBadge,
+  occurrenceKey,
+  UploadAudioButton,
+} from './episode-dialog.tsx';
+import { formatDay, formatDuration, formatTime, ruleSummary } from './format.ts';
+import { useShowError, useShowT } from './messages.ts';
+import { ShowFormDialog } from './show-form.tsx';
+import { ShowArtwork } from './shows-page.tsx';
+import { SlotEditorDialog } from './slot-editor.tsx';
+import { useEpisodeUpload } from './upload.ts';
+
+const route = getRouteApi('/_app/stations/$stationId/shows/$showId');
+
+const DAY_MS = 24 * 3600 * 1000;
+/** How far ahead "upcoming airings" looks. */
+const UPCOMING_DAYS = 56;
+/** "Create the missing episodes" covers the next two weeks. */
+const PLAN_AHEAD_DAYS = 14;
+
+type EpisodeEdit = { episode?: Episode; occurrence?: ShowOccurrence } | null;
+
+export function ShowPage() {
+  const t = useShowT();
+  const { stationId, showId } = route.useParams();
+  const access = useShowAccess(stationId);
+  const show = useQuery(showQuery(stationId, showId));
+  // Start of today: today's airings stay listed until tomorrow.
+  const [from] = useState(() => new Date(Math.floor(Date.now() / 60_000) * 60_000 - DAY_MS / 2));
+  const to = useMemo(() => new Date(from.getTime() + UPCOMING_DAYS * DAY_MS), [from]);
+  const occurrences = useQuery(occurrencesQuery(stationId, from, to, showId));
+  const slots = useQuery(slotsQuery(stationId, showId));
+  const episodes = useQuery(episodesQuery(stationId, showId));
+  const unscheduled = useQuery(episodesQuery(stationId, showId, false));
+  const [detached, setDetached] = useState<string[]>([]);
+  const [editingShow, setEditingShow] = useState(false);
+  const [slotEdit, setSlotEdit] = useState<{ slot?: ShowSlot } | null>(null);
+  const [episodeEdit, setEpisodeEdit] = useState<EpisodeEdit>(null);
+
+  if (show.isPending) return <Spinner className="m-6" />;
+  if (show.isError) {
+    return (
+      <div className="p-6">
+        {isApiError(show.error, 'not_found') ? (
+          <p className="text-sm text-muted-foreground">{t('show.notFound')}</p>
+        ) : (
+          <FormAlert error={show.error} />
+        )}
+      </div>
+    );
+  }
+  const data = show.data;
+  const canEdit = access.canEdit(data);
+  const upcoming = occurrences.data?.occurrences ?? [];
+  const detachedEpisodes = (episodes.data?.items ?? []).filter((e) => detached.includes(e.id));
+
+  return (
+    <div className="flex flex-col gap-6 p-4 sm:p-6">
+      <Link
+        to="/stations/$stationId/shows"
+        params={{ stationId }}
+        className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
+      >
+        <ArrowLeftIcon className="size-3.5" />
+        {t('show.back')}
+      </Link>
+
+      <header className="flex flex-wrap items-start gap-4">
+        <ShowArtwork show={data} className="size-20 sm:size-24" />
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <h1 className="font-heading text-xl font-semibold">{data.name}</h1>
+          <p className="text-muted-foreground">
+            {data.hosts.length > 0
+              ? t('show.hostedBy', { hosts: data.hosts.map((h) => h.name).join(', ') })
+              : t('list.noHosts')}
+          </p>
+          {data.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {data.tags.map((tag) => (
+                <Badge key={tag} variant="outline">
+                  {tag}
+                </Badge>
+              ))}
+            </div>
+          )}
+          {data.description && (
+            <p className="max-w-2xl text-sm whitespace-pre-line">{data.description}</p>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            nativeButton={false}
+            render={
+              <Link
+                to="/stations/$stationId/shows/calendar"
+                params={{ stationId }}
+                search={{ show: showId }}
+              />
+            }
+          >
+            <CalendarDaysIcon data-icon="inline-start" />
+            {t('calendar.title')}
+          </Button>
+          {canEdit && (
+            <Button variant="outline" onClick={() => setEditingShow(true)}>
+              <PencilIcon data-icon="inline-start" />
+              {t('show.edit')}
+            </Button>
+          )}
+        </div>
+      </header>
+
+      {detachedEpisodes.length > 0 && (
+        <Alert>
+          <CircleAlertIcon />
+          <AlertTitle>{t('detached.title', { count: detachedEpisodes.length })}</AlertTitle>
+          <AlertDescription>
+            {t('detached.description', {
+              episodes: detachedEpisodes.map((e) => `#${e.number}`).join(', '),
+            })}
+          </AlertDescription>
+          <AlertAction>
+            <Button size="sm" variant="ghost" onClick={() => setDetached([])}>
+              {t('detached.dismiss')}
+            </Button>
+          </AlertAction>
+        </Alert>
+      )}
+
+      <UpcomingSection
+        stationId={stationId}
+        showId={showId}
+        access={access}
+        canEdit={canEdit}
+        occurrences={upcoming}
+        pending={occurrences.isPending}
+        error={occurrences.error}
+        unscheduled={unscheduled.data?.items ?? []}
+        onPlan={(occurrence) => setEpisodeEdit({ occurrence })}
+        onEdit={(id) => {
+          const episode = episodes.data?.items.find((e) => e.id === id);
+          if (episode) setEpisodeEdit({ episode });
+        }}
+      />
+
+      {(unscheduled.data?.items.length ?? 0) > 0 && (
+        <section className="flex flex-col gap-3">
+          <h2 className="font-heading font-semibold">{t('unscheduled.title')}</h2>
+          <p className="text-muted-foreground">{t('unscheduled.description')}</p>
+          <ul className="flex flex-col divide-y rounded-xl ring-1 ring-foreground/10">
+            {unscheduled.data?.items.map((episode) => (
+              <UnscheduledRow
+                key={episode.id}
+                stationId={stationId}
+                showId={showId}
+                episode={episode}
+                canEdit={canEdit}
+                free={upcoming.filter((o) => !o.episode && o.type !== 'rerun')}
+                timezone={access.timezone}
+                onEdit={() => setEpisodeEdit({ episode })}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <section className="flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <h2 className="font-heading font-semibold">{t('slots.title')}</h2>
+          {access.canManage && (
+            <Button className="ml-auto" size="sm" onClick={() => setSlotEdit({})}>
+              <PlusIcon data-icon="inline-start" />
+              {t('slots.add')}
+            </Button>
+          )}
+        </div>
+        <SlotList
+          slots={slots.data?.items}
+          pending={slots.isPending}
+          canManage={access.canManage}
+          onEdit={(slot) => setSlotEdit({ slot })}
+        />
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <h2 className="font-heading font-semibold">{t('episodes.title')}</h2>
+          {canEdit && (
+            <Button className="ml-auto" size="sm" onClick={() => setEpisodeEdit({})}>
+              <PlusIcon data-icon="inline-start" />
+              {t('episodes.new')}
+            </Button>
+          )}
+        </div>
+        <EpisodeTable
+          episodes={episodes.data?.items}
+          pending={episodes.isPending}
+          canEdit={canEdit}
+          onEdit={(episode) => setEpisodeEdit({ episode })}
+        />
+      </section>
+
+      <ShowFormDialog
+        stationId={stationId}
+        show={data}
+        open={editingShow}
+        onOpenChange={setEditingShow}
+        canManage={access.canManage}
+      />
+      {access.canManage && (
+        <>
+          <SlotEditorDialog
+            stationId={stationId}
+            show={data}
+            slot={slotEdit?.slot}
+            timezone={access.timezone}
+            open={slotEdit !== null}
+            onOpenChange={(open) => !open && setSlotEdit(null)}
+            onDetached={(ids) => setDetached(ids)}
+          />
+          <DeleteShow stationId={stationId} showId={showId} name={data.name} />
+        </>
+      )}
+      <EpisodeDialog
+        stationId={stationId}
+        show={data}
+        episode={episodeEdit?.episode}
+        initialOccurrence={episodeEdit?.occurrence}
+        occurrences={upcoming}
+        timezone={access.timezone}
+        canSearchLibrary={access.canSearchLibrary}
+        open={episodeEdit !== null}
+        onOpenChange={(open) => !open && setEpisodeEdit(null)}
+      />
+    </div>
+  );
+}
+
+function UpcomingSection({
+  stationId,
+  showId,
+  access,
+  canEdit,
+  occurrences,
+  pending,
+  error,
+  unscheduled,
+  onPlan,
+  onEdit,
+}: {
+  stationId: string;
+  showId: string;
+  access: ShowAccess;
+  canEdit: boolean;
+  occurrences: ShowOccurrence[];
+  pending: boolean;
+  error: unknown;
+  unscheduled: Episode[];
+  onPlan(occurrence: ShowOccurrence): void;
+  onEdit(episodeId: string): void;
+}) {
+  const t = useShowT();
+  const { locale } = useI18n();
+  const showError = useShowError();
+  const queryClient = useQueryClient();
+  const upload = useEpisodeUpload(stationId);
+  const [busy, setBusy] = useState(false);
+  const horizon = Date.now() + PLAN_AHEAD_DAYS * DAY_MS;
+  const missing = occurrences.filter(
+    (o) => !o.episode && o.type !== 'rerun' && o.startsAt.getTime() < horizon,
+  );
+
+  const act = async (action: () => Promise<unknown>, done?: string) => {
+    setBusy(true);
+    try {
+      await action();
+      if (done) toast.success(done);
+    } catch (e) {
+      toast.error(showError(e));
+    } finally {
+      await invalidateShows(queryClient, stationId);
+      setBusy(false);
+    }
+  };
+
+  /** One episode per free airing, numbered in airing order. */
+  const createMissing = () =>
+    act(
+      async () => {
+        for (const o of missing) {
+          await showsApi.createEpisode(stationId, showId, {
+            slotId: o.slotId,
+            occurrenceDate: o.date,
+          });
+        }
+      },
+      t('upcoming.created', { count: missing.length }),
+    );
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="font-heading font-semibold">{t('upcoming.title')}</h2>
+        {canEdit && missing.length > 0 && (
+          <Button
+            className="ml-auto"
+            size="sm"
+            variant="secondary"
+            disabled={busy}
+            onClick={createMissing}
+          >
+            <PlusIcon data-icon="inline-start" />
+            {t('upcoming.createMissing', { count: missing.length })}
+          </Button>
+        )}
+      </div>
+      <p className="text-muted-foreground">
+        {t('upcoming.timezone', { timezone: access.timezone })}
+      </p>
+      {pending ? (
+        <Spinner />
+      ) : error ? (
+        <FormAlert error={error} />
+      ) : occurrences.length === 0 ? (
+        <Card>
+          <CardContent className="py-6 text-center text-muted-foreground">
+            {t('upcoming.empty')}
+          </CardContent>
+        </Card>
+      ) : (
+        <ul className="flex flex-col divide-y rounded-xl ring-1 ring-foreground/10">
+          {occurrences.map((o) => {
+            const date = localDateOf(o.startsAt, access.timezone);
+            const episode = o.episode;
+            return (
+              <li
+                key={occurrenceKey(o)}
+                className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3"
+                data-testid="upcoming-row"
+              >
+                <div className="flex min-w-36 flex-col">
+                  <span className="font-medium">{formatDay(date, locale)}</span>
+                  <span className="text-muted-foreground tabular-nums">
+                    {formatTime(o.startsAt, access.timezone, locale)}–
+                    {formatTime(o.endsAt, access.timezone, locale)}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
+                  {o.type === 'live' && (
+                    <Badge variant="secondary">
+                      <RadioIcon />
+                      {t('type.live')}
+                    </Badge>
+                  )}
+                  {o.type === 'rerun' && <Badge variant="outline">{t('type.rerun')}</Badge>}
+                  {o.moved && <Badge variant="outline">{t('occurrence.moved')}</Badge>}
+                </div>
+                <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
+                  {episode ? (
+                    <>
+                      <button
+                        type="button"
+                        className="truncate text-left hover:underline disabled:no-underline"
+                        disabled={!canEdit}
+                        onClick={() => onEdit(episode.id)}
+                      >
+                        {t('episode.label', { number: episode.number })}
+                        {episode.title ? ` · ${episode.title}` : ''}
+                      </button>
+                      <EpisodeStatusBadge status={episode.status} episodeId={episode.id} />
+                      {canEdit && episode.kind === 'prerecorded' && !episode.assetId && (
+                        <UploadAudioButton
+                          variant="default"
+                          label={t('episode.uploadAudio')}
+                          onFile={(file) => upload({ showId, episodeId: episode.id }, file)}
+                        />
+                      )}
+                    </>
+                  ) : o.type === 'rerun' ? (
+                    <span className="text-muted-foreground">{t('upcoming.rerun')}</span>
+                  ) : canEdit ? (
+                    <>
+                      {o.type === 'prerecorded' && (
+                        <UploadAudioButton
+                          variant="default"
+                          label={t('episode.uploadAudio')}
+                          onFile={(file) =>
+                            upload({ showId, slotId: o.slotId, occurrenceDate: o.date }, file)
+                          }
+                        />
+                      )}
+                      {unscheduled.length > 0 && (
+                        <NativeSelect
+                          size="sm"
+                          aria-label={t('upcoming.assign')}
+                          value=""
+                          disabled={busy}
+                          onChange={(e) => {
+                            const id = e.target.value;
+                            if (id) {
+                              void act(() =>
+                                showsApi.updateEpisode(stationId, showId, id, {
+                                  slotId: o.slotId,
+                                  occurrenceDate: o.date,
+                                }),
+                              );
+                            }
+                          }}
+                        >
+                          <NativeSelectOption value="">{t('upcoming.assign')}</NativeSelectOption>
+                          {unscheduled.map((e) => (
+                            <NativeSelectOption key={e.id} value={e.id}>
+                              {t('episode.label', { number: e.number })}
+                              {e.title ? ` · ${e.title}` : ''}
+                            </NativeSelectOption>
+                          ))}
+                        </NativeSelect>
+                      )}
+                      <Button size="sm" variant="outline" disabled={busy} onClick={() => onPlan(o)}>
+                        {t('upcoming.plan')}
+                      </Button>
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">{t('upcoming.noEpisode')}</span>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function UnscheduledRow({
+  stationId,
+  showId,
+  episode,
+  canEdit,
+  free,
+  timezone,
+  onEdit,
+}: {
+  stationId: string;
+  showId: string;
+  episode: Episode;
+  canEdit: boolean;
+  free: ShowOccurrence[];
+  timezone: string;
+  onEdit(): void;
+}) {
+  const t = useShowT();
+  const { locale } = useI18n();
+  const showError = useShowError();
+  const queryClient = useQueryClient();
+  return (
+    <li className="flex flex-wrap items-center gap-3 p-3">
+      <button type="button" className="hover:underline" onClick={onEdit} disabled={!canEdit}>
+        {t('episode.label', { number: episode.number })}
+        {episode.title ? ` · ${episode.title}` : ''}
+      </button>
+      <EpisodeStatusBadge status={episode.status} episodeId={episode.id} />
+      {canEdit && free.length > 0 && (
+        <NativeSelect
+          size="sm"
+          className="ml-auto"
+          aria-label={t('unscheduled.planIn', { number: episode.number })}
+          value=""
+          onChange={async (e) => {
+            const [slotId, occurrenceDate] = e.target.value.split('|');
+            if (!slotId || !occurrenceDate) return;
+            try {
+              await showsApi.updateEpisode(stationId, showId, episode.id, {
+                slotId,
+                occurrenceDate,
+              });
+              toast.success(t('unscheduled.planned', { number: episode.number }));
+            } catch (error) {
+              toast.error(showError(error));
+            } finally {
+              await invalidateShows(queryClient, stationId);
+            }
+          }}
+        >
+          <NativeSelectOption value="">
+            {t('unscheduled.planIn', { number: episode.number })}
+          </NativeSelectOption>
+          {free.map((o) => (
+            <NativeSelectOption key={occurrenceKey(o)} value={occurrenceKey(o)}>
+              {formatDay(localDateOf(o.startsAt, timezone), locale)}{' '}
+              {formatTime(o.startsAt, timezone, locale)}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
+      )}
+    </li>
+  );
+}
+
+function SlotList({
+  slots,
+  pending,
+  canManage,
+  onEdit,
+}: {
+  slots: ShowSlot[] | undefined;
+  pending: boolean;
+  canManage: boolean;
+  onEdit(slot: ShowSlot): void;
+}) {
+  const t = useShowT();
+  const { locale } = useI18n();
+  if (pending) return <Spinner />;
+  if (!slots || slots.length === 0) {
+    return <p className="text-muted-foreground">{t('slots.empty')}</p>;
+  }
+  return (
+    <ul className="flex flex-col divide-y rounded-xl ring-1 ring-foreground/10">
+      {slots.map((slot) => (
+        <li key={slot.id} className="flex flex-wrap items-center gap-3 p-3">
+          <div className="flex flex-col">
+            <span className="font-medium">{ruleSummary(slot.rule, t, locale)}</span>
+            <span className="text-muted-foreground">
+              {formatDuration(slot.durationMs)}
+              {slot.exceptions.length > 0 &&
+                ` · ${t('slots.exceptions', { count: slot.exceptions.length })}`}
+            </span>
+          </div>
+          <Badge variant="outline">{t(`type.${slot.type}`)}</Badge>
+          {canManage && (
+            <Button className="ml-auto" size="sm" variant="ghost" onClick={() => onEdit(slot)}>
+              <PencilIcon data-icon="inline-start" />
+              {t('slots.edit')}
+            </Button>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function EpisodeTable({
+  episodes,
+  pending,
+  canEdit,
+  onEdit,
+}: {
+  episodes: Episode[] | undefined;
+  pending: boolean;
+  canEdit: boolean;
+  onEdit(episode: Episode): void;
+}) {
+  const t = useShowT();
+  const { locale } = useI18n();
+  if (pending) return <Spinner />;
+  if (!episodes || episodes.length === 0) {
+    return <p className="text-muted-foreground">{t('episodes.empty')}</p>;
+  }
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="w-16">#</TableHead>
+          <TableHead>{t('episode.title')}</TableHead>
+          <TableHead>{t('episode.kind')}</TableHead>
+          <TableHead>{t('episode.occurrence')}</TableHead>
+          <TableHead>{t('episodes.status')}</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {episodes.map((episode) => (
+          <TableRow key={episode.id}>
+            <TableCell className="tabular-nums">
+              {canEdit ? (
+                <button
+                  type="button"
+                  className="font-medium hover:underline"
+                  onClick={() => onEdit(episode)}
+                  aria-label={t('episode.editTitle', { number: episode.number })}
+                >
+                  {episode.number}
+                </button>
+              ) : (
+                episode.number
+              )}
+            </TableCell>
+            <TableCell>{episode.title ?? '–'}</TableCell>
+            <TableCell>{t(`type.${episode.kind}`)}</TableCell>
+            <TableCell>
+              {episode.occurrenceDate
+                ? formatDay(episode.occurrenceDate, locale, { year: 'numeric' })
+                : t('episode.unscheduled')}
+            </TableCell>
+            <TableCell>
+              <EpisodeStatusBadge status={episode.status} episodeId={episode.id} />
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function DeleteShow({
+  stationId,
+  showId,
+  name,
+}: {
+  stationId: string;
+  showId: string;
+  name: string;
+}) {
+  const t = useShowT();
+  const showError = useShowError();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  return (
+    <div className="border-t pt-4">
+      <Button
+        variant="destructive"
+        onClick={async () => {
+          if (!window.confirm(t('show.deleteConfirm', { name }))) return;
+          try {
+            await showsApi.remove(stationId, showId);
+            await invalidateShows(queryClient, stationId);
+            toast.success(t('show.deleted'));
+            await navigate({ to: '/stations/$stationId/shows', params: { stationId } });
+          } catch (error) {
+            toast.error(showError(error));
+          }
+        }}
+      >
+        {t('show.delete')}
+      </Button>
+    </div>
+  );
+}
