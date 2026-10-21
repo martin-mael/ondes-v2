@@ -1,6 +1,6 @@
 # ADR 0002: Engine control: harbor HTTP + JSON, pushed events, just-in-time queue
 
-- Status: accepted (contract v1 is a draft that #28 finalises). Amended 2026-10-20: island joins follow spike #12.
+- Status: accepted. Amended 2026-10-20: island joins follow spike #12; contract v1 finalised by #28 (see "Contract v1" below).
 - Date: 2026-10-20
 - Issue: #13 (spike). Consumers: #27 (template), #28 (adapter).
 
@@ -39,10 +39,11 @@ All under `/v1`, JSON bodies, schemas in `packages/shared/src/contracts/engine.t
 | `GET /v1/state` | – | `{boot_id, station_id, version, uptime, seq, on_air, queue[], live: {enabled, connected, ready}, blank, output_db}` |
 | `GET /v1/events?after=<seq>` | – | event log after `seq` (last 1000 kept) |
 | `POST /v1/queue` | `{item_id, uri, cue_in?, cue_out?, fade_in?, fade_out?, amplify_db?, cross_in?, cross_out?, title?, artist?}` | `201 {rid, item_id, uri, status}`, `422` if the file can't be resolved, `400` on a bad body |
-| `DELETE /v1/queue/:item_id` | – | `{removed}`, `404` if not queued |
+| `POST /v1/segment` | `{segment_id, parts: [{item_id, uri, cue_in?, cue_out?, amplify_db?, title?, artist?}] (2–16), fade_in?, fade_out?, cross_in?, cross_out?}` | `201 {segment_id, requests[]}`, `422` if any part can't be resolved (nothing queued), `400` on a bad body. Added by #28, served by #27. |
+| `DELETE /v1/queue/:id` | – | `{removed}` (requests): every queued entry whose `item_id` or `segment_id` is `id`. Naming one part of a segment removes the whole segment. `404` if none |
 | `DELETE /v1/queue` | – | `{removed}` (clears the queue) |
-| `POST /v1/skip` | – | ends whatever is on air |
-| `POST /v1/live` | `{enabled}` | opens or closes the live gate |
+| `POST /v1/skip` | – | `{skipped}`: ends whatever is on air (a whole segment, if one plays) |
+| `POST /v1/live` | `{enabled}` | opens or closes the live gate; `409` if live is disabled in the station settings |
 
 Notes:
 - **Push resolves synchronously.** The handler calls `request.resolve` before `queue.push`, so a 201 means the file is local and decodable. A missing file in the playout cache is reported to Node at push time, not discovered on air. A push costs about 30 ms.
@@ -127,6 +128,16 @@ emergency single()┘
 
 ### Metrics
 `settings.prometheus.server := true` on 9599 (internal). The template adds `ondes_engine_queue_length`, `ondes_engine_on_air_source{source}`, `ondes_engine_live_connected`, `ondes_engine_blank` (all labelled `station`) and `prometheus.latency` on the final mix (`liquidsoap_*` latency gauges).
+
+## Contract v1 (#28)
+Finalised in `packages/shared/src/contracts/engine.ts`; additive over the spike draft, so the spike template still conforms.
+- **Island segments:** `POST /v1/segment` above. Per-part fields are the request fields (file, cues, gain, ICY metadata); transition fields (`fade_*`, `cross_*`) apply to the whole segment, into and out of it. The template builds it as `sequence(merge=true, [...requests, source.fail()])` and tags each part with `ondes_segment_id`.
+- **`segment_id`** (optional, nullable) on queued requests, on `on_air` in the state, and in `track.started` / `track.ended`. As-run stays keyed on `rid`, so each part still reports its own `track.started` with its own `item_id`.
+- **`config_version`** (optional) in `GET /v1/health` and `GET /v1/state`: hash of the template and settings the script was rendered from (#27), so the api can spot a script waiting for a restart.
+- **Entry ends are frame-granular** (#27 finding): at a normal crossfade boundary an entry can air up to about one frame (441 samples measured) past its `cue_out`, even with `cross_out=0`. Harmless outside island joins, but as-run and back-timing must not expect sample accuracy at entry ends.
+- **Queued `uri`** is Liquidsoap's request URI, i.e. the pushed path behind the `annotate:` prefix.
+- **Domain events.** The adapter publishes engine events on the RabbitMQ fanout as `engine.*` events defined in `packages/shared/src/contracts/events.ts` (camelCase, ISO times, deterministic ids from `(station, boot_id, seq)`), plus `engine.up` / `engine.down` from health polling. Wire `engine.started` becomes `engine.booted`.
+- **Events endpoint:** `POST /internal/engine/stations/:stationId/events` on the api. 200 when published, 503 when it couldn't publish (the engine redelivers), 400/404/409 for wiring bugs. It can require a bearer token once the template sends one.
 
 ## Consequences
 - #28 implements `EngineAdapter` over `fetch` with the schemas in `@ondes/shared`, an events endpoint (dedupe on `(boot_id, seq)`, gap backfill) and the live-auth webhook. It publishes engine events on RabbitMQ and SSE.
