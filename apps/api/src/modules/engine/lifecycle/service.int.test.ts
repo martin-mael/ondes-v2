@@ -72,7 +72,9 @@ beforeAll(async () => {
   const mailer = createMemoryMailer();
   // A real connection: other plugins on the app (SSE #9, alerts #33) consume from RabbitMQ.
   // Publishes are captured, then sent on as usual.
-  realRabbit = await createRabbit(process.env.RABBITMQ_URL ?? 'amqp://ondes:ondes@127.0.0.1:5672');
+  realRabbit = await createRabbit(
+    process.env.RABBITMQ_URL ?? 'amqp://ondes:ondes@127.0.0.1:5672/ondes',
+  );
   const rabbit: Rabbit = {
     ...realRabbit,
     events: {

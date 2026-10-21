@@ -474,9 +474,12 @@ describe.skipIf(!enabled)('cache sync triggers', () => {
   const eventQueue = `cache-sync-it-${randomUUID().slice(0, 8)}`;
 
   beforeAll(async () => {
-    queue = await connectQueue(process.env.RABBITMQ_URL ?? 'amqp://ondes:ondes@127.0.0.1:5672', {
-      prefix: `test-${randomUUID().slice(0, 8)}`,
-    });
+    queue = await connectQueue(
+      process.env.RABBITMQ_URL ?? 'amqp://ondes:ondes@127.0.0.1:5672/ondes',
+      {
+        prefix: `test-${randomUUID().slice(0, 8)}`,
+      },
+    );
   });
   afterAll(async () => {
     await deleteEventQueue(queue.rabbit, queue.topology, eventQueue).catch(() => {});
