@@ -85,6 +85,13 @@
       "when": 1792583037484,
       "tag": "20261021114357_org-invitations",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1792583057625,
+      "tag": "20261021114417_org-member-history",
+      "breakpoints": true
     }
   ]
 }
