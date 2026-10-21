@@ -1,3 +1,4 @@
+import { localDateSchema } from '@ondes/shared';
 import type { QueryClient } from '@tanstack/react-query';
 import {
   createRootRouteWithContext,
@@ -10,6 +11,7 @@ import {
 } from '@tanstack/react-router';
 import { toast } from 'sonner';
 import { z } from 'zod';
+import { TimelinePage } from '../features/log-timeline/timeline-page.tsx';
 import { CategoriesPage } from '../features/rotation/categories/categories-page.tsx';
 import {
   EditCategoryPage,
@@ -193,6 +195,14 @@ const safetySettingsRoute = createRoute({
   component: SafetyPage,
 });
 
+// The log timeline (#51): one station-local day, `?date=YYYY-MM-DD` (default: today).
+const logRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'log',
+  validateSearch: z.object({ date: localDateSchema.optional().catch(undefined) }),
+  component: TimelinePage,
+});
+
 const routeTree = rootRoute.addChildren([
   authLayout.addChildren([
     loginRoute,
@@ -211,6 +221,7 @@ const routeTree = rootRoute.addChildren([
       newCategoryRoute,
       categoryRoute,
       safetySettingsRoute,
+      logRoute,
     ]),
   ]),
 ]);
