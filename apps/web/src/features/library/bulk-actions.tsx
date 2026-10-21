@@ -1,4 +1,5 @@
 import {
+  type AssetUsage,
   assetTypeSchema,
   type BulkAction,
   type BulkAssetPatch,
@@ -8,7 +9,7 @@ import {
   tagKeySchema,
 } from '@ondes/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { PencilIcon, PlusIcon, TagsIcon, Trash2Icon, XIcon } from 'lucide-react';
+import { ListMusicIcon, PencilIcon, PlusIcon, TagsIcon, Trash2Icon, XIcon } from 'lucide-react';
 import { type ReactNode, useId, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/ui/button';
@@ -26,6 +27,7 @@ import { Label } from '@/ui/label';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { isApiError } from '../../app/api/client.ts';
 import { FormAlert } from '../../app/forms.tsx';
+import { categoriesQuery } from '../rotation/categories/api.ts';
 import { invalidateLibrary, libraryApi, tagsQuery } from './api.ts';
 import { type LibraryT, useLibraryT } from './messages.ts';
 
@@ -38,7 +40,7 @@ export interface BulkTarget {
   count: number;
 }
 
-type Dialogs = 'tags' | 'edit' | 'delete' | null;
+type Dialogs = 'tags' | 'edit' | 'category' | 'delete' | null;
 
 export function BulkBar({
   stationId,
@@ -81,6 +83,10 @@ export function BulkBar({
           <PencilIcon data-icon="inline-start" />
           {t('bulk.edit')}
         </Button>
+        <Button variant="outline" size="sm" disabled={tooMany} onClick={() => setOpen('category')}>
+          <ListMusicIcon data-icon="inline-start" />
+          {t('bulk.category')}
+        </Button>
         <Button
           variant="destructive"
           size="sm"
@@ -109,6 +115,12 @@ function bulkErrorMessage(t: LibraryT, error: unknown): string | null {
   const count = (error as { details?: { count?: number } }).details?.count ?? 0;
   if (isApiError(error, 'selection_changed')) return t('bulk.changed', { count });
   if (isApiError(error, 'kill_before_start')) return t('bulk.killBeforeStart', { count });
+  if (isApiError(error, 'asset_in_use')) {
+    const usages =
+      (error as { details?: { usages?: AssetUsage[] } }).details?.usages ?? ([] as AssetUsage[]);
+    const kinds = [...new Set(usages.map((u) => t(`bulk.inUse.${u.kind}`)))].join(', ');
+    return t('bulk.inUse', { count: new Set(usages.map((u) => u.assetId)).size, kinds });
+  }
   if (isApiError(error, 'too_many_assets')) {
     return t('bulk.tooMany', { max: MAX_BULK_ASSETS.toLocaleString() });
   }
@@ -181,6 +193,16 @@ function BulkDialog({
             pending={mutation.isPending}
             error={error}
             onSubmit={(patch) => mutation.mutate({ kind: 'update', patch })}
+            onCancel={close}
+          />
+        )}
+        {open === 'category' && (
+          <CategoryForm
+            stationId={stationId}
+            title={t('bulk.category.title', { count })}
+            pending={mutation.isPending}
+            error={error}
+            onSubmit={(categoryId, mode) => mutation.mutate({ kind: 'category', categoryId, mode })}
             onCancel={close}
           />
         )}
@@ -494,6 +516,84 @@ function EditForm({
           {t('upload.cancel')}
         </Button>
         <Button type="submit" disabled={enabled.size === 0 || pending}>
+          {t('bulk.apply')}
+        </Button>
+      </DialogFooter>
+    </form>
+  );
+}
+
+// --- Category ----------------------------------------------------------------------------
+
+type CategoryMode = 'include' | 'exclude' | 'remove';
+
+function CategoryForm({
+  stationId,
+  title,
+  pending,
+  error,
+  onSubmit,
+  onCancel,
+}: {
+  stationId: string;
+  title: string;
+  pending: boolean;
+  error: ReactNode;
+  onSubmit: (categoryId: string, mode: CategoryMode) => void;
+  onCancel: () => void;
+}) {
+  const t = useLibraryT();
+  const categories = useQuery(categoriesQuery(stationId)).data?.items ?? [];
+  const [categoryId, setCategoryId] = useState('');
+  const [mode, setMode] = useState<CategoryMode>('include');
+  const chosen = categoryId || categories[0]?.id || '';
+  return (
+    <form
+      className="flex flex-col gap-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (chosen) onSubmit(chosen, mode);
+      }}
+    >
+      <DialogHeader>
+        <DialogTitle>{title}</DialogTitle>
+        <DialogDescription>{t('bulk.category.help')}</DialogDescription>
+      </DialogHeader>
+      <div className="grid grid-cols-[9rem_1fr] items-center gap-2">
+        <Label htmlFor="bulk-category">{t('bulk.category.category')}</Label>
+        <NativeSelect
+          id="bulk-category"
+          value={chosen}
+          onChange={(e) => setCategoryId(e.target.value)}
+        >
+          {categories.map((c) => (
+            <NativeSelectOption key={c.id} value={c.id}>
+              {c.name}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
+        <Label htmlFor="bulk-category-mode">{t('bulk.category.mode')}</Label>
+        <NativeSelect
+          id="bulk-category-mode"
+          value={mode}
+          onChange={(e) => setMode(e.target.value as CategoryMode)}
+        >
+          {(['include', 'exclude', 'remove'] as const).map((m) => (
+            <NativeSelectOption key={m} value={m}>
+              {t(`bulk.category.${m}`)}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
+      </div>
+      {categories.length === 0 && (
+        <p className="text-muted-foreground">{t('bulk.category.none')}</p>
+      )}
+      {error}
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          {t('upload.cancel')}
+        </Button>
+        <Button type="submit" disabled={!chosen || pending}>
           {t('bulk.apply')}
         </Button>
       </DialogFooter>

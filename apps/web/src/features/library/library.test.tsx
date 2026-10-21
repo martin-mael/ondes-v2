@@ -6,7 +6,7 @@ import type {
   LibrarySearchPage,
   MyOrg,
 } from '@ondes/shared';
-import { act, waitFor, within } from '@testing-library/react';
+import { act, cleanup, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeEventSource } from '../../app/testing/fake-event-source.ts';
 import {
@@ -387,6 +387,179 @@ describe('library page', () => {
     );
     await user.click(within(row).getByRole('button', { name: 'Open the asset' }));
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
+  });
+});
+
+describe('library page, more', () => {
+  const sha = 'a'.repeat(64);
+  const file = {
+    fileId: ids[0],
+    storageKey: 'k',
+    sha256: sha,
+    sizeBytes: 1,
+    codec: 'flac',
+    sampleRate: 44_100,
+    channels: 2,
+    durationSamples: 1,
+    flacBlockSize: 1024,
+  };
+  const ingested = {
+    id: '01a15ddf-0000-7000-8000-0000000004b0',
+    stationId,
+    at,
+    type: 'asset.ingested',
+    data: { orgId: orgs[0]?.id, assetId: ids[0], uploadId, master: file, playout: file },
+  };
+
+  it('saves filters in this browser and applies them again', async () => {
+    const first = renderApp(
+      `/stations/${stationId}/library?type=%5B%22jingle%22%5D`,
+      routes('presenter'),
+    );
+    await first.screen.findByText('One More Time');
+    await first.user.click(first.screen.getByRole('button', { name: 'Saved filters' }));
+    await first.user.click(
+      await first.screen.findByRole('menuitem', { name: /Save the current filters/ }),
+    );
+    const dialog = await first.screen.findByRole('dialog');
+    await first.user.type(within(dialog).getByLabelText('Name'), 'Jingles');
+    await first.user.click(within(dialog).getByRole('button', { name: 'Apply' }));
+    cleanup();
+
+    const again = renderApp(`/stations/${stationId}/library`, routes('presenter'));
+    await again.screen.findByText('One More Time');
+    await again.user.click(again.screen.getByRole('button', { name: 'Saved filters' }));
+    await again.user.click(await again.screen.findByRole('menuitem', { name: 'Jingles' }));
+    await waitFor(() =>
+      expect(lastBody(again.calls, `${lib}/search`)?.filter).toEqual({ types: ['jingle'] }),
+    );
+  });
+
+  it('remembers the visible columns', async () => {
+    const first = renderApp(`/stations/${stationId}/library`, routes('presenter'));
+    await first.screen.findByText('One More Time');
+    expect(first.screen.getByRole('columnheader', { name: 'Album' })).toBeInTheDocument();
+    await first.user.click(first.screen.getByRole('button', { name: 'Columns' }));
+    await first.user.click(await first.screen.findByRole('menuitemcheckbox', { name: 'Album' }));
+    await first.user.click(await first.screen.findByRole('menuitemcheckbox', { name: 'BPM' }));
+    cleanup();
+
+    const again = renderApp(`/stations/${stationId}/library`, routes('presenter'));
+    await again.screen.findByText('One More Time');
+    expect(again.screen.queryByRole('columnheader', { name: 'Album' })).toBeNull();
+    expect(again.screen.getByRole('columnheader', { name: /BPM/ })).toBeInTheDocument();
+  });
+
+  it('keeps the count seen at "select all", even after new assets arrive', async () => {
+    let total = 250;
+    let bulk: unknown;
+    const { screen, user } = renderApp(
+      `/stations/${stationId}/library`,
+      routes('programmer', {
+        [`POST ${lib}/facets`]: () => [200, { ...facets, total }],
+        [`POST ${lib}/bulk`]: (body) => {
+          bulk = body;
+          return [200, { matched: 250, changed: 250 }];
+        },
+      }),
+    );
+    await screen.findByText('One More Time');
+    await user.click(screen.getByRole('checkbox', { name: 'Select the loaded assets' }));
+    await user.click(screen.getByRole('button', { name: 'Select all 250 matching' }));
+    total = 251;
+    act(() => {
+      const source = FakeEventSource.last();
+      source.open();
+      source.emit(ingested);
+    });
+    await waitFor(() => expect(screen.getByText('251 assets')).toBeInTheDocument());
+    expect(screen.getByText('All 250 matching selected')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Edit fields' }));
+    const edit = await screen.findByRole('dialog');
+    await user.click(within(edit).getByRole('checkbox', { name: 'Explicit' }));
+    await user.click(within(edit).getByRole('button', { name: 'Apply' }));
+    await waitFor(() =>
+      expect(bulk).toMatchObject({ selection: { filter: {}, expectedCount: 250 } }),
+    );
+  });
+
+  it('adds the selection to a category, and explains a refused delete', async () => {
+    const bulk: unknown[] = [];
+    const categoryId = '01a15ddf-0000-7000-8000-0000000005a0';
+    const { screen, user } = renderApp(
+      `/stations/${stationId}/library`,
+      routes('programmer', {
+        [`GET /stations/${stationId}/categories`]: [
+          200,
+          {
+            items: [
+              {
+                id: categoryId,
+                orgId: orgs[0]?.id,
+                stationId,
+                name: 'House power',
+                description: null,
+                color: null,
+                assetType: 'song',
+                rule: null,
+                rotationOrder: 'least_recently_played',
+                searchDepthPercent: 100,
+                restMinutes: 0,
+                maxPlaysPerDay: null,
+                maxPlaysPerWeek: null,
+                createdAt: at,
+                updatedAt: at,
+                counts: {
+                  members: 0,
+                  schedulable: 0,
+                  ruleMatches: 0,
+                  manualOnly: 0,
+                  excluded: 0,
+                  totalDurationMs: 0,
+                },
+              },
+            ],
+          },
+        ],
+        [`POST ${lib}/bulk`]: (body) => {
+          bulk.push(body);
+          return (body as { action: { kind: string } }).action.kind === 'delete'
+            ? [
+                409,
+                {
+                  error: 'asset_in_use',
+                  message: 'in use',
+                  details: {
+                    usages: [{ assetId: ids[0], kind: 'safety_playlist', usedBy: stationId }],
+                  },
+                },
+              ]
+            : [200, { matched: 1, changed: 1 }];
+        },
+      }),
+    );
+    await screen.findByText('One More Time');
+    await user.click(screen.getByRole('checkbox', { name: 'Select Été indien' }));
+    await user.click(screen.getByRole('button', { name: 'Category' }));
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() =>
+      expect(within(dialog).getByRole('combobox', { name: 'Category' })).toHaveValue(categoryId),
+    );
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'exclude');
+    await user.click(within(dialog).getByRole('button', { name: 'Apply' }));
+    await waitFor(() =>
+      expect(bulk[0]).toEqual({
+        selection: { ids: [ids[0]] },
+        action: { kind: 'category', categoryId, mode: 'exclude' },
+      }),
+    );
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select Été indien' }));
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await user.click(await screen.findByRole('button', { name: 'Delete 1 assets' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '1 assets are still used (the safety playlist)',
+    );
   });
 });
 

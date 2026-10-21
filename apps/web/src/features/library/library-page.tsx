@@ -1,4 +1,9 @@
-import { type LibrarySort, type Permission, rolePermissions } from '@ondes/shared';
+import {
+  type LibraryFilter,
+  type LibrarySort,
+  type Permission,
+  rolePermissions,
+} from '@ondes/shared';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi } from '@tanstack/react-router';
 import {
@@ -38,7 +43,7 @@ import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert } from '../../app/forms.tsx';
 import { useSseEvent } from '../../app/sse/sse.tsx';
-import { facetsQuery, invalidateLibrary, searchQuery } from './api.ts';
+import { facetsQuery, refreshFirstPage, searchQuery } from './api.ts';
 import { AssetDrawer } from './asset-drawer.tsx';
 import { BulkBar, type BulkTarget } from './bulk-actions.tsx';
 import { COLUMNS, DEFAULT_COLUMNS, visibleColumns } from './columns.tsx';
@@ -61,6 +66,9 @@ import { applyUploadEvent } from './uploads.ts';
 // are in the URL.
 
 const route = getRouteApi('/_app/stations/$stationId/library');
+
+/** Most one live refresh per this long during ingest bursts. */
+const REFRESH_EVERY_MS = 5_000;
 
 /** Default sort direction per column: newest first, names A to Z, numbers high to low. */
 const DEFAULT_DIRECTION: Record<LibrarySort, 'asc' | 'desc'> = {
@@ -116,23 +124,36 @@ export function LibraryPage() {
 
   // --- Selection -------------------------------------------------------------------------
   const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [allMatching, setAllMatching] = useState(false);
+  /** "All matching", as the person saw it: the filter and its count at that moment. */
+  const [allMatching, setAllMatching] = useState<{ filter: LibraryFilter; count: number } | null>(
+    null,
+  );
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new filter starts a new selection.
   useEffect(() => {
     setPicked(new Set());
-    setAllMatching(false);
+    setAllMatching(null);
   }, [filterKey]);
+  // Picks that left the list (deleted, or no longer matching after a refetch) are dropped, so
+  // the count shown is what a bulk edit would touch.
+  useEffect(() => {
+    setPicked((current) => {
+      const loaded = new Set(items.map((i) => i.id));
+      const kept = [...current].filter((id) => loaded.has(id));
+      return kept.length === current.size ? current : new Set(kept);
+    });
+  }, [items]);
   const clearSelection = () => {
     setPicked(new Set());
-    setAllMatching(false);
+    setAllMatching(null);
   };
+  const allLoadedPicked = items.length > 0 && items.every((i) => picked.has(i.id));
   const selection: Selection | null = canWrite
     ? {
-        isSelected: (id) => allMatching || picked.has(id),
+        isSelected: (id) => allMatching !== null || picked.has(id),
         toggle: (id) => {
           if (allMatching) {
             // Leaving "all matching": keep the loaded rows but this one.
-            setAllMatching(false);
+            setAllMatching(null);
             setPicked(new Set(items.map((i) => i.id).filter((i) => i !== id)));
             return;
           }
@@ -141,36 +162,36 @@ export function LibraryPage() {
           else next.add(id);
           setPicked(next);
         },
-        page:
-          allMatching || (items.length > 0 && items.every((i) => picked.has(i.id)))
-            ? 'all'
-            : picked.size > 0
-              ? 'some'
-              : 'none',
+        page: allMatching || allLoadedPicked ? 'all' : picked.size > 0 ? 'some' : 'none',
         togglePage: () => {
-          if (allMatching || (items.length > 0 && items.every((i) => picked.has(i.id)))) {
-            clearSelection();
-          } else {
-            setPicked(new Set(items.map((i) => i.id)));
-          }
+          if (allMatching || allLoadedPicked) clearSelection();
+          else setPicked(new Set(items.map((i) => i.id)));
         },
       }
     : null;
-  const bulkTarget: BulkTarget | null =
-    allMatching && total
-      ? { selection: { filter, expectedCount: total }, count: total }
-      : picked.size > 0
-        ? { selection: { ids: [...picked] }, count: picked.size }
-        : null;
-  const everyLoadedPicked =
-    !allMatching && items.length > 0 && items.every((i) => picked.has(i.id));
+  const bulkTarget: BulkTarget | null = allMatching
+    ? {
+        selection: { filter: allMatching.filter, expectedCount: allMatching.count },
+        count: allMatching.count,
+      }
+    : picked.size > 0
+      ? { selection: { ids: [...picked] }, count: picked.size }
+      : null;
+  const everyLoadedPicked = !allMatching && allLoadedPicked;
 
   // --- Live updates ----------------------------------------------------------------------
+  // New assets (ingest bursts): at most one refresh every few seconds, of the first page and
+  // the counts only. Later pages are dropped rather than refetched; scrolling loads them again.
+  const lastRefresh = useRef(0);
   const refreshTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const refreshSoon = useCallback(() => {
-    // Ingests come in bursts: one refetch per second at most.
-    clearTimeout(refreshTimer.current);
-    refreshTimer.current = setTimeout(() => void invalidateLibrary(queryClient, stationId), 1000);
+    if (refreshTimer.current) return;
+    const wait = Math.max(0, lastRefresh.current + REFRESH_EVERY_MS - Date.now());
+    refreshTimer.current = setTimeout(() => {
+      refreshTimer.current = undefined;
+      lastRefresh.current = Date.now();
+      void refreshFirstPage(queryClient, stationId);
+    }, wait);
   }, [queryClient, stationId]);
   useEffect(() => () => clearTimeout(refreshTimer.current), []);
   useSseEvent('asset.ingested', refreshSoon);
@@ -303,7 +324,7 @@ export function LibraryPage() {
               size="sm"
               className="self-start"
               onClick={() => {
-                setAllMatching(true);
+                setAllMatching({ filter, count: total });
                 setPicked(new Set());
               }}
             >

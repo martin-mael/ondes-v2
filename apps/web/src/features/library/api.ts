@@ -106,3 +106,19 @@ export const libraryApi = {
 /** After an edit or new assets: every library list, count and detail of the station. */
 export const invalidateLibrary = (queryClient: QueryClient, stationId: string) =>
   queryClient.invalidateQueries({ queryKey: libraryKeys.all(stationId) });
+
+/**
+ * After new assets: the first page of every loaded search and the facet counts. The later
+ * pages are dropped, not refetched (one request per list, however far it was scrolled).
+ */
+export async function refreshFirstPage(queryClient: QueryClient, stationId: string) {
+  const searches = [...libraryKeys.all(stationId), 'search'];
+  queryClient.setQueriesData<{ pages: unknown[]; pageParams: unknown[] }>(
+    { queryKey: searches },
+    (data) => data && { pages: data.pages.slice(0, 1), pageParams: data.pageParams.slice(0, 1) },
+  );
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: searches }),
+    queryClient.invalidateQueries({ queryKey: [...libraryKeys.all(stationId), 'facets'] }),
+  ]);
+}
