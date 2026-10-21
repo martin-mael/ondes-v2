@@ -1,0 +1,182 @@
+# Hard-start spike (#14): one engine per lane (scenario × correction strategy), all
+# driven at once by spike.ts. Self-contained: its own project name, no published ports, so
+# it neither needs nor disturbs the shared ondes-dev stack.
+#
+#   docker compose -f engine/spikes/hardstart/compose.yml run --rm --use-aliases driver
+#   docker compose -f engine/spikes/hardstart/compose.yml down -v
+#
+# The full run takes about an hour. A quick run: see README.md (ITEMS, MAX_ITEM, LANES).
+
+name: ondes-spike-hardstart
+
+x-engine: &engine
+  image: savonet/liquidsoap:v2.4.6
+  command: [/spike/station.liq]
+  volumes:
+    - ./station.liq:/spike/station.liq:ro
+    - media:/media:ro
+    - rec:/rec
+  depends_on:
+    fixtures:
+      condition: service_completed_successfully
+
+x-env: &env
+  ENGINE_EVENTS_URL: http://driver:8080/events
+  ENGINE_SAFETY_DIR: /media/safety
+  ENGINE_EMERGENCY_FILE: /media/emergency.wav
+  ENGINE_CROSS_DURATION: '2.'
+
+services:
+  fixtures:
+    image: node:24.22.0-alpine
+    working_dir: /repo
+    command:
+      - sh
+      - -c
+      - >-
+        chmod 777 /rec && apk add --no-cache ffmpeg > /dev/null
+        && node engine/spikes/hardstart/fixtures.ts /media
+    volumes:
+      - ../../..:/repo:ro
+      - media:/media
+      - rec:/rec
+
+  ontime-none:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: ontime-none
+
+  ontime-depth1:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: ontime-depth1
+
+  late-none:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: late-none
+
+  late-replan:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: late-replan
+
+  late-node:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: late-node
+
+  late-soft:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: late-soft
+
+  late-engine:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: late-engine
+
+  late-engine-wall:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: late-engine-wall
+      HARDSTART_GATE: wall
+
+  late-combined:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: late-combined
+
+  early-none:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: early-none
+
+  early-replan:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: early-replan
+
+  early-bed-engine:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: early-bed-engine
+
+  early-combined:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: early-combined
+
+  early-stretch:
+    <<: *engine
+    environment:
+      <<: *env
+      STATION_ID: early-stretch
+      HARDSTART_STRETCH: '1'
+
+  driver:
+    image: node:24.22.0-alpine
+    working_dir: /repo
+    command: [node, engine/spikes/hardstart/spike.ts]
+    environment:
+      LANES: ${LANES:-}
+      ITEMS: ${ITEMS:-14}
+      MAX_ITEM: ${MAX_ITEM:-}
+      TAIL: ${TAIL:-}
+      TRANSITION_LAG: ${TRANSITION_LAG:-0}
+      LATE: ${LATE:-45}
+      EARLY: ${EARLY:-95}
+      STRETCH_EARLY: ${STRETCH_EARLY:-6}
+      SOFT_CAP: ${SOFT_CAP:-30}
+      RUN_NAME: ${RUN_NAME:-run}
+    volumes:
+      - ../../..:/repo:ro
+      - ./results:/results
+      - media:/media:ro
+      - rec:/rec:ro
+    depends_on:
+      ontime-none:
+        condition: service_started
+      ontime-depth1:
+        condition: service_started
+      late-none:
+        condition: service_started
+      late-replan:
+        condition: service_started
+      late-node:
+        condition: service_started
+      late-soft:
+        condition: service_started
+      late-engine:
+        condition: service_started
+      late-engine-wall:
+        condition: service_started
+      late-combined:
+        condition: service_started
+      early-none:
+        condition: service_started
+      early-replan:
+        condition: service_started
+      early-bed-engine:
+        condition: service_started
+      early-combined:
+        condition: service_started
+      early-stretch:
+        condition: service_started
+
+volumes:
+  media:
+  rec:
