@@ -159,6 +159,13 @@ export function stationScopeOf(request: FastifyRequest): StationScope {
   return scope as StationScope;
 }
 
+/** Marks the hooks returned by `requireUser` / `requirePermission` (see the `onRoute` hook). */
+const AUTH_GUARD = Symbol('ondes.authGuard');
+
+function markGuard<F extends (request: FastifyRequest) => Promise<void>>(fn: F): F {
+  return Object.assign(fn, { [AUTH_GUARD]: true });
+}
+
 const SESSION_TOUCH_MS = 5 * 60 * 1000;
 
 export const authPlugin = fp(
@@ -246,21 +253,44 @@ export const authPlugin = fp(
       };
     });
 
-    app.decorate('requireUser', async (request: FastifyRequest) => {
-      const auth = request.auth;
-      if (auth?.kind === 'api_key') {
-        throw new HttpError(
-          403,
-          'session_required',
-          'this route needs a signed-in user, not an API key',
-        );
-      }
-      if (auth?.kind !== 'session') throw new HttpError(401, 'unauthenticated', 'sign in first');
+    // Guards run before validation: Fastify validates params, query and body before any
+    // `preHandler`, so an anonymous caller would otherwise get 400s describing the route's
+    // schema (and have its body parsed). Routes keep writing `preHandler: app.requireUser` /
+    // `app.requirePermission(…)`; this hook moves those guards to `preValidation`.
+    app.addHook('onRoute', (route) => {
+      const handlers = route.preHandler;
+      if (!handlers) return;
+      const list = Array.isArray(handlers) ? handlers : [handlers];
+      const guards = list.filter((h) => AUTH_GUARD in h);
+      if (guards.length === 0) return;
+      const rest = list.filter((h) => !(AUTH_GUARD in h));
+      route.preHandler = rest.length > 0 ? rest : undefined;
+      const before = route.preValidation
+        ? Array.isArray(route.preValidation)
+          ? route.preValidation
+          : [route.preValidation]
+        : [];
+      route.preValidation = [...guards, ...before] as typeof route.preValidation;
     });
+
+    app.decorate(
+      'requireUser',
+      markGuard(async (request: FastifyRequest) => {
+        const auth = request.auth;
+        if (auth?.kind === 'api_key') {
+          throw new HttpError(
+            403,
+            'session_required',
+            'this route needs a signed-in user, not an API key',
+          );
+        }
+        if (auth?.kind !== 'session') throw new HttpError(401, 'unauthenticated', 'sign in first');
+      }),
+    );
 
     app.decorate('requirePermission', <R extends Resource>(resource: R, action: Action<R>) => {
       const permission = `${resource}:${action}` as Permission;
-      return async (request: FastifyRequest) => {
+      return markGuard(async (request: FastifyRequest) => {
         const auth = request.auth;
         if (auth?.kind !== 'session' && auth?.kind !== 'api_key') {
           throw new HttpError(401, 'unauthenticated', 'sign in or use an API key');
@@ -306,7 +336,7 @@ export const authPlugin = fp(
         }
         request.scope = scope;
         request.permissions = permissions;
-      };
+      });
     });
   },
   { name: 'auth', dependencies: ['db'] },
