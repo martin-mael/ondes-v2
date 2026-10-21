@@ -57,7 +57,7 @@ const compose = (...args: string[]) =>
   });
 
 /** Icecast with a random global source password and the station's own on its mount. */
-function icecastXml(mount: string, password: string): string {
+function icecastXml(mounts: string[], password: string): string {
   return `<?xml version="1.0"?>
 <icecast>
   <hostname>localhost</hostname>
@@ -67,7 +67,7 @@ function icecastXml(mount: string, password: string): string {
     <admin-user>admin</admin-user>
     <admin-password>${randomUUID()}</admin-password>
   </authentication>
-  <mount type="normal"><mount-name>${mount}</mount-name><password>${password}</password></mount>
+${mounts.map((m) => `  <mount type="normal"><mount-name>${m}</mount-name><password>${password}</password></mount>`).join('\n')}
   <listen-socket><port>8000</port></listen-socket>
   <paths>
     <basedir>/usr/share/icecast</basedir>
@@ -173,7 +173,8 @@ beforeAll(async () => {
   const { icecastSourcePassword } = await lifecycle.secretsFor(scope);
   writeFileSync(
     join(icecastDir, 'icecast.xml'),
-    icecastXml(`/${slug}.mp3`, icecastSourcePassword),
+    // #32's default outputs: `<slug>/mp3` and `<slug>/aac`, each with the station's password.
+    icecastXml([`/${slug}/mp3`, `/${slug}/aac`], icecastSourcePassword),
     {
       mode: 0o644,
     },
@@ -261,7 +262,7 @@ describe('station engine lifecycle (real Docker)', () => {
       const res = await fetch(`http://127.0.0.1:${icecastPort}/status-json.xsl`);
       const body = (await res.json()) as { icestats: { source?: unknown } };
       const sources = [body.icestats.source ?? []].flat() as { listenurl?: string }[];
-      return sources.some((s) => s.listenurl?.endsWith(`/${slug}.mp3`)) || undefined;
+      return sources.some((s) => s.listenurl?.endsWith(`/${slug}/mp3`)) || undefined;
     });
   }, 180_000);
 

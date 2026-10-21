@@ -1,5 +1,11 @@
 import { buildApp } from './app.ts';
 import { engineLifecycleConfigFromEnv } from './modules/engine/lifecycle/plugin.ts';
+import {
+  createIcecastService,
+  type EngineLifecycleHooks,
+  icecastServiceConfigFromEnv,
+  type SourceAlerts,
+} from './modules/engine/icecast/index.ts';
 import { authConfigFromEnv } from './plugins/auth.ts';
 import { dbConfigFromEnv } from './plugins/db.ts';
 import { mailConfigFromEnv } from './plugins/mail.ts';
@@ -27,10 +33,24 @@ const app = await buildApp({
   },
 });
 
+// Icecast (#32): keeps its config in step with the stations (ICECAST_CONFIG_PATH) and records
+// listener counts (ICECAST_URL + admin credentials). See modules/engine/icecast/README.md.
+const icecast = createIcecastService({
+  db: app.db,
+  config: icecastServiceConfigFromEnv(env),
+  logger: app.log,
+  // #33's alert service and #35's engine lifecycle, when their plugins are registered.
+  alerts: (app as { alerts?: SourceAlerts }).alerts,
+  lifecycle: app.hasDecorator('engineLifecycle')
+    ? (app as unknown as { engineLifecycle: EngineLifecycleHooks }).engineLifecycle
+    : undefined,
+});
+icecast.start();
+
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
     app.log.info({ signal }, 'shutting down');
-    app.close().then(
+    Promise.all([icecast.stop(), app.close()]).then(
       () => process.exit(0),
       (err) => {
         app.log.error({ err }, 'shutdown failed');

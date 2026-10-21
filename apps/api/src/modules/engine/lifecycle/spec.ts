@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { stableStringify } from '@ondes/shared';
 import { engineEventsUrl } from '../adapter/route.ts';
-import type { StationEngineSettingsInput } from '../config/settings.ts';
+import {
+  defaultStationOutputs,
+  mountsOutsideNamespace,
+  type StationEngineSettingsInput,
+} from '../config/settings.ts';
 import {
   ENGINE_CACHE_MOUNT,
   ENGINE_ENTRYPOINT,
@@ -84,7 +88,7 @@ export type StationForEngine = {
 /**
  * The settings the station's script is rendered from: the station's stored engine settings,
  * with what the lifecycle owns forced (identity, ports, paths, event and Icecast endpoints).
- * Outputs default to one 128 kbps MP3 mount named after the station until #32 sets them.
+ * Outputs default to #32's `<slug>/mp3` + `<slug>/aac` and must stay under `<slug>/`.
  */
 export function engineSettingsFor(
   station: StationForEngine,
@@ -106,10 +110,38 @@ export function engineSettingsFor(
       emergencyFile: `${ENGINE_CACHE_MOUNT}/emergency.flac`,
     },
     icecast: { host: config.icecast.host, port: config.icecast.port },
-    outputs: stored.outputs?.length
-      ? stored.outputs
-      : [{ mount: `${station.slug}.mp3`, format: 'mp3', bitrate: 128 }],
+    outputs: stationOutputsFor(station, stored.outputs),
   };
+}
+
+/** A station's outputs can't be rendered: they leave its mount namespace. */
+export class EngineOutputsError extends Error {
+  readonly stationId: string;
+  constructor(stationId: string, message: string) {
+    super(message);
+    this.name = 'EngineOutputsError';
+    this.stationId = stationId;
+  }
+}
+
+/**
+ * The station's outputs, or #32's defaults (`<slug>/mp3`, `<slug>/aac`). Every mount must sit
+ * under `<slug>/`: an engine never streams into another station's namespace, whatever the
+ * stored settings say (Icecast's per-mount passwords are the second line of defence).
+ */
+function stationOutputsFor(
+  station: StationForEngine,
+  stored: StationEngineSettingsInput['outputs'] | undefined,
+): StationEngineSettingsInput['outputs'] {
+  const outputs = stored?.length ? stored : defaultStationOutputs(station.slug);
+  const outside = mountsOutsideNamespace(station.slug, outputs);
+  if (outside.length > 0) {
+    throw new EngineOutputsError(
+      station.stationId,
+      `mount "${outside[0]}" is not under "${station.slug}/"`,
+    );
+  }
+  return outputs;
 }
 
 export type ContainerSpecInput = {

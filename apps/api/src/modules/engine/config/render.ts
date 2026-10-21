@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { stableStringify } from '@ondes/shared';
 import { liqBool, liqFloat, liqInt, liqString } from './liquidsoap.ts';
 import {
+  ICECAST_ONLY_OUTPUT_FIELDS,
   type IcecastOutput,
   type StationEngineSettings,
   type StationEngineSettingsInput,
@@ -36,10 +37,20 @@ export type RenderedStationScript = {
 };
 
 export function configVersion(template: string, settings: StationEngineSettings): string {
+  // Icecast-only output fields (max listeners, burst, fallback, …) don't reach the script:
+  // changing them reloads Icecast and must not restart the engine.
+  const scriptSettings = {
+    ...settings,
+    outputs: settings.outputs.map((o) => {
+      const out: Partial<IcecastOutput> = { ...o };
+      for (const field of ICECAST_ONLY_OUTPUT_FIELDS) delete out[field];
+      return out;
+    }),
+  };
   return createHash('sha256')
     .update(template)
     .update('\0')
-    .update(stableStringify(settings))
+    .update(stableStringify(scriptSettings))
     .digest('hex')
     .slice(0, 16);
 }

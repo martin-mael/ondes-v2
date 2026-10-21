@@ -40,7 +40,7 @@ describe('stationEngineSettingsSchema', () => {
   });
 
   it('rejects mounts and ids that would need escaping', () => {
-    for (const mount of ['/x.mp3', 'a b', 'x"y', '']) {
+    for (const mount of ['/x.mp3', 'a b', 'x"y', '', 'a//b', 'a/', 'a/../b', 'a/.b']) {
       const r = stationEngineSettingsSchema.safeParse({
         ...minimal,
         outputs: [{ mount, format: 'mp3', bitrate: 128 }],
@@ -85,5 +85,36 @@ describe('stationEngineSettingsSchema', () => {
       stationEngineSettingsSchema.safeParse({ ...minimal, eventsUrl: 'http://api:3000/events' })
         .success,
     ).toBe(true);
+  });
+
+  it('defaults the Icecast mount settings and checks burst against queue', () => {
+    const s = stationEngineSettingsSchema.parse({
+      ...minimal,
+      outputs: [{ mount: 'vandale/mp3', format: 'mp3', bitrate: 128 }],
+    });
+    expect(s.outputs[0]).toEqual({
+      mount: 'vandale/mp3',
+      format: 'mp3',
+      bitrate: 128,
+      public: false,
+      maxListeners: 500,
+      burstSize: 65536,
+      queueSize: 524288,
+      fallback: true,
+      intro: false,
+    });
+    const r = stationEngineSettingsSchema.safeParse({
+      ...minimal,
+      outputs: [{ ...minimal.outputs[0], burstSize: 65536, queueSize: 65536 }],
+    });
+    expect(r.success).toBe(false);
+    expect(r.error?.issues[0]?.path).toEqual(['outputs', 0, 'burstSize']);
+    for (const maxListeners of [0, 16385, 1.5]) {
+      const bad = stationEngineSettingsSchema.safeParse({
+        ...minimal,
+        outputs: [{ ...minimal.outputs[0], maxListeners }],
+      });
+      expect(bad.success, String(maxListeners)).toBe(false);
+    }
   });
 });

@@ -7,6 +7,7 @@ import {
   ENGINE_ENTRYPOINT,
   ENGINE_LABELS,
   engineContainerSpec,
+  EngineOutputsError,
   engineSettingsFor,
 } from './spec.ts';
 
@@ -49,19 +50,33 @@ describe('engine settings for a station', () => {
       blank: { maxSeconds: 30 },
       paths: { safetyDir: '/cache/safety', emergencyFile: '/cache/emergency.flac' },
       icecast: { host: 'icecast', port: 8000 },
-      outputs: [{ mount: 'vandale.mp3', format: 'mp3', bitrate: 128 }],
+      outputs: [
+        { mount: 'vandale/mp3', format: 'mp3', bitrate: 128 },
+        { mount: 'vandale/aac', format: 'aac', bitrate: 128 },
+      ],
     });
     // It renders.
     expect(renderStationScript(settings).version).toMatch(/^[0-9a-f]{16}$/);
   });
 
   it('keeps outputs and a name set in the station settings', () => {
-    const outputs = [{ mount: 'v.ogg', format: 'opus', bitrate: 96 }];
+    const outputs = [{ mount: 'vandale/opus', format: 'opus', bitrate: 96 }];
     const settings = engineSettingsFor(
       { ...station, engineSettings: { name: 'Vandale', outputs } },
       config,
     );
     expect(settings).toMatchObject({ name: 'Vandale', outputs });
+  });
+
+  it("refuses outputs outside the station's mount namespace", () => {
+    for (const mount of ['other-station/mp3', 'vandale', 'vandale.mp3', 'vandalex/mp3']) {
+      expect(() =>
+        engineSettingsFor(
+          { ...station, engineSettings: { outputs: [{ mount, format: 'mp3', bitrate: 128 }] } },
+          config,
+        ),
+      ).toThrow(EngineOutputsError);
+    }
   });
 });
 

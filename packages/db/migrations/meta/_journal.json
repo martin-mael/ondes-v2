@@ -64,6 +64,13 @@
       "when": 1792582905400,
       "tag": "20261021114145_alerts",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792582987472,
+      "tag": "20261021114307_streams",
+      "breakpoints": true
     }
   ]
 }
