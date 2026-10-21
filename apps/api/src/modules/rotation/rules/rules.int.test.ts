@@ -35,6 +35,7 @@ let scope: StationScope;
 let otherScope: StationScope;
 let categoryId: string;
 let otherCategoryId: string;
+let plannedBravo: string;
 const cookies = { programmer: '', presenter: '', outsider: '' };
 const ids: Record<string, string> = {};
 const now = Date.now();
@@ -148,18 +149,22 @@ beforeAll(async () => {
       endsAt: new Date(now + 12 * 60 * MINUTE),
     })
     .returning();
-  await db.insert(logItem).values({
-    orgId: scope.orgId,
-    stationId: scope.stationId,
-    logDayId: day?.id as string,
-    position: 0,
-    kind: 'song',
-    plannedStart: new Date(now + 30 * MINUTE),
-    plannedDurationMs: 180_000,
-    assetId: ids.Bravo,
-    title: 'Bravo',
-    originType: 'manual',
-  });
+  const [planned] = await db
+    .insert(logItem)
+    .values({
+      orgId: scope.orgId,
+      stationId: scope.stationId,
+      logDayId: day?.id as string,
+      position: 0,
+      kind: 'song',
+      plannedStart: new Date(now + 30 * MINUTE),
+      plannedDurationMs: 180_000,
+      assetId: ids.Bravo,
+      title: 'Bravo',
+      originType: 'manual',
+    })
+    .returning();
+  plannedBravo = planned?.id as string;
 }, 60_000);
 
 afterAll(() => t?.close());
@@ -299,6 +304,16 @@ describe('pick', () => {
     );
     // Charlie, the only clean candidate otherwise, now rested too little: the ladder relaxes.
     expect(result.picks[0]?.relaxed.length).toBeGreaterThan(0);
+  });
+
+  it('leaves ignored log items out of the history (timeline Replace)', async () => {
+    const res = await call('programmer', 'POST', '/rotation/pick', {
+      slots: [{ categoryId, at: at(10) }],
+      explain: true,
+      ignoreLogItemIds: [plannedBravo],
+    });
+    const bravo = res.json<PickResponse>().picks[0]?.ranked?.find((r) => r.title === 'Bravo');
+    expect(bravo?.violations).toEqual([]);
   });
 
   it('never reaches another station', async () => {

@@ -173,6 +173,11 @@ export const pickRequestSchema = z.object({
   rules: rotationRulesSchema.optional(),
   /** Include every candidate's verdict, not only the pick. */
   explain: z.boolean().default(false),
+  /**
+   * Planned log items left out of the history: the item being replaced (timeline, #51), so it
+   * doesn't clash with its own artist or title.
+   */
+  ignoreLogItemIds: z.array(uuidSchema).max(500).default([]),
 });
 export type PickRequest = z.input<typeof pickRequestSchema>;
 

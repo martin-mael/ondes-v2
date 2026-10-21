@@ -31,7 +31,7 @@ import {
   type UpdateRotationRules,
   updateRotationRulesSchema,
 } from '@ondes/shared';
-import { and, eq, gte, isNotNull, lt } from 'drizzle-orm';
+import { and, eq, gte, isNotNull, lt, notInArray } from 'drizzle-orm';
 import { lastAiredByAsset } from '../../asrun/index.ts';
 import {
   getCategory,
@@ -132,6 +132,7 @@ export async function loadHistory(
   from: Date,
   to: Date,
   now: Date,
+  ignoreLogItemIds: readonly string[] = [],
 ): Promise<PlayedItem[]> {
   const [aired, planned] = await Promise.all([
     from < now
@@ -165,6 +166,9 @@ export async function loadHistory(
             and(
               whereStation(logItem, scope),
               isNotNull(logItem.assetId),
+              ignoreLogItemIds.length > 0
+                ? notInArray(logItem.id, [...ignoreLogItemIds])
+                : undefined,
               gte(logItem.plannedStart, from > now ? from : now),
               lt(logItem.plannedStart, to),
             ),
@@ -267,7 +271,7 @@ export async function pickSlots(
   const to = new Date(Math.max(...times) + span);
   const memberIds = [...new Set([...membersOf.values()].flat().map((m) => m.id))];
   const [loaded, lastPlayedAt] = await Promise.all([
-    loadHistory(db, scope, libraryById, from, to, now),
+    loadHistory(db, scope, libraryById, from, to, now, request.ignoreLogItemIds),
     lastAiredBefore(
       db,
       scope,
