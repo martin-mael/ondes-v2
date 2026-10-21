@@ -212,7 +212,13 @@ export function CalendarPage() {
 
   return (
     // `contain`: the shell's flex layout would otherwise widen the page to the grid's min width.
-    <div className="flex min-w-0 flex-col gap-4 p-4 [contain:inline-size] sm:p-6">
+    // The week view fills the window under the shell's 3rem header; its grid scrolls inside.
+    <div
+      className={cn(
+        'flex min-w-0 flex-col gap-4 p-4 [contain:inline-size] sm:p-6',
+        view === 'week' && 'h-[calc(100svh-3rem)] min-h-[32rem]',
+      )}
+    >
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex flex-col gap-1">
           <h1 className="font-heading text-xl font-semibold">{t('calendar.title')}</h1>
@@ -438,7 +444,7 @@ function EntryButton({
       data-testid="calendar-entry"
       onClick={() => onSelect(entry)}
       className={cn(
-        'flex min-w-0 flex-col overflow-hidden rounded-md border-l-4 bg-card px-1.5 py-0.5 text-left text-[0.7rem] leading-tight ring-1 ring-foreground/10 hover:bg-muted',
+        'flex min-w-0 flex-col overflow-hidden rounded-md border-l-4 bg-card px-1.5 py-0.5 text-left text-[0.7rem] leading-tight hover:bg-muted',
         entry.kind === 'cancelled' && 'border-dashed opacity-60',
         conflict && 'ring-2 ring-destructive',
         className,
@@ -613,8 +619,8 @@ function WeekGrid({
   };
 
   return (
-    <div className="overflow-x-auto rounded-xl ring-1 ring-foreground/10">
-      <div className="min-w-[48rem]">
+    <div className="flex min-h-0 flex-1 flex-col overflow-x-auto rounded-xl ring-1 ring-foreground/10">
+      <div className="flex min-h-0 min-w-[48rem] flex-1 flex-col">
         <div className="grid grid-cols-[3rem_repeat(7,1fr)] border-b">
           <span />
           {days.map((day) => (
@@ -629,7 +635,7 @@ function WeekGrid({
             </span>
           ))}
         </div>
-        <div ref={scroller} className="max-h-[70vh] overflow-y-auto">
+        <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
           <div
             className="relative grid grid-cols-[3rem_repeat(7,1fr)]"
             style={{ height: 24 * HOUR_PX }}
