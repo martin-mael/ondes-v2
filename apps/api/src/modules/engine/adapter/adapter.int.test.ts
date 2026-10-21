@@ -193,7 +193,9 @@ describe('engine adapter against Liquidsoap', () => {
     const aEnded = received
       .slice(mark)
       .find((e) => e.type === 'engine.track.ended' && e.data.itemId === 'A');
-    expect(aEnded?.type === 'engine.track.ended' && aEnded.data.played).toBeGreaterThan(2);
+    // A airs its 3 s cue window minus the crossfades around it (and the takeover from safety),
+    // about 2.5 s; a loaded CI runner measures less. What matters: it played, it wasn't skipped.
+    expect(aEnded?.type === 'engine.track.ended' && aEnded.data.played).toBeGreaterThan(1);
 
     await station.adapter.skip();
     const bEnded = await waitFor('B ended', () =>
