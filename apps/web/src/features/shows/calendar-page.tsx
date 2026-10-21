@@ -211,7 +211,8 @@ export function CalendarPage() {
   };
 
   return (
-    <div className="flex flex-col gap-4 p-4 sm:p-6">
+    // `contain`: the shell's flex layout would otherwise widen the page to the grid's min width.
+    <div className="flex min-w-0 flex-col gap-4 p-4 [contain:inline-size] sm:p-6">
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex flex-col gap-1">
           <h1 className="font-heading text-xl font-semibold">{t('calendar.title')}</h1>
@@ -267,7 +268,7 @@ export function CalendarPage() {
         >
           <ChevronRightIcon />
         </Button>
-        <h2 className="font-heading font-semibold capitalize">{heading}</h2>
+        <h2 className="font-heading font-semibold first-letter:uppercase">{heading}</h2>
         {occurrences.isFetching && <Spinner className="ml-auto" />}
       </div>
 
@@ -617,7 +618,7 @@ function WeekGrid({
             <span
               key={day}
               className={cn(
-                'px-1 py-2 text-center font-medium capitalize',
+                'px-1 py-2 text-center font-medium first-letter:uppercase',
                 day === today && 'text-primary',
               )}
             >
@@ -742,7 +743,10 @@ function MonthGrid({
     <div className="overflow-x-auto rounded-xl ring-1 ring-foreground/10">
       <div className="grid min-w-[48rem] grid-cols-7">
         {days.slice(0, 7).map((day) => (
-          <span key={day} className="border-b px-2 py-1 text-center font-medium capitalize">
+          <span
+            key={day}
+            className="border-b px-2 py-1 text-center font-medium first-letter:uppercase"
+          >
             {new Intl.DateTimeFormat(locale, { timeZone: 'UTC', weekday: 'short' }).format(
               new Date(`${day}T12:00:00Z`),
             )}
@@ -803,7 +807,7 @@ function ListView({
     <div className="flex flex-col gap-4">
       {days.map((day) => (
         <section key={day} data-testid={`day-${day}`} className="flex flex-col gap-1">
-          <h3 className={cn('font-medium capitalize', day === today && 'text-primary')}>
+          <h3 className={cn('font-medium first-letter:uppercase', day === today && 'text-primary')}>
             {formatDay(day, locale, { weekday: 'long' })}
           </h3>
           {(byDay.get(day) ?? []).length === 0 ? (

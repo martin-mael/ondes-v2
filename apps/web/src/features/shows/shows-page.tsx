@@ -85,7 +85,7 @@ export function ShowsPage() {
   const others = mine.length > 0 ? items.filter((s) => !mine.includes(s)) : items;
 
   return (
-    <div className="flex flex-col gap-6 p-4 sm:p-6">
+    <div className="flex min-w-0 flex-col gap-6 p-4 sm:p-6">
       <div className="flex flex-wrap items-start gap-4">
         <div className="flex flex-col gap-1">
           <h1 className="font-heading text-xl font-semibold">{t('list.title')}</h1>

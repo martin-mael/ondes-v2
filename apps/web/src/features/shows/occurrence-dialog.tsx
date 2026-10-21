@@ -102,6 +102,8 @@ export function OccurrenceDialog({
     enabled: Boolean(occurrence && !occurrence.episode && editable && occurrence.type !== 'rerun'),
   });
 
+  const toPlan = (unscheduled.data?.items ?? []).filter((e) => e.slotId === null);
+
   useEffect(() => {
     if (!occurrence) return;
     const start = zonedParts(occurrence.startsAt, timezone);
@@ -292,7 +294,7 @@ export function OccurrenceDialog({
                   >
                     {t('occurrence.createEpisode')}
                   </Button>
-                  {(unscheduled.data?.items.length ?? 0) > 0 && (
+                  {toPlan.length > 0 && (
                     <NativeSelect
                       size="sm"
                       aria-label={t('upcoming.assign')}
@@ -313,7 +315,7 @@ export function OccurrenceDialog({
                       }}
                     >
                       <NativeSelectOption value="">{t('upcoming.assign')}</NativeSelectOption>
-                      {unscheduled.data?.items.map((e) => (
+                      {toPlan.map((e) => (
                         <NativeSelectOption key={e.id} value={e.id}>
                           {t('episode.label', { number: e.number })}
                           {e.title ? ` · ${e.title}` : ''}

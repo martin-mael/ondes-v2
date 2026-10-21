@@ -86,9 +86,10 @@ export function ShowPage() {
   const canEdit = access.canEdit(data);
   const upcoming = occurrences.data?.occurrences ?? [];
   const detachedEpisodes = (episodes.data?.items ?? []).filter((e) => detached.includes(e.id));
+  const toPlan = (unscheduled.data?.items ?? []).filter((e) => e.slotId === null);
 
   return (
-    <div className="flex flex-col gap-6 p-4 sm:p-6">
+    <div className="flex min-w-0 flex-col gap-6 p-4 sm:p-6">
       <Link
         to="/stations/$stationId/shows"
         params={{ stationId }}
@@ -120,7 +121,7 @@ export function ShowPage() {
             <p className="max-w-2xl text-sm whitespace-pre-line">{data.description}</p>
           )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex basis-full gap-2 sm:basis-auto">
           <Button
             variant="outline"
             nativeButton={false}
@@ -150,7 +151,11 @@ export function ShowPage() {
           <AlertTitle>{t('detached.title', { count: detachedEpisodes.length })}</AlertTitle>
           <AlertDescription>
             {t('detached.description', {
-              episodes: detachedEpisodes.map((e) => `#${e.number}`).join(', '),
+              episodes: detachedEpisodes
+                .map((e) => e.number)
+                .sort((a, b) => a - b)
+                .map((number) => t('episode.label', { number }))
+                .join(', '),
             })}
           </AlertDescription>
           <AlertAction>
@@ -169,7 +174,7 @@ export function ShowPage() {
         occurrences={upcoming}
         pending={occurrences.isPending}
         error={occurrences.error}
-        unscheduled={unscheduled.data?.items ?? []}
+        unscheduled={toPlan}
         onPlan={(occurrence) => setEpisodeEdit({ occurrence })}
         onEdit={(id) => {
           const episode = episodes.data?.items.find((e) => e.id === id);
@@ -177,12 +182,12 @@ export function ShowPage() {
         }}
       />
 
-      {(unscheduled.data?.items.length ?? 0) > 0 && (
+      {toPlan.length > 0 && (
         <section className="flex flex-col gap-3">
           <h2 className="font-heading font-semibold">{t('unscheduled.title')}</h2>
           <p className="text-muted-foreground">{t('unscheduled.description')}</p>
           <ul className="flex flex-col divide-y rounded-xl ring-1 ring-foreground/10">
-            {unscheduled.data?.items.map((episode) => (
+            {toPlan.map((episode) => (
               <UnscheduledRow
                 key={episode.id}
                 stationId={stationId}
