@@ -2,5 +2,6 @@
 
 export * from './jobs.ts';
 export * from './library.ts';
+export * from './log.ts';
 export * from './storage.ts';
 export * from './tenancy.ts';

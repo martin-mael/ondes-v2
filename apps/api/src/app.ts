@@ -8,6 +8,7 @@ import {
 import { health } from './health.ts';
 import { authRoutes } from './modules/auth/routes.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
+import { logRoutes } from './modules/log/routes.ts';
 import { type AuthConfig, authPlugin } from './plugins/auth.ts';
 import { type DbPluginOptions, dbPlugin } from './plugins/db.ts';
 import { errorsPlugin } from './plugins/errors.ts';
@@ -44,6 +45,7 @@ export async function buildApp(options: AppOptions) {
   await app.register(authRoutes, { prefix: '/api/v1' });
   // Library routes carry their full /api/v1/stations/:stationId path.
   await app.register(libraryPlugin);
+  await app.register(logRoutes, { prefix: '/api/v1' });
 
   return app;
 }
