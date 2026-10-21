@@ -45,3 +45,4 @@ UI components come from shadcn/ui on Base UI and live in `apps/web/src/ui/` ([AD
 | `packages/scheduling` | Pure scheduling logic (rules, clocks, log generation) |
 | `engine/` | Liquidsoap templates and engine tests |
 | `deploy/` | Compose files, installer |
+// ci-probe ci-probe-docs
