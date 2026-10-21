@@ -59,6 +59,10 @@ export const asset = pgTable(
     notes: text('notes'),
     metadata: jsonb('metadata').$type<AssetMetadata>().notNull().default({}),
     sourceFilename: text('source_filename'),
+    /** Loudness normalisation at playout (#19); off plays the file as it is. */
+    normalizeLoudness: boolean('normalize_loudness').notNull().default(true),
+    /** Fixed playout gain in dB instead of the measured one (#19). */
+    gainOverrideDb: real('gain_override_db'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -79,6 +83,7 @@ export const asset = pgTable(
     ),
     check('asset_kill_after_start_check', sql`${t.killAt} > ${t.startAt}`),
     check('asset_duration_check', sql`${t.durationMs} >= 0`),
+    check('asset_gain_override_check', sql`${t.gainOverrideDb} between -60 and 24`),
   ],
 );
 

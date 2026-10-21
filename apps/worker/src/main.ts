@@ -3,7 +3,8 @@ import { createDb, PostgresJobRunStore, runMigrations, sweepStorageDeletions } f
 import { connectQueue, createJobPublisher, createJobWorker } from '@ondes/queue';
 import { createS3Storage, loadStorageConfig } from '@ondes/storage';
 import { sweepUploads } from './jobs/ingest/sweep.ts';
-import { discoverJobs } from './registry.ts';
+import { discoverJobs, discoverTriggers } from './registry.ts';
+import { startJobTriggers } from './triggers.ts';
 
 // Worker bootstrap (#8): connect, declare the topology, discover jobs/<job>/ and consume.
 
@@ -12,7 +13,9 @@ if (!url) throw new Error('RABBITMQ_URL is not set (see .env.example)');
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL is not set (see .env.example)');
 
-const jobs = await discoverJobs(fileURLToPath(new URL('./jobs/', import.meta.url)));
+const jobsDir = fileURLToPath(new URL('./jobs/', import.meta.url));
+const jobs = await discoverJobs(jobsDir);
+const triggers = await discoverTriggers(jobsDir);
 const queue = await connectQueue(url, { connectionName: 'ondes-worker' });
 // Job status lives in Postgres so idempotency holds across worker replicas. Migrations are
 // safe to run from every process (advisory lock), so the worker can boot before the api.
@@ -26,6 +29,10 @@ await worker.ready;
 // grace period is over. Safe to run from every worker replica (row locks, skip locked).
 const storage = createS3Storage(loadStorageConfig(process.env));
 const publisher = createJobPublisher(queue.rabbit, queue.topology);
+
+// Job triggers: events → jobs, one durable queue each (registry.ts `JobTrigger`).
+const triggerConsumers = startJobTriggers(queue, triggers, publisher);
+await Promise.all(triggerConsumers.map((consumer) => consumer.ready));
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 let sweeping = false;
 async function sweep() {
@@ -61,6 +68,7 @@ console.log(
     level: 'info',
     msg: 'worker started',
     jobs: jobs.map((job) => `${job.name} (${job.lane})`),
+    triggers: triggers.map((trigger) => trigger.queue),
   }),
 );
 
@@ -70,6 +78,7 @@ async function stop(signal: string) {
   stopping = true;
   console.log(JSON.stringify({ level: 'info', msg: 'worker stopping', signal }));
   clearInterval(sweepTimer);
+  await Promise.all(triggerConsumers.map((consumer) => consumer.close()));
   await worker.close();
   await publisher.close();
   await queue.close();

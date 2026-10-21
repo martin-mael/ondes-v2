@@ -92,11 +92,15 @@ export function isFileError(error: unknown): error is ToolError {
   return error instanceof ToolError && !MACHINE_ERRORS.some((re) => re.test(error.stderr));
 }
 
-async function run(
+/**
+ * Runs a tool and resolves with its output (`stderr`: the last 8000 characters), or rejects
+ * with a {@link ToolError} (it ran and failed) or {@link ToolKilledError} (killed, timed out).
+ */
+export async function run(
   command: string,
   args: readonly string[],
   options: { signal?: AbortSignal; timeoutMs: number },
-): Promise<{ stdout: string }> {
+): Promise<{ stdout: string; stderr: string }> {
   const timeout = AbortSignal.timeout(options.timeoutMs);
   const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
   return new Promise((resolve, reject) => {
@@ -118,7 +122,7 @@ async function run(
     });
     child.on('close', (code, signalName) => {
       if (failed) return;
-      if (code === 0) resolve({ stdout: Buffer.concat(out).toString('utf8') });
+      if (code === 0) resolve({ stdout: Buffer.concat(out).toString('utf8'), stderr: err });
       else if (code === null) reject(new ToolKilledError(command, `killed by ${signalName}`));
       else reject(new ToolError(command, code, tail(err)));
     });

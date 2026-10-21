@@ -15,6 +15,7 @@ import {
   type CuePoint,
   createAssetFileSchema,
   createAssetSchema,
+  getPlayoutGain,
   type ListAssetsQuery,
   listAssetsQuerySchema,
   type SetAnalysis,
@@ -45,7 +46,7 @@ import {
 } from '../schema/library.ts';
 import { type StationScope, whereStation } from '../tenant.ts';
 import { createPostgresQuotaStore, scheduleStorageDeletion } from './storage.ts';
-import type { StationContext } from './tenancy.ts';
+import { getStation, type StationContext } from './tenancy.ts';
 
 // Library repositories (#17). Reads take a station scope and filter on it; mutations go through
 // `withAudit`. Stored objects are reference-counted in `storage_object`: adding a file charges
@@ -119,21 +120,23 @@ async function lockAsset(tx: Tx, scope: StationScope, id: string): Promise<Asset
   return row;
 }
 
-/** The asset with its files, cues, loudness, analysis and tags. */
+/** The asset with its files, cues, loudness (and the playout gain it gives), analysis and tags. */
 export async function getAssetDetail(
   db: Executor,
   scope: StationScope,
   id: string,
 ): Promise<AssetDetail> {
   const base = await getAsset(db, scope, id);
-  const [files, cues, loudness, analysis, tags] = await Promise.all([
+  const [files, cues, loudness, analysis, tags, station] = await Promise.all([
     listAssetFiles(db, scope, id),
     getCues(db, scope, id),
     getLoudness(db, scope, id),
     getAnalysis(db, scope, id),
     listAssetTags(db, scope, id),
+    getStation(db, scope, scope.stationId),
   ]);
-  return { ...base, files, cues, loudness, analysis, tags };
+  const playoutGain = getPlayoutGain({ ...base, loudness }, station);
+  return { ...base, files, cues, loudness, playoutGain, analysis, tags };
 }
 
 /** Newest first, keyset-paginated on the (time-ordered) id. */
@@ -570,6 +573,31 @@ export async function setLoudness(
     });
     return after;
   });
+}
+
+/**
+ * Assets of the station that have a playout file but no loudness measurement, oldest first:
+ * what the loudness backfill (#19) enqueues. Keyset-paginated on the asset id.
+ */
+export async function listAssetsWithoutLoudness(
+  db: Executor,
+  scope: StationScope,
+  options: { limit: number; after?: string },
+): Promise<{ assetId: string; playoutSha256: string }[]> {
+  return db
+    .select({ assetId: assetFile.assetId, playoutSha256: assetFile.sha256 })
+    .from(assetFile)
+    .leftJoin(assetLoudness, eq(assetLoudness.assetId, assetFile.assetId))
+    .where(
+      and(
+        whereStation(assetFile, scope),
+        eq(assetFile.role, 'playout'),
+        sql`${assetLoudness.assetId} is null`,
+        options.after ? sql`${assetFile.assetId} > ${options.after}` : undefined,
+      ),
+    )
+    .orderBy(asc(assetFile.assetId))
+    .limit(options.limit);
 }
 
 export async function getAnalysis(

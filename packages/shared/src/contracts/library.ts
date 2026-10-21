@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { playoutGainDbSchema, playoutGainSchema } from './loudness.ts';
 import { uuidSchema } from './tenancy.ts';
 
 // Library contracts (#17): assets, their files, cues, loudness, analysis and tags. Mirrors
@@ -76,6 +77,10 @@ export const assetSchema = z.object({
   metadata: assetMetadataSchema,
   /** File name as uploaded, for the operator's reference. */
   sourceFilename: z.string().nullable(),
+  /** Loudness normalisation at playout (#19). Off: the file plays as it is (0 dB). */
+  normalizeLoudness: z.boolean(),
+  /** Fixed playout gain in dB, instead of the measured one (#19). */
+  gainOverrideDb: z.number().nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -96,6 +101,8 @@ const assetFields = {
   notes: z.string().max(10_000).nullable(),
   metadata: assetMetadataSchema,
   sourceFilename: z.string().max(1000).nullable(),
+  normalizeLoudness: z.boolean(),
+  gainOverrideDb: playoutGainDbSchema.nullable(),
 };
 
 function killAfterStart(asset: { startAt?: Date | null; killAt?: Date | null }): boolean {
@@ -117,6 +124,8 @@ export const createAssetSchema = z
     notes: assetFields.notes.optional(),
     metadata: assetFields.metadata.optional(),
     sourceFilename: assetFields.sourceFilename.optional(),
+    normalizeLoudness: assetFields.normalizeLoudness.optional(),
+    gainOverrideDb: assetFields.gainOverrideDb.optional(),
   })
   .refine(killAfterStart, { message: 'killAt must be after startAt', path: ['killAt'] });
 /** Metadata edits. `durationMs` and `sourceFilename` belong to ingest, not to this patch. */
@@ -380,6 +389,8 @@ export const assetDetailSchema = assetSchema.extend({
   files: z.array(assetFileSchema),
   cues: assetCuesSchema.nullable(),
   loudness: assetLoudnessSchema.nullable(),
+  /** What the engine applies at playout, from the loudness, the overrides and the station. */
+  playoutGain: playoutGainSchema,
   analysis: assetAnalysisSchema.nullable(),
   tags: z.array(tagSchema),
 });
