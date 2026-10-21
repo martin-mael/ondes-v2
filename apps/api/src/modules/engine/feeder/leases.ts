@@ -45,16 +45,22 @@ export function createFeederLeases(
     return conn;
   }
 
-  /** The session failed: every lock is gone with it. */
-  function lost() {
+  /**
+   * A query failed. If the session is gone, so are its locks. If it isn't (a statement error),
+   * unlock everything before the connection goes back to the pool: a pooled session must never
+   * hold a station's lock.
+   */
+  function lost(error: unknown) {
     const stations = [...held];
     held.clear();
     const old = conn;
     conn = null;
-    // The error may not have closed the session: never hand a session that still holds locks
-    // back to the pool.
     if (old) {
-      void old`select pg_advisory_unlock_all()`.catch(() => {}).finally(() => old.release());
+      if (isConnectionError(error)) {
+        old.release();
+      } else {
+        void old`select pg_advisory_unlock_all()`.catch(() => {}).finally(() => old.release());
+      }
     }
     if (stations.length) options.onLost?.(stations);
   }
@@ -66,7 +72,7 @@ export function createFeederLeases(
     try {
       return await run(c);
     } catch (error) {
-      lost();
+      lost(error);
       throw error;
     }
   }
@@ -117,4 +123,19 @@ export function createFeederLeases(
       }
     },
   };
+}
+
+/** Errors after which the session is gone (postgres.js connection codes, admin shutdown). */
+function isConnectionError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return (
+    typeof code === 'string' &&
+    (code.startsWith('CONNECTION_') ||
+      code.startsWith('08') ||
+      code === '57P01' ||
+      code === '57P02' ||
+      code === '57P03' ||
+      code === 'ECONNRESET' ||
+      code === 'EPIPE')
+  );
 }
