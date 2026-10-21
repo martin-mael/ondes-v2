@@ -22,7 +22,7 @@ Anything keyed on `time()` at callback or frame time inherits the jitter:
 The as-run time on the audio timeline (`origin + frame position`) matched the recorded audio to within one frame in every lane.
 
 ### 2. The natural chain is late by one frame per transition
-With no correction, songs land on a frame boundary: every transition is −1, 0 or +1 frame off the plan, nearly always +1. Over the full hour: **+219 ms at the last song** (12 transitions at +20 ms, the 0 s overlap at −20 ms), identical in four independent lanes to 0.4 ms and the same at queue depth 1 or 3. Decoder effects (MP3 padding, AAC priming, 48 kHz resampling, WAV) and seek rounding (spike #12) all stay inside that frame. It's systematic, so the planning model absorbs it: **+20 ms per transition**.
+With no correction, songs land on a frame boundary: every transition is −1, 0 or +1 frame off the plan, nearly always +1. Over the full hour: **+219 ms at the last song** (12 transitions at +20 ms, the 0 s overlap at −20 ms), identical in four independent lanes to 0.4 ms and the same at queue depth 1 or 3. Decoder effects (MP3 padding, AAC priming, 48 kHz resampling, WAV) and seek rounding (spike #12) all stay inside that frame. It's systematic, so the planning model absorbs it: **+20 ms per transition**. This matches #27's finding that entry ends are frame-granular (ADR 0007).
 
 ### 3. Correction strategies
 Episode start − T in the recorded audio, full hour (45 s late / 95 s early), and the compressed hour with the planning model (`tail40-lag`, 10 s late / 25 s early):
@@ -62,7 +62,7 @@ Rejected:
 ## Consequences
 
 ### Engine (#27 template, #28 adapter): contract additions, in a `contract:` PR first
-- **`POST /v1/schedule {item_id, uri, at, fade_out?}`** → `201` like a push, `422` if unresolvable. The engine holds the item in a `scheduled` `request.queue` behind a `switch` gate, above the automation fallback and below live. `at` is wall-clock epoch seconds. A new schedule replaces the previous one; `DELETE /v1/schedule` cancels it. `GET /v1/state` reports it.
+- **`POST /v1/schedule {item_id, uri, at, fade_out?}`** → `201` like a push, `422` if unresolvable. The engine holds the item in its own scheduled source (a `request.queue` in the spike; a one-segment source like the main queue in the ADR 0007 template) behind a `switch` gate, above the automation fallback and below live. `at` is wall-clock epoch seconds. A new schedule replaces the previous one; `DELETE /v1/schedule` cancels it. `GET /v1/state` reports it.
 - **Gate on the audio timeline.** In an `on_frame(before=true)` callback on the final mix, keep `frame_pos = source.time(radio)` and `clock_origin = min(clock_origin, time() − frame_pos)` (Liquidsoap sleeps when ahead, so the least delayed frame is the true origin). Open when `clock_origin + frame_pos ≥ at − 1.5 × frame_duration`: one frame for the switch latency, half a frame to pick the nearest frame.
 - On taking the air, fade out the automation over `fade_out` (default 1 s) while the scheduled item plays at full level from its first sample. Then `skip()` the interrupted automation so it doesn't resume after the episode.
 - **Events carry the audio-timeline time.** The envelope's `at` becomes `clock_origin + frame_pos`, sent with millisecond precision (integer milliseconds or a string; 2.4.6 rounds epoch floats to 10 ms). Every event also gets `audio_pos`.
