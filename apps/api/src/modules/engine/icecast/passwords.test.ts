@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { engineIcecastSourcePassword, icecastSourcePassword } from './passwords.ts';
+import { icecastSourcePassword } from './passwords.ts';
 
 describe('icecastSourcePassword', () => {
   const master = 'a-master-password-of-some-length';
@@ -16,14 +16,5 @@ describe('icecastSourcePassword', () => {
   it('refuses a short master', () => {
     expect(() => icecastSourcePassword('short', 'station-a')).toThrow(/16 characters/);
     expect(() => icecastSourcePassword('', 'station-a')).toThrow();
-  });
-
-  it("gives engines the derived password only when the api owns Icecast's config", () => {
-    const env = { ICECAST_SOURCE_PASSWORD: master };
-    expect(engineIcecastSourcePassword(env, 'st')).toBe(master);
-    expect(engineIcecastSourcePassword({ ...env, ICECAST_CONFIG_PATH: '/x.xml' }, 'st')).toBe(
-      icecastSourcePassword(master, 'st'),
-    );
-    expect(() => engineIcecastSourcePassword({}, 'st')).toThrow();
   });
 });

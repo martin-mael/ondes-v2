@@ -33,19 +33,22 @@ are Icecast paths.
 
 ## Source passwords: one per station
 
-Every `<mount>` carries `<password>`: `icecastSourcePassword(master, stationId)`, an HMAC of the
-station id under the master `ICECAST_SOURCE_PASSWORD` (`apps/api/src/modules/engine/icecast/passwords.ts`).
-Tested on the pinned image (`icecast.int.test.ts`): a mount with its own password refuses every
-other one, the master included; the master only opens undeclared mounts. So a station's engine
-sources its own mounts and nothing else, even if its settings name another station's mount
-(they are also rejected when the plan is built: `mountsOutsideNamespace`).
+Every `<mount>` carries `<password>`: its station's own source password. Tested on the pinned
+image (`icecast.int.test.ts`): a mount with its own password refuses every other one, and the
+global `<source-password>` only opens undeclared mounts. `entrypoint.sh` makes that global one
+random, known to nobody. So a station's engine sources its own mounts and nothing else, even
+if its settings name another station's mount (they are also rejected when the plan is built:
+`mountsOutsideNamespace`).
 
-- The api and the Icecast container share the master. **It must never reach an engine**: the
-  lifecycle (#35) gives each engine `engineIcecastSourcePassword(env, stationId)`, the derived
-  password when the api owns Icecast's config (`ICECAST_CONFIG_PATH` set), the master only with
-  the dev stack's static config, which has no per-mount passwords.
-- Nothing is stored: rotating the master rotates every station's password (restart the engines).
-- The generated file therefore holds the per-station passwords; the global ones (master, relay,
+- **With the engine lifecycle (#35)**: the password is the station's stored, encrypted secret,
+  `app.engineLifecycle.secretsFor(scope).icecastSourcePassword`, the one its engine gets. The api
+  syncs Icecast in the lifecycle's `onBeforeCreate` hook, before every engine container create
+  (first start, config change, secret rotation), so Icecast knows a new password before the
+  engine uses it. Icecast applies it 1–3 s after the file is written; Liquidsoap retries a
+  refused connection on its own.
+- **Without it** (the api alone, the tests): derived, `icecastSourcePassword(ICECAST_SOURCE_SECRET, stationId)`
+  (an HMAC; `apps/api/src/modules/engine/icecast/passwords.ts`).
+- The generated file therefore holds the per-station passwords; the global ones (source, relay,
   admin) stay placeholders. It is written mode 0600; the api (`node`) and Icecast both run as
   uid 1000, so Icecast can read it. Mount the volume in those two containers only.
 
@@ -127,7 +130,7 @@ services:
     entrypoint: [sh, /ondes/entrypoint.sh]
     restart: unless-stopped
     environment:
-      ICECAST_SOURCE_PASSWORD: ${ICECAST_SOURCE_PASSWORD}   # the master, ≥ 16 chars
+      # No ICECAST_SOURCE_PASSWORD: the global one is random; stations have their own.
       ICECAST_ADMIN_USER: admin
       ICECAST_ADMIN_PASSWORD: ${ICECAST_ADMIN_PASSWORD}
     expose: ['8000']            # no `ports:`: only Caddy, the engines and the api reach it
@@ -140,7 +143,6 @@ services:
       ICECAST_CONFIG_PATH: /srv/ondes/icecast/icecast.xml
       ICECAST_ASSETS_DIR: /srv/ondes/stream-assets
       ICECAST_PUBLIC_HOSTNAME: stream.example.org
-      ICECAST_SOURCE_PASSWORD: ${ICECAST_SOURCE_PASSWORD}   # same master
       ICECAST_URL: http://icecast:8000
       ICECAST_ADMIN_USER: admin
       ICECAST_ADMIN_PASSWORD: ${ICECAST_ADMIN_PASSWORD}

@@ -7,13 +7,13 @@ behaviour, Caddy and measurements: `deploy/icecast/README.md`.
 | Piece | File | Role |
 |---|---|---|
 | Mount plan | `mounts.ts` | `stationOutputs(row)`: the station's `engine_settings.outputs` or `defaultStationOutputs(slug)` (settings.ts: `<slug>/mp3` 128k, `<slug>/aac` 128k; `opusOutput(slug)` is the opt-in Opus 96k), rejected when a mount leaves `/<slug>/…`. `planMounts(rows)` for every station. |
-| Passwords | `passwords.ts` | `icecastSourcePassword(master, stationId)`: the station's source password, on each of its mounts. `engineIcecastSourcePassword(env, stationId)`: what an engine gets (never the master once the api owns the config). |
+| Passwords | `passwords.ts`, `service.ts` | Each station's mounts carry its source password: the lifecycle's secret (`secretsFor(scope).icecastSourcePassword`, #35), or without the lifecycle `icecastSourcePassword(ICECAST_SOURCE_SECRET, stationId)`. |
 | Config | `config.ts` | `renderIcecastConfig(mounts, options, secrets)`: deterministic `icecast.xml` with per-mount limits, password, UTF-8 charset, fallback and intro. Global passwords as placeholders. |
-| Sync | `sync.ts` | `createIcecastConfigSync({ db, path, config, sourceMaster, assetsDir })`: reads the stations under an advisory lock, keeps a broken station's last good mounts, configures fallback/intro only when the file exists, writes the file atomically when it changed (boot, every 30 s, `syncNow()`). The Icecast container reloads it (SIGHUP). |
+| Sync | `sync.ts` | `createIcecastConfigSync({ db, path, config, sourcePasswordFor, assetsDir })`: reads the stations under an advisory lock, keeps a broken station's last good mounts, configures fallback/intro only when the file exists, writes the file atomically when it changed (boot, every 30 s, `syncNow()`, `syncStation(station, password)` from the lifecycle's `onBeforeCreate`). The Icecast container reloads it (SIGHUP). |
 | Admin client | `admin.ts` | `createIcecastAdmin(...).stats()`: `/admin/stats` parsed and checked with zod. Never `/admin/listclients`: it makes Icecast 2.5.0 deadlock on the next reload. |
 | Poller | `poller.ts` | `createListenerStatsPoller(...)`: one sample per planned mount every 15 s, folded per minute by `recordListenerSamples` (`@ondes/db`). Fallback listeners count for their mount. Reports source changes, removed mounts and Icecast being unreachable (4 failed polls). |
 | Alerts | `alerts.ts` | `createStreamAlerts({ alerts: app.alerts })` (#33): `stream.source_missing` (60 s grace, 30 s hold before resolving), `stream.config_invalid`, `stream.icecast_unreachable`. |
-| Wiring | `service.ts` | `createIcecastService({ db, config: icecastServiceConfigFromEnv(env), alerts })`, started from `main.ts`. Sync with `ICECAST_CONFIG_PATH` + `ICECAST_SOURCE_PASSWORD`; poller with `ICECAST_URL` + `ICECAST_ADMIN_PASSWORD`; hourly `downsampleListenerStats` with the poller. |
+| Wiring | `service.ts` | `createIcecastService({ db, config: icecastServiceConfigFromEnv(env), alerts, lifecycle })`, started from `main.ts` (`app.alerts`, `app.engineLifecycle` when registered). Sync with `ICECAST_CONFIG_PATH` (+ `ICECAST_SOURCE_SECRET` without the lifecycle); poller with `ICECAST_URL` + `ICECAST_ADMIN_PASSWORD`; hourly `downsampleListenerStats` with the poller. |
 
 ## Settings
 

@@ -1,6 +1,7 @@
 import { buildApp } from './app.ts';
 import {
   createIcecastService,
+  type EngineLifecycleHooks,
   icecastServiceConfigFromEnv,
   type SourceAlerts,
 } from './modules/engine/icecast/index.ts';
@@ -35,8 +36,11 @@ const icecast = createIcecastService({
   db: app.db,
   config: icecastServiceConfigFromEnv(env),
   logger: app.log,
-  // #33's alert service, when the alerts plugin is registered.
+  // #33's alert service and #35's engine lifecycle, when their plugins are registered.
   alerts: (app as { alerts?: SourceAlerts }).alerts,
+  lifecycle: app.hasDecorator('engineLifecycle')
+    ? (app as unknown as { engineLifecycle: EngineLifecycleHooks }).engineLifecycle
+    : undefined,
 });
 icecast.start();
 

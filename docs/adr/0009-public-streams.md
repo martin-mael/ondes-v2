@@ -13,10 +13,12 @@ intro come from each station's settings, which change while listeners are connec
 - **One Icecast 2.5 for all stations**, mounts namespaced `/<station-slug>/<format>`
   (`mp3` 128k and `aac` 128k by default, `opus` 96k opt-in). The namespace is checked when the
   plan is built; the slugs `admin` and `assets` are reserved.
-- **One source password per station**, on each of its mounts (`<password>`), derived as an HMAC
-  of the station id under a master that only the api and Icecast know. Icecast 2.5 then refuses
-  any other password on those mounts, so no engine can source another station's mount whatever
-  its settings say (tested). Derived rather than stored: nothing to keep in sync.
+- **One source password per station**, on each of its mounts (`<password>`); Icecast's global
+  source password is random. Icecast 2.5 then refuses any other password on those mounts, so
+  no engine can source another station's mount whatever its settings say (tested). The
+  password is the engine lifecycle's stored per-station secret (#35); the api syncs Icecast
+  before every engine create so Icecast has it first. Without the lifecycle it is an HMAC of
+  the station id under `ICECAST_SOURCE_SECRET`.
 - **The api generates `icecast.xml`** for every station from the database and writes it to a
   volume shared with the Icecast container, atomically and only when it changed, under an
   advisory lock. The global secrets are placeholders filled in by the container; the
@@ -44,8 +46,9 @@ intro come from each station's settings, which change while listeners are connec
 - Re-encoding the fallback and intro files when a station's emergency file or outputs change is
   a worker job (follow-up). Until a file exists, its mount has no fallback: listeners are
   disconnected while the engine is down.
-- Engines must get their derived password (`engineIcecastSourcePassword`), never the master
-  (#35's lifecycle).
+- The engine and Icecast must agree on the station's secret: the lifecycle's `onBeforeCreate`
+  hook is what orders them; a rotated secret takes Icecast 1–3 s to apply, and the engine
+  retries meanwhile.
 - The listclients deadlock and the reload numbers must be re-checked when the image is bumped
   (`icecast.int.test.ts` covers both).
 - Details, compose snippet and Caddyfile: `deploy/icecast/README.md`.

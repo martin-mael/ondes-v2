@@ -38,9 +38,9 @@ const base = `http://127.0.0.1:${port}`;
 const configPath = `${renderedDir}config/icecast.xml`;
 const assetsDir = `${renderedDir}assets`;
 const NAME = 'Vandale Radió – Lyon';
-/** Same as the Icecast container's ICECAST_SOURCE_PASSWORD (testing/compose.yml). */
-const MASTER = 'ondes-it-source-master';
-/** The test station's derived source password, handed to its engine (the `source` service). */
+/** Stands in for the lifecycle's per-station secrets: passwords derived from it. */
+const MASTER = 'ondes-it-source-secret';
+/** The test station's source password, handed to its engine (the `source` service). */
 let itPassword = 'unset';
 
 const compose = (...args: string[]) =>
@@ -188,7 +188,7 @@ beforeAll(async () => {
     db: tdb.db,
     path: configPath,
     config: { hostname: 'localhost' },
-    sourceMaster: MASTER,
+    sourcePasswordFor: (st) => icecastSourcePassword(MASTER, st.id),
     assetsDir,
     // The test process and Icecast's container don't share a uid (CI).
     fileMode: 0o644,

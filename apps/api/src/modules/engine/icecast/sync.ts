@@ -11,7 +11,6 @@ import {
   type StreamStation,
   stationMounts,
 } from './mounts.ts';
-import { icecastSourcePassword } from './passwords.ts';
 
 // Keeps Icecast's config in step with the stations in the database.
 //
@@ -73,8 +72,13 @@ export type IcecastConfigSyncOptions = {
   /** Where the Icecast container reads the generated config (`ICECAST_CONFIG_PATH`). */
   path: string;
   config: IcecastConfigOptions;
-  /** `ICECAST_SOURCE_PASSWORD`: the master the per-station source passwords derive from. */
-  sourceMaster: string;
+  /**
+   * The station's Icecast source password, put on each of its mounts (Icecast then refuses
+   * any other password there). The engine lifecycle's stored secret (#35,
+   * `secretsFor(scope).icecastSourcePassword`), or `icecastSourcePassword` (passwords.ts)
+   * without it. A station whose password can't be read keeps its last good mounts.
+   */
+  sourcePasswordFor: (station: { id: string; orgId: string }) => string | Promise<string>;
   /**
    * The api's view of Icecast's `/_ondes` webroot volume (`ICECAST_ASSETS_DIR`). A mount's
    * fallback and intro are only configured once their file is there; unset: none are.
@@ -97,6 +101,15 @@ export type IcecastConfigSyncOptions = {
 export type IcecastConfigSync = {
   /** Re-reads the stations and rewrites the config if it changed. Calls are serialized. */
   syncNow(): Promise<{ changed: boolean; mounts: StreamMount[]; invalid: StationOutputsError[] }>;
+  /**
+   * Syncs with this password for the station, e.g. a secret the lifecycle is about to give a
+   * new engine (`onBeforeCreate`) and may not have stored yet. It wins over the looked-up one
+   * until the lookup returns it too.
+   */
+  syncStation(
+    station: { id: string; orgId: string },
+    sourcePassword: string,
+  ): ReturnType<IcecastConfigSync['syncNow']>;
   /** The mounts Icecast was last configured with (empty before the first sync). */
   mounts(): StreamMount[];
   start(): void;
@@ -111,11 +124,24 @@ export function createIcecastConfigSync(options: IcecastConfigSyncOptions): Icec
   const lastGood = new Map<string, StreamMount[]>();
   /** Last known validity per station, to report changes only. */
   const valid = new Map<string, boolean>();
+  /** The password each station's mounts were last configured with. */
+  const passwords = new Map<string, string>();
+  /** Passwords handed over by `syncStation`, until the lookup agrees. */
+  const pending = new Map<string, string>();
   let warnedNoAssets = false;
-  const sourcePasswordFor = (stationId: string) =>
-    icecastSourcePassword(options.sourceMaster, stationId);
-  // Fails fast on a missing or short master, before anything is written.
-  sourcePasswordFor('check');
+
+  async function passwordOf(st: { id: string; orgId: string }): Promise<string | undefined> {
+    try {
+      const looked = await options.sourcePasswordFor(st);
+      const handed = pending.get(st.id);
+      if (handed !== undefined && handed !== looked) return handed;
+      pending.delete(st.id);
+      return looked;
+    } catch (err) {
+      options.logger?.warn({ stationId: st.id, err }, 'station source password unavailable');
+      return pending.get(st.id) ?? passwords.get(st.id);
+    }
+  }
 
   async function withAssets(mounts: StreamMount[]): Promise<StreamMount[]> {
     const dir = options.assetsDir;
@@ -149,7 +175,11 @@ export function createIcecastConfigSync(options: IcecastConfigSyncOptions): Icec
       const stations = await loadStreamStations(tx);
       const planned: StreamMount[] = [];
       const invalid: StationOutputsError[] = [];
+      const stationPasswords = new Map<string, string>();
       for (const st of stations) {
+        const password = await passwordOf(st);
+        if (password === undefined) continue; // no password ever: nothing Icecast could accept
+        stationPasswords.set(st.id, password);
         let mounts: StreamMount[];
         try {
           mounts = stationMounts(st);
@@ -177,9 +207,18 @@ export function createIcecastConfigSync(options: IcecastConfigSyncOptions): Icec
       const ids = new Set(stations.map((s) => s.id));
       for (const id of [...lastGood.keys()]) if (!ids.has(id)) lastGood.delete(id);
       for (const id of [...valid.keys()]) if (!ids.has(id)) valid.delete(id);
+      for (const id of [...pending.keys()]) if (!ids.has(id)) pending.delete(id);
+      passwords.clear();
+      for (const [id, pw] of stationPasswords) passwords.set(id, pw);
 
       const mounts = await withAssets(planned);
-      const xml = renderIcecastConfig(mounts, options.config, { sourcePasswordFor });
+      const xml = renderIcecastConfig(mounts, options.config, {
+        sourcePasswordFor: (stationId) => {
+          const pw = stationPasswords.get(stationId);
+          if (pw === undefined) throw new Error(`no source password for station ${stationId}`);
+          return pw;
+        },
+      });
       const changed = await writeIfChanged(options.path, xml, options.fileMode);
       if (changed) {
         options.logger?.info(
@@ -200,6 +239,10 @@ export function createIcecastConfigSync(options: IcecastConfigSyncOptions): Icec
 
   return {
     syncNow,
+    syncStation(station, sourcePassword) {
+      pending.set(station.id, sourcePassword);
+      return syncNow();
+    },
     mounts: () => current,
     start() {
       if (timer) return;

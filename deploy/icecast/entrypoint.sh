@@ -29,7 +29,7 @@ PORT=${ICECAST_PORT:-8000}
 
 log() { echo "[ondes-icecast] $*" >&2; }
 
-for var in ICECAST_SOURCE_PASSWORD ICECAST_ADMIN_PASSWORD; do
+for var in ICECAST_ADMIN_PASSWORD; do
   eval "value=\${$var:-}"
   if [ -z "$value" ]; then
     log "$var is not set"
@@ -38,9 +38,14 @@ for var in ICECAST_SOURCE_PASSWORD ICECAST_ADMIN_PASSWORD; do
 done
 # Same variable name as the api's (apps/api/src/modules/engine/icecast/service.ts).
 export ICECAST_ADMIN_USER="${ICECAST_ADMIN_USER:-admin}"
+random_password() { head -c 24 /dev/urandom | md5sum | cut -c1-32; }
+# The global source password only opens mounts the config doesn't declare; every station's
+# mounts have their own. Random and known to nobody, so no engine can source anything else.
+# Set it only to debug by hand.
+export ICECAST_SOURCE_PASSWORD="${ICECAST_SOURCE_PASSWORD:-$(random_password)}"
 # Relays are not used; a random password keeps the relay login closed.
-export ICECAST_RELAY_PASSWORD="${ICECAST_RELAY_PASSWORD:-$(head -c 24 /dev/urandom | md5sum | cut -c1-32)}"
-export ICECAST_SOURCE_PASSWORD ICECAST_ADMIN_PASSWORD
+export ICECAST_RELAY_PASSWORD="${ICECAST_RELAY_PASSWORD:-$(random_password)}"
+export ICECAST_ADMIN_PASSWORD
 
 # Replaces each `env:NAME` placeholder (NAME among the four below) with the XML-escaped value
 # of $NAME, in one pass over each line: a substituted value is never scanned again, and a

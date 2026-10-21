@@ -2,10 +2,10 @@ import type { StreamMount } from './mounts.ts';
 
 // Icecast 2.5 configuration for every station's mounts (the mount plan, mounts.ts).
 //
-// The global secrets (master source password, relay and admin credentials) are not rendered:
+// The global secrets (global source password, relay and admin credentials) are not rendered:
 // they are placeholders that the Icecast container replaces from its own environment each time
-// it loads the file (deploy/icecast/entrypoint.sh). Each mount does carry its station's source
-// password (passwords.ts): derived from the master, it only opens that station's mounts. The
+// it loads the file (deploy/icecast/entrypoint.sh; the global source password is random). Each
+// mount does carry its station's source password, which only opens that station's mounts. The
 // file is therefore written readable by Icecast's user only.
 
 export type IcecastConfigOptions = {
@@ -27,7 +27,7 @@ export type IcecastConfigOptions = {
 };
 
 export type IcecastConfigSecrets = {
-  /** The source password of a station's mounts (`icecastSourcePassword(master, stationId)`). */
+  /** The source password of a station's mounts (the lifecycle's secret, or passwords.ts). */
   sourcePasswordFor(stationId: string): string;
 };
 

@@ -5,8 +5,8 @@
 # ./.rendered/assets (the api's view of the assets volume).
 #
 # Its own project name and port, so it never touches the shared ondes-dev stack. The test
-# starts it and tears it down; by hand (IT_SOURCE_PASSWORD is the test station's derived
-# source password, printed by the test):
+# starts it and tears it down; by hand (IT_SOURCE_PASSWORD is the test station's source
+# password, which the test passes in):
 #
 #   docker compose -f apps/api/src/modules/engine/icecast/testing/compose.yml up -d --wait icecast
 #   docker compose -f apps/api/src/modules/engine/icecast/testing/compose.yml down -v
@@ -20,8 +20,7 @@ services:
     entrypoint: [sh, /ondes/entrypoint.sh]
     restart: unless-stopped
     environment:
-      # The master: Icecast's global source password. Engines get derived ones.
-      ICECAST_SOURCE_PASSWORD: ondes-it-source-master
+      # No ICECAST_SOURCE_PASSWORD: the global one is random (only per-station passwords work).
       ICECAST_ADMIN_USER: admin
       ICECAST_ADMIN_PASSWORD: ondes-it-admin
       ICECAST_CONFIG_POLL_SECONDS: '1'
