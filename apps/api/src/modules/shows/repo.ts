@@ -166,6 +166,24 @@ export async function isHost(
   return row !== undefined;
 }
 
+/** Who may host: members of the station, or of its org at org level. By name. */
+export async function listHostCandidates(
+  db: Executor,
+  scope: StationScope,
+): Promise<Show['hosts']> {
+  return db
+    .selectDistinct({ userId: user.id, name: user.name })
+    .from(membership)
+    .innerJoin(user, eq(user.id, membership.userId))
+    .where(
+      and(
+        eq(membership.orgId, scope.orgId),
+        or(isNull(membership.stationId), eq(membership.stationId, scope.stationId)),
+      ),
+    )
+    .orderBy(asc(user.name), asc(user.id));
+}
+
 /** Hosts must be members of the station, or of its org at org level. */
 async function checkHosts(tx: Tx, scope: StationScope, userIds: string[]) {
   if (!userIds.length) return;

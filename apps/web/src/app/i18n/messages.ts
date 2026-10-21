@@ -117,6 +117,8 @@ const en = {
   'account.recovery.done': "I've saved them",
 
   'shell.nav.dashboard': 'Dashboard',
+  'shell.nav.calendar': 'Calendar',
+  'shell.nav.shows': 'Shows',
   'shell.nav.categories': 'Categories',
   'shell.nav.rotationRules': 'Rotation rules',
   'shell.nav.clocks': 'Clocks',
@@ -266,6 +268,8 @@ const fr: Messages = {
   'account.recovery.done': 'Je les ai enregistrés',
 
   'shell.nav.dashboard': 'Tableau de bord',
+  'shell.nav.calendar': 'Calendrier',
+  'shell.nav.shows': 'Émissions',
   'shell.nav.categories': 'Catégories',
   'shell.nav.rotationRules': 'Règles de rotation',
   'shell.nav.clocks': 'Horloges',

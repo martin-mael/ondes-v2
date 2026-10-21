@@ -157,6 +157,18 @@ describe('shows', () => {
     expect(list.items.map((s) => s.id)).toContain(created.id);
   });
 
+  it('lists who may host: station members, to show:write only', async () => {
+    const list = await ok<{ items: { userId: string; name: string }[] }>(
+      await call('programmer', 'GET', '/show-hosts'),
+    );
+    const ids = list.items.map((h) => h.userId);
+    for (const who of ['programmer', 'host', 'presenter', 'viewer']) {
+      expect(ids).toContain(users[who]?.userId);
+    }
+    expect(ids).not.toContain(users.outsider?.userId);
+    expect((await call('host', 'GET', '/show-hosts')).statusCode).toBe(403);
+  });
+
   it('refuses hosts who are not members of the station, and an http artwork url', async () => {
     const res = await call('programmer', 'POST', '/shows', {
       name: 'X',

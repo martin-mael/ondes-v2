@@ -2,11 +2,13 @@ import type { Permission } from '@ondes/shared';
 import type { LinkProps } from '@tanstack/react-router';
 import {
   ClockIcon,
+  CalendarDaysIcon,
   LayoutDashboardIcon,
   LifeBuoyIcon,
   ListMusicIcon,
   type LucideIcon,
   SlidersHorizontalIcon,
+  MicIcon,
 } from 'lucide-react';
 import type { MessageKey } from '../i18n/messages.ts';
 
@@ -30,6 +32,18 @@ export const stationNav: NavItem[] = [
     label: 'shell.nav.dashboard',
     icon: LayoutDashboardIcon,
     permission: 'dashboard:read',
+  },
+  {
+    to: '/stations/$stationId/shows/calendar',
+    label: 'shell.nav.calendar',
+    icon: CalendarDaysIcon,
+    permission: 'show:read',
+  },
+  {
+    to: '/stations/$stationId/shows',
+    label: 'shell.nav.shows',
+    icon: MicIcon,
+    permission: 'show:read',
   },
   {
     to: '/stations/$stationId/categories',

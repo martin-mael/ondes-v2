@@ -185,6 +185,10 @@ export type UpdateShow = z.input<typeof updateShowSchema>;
 export const showListSchema = z.object({ items: z.array(showSchema) });
 export type ShowList = z.infer<typeof showListSchema>;
 
+/** `GET …/show-hosts`: who may host the station's shows (its members, org members included). */
+export const showHostCandidateListSchema = z.object({ items: z.array(showHostSchema) });
+export type ShowHostCandidateList = z.infer<typeof showHostCandidateListSchema>;
+
 // --- Slot --------------------------------------------------------------------------------
 
 export const showSlotSchema = z.object({
