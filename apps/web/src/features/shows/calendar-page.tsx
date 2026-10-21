@@ -444,7 +444,7 @@ function EntryButton({
       data-testid="calendar-entry"
       onClick={() => onSelect(entry)}
       className={cn(
-        'relative flex min-w-0 flex-col overflow-hidden rounded-md bg-card py-0.5 pr-1.5 pl-2.5 text-left text-[0.7rem] leading-tight hover:bg-muted',
+        'relative flex min-w-0 flex-col overflow-hidden rounded-l-[4px] rounded-r-md bg-card py-0.5 pr-1.5 pl-2.5 text-left text-[0.7rem] leading-tight hover:bg-muted',
         entry.kind === 'cancelled' && 'opacity-60',
         conflict && 'ring-2 ring-destructive',
         className,
@@ -452,8 +452,8 @@ function EntryButton({
       style={style}
       {...rest}
     >
-      {/* The show's colour: a strip, not a border, so its inner edge stays straight while the
-          rounded corners clip its outer ones. Dashed for a cancelled airing. */}
+      {/* The show's colour: a strip, not a border, so its inner edge stays straight. The left
+          corners' radius equals its width, so it fills them top to bottom. Dashed when cancelled. */}
       <span
         aria-hidden
         className="absolute inset-y-0 left-0 w-1"
