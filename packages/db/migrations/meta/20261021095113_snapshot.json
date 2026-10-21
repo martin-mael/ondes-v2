@@ -1,5 +1,5 @@
 {
-  "id": "be58b199-cb06-4d33-8524-4c6887f2eea8",
+  "id": "a2f236b4-37cc-41e6-95b7-5c95a4dd65dd",
   "prevId": "e281989a-a356-4950-aa88-2bbd0d39d84a",
   "version": "7",
   "dialect": "postgresql",
@@ -251,18 +251,6 @@
         "org_id": {
           "name": "org_id",
           "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "max_seconds": {
-          "name": "max_seconds",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "threshold_db": {
-          "name": "threshold_db",
-          "type": "real",
           "primaryKey": false,
           "notNull": true
         },

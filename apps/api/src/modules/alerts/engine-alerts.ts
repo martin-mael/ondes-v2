@@ -12,7 +12,7 @@ import type { AlertService } from './service.ts';
 
 /**
  * The station template's `blank` settings (#27, `stationEngineSettingsSchema.blank`) from the
- * station's silence settings. The engine lifecycle (#35) renders with these.
+ * station's silence settings: what `updateSilenceSettings` writes to `station.engine_settings.blank`.
  */
 export function engineBlankSettings(settings: SilenceSettings) {
   return { maxSeconds: settings.maxSeconds, thresholdDb: settings.thresholdDb };

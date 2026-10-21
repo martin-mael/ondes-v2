@@ -7,7 +7,6 @@ import {
   integer,
   jsonb,
   pgTable,
-  real,
   text,
   timestamp,
   uniqueIndex,
@@ -74,16 +73,15 @@ export const alert = pgTable(
 );
 
 /**
- * Silence detection settings, one row per station (defaults apply without a row).
- * `max_seconds` / `threshold_db` feed the engine template's `blank.detect`.
+ * What the app does on silence, one row per station (defaults apply without a row). The
+ * detection itself (threshold, duration) is `station.engine_settings.blank`, rendered into the
+ * engine template's `blank.detect`.
  */
 export const silenceSetting = pgTable(
   'silence_setting',
   {
     stationId: uuid('station_id').primaryKey(),
     orgId: uuid('org_id').notNull(),
-    maxSeconds: real('max_seconds').notNull(),
-    thresholdDb: real('threshold_db').notNull(),
     action: text('action').$type<SilenceAction>().notNull(),
     escalateAfterSeconds: integer('escalate_after_seconds').notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true })

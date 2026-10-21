@@ -4,6 +4,7 @@ import {
   createOrganization,
   createStation,
   type StationScope,
+  station,
   unsafeScope,
 } from '@ondes/db';
 import { createTestDatabase, type TestDatabase } from '@ondes/db/testing';
@@ -72,6 +73,7 @@ beforeAll(async () => {
     slug: 'vandale',
     name: 'Vandale',
     timezone: 'Europe/Paris',
+    engineSettings: { crossfade: { duration: 2 } },
   });
   scope = unsafeScope(org.id, st.id);
   otherStation = (
@@ -160,6 +162,16 @@ describe('silence settings', () => {
     const ok = await api('PATCH', '/silence-settings', manager, { maxSeconds: 4 });
     expect(ok.statusCode).toBe(200);
     expect(ok.json()).toMatchObject({ maxSeconds: 4, action: 'skip' });
+    // Threshold and duration live in the station's engine settings, which the engine is
+    // rendered from (#35); the other engine settings are left alone.
+    const [st] = await tdb.db
+      .select({ engineSettings: station.engineSettings })
+      .from(station)
+      .where(eq(station.id, scope.stationId));
+    expect(st?.engineSettings).toEqual({
+      crossfade: { duration: 2 },
+      blank: { maxSeconds: 4, thresholdDb: -40 },
+    });
     const event = await waitFor('settings event', alertEvent('alert.silence_settings.updated'));
     expect(event).toMatchObject({ stationId: scope.stationId, data: { maxSeconds: 4 } });
     const audit = await tdb.db

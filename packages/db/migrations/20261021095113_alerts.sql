@@ -26,8 +26,6 @@ CREATE TABLE "alert" (
 CREATE TABLE "silence_setting" (
 	"station_id" uuid PRIMARY KEY NOT NULL,
 	"org_id" uuid NOT NULL,
-	"max_seconds" real NOT NULL,
-	"threshold_db" real NOT NULL,
 	"action" text NOT NULL,
 	"escalate_after_seconds" integer NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,

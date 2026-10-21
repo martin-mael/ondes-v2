@@ -74,19 +74,19 @@ The engine template detects silence: `blank.detect` on the final mix, after `mks
 ADR 0002). The adapter publishes `engine.blank.detected` / `recovered` on the fanout. This
 module turns them into alerts.
 
-**Settings** (`silence_setting`, defaults without a row):
+**Settings** (`GET/PATCH /silence-settings`, defaults for anything unset):
 
-| Setting | Default | Meaning |
-|---|---|---|
-| `maxSeconds` | 10 | Seconds of silence before an alert (template `max_blank`) |
-| `thresholdDb` | -40 | Below this level counts as silence (template `threshold`) |
-| `action` | `skip` | What to do on silence |
-| `escalateAfterSeconds` | 60 | How long silence can last after the action before the alert goes critical |
+| Setting | Default | Stored in | Meaning |
+|---|---|---|---|
+| `maxSeconds` | 10 | `station.engine_settings.blank` | Seconds of silence before an alert (template `max_blank`) |
+| `thresholdDb` | -40 | `station.engine_settings.blank` | Below this level counts as silence (template `threshold`) |
+| `action` | `skip` | `silence_setting` | What to do on silence |
+| `escalateAfterSeconds` | 60 | `silence_setting` | How long silence can last after the action before the alert goes critical |
 
-`maxSeconds` and `thresholdDb` are the template's `blank` settings, with the same ranges and
-defaults (`settings.test.ts`).
-- The engine lifecycle (#35) renders with `engineBlankSettings(await getSilenceSettings(db, scope))`.
-- A change publishes `alert.silence_settings.updated`, so it can re-render.
+The detection values live where the engine lifecycle (#35) renders from: `station.engine_settings`,
+same ranges and defaults as the template's `blank` (`settings.test.ts`). A change publishes
+`alert.silence_settings.updated`; the lifecycle reconciles the station on it (a restart only if
+the rendered `config_version` changed).
 
 **Events → alerts:**
 - `engine.blank.detected`: raise `engine.silence`.

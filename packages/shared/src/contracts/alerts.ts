@@ -122,7 +122,8 @@ export type SilenceAction = z.infer<typeof silenceActionSchema>;
 
 /**
  * Per-station silence detection. `maxSeconds` and `thresholdDb` are the engine template's
- * `blank.detect` (station settings `blank`, same ranges and defaults); the rest is the app's.
+ * `blank.detect`: stored in `station.engine_settings.blank` (same ranges and defaults as the
+ * template's settings), which the engine is rendered from. The rest is the app's own.
  */
 export const silenceSettingsSchema = z.object({
   /** Seconds of silence before `blank.detected`. */

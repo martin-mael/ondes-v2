@@ -319,25 +319,36 @@ export async function alertRecipients(
 }
 
 // --- Silence settings --------------------------------------------------------------------
+// One source of truth per value: the template's `blank` settings (threshold, duration) live in
+// `station.engine_settings.blank`, which the engine lifecycle (#35) renders from; the app's
+// own (action, escalation) live in `silence_setting`. Defaults apply to whatever is unset.
+
+const stationOf = (scope: StationScope) =>
+  and(eq(station.id, scope.stationId), eq(station.orgId, scope.orgId));
 
 /** The station's silence settings, defaults where none were saved. */
 export async function getSilenceSettings(
   db: Executor,
   scope: StationScope,
 ): Promise<SilenceSettings> {
-  const [row] = await db.select().from(silenceSetting).where(whereStation(silenceSetting, scope));
-  return silenceSettingsSchema.parse(
-    row
-      ? {
-          maxSeconds: row.maxSeconds,
-          thresholdDb: row.thresholdDb,
-          action: row.action,
-          escalateAfterSeconds: row.escalateAfterSeconds,
-        }
-      : {},
-  );
+  const [[st], [row]] = await Promise.all([
+    db.select({ engineSettings: station.engineSettings }).from(station).where(stationOf(scope)),
+    db.select().from(silenceSetting).where(whereStation(silenceSetting, scope)),
+  ]);
+  if (!st) throw new NotFoundError('station', scope.stationId);
+  const blank = (st.engineSettings.blank ?? {}) as { maxSeconds?: unknown; thresholdDb?: unknown };
+  return silenceSettingsSchema.parse({
+    maxSeconds: blank.maxSeconds,
+    thresholdDb: blank.thresholdDb,
+    action: row?.action,
+    escalateAfterSeconds: row?.escalateAfterSeconds,
+  });
 }
 
+/**
+ * Saves a patch: `maxSeconds` / `thresholdDb` into `station.engine_settings.blank` (other
+ * engine settings untouched), the rest into `silence_setting`. Run it in a transaction.
+ */
 export async function updateSilenceSettings(
   db: Executor,
   scope: StationScope,
@@ -345,10 +356,22 @@ export async function updateSilenceSettings(
 ): Promise<{ before: SilenceSettings; after: SilenceSettings }> {
   const before = await getSilenceSettings(db, scope);
   const after = silenceSettingsSchema.parse({ ...before, ...patch });
-  await db
-    .insert(silenceSetting)
-    .values({ stationId: scope.stationId, orgId: scope.orgId, ...after })
-    .onConflictDoUpdate({ target: silenceSetting.stationId, set: { ...after } });
+  if (patch.maxSeconds !== undefined || patch.thresholdDb !== undefined) {
+    const blank = { maxSeconds: after.maxSeconds, thresholdDb: after.thresholdDb };
+    await db
+      .update(station)
+      .set({
+        engineSettings: sql`${station.engineSettings} || jsonb_build_object('blank', coalesce(${station.engineSettings} -> 'blank', '{}'::jsonb) || ${JSON.stringify(blank)}::jsonb)`,
+      })
+      .where(stationOf(scope));
+  }
+  if (patch.action !== undefined || patch.escalateAfterSeconds !== undefined) {
+    const own = { action: after.action, escalateAfterSeconds: after.escalateAfterSeconds };
+    await db
+      .insert(silenceSetting)
+      .values({ stationId: scope.stationId, orgId: scope.orgId, ...own })
+      .onConflictDoUpdate({ target: silenceSetting.stationId, set: own });
+  }
   return { before, after };
 }
 
