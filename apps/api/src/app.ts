@@ -20,6 +20,7 @@ import { type SafetyPluginOptions, safetyPlugin } from './modules/engine/safety/
 import { type InvitationsOptions, invitationsRoutes } from './modules/invitations/routes.ts';
 import { type PeaksPluginOptions, peaksPlugin } from './modules/library/peaks-plugin.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
+import { librarySearchRoutes } from './modules/library/search-routes.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
@@ -88,6 +89,8 @@ export async function buildApp(options: AppOptions) {
   await app.register(ssePlugin, options.sse ?? {});
   // Library routes carry their full /api/v1/stations/:stationId path.
   await app.register(libraryPlugin);
+  // Library screen (#23): search, facets, bulk edits, asset activity.
+  await app.register(librarySearchRoutes, { prefix: '/api/v1' });
   await app.register(logRoutes, { prefix: '/api/v1' });
   // As-run (#30): `GET …/asrun`, engine track events -> as-run entries (durable queue).
   await app.register(asRunPlugin, options.asrun ?? {});
