@@ -1,0 +1,2 @@
+ALTER TABLE "user_auth" ADD COLUMN "second_factor_failures" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "user_auth" ADD COLUMN "second_factor_locked_until" timestamp with time zone;

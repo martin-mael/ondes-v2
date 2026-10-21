@@ -1,0 +1,66 @@
+# Engine adapter integration test (#28): one real station engine running the station
+# template (#27), rendered by adapter.int.test.ts into ./.rendered/station.liq, and driven
+# by that test from the host.
+#
+# Its own project name and ports, so it never touches the shared ondes-dev stack. The test
+# starts it and tears it down; by hand:
+#
+#   docker compose -f apps/api/src/modules/engine/adapter/testing/compose.yml up -d
+#   docker compose -f apps/api/src/modules/engine/adapter/testing/compose.yml down -v
+#
+# The engine posts its events to the test process on the host (host.docker.internal).
+# Only the control port is published, on 127.0.0.1.
+
+name: ondes-engine-adapter-it
+
+services:
+  icecast:
+    image: libretime/icecast:2.5.0-alpine
+    entrypoint:
+      - sh
+      - -c
+      - cat /config/icecast.xml > /etc/icecast.xml && exec docker-entrypoint icecast -c /etc/icecast.xml
+    environment:
+      ICECAST_SOURCE_PASSWORD: ondes-it-source
+      ICECAST_HOSTNAME: localhost
+    volumes:
+      - ../../../../../../../deploy/dev/icecast/icecast.xml:/config/icecast.xml:ro
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8000/status-json.xsl]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # Sine-tone WAVs, written into the shared volume (no binary fixtures in git).
+  fixtures:
+    image: node:24.22.0-alpine
+    working_dir: /repo
+    command: [node, engine/spikes/control/fixtures.ts, /media]
+    volumes:
+      - ../../../../../../..:/repo:ro
+      - media:/media
+
+  engine:
+    # Keep in sync with deploy/compose.dev.yml (ADR 0002 pins 2.4.6).
+    image: savonet/liquidsoap:v2.4.6
+    command: [/engine/station.liq]
+    restart: unless-stopped
+    # Settings are baked into the rendered script; only secrets come from the environment.
+    environment:
+      ENGINE_CONTROL_TOKEN: it-token
+      ICECAST_SOURCE_PASSWORD: ondes-it-source
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - 127.0.0.1:${ENGINE_IT_CONTROL_PORT:-17180}:7000
+    volumes:
+      - ./.rendered:/engine:ro
+      - media:/media:ro
+    depends_on:
+      fixtures:
+        condition: service_completed_successfully
+      icecast:
+        condition: service_healthy
+
+volumes:
+  media:

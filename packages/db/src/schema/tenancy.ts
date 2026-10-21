@@ -1,9 +1,11 @@
 import type { ActorType, AuditDiff, EngineSettings, Role } from '@ondes/shared';
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   foreignKey,
   index,
+  integer,
   jsonb,
   pgTable,
   real,
@@ -159,5 +161,136 @@ export const auditLog = pgTable(
     index('audit_log_org_id_at_idx').on(t.orgId, t.at),
     index('audit_log_station_id_at_idx').on(t.stationId, t.at),
     index('audit_log_entity_idx').on(t.entityType, t.entityId),
+  ],
+);
+
+// --- Authentication (#6) -----------------------------------------------------------------
+// Credentials live apart from `user` so tenancy reads never load a password hash.
+
+/** One row per user who has signed up (invited-but-not-registered users have none). */
+export const userAuth = pgTable('user_auth', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  /** argon2id PHC string. */
+  passwordHash: text('password_hash').notNull(),
+  emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
+  /** TOTP secret, encrypted with AUTH_SECRET (AES-256-GCM). Set at setup, before it's enabled. */
+  totpSecret: text('totp_secret'),
+  totpEnabledAt: timestamp('totp_enabled_at', { withTimezone: true }),
+  /** Last accepted TOTP time step: a code can't be replayed. */
+  totpLastStep: integer('totp_last_step'),
+  /** Wrong second-factor codes (TOTP or recovery) since the last success or lockout. */
+  secondFactorFailures: integer('second_factor_failures').notNull().default(0),
+  /** Second-factor checks refused until then, after too many wrong codes. */
+  secondFactorLockedUntil: timestamp('second_factor_locked_until', { withTimezone: true }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+/** Single-use 2FA recovery codes (HMAC of the code, never the code). */
+export const recoveryCode = pgTable(
+  'recovery_code',
+  {
+    id: id(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    codeHash: text('code_hash').notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('recovery_code_user_hash_key').on(t.userId, t.codeHash)],
+);
+
+/** Cookie sessions. The cookie holds a random token; only its SHA-256 is stored. */
+export const session = pgTable(
+  'session',
+  {
+    id: id(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull().unique(),
+    /** Password checked, second factor still expected: only `POST /auth/login/2fa` accepts it. */
+    twoFactorPending: boolean('two_factor_pending').notNull().default(false),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    ip: text('ip'),
+    userAgent: text('user_agent'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('session_user_id_idx').on(t.userId),
+    index('session_expires_at_idx').on(t.expiresAt),
+  ],
+);
+
+/** Single-purpose tokens sent by email: address verification and password reset. */
+export const authToken = pgTable(
+  'auth_token',
+  {
+    id: id(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    purpose: text('purpose').$type<'verify_email' | 'reset_password'>().notNull(),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('auth_token_user_id_idx').on(t.userId),
+    check('auth_token_purpose_check', sql`${t.purpose} in ('verify_email', 'reset_password')`),
+  ],
+);
+
+/** Org security settings. No row means the defaults (2FA optional). */
+export const orgAuthPolicy = pgTable('org_auth_policy', {
+  orgId: uuid('org_id')
+    .primaryKey()
+    .references(() => organization.id, { onDelete: 'cascade' }),
+  requireTwoFactor: boolean('require_two_factor').notNull().default(false),
+  updatedAt: updatedAt(),
+});
+
+/**
+ * Invitation by email link: one person, one role, one scope (org or station). The token is
+ * random and stored hashed. Bulk lists and shareable links (#113) build on this table.
+ */
+export const invitation = pgTable(
+  'invitation',
+  {
+    id: id(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organization.id, { onDelete: 'cascade' }),
+    /** `null` for org-level roles. */
+    stationId: uuid('station_id'),
+    /** Stored lowercase. */
+    email: text('email').notNull(),
+    role: text('role').$type<Role>().notNull(),
+    tokenHash: text('token_hash').notNull().unique(),
+    invitedBy: uuid('invited_by').references(() => user.id, { onDelete: 'set null' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+    acceptedBy: uuid('accepted_by').references(() => user.id, { onDelete: 'set null' }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    foreignKey({
+      name: 'invitation_station_org_fk',
+      columns: [t.stationId, t.orgId],
+      foreignColumns: [station.id, station.orgId],
+    }).onDelete('cascade'),
+    index('invitation_org_id_idx').on(t.orgId),
+    index('invitation_email_idx').on(sql`lower(${t.email})`),
+    check(
+      'invitation_role_level_check',
+      sql`(${t.role} in ('owner', 'admin') and ${t.stationId} is null)
+        or (${t.role} in ('station_manager', 'programmer', 'presenter', 'viewer') and ${t.stationId} is not null)`,
+    ),
   ],
 );

@@ -15,6 +15,34 @@
       "when": 1792459209222,
       "tag": "20261020012009_job-run",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792514067049,
+      "tag": "20261020163427_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792516133036,
+      "tag": "20261020170853_library",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792569254609,
+      "tag": "20261021075414_second-factor-lockout",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792569425256,
+      "tag": "20261021075705_storage-deletion",
+      "breakpoints": true
     }
   ]
 }
