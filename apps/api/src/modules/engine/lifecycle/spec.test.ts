@@ -6,8 +6,8 @@ import {
   containerName,
   ENGINE_ENTRYPOINT,
   ENGINE_LABELS,
-  engineContainerSpec,
   EngineOutputsError,
+  engineContainerSpec,
   engineSettingsFor,
 } from './spec.ts';
 

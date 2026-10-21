@@ -1,11 +1,11 @@
 import { buildApp } from './app.ts';
-import { engineLifecycleConfigFromEnv } from './modules/engine/lifecycle/plugin.ts';
 import {
   createIcecastService,
   type EngineLifecycleHooks,
   icecastServiceConfigFromEnv,
   type SourceAlerts,
 } from './modules/engine/icecast/index.ts';
+import { engineLifecycleConfigFromEnv } from './modules/engine/lifecycle/plugin.ts';
 import { authConfigFromEnv } from './plugins/auth.ts';
 import { dbConfigFromEnv } from './plugins/db.ts';
 import { mailConfigFromEnv } from './plugins/mail.ts';
