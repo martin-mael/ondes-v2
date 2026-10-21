@@ -512,7 +512,11 @@ export async function updateCues(
   });
 }
 
-/** Autocue results. Only unlocked `auto` points change; manual edits always win. */
+/**
+ * Autocue results. Only unlocked `auto` points change; manual edits always win. The analysis
+ * ran on a snapshot of the cues, so the points it writes are fitted, under the row lock, inside
+ * the cue-in and cue-out as they are now (a person may have moved them meanwhile).
+ */
 export async function setAutoCues(
   db: Writer,
   ctx: StationContext,
@@ -524,12 +528,15 @@ export async function setAutoCues(
     const existing = await lockCues(tx, ctx.scope, assetId);
     const sampleRate = resolveSampleRate(existing, values.sampleRate);
     const points = currentPoints(existing);
+    const written = new Set<CueField>();
     for (const field of CUE_FIELDS) {
       const samples = values.points[field];
       const point = points[field];
       if (samples === undefined || point.locked || point.source === 'manual') continue;
       points[field] = { ...point, samples };
+      written.add(field);
     }
+    fitAutoCues(points, written);
     const row = await writeCues(
       tx,
       ctx.scope,
@@ -546,6 +553,48 @@ export async function setAutoCues(
     });
     return toCues(row);
   });
+}
+
+/** Positions that must lie within [cueIn, cueOut]; the fades are durations within it. */
+const MARKERS = ['introEnd', 'outroStart'] as const satisfies readonly CueField[];
+
+/**
+ * Keeps the points autocue just wrote (`written`) consistent with the others: an auto bound
+ * that crosses a person's bound is dropped, an auto marker outside the bounds is dropped, and
+ * an auto crossfade point or fade is clamped into them. Never touches a point it didn't write.
+ */
+function fitAutoCues(points: Record<CueField, CuePoint>, written: ReadonlySet<CueField>): void {
+  const drop = (field: CueField) => {
+    points[field] = { ...points[field], samples: null };
+  };
+  const cueIn = points.cueIn.samples;
+  const cueOut = points.cueOut.samples;
+  if (cueIn !== null && cueOut !== null && cueOut <= cueIn) {
+    if (written.has('cueIn')) drop('cueIn');
+    else if (written.has('cueOut')) drop('cueOut');
+  }
+  const lo = points.cueIn.samples ?? 0;
+  const hi = points.cueOut.samples;
+  if (hi !== null && hi <= lo) return;
+  const inside = (samples: number) => samples >= lo && (hi === null || samples <= hi);
+  for (const field of MARKERS) {
+    const samples = points[field].samples;
+    if (written.has(field) && samples !== null && !inside(samples)) drop(field);
+  }
+  const cross = points.crossStartNext.samples;
+  if (written.has('crossStartNext') && cross !== null && !inside(cross)) {
+    points.crossStartNext = {
+      ...points.crossStartNext,
+      samples: Math.max(lo, hi === null ? cross : Math.min(hi, cross)),
+    };
+  }
+  if (hi === null) return;
+  for (const field of ['fadeIn', 'fadeOut'] as const) {
+    const samples = points[field].samples;
+    if (written.has(field) && samples !== null && samples > hi - lo) {
+      points[field] = { ...points[field], samples: hi - lo };
+    }
+  }
 }
 
 function resolveSampleRate(existing: CuesRow | undefined, given: number | undefined): number {

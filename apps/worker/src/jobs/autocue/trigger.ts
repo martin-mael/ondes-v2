@@ -5,11 +5,10 @@ import {
   type AutocueJobPayload,
   autocueIdempotencyKey,
   autocueJobPayloadSchema,
-  autocueSettingsOf,
   type RealtimeEvent,
 } from '@ondes/shared';
 import type { JobTrigger } from '../../registry.ts';
-import { autocueAnalyzerVersion } from './autocue.ts';
+import { autocueAnalyzerVersion, stationAutocueSettings } from './autocue.ts';
 
 /** The `autocue` job type, for publishers (the trigger, the backfill). */
 export const autocueJob = jobType(AUTOCUE_JOB, autocueJobPayloadSchema, {
@@ -38,7 +37,10 @@ export function createAutocueTrigger(db: () => Promise<Db>): JobTrigger {
         if (error instanceof NotFoundError) return;
         throw error;
       }
-      const settings = autocueSettingsOf(await getStationEngineSettings(conn, scope));
+      const settings = stationAutocueSettings(
+        await getStationEngineSettings(conn, scope),
+        scope.stationId,
+      );
       await enqueueAutocue(jobs, {
         orgId: scope.orgId,
         stationId: scope.stationId,

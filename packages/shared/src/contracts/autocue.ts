@@ -43,10 +43,34 @@ export const autocueSettingsSchema = z.object({
 export type AutocueSettings = z.infer<typeof autocueSettingsSchema>;
 export const DEFAULT_AUTOCUE_SETTINGS: AutocueSettings = autocueSettingsSchema.parse({});
 
-/** Reads a station's thresholds from its engine settings; anything invalid falls back. */
-export function autocueSettingsOf(engineSettings: Record<string, unknown>): AutocueSettings {
-  const parsed = autocueSettingsSchema.safeParse(engineSettings.autocue ?? {});
-  return parsed.success ? parsed.data : DEFAULT_AUTOCUE_SETTINGS;
+/**
+ * Reads a station's thresholds from its engine settings. Each invalid threshold falls back to
+ * its default on its own (the others still apply); `onInvalid` gets their names, so the caller
+ * can say so (a fallback changes the analyzer version).
+ */
+export function autocueSettingsOf(
+  engineSettings: Record<string, unknown>,
+  onInvalid?: (keys: string[]) => void,
+): AutocueSettings {
+  const stored = engineSettings.autocue;
+  if (stored === undefined) return DEFAULT_AUTOCUE_SETTINGS;
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) {
+    onInvalid?.(['autocue']);
+    return DEFAULT_AUTOCUE_SETTINGS;
+  }
+  const settings: Record<string, unknown> = { ...DEFAULT_AUTOCUE_SETTINGS };
+  const invalid: string[] = [];
+  const shape = autocueSettingsSchema.shape;
+  for (const [key, value] of Object.entries(stored)) {
+    const field = shape[key as keyof typeof shape];
+    // Unknown keys (newer code) are ignored, not errors.
+    if (!field) continue;
+    const parsed = field.safeParse(value);
+    if (parsed.success) settings[key] = parsed.data;
+    else invalid.push(key);
+  }
+  if (invalid.length) onInvalid?.(invalid);
+  return settings as AutocueSettings;
 }
 
 // --- `autocue` job -----------------------------------------------------------------------

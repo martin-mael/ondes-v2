@@ -12,7 +12,12 @@ export interface AutocueStation {
   engineSettings: Record<string, unknown>;
 }
 
-/** Every station with its engine settings (where its autocue thresholds live). */
+/**
+ * Every station with its engine settings (where its autocue thresholds live).
+ *
+ * System-only, cross-tenant: for the worker's autocue backfill. Never call it from an api route
+ * or anything a user request reaches; per-station queries take a scope.
+ */
 export async function listAutocueStations(db: Executor): Promise<AutocueStation[]> {
   const rows = await db
     .select({ id: station.id, orgId: station.orgId, engineSettings: station.engineSettings })

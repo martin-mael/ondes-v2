@@ -5,7 +5,7 @@ import type { AutocueSettings } from '@ondes/shared';
 // series.
 //
 // The thresholds and their logic are ported from Moonbase59's autocue (`cue_file`, v4.1.1,
-// https://github.com/Moonbase59/autocue, MIT License, Copyright (c) 2024 Matthias C. Hormann):
+// https://github.com/Moonbase59/autocue; its license is reproduced at the end of this header):
 // levels relative to the integrated loudness I, cue-in and cue-out where the momentary
 // loudness crosses I + silence, the next track's start where the ending falls below
 // I + overlay, the long-tail rule, the sustained-ending rule and blank skipping. Differences:
@@ -21,6 +21,32 @@ import type { AutocueSettings } from '@ondes/shared';
 // - fades, intro and outro markers, which autocue reserves but doesn't compute, are derived
 //   from the same series (see {@link detectCues});
 // - a silent track gets its whole length and nothing else, rather than failing.
+//
+// The reasons are in docs/adr/0011-autocue.md.
+//
+// autocue's license:
+//
+//   MIT License
+//
+//   Copyright (c) 2024 Matthias C. Hormann
+//
+//   Permission is hereby granted, free of charge, to any person obtaining a copy
+//   of this software and associated documentation files (the "Software"), to deal
+//   in the Software without restriction, including without limitation the rights
+//   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+//   copies of the Software, and to permit persons to whom the Software is
+//   furnished to do so, subject to the following conditions:
+//
+//   The above copyright notice and this permission notice shall be included in all
+//   copies or substantial portions of the Software.
+//
+//   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+//   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+//   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+//   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+//   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+//   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+//   SOFTWARE.
 
 /** One momentary window is four 100 ms frames. */
 const WINDOW_FRAMES = 4;
@@ -94,12 +120,20 @@ export function detectCues(
   const seconds = (s: number) => Math.round(s * rate);
 
   const flags = { silent: false, blankSkipped: false, longTail: false, sustained: false };
+  // A person's points are never moved (`setAutoCues` wouldn't write them anyway): the detected
+  // ones give way. A cue-out before the detected cue-in plays from the start; a cue-in after
+  // the detected end plays to the end of the file.
   const bounds = (cueIn: number, cueOut: number) => {
-    const inPos = fixed.cueIn ?? cueIn;
-    let outPos = fixed.cueOut ?? cueOut;
-    // A person's cue-in after the detected end: keep the file's end.
-    if (outPos <= inPos) outPos = Math.max(total, inPos + 1);
-    return { cueIn: inPos, cueOut: outPos };
+    if (fixed.cueIn !== undefined && fixed.cueOut !== undefined) {
+      return { cueIn: fixed.cueIn, cueOut: fixed.cueOut };
+    }
+    if (fixed.cueOut !== undefined) {
+      return { cueIn: cueIn < fixed.cueOut ? cueIn : 0, cueOut: fixed.cueOut };
+    }
+    if (fixed.cueIn !== undefined) {
+      return { cueIn: fixed.cueIn, cueOut: cueOut > fixed.cueIn ? cueOut : total };
+    }
+    return { cueIn, cueOut };
   };
   const silentResult = (): DetectedCues => ({
     ...bounds(0, total),
@@ -146,9 +180,13 @@ export function detectCues(
   let cueOut = endAfter(last);
 
   // Blank skip: a long silence followed by more sound (a hidden track) ends the track there.
+  // It starts from the cue-in that will play: a person's cue-in after an earlier blank (the
+  // hidden track itself, say) still gets the next blank cut.
   if (settings.blankSkipSeconds > 0 && fixed.cueOut === undefined) {
     const minBlank = seconds(settings.blankSkipSeconds);
-    for (let i = first; i < last; i++) {
+    let from = fixed.cueIn === undefined ? first : Math.max(first, frameAt(fixed.cueIn));
+    while (from < last && !loud(from)) from++;
+    for (let i = from; i < last; i++) {
       if (loud(i)) continue;
       let j = i;
       while (j < last && !loud(j)) j++;
@@ -162,6 +200,19 @@ export function detectCues(
   }
 
   ({ cueIn, cueOut } = bounds(cueIn, cueOut));
+  // A person's cue-out at or before their cue-in: nothing to fit inside it.
+  if (cueOut <= cueIn) {
+    return {
+      cueIn,
+      cueOut,
+      introEnd: null,
+      outroStart: null,
+      fadeIn: null,
+      fadeOut: null,
+      crossStartNext: null,
+      flags,
+    };
+  }
   const a = frameAt(cueIn);
   const b = frameAt(cueOut - 1);
   const clamp = (pos: number) => Math.max(cueIn, Math.min(cueOut, pos));

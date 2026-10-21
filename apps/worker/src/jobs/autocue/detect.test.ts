@@ -194,6 +194,34 @@ describe('detectCues', () => {
     expect(late.cueOut).toBeGreaterThan(at(69));
   });
 
+  it('never moves a cue-out a person set before the detected cue-in', () => {
+    const s = series([silence(2), level(60, -14), silence(2)]);
+    const cues = detectCues(s, settings(), { cueOut: at(1) });
+    expect(cues.cueOut).toBe(at(1));
+    // Plays from the start rather than crossing the person's cue-out.
+    expect(cues.cueIn).toBe(0);
+    expect(cues.cueOut).toBeGreaterThan(cues.cueIn);
+    // Both set and crossed: they stay, nothing is fitted inside.
+    const crossed = detectCues(s, settings(), { cueIn: at(30), cueOut: at(10) });
+    expect(crossed).toMatchObject({ cueIn: at(30), cueOut: at(10), crossStartNext: null });
+  });
+
+  it('cuts the next blank after a cue-in a person set', () => {
+    // Song, blank, hidden track, blank, second hidden track.
+    const parts = [
+      level(60, -14),
+      silence(30),
+      level(30, -14),
+      silence(30),
+      level(30, -14),
+      silence(1),
+    ];
+    const cues = detectCues(series(parts), settings(), { cueIn: at(95) });
+    expect(cues.cueIn).toBe(at(95));
+    expect(cues.flags.blankSkipped).toBe(true);
+    expect(cues.cueOut).toBe(at(120));
+  });
+
   it('uses the station thresholds', () => {
     const s = series([level(60, -14), ramp(10, -14, -70), silence(2)]);
     const strict = detectCues(s, settings({ overlayLu: -4 }));

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -15,6 +15,7 @@ import {
   resolveOrgScope,
   resolveStationScope,
   type StationScope,
+  setAutoCues,
   updateCues,
 } from '@ondes/db';
 import { createTestDatabase, type TestDatabase } from '@ondes/db/testing';
@@ -95,6 +96,9 @@ beforeAll(async () => {
   // 8 s of tone, 15 s of silence, a 4 s hidden track.
   await generate('hidden', 27, 'lt(t,8)+between(t,23,27)');
   await generate('silent', 5, '0');
+  // Not FLAC at all: random bytes under a .flac name.
+  fixtures.corrupt = join(dir, 'corrupt.flac');
+  await writeFile(fixtures.corrupt, randomBytes(64 * 1024));
 }, 60_000);
 
 afterAll(async () => {
@@ -120,22 +124,35 @@ async function setEngineSettings(scope: StationScope, settings: Record<string, u
   await tdb.sql`update station set engine_settings = ${JSON.stringify(settings)}::jsonb where id = ${scope.stationId}`;
 }
 
-/** An asset whose master and playout copy are the fixture, stored like ingest stores them. */
-async function asset(scope: StationScope, fixture: string) {
+/**
+ * An asset whose master and playout copy are the fixture, stored like ingest stores them.
+ * `durationSamples` overrides the probed length (`null`: unknown).
+ */
+async function asset(
+  scope: StationScope,
+  fixture: string,
+  options: { durationSamples?: number | null } = {},
+) {
   const bytes = await readFile(fixtures[fixture] as string);
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   const storageKey = contentKey({ orgId: scope.orgId, sha256, ext: 'flac' });
   await storage.put(storageKey, bytes);
-  const { stdout } = await exec(tools.ffprobe, [
-    '-v',
-    'error',
-    '-show_entries',
-    'stream=duration_ts',
-    '-of',
-    'csv=p=0',
-    fixtures[fixture] as string,
-  ]);
-  const durationSamples = Number(stdout.trim());
+  const durationSamples =
+    options.durationSamples !== undefined
+      ? options.durationSamples
+      : Number(
+          (
+            await exec(tools.ffprobe, [
+              '-v',
+              'error',
+              '-show_entries',
+              'stream=duration_ts',
+              '-of',
+              'csv=p=0',
+              fixtures[fixture] as string,
+            ])
+          ).stdout.trim(),
+        );
   const ctx = { actor: system, scope };
   const created = await createAsset(tdb.db, ctx, { type: 'song', title: fixture });
   for (const role of ['master', 'playout'] as const) {
@@ -245,6 +262,81 @@ describe.skipIf(!enabled)('autocue (integration)', () => {
     expect(again?.analyzerVersion).not.toBe(cues?.analyzerVersion);
     expect(again?.cueOut).toMatchObject({ samples: at(12), source: 'manual' });
     expect(again?.crossStartNext).toMatchObject({ samples: at(10), locked: true });
+  });
+
+  it('keeps a locked cue-out set before the sound starts, and plays from the start', async () => {
+    const scope = await tenant();
+    const a = await asset(scope, 'song');
+    await updateCues(tdb.db, { actor: user, scope }, a.id, {
+      sampleRate: RATE,
+      cueOut: { samples: at(1), locked: true },
+    });
+    // The detected cue-in (2 s) would cross it: no conflict, no retry.
+    const cues = await autocue(deps, a.payload);
+    expect(cues?.cueOut).toMatchObject({ samples: at(1), locked: true });
+    expect(cues?.cueIn).toMatchObject({ samples: 0, source: 'auto' });
+    expect(cues?.analyzerVersion).toBe('autocue/1');
+  });
+
+  it('fits auto points inside cue points a person moved during the analysis', async () => {
+    const scope = await tenant();
+    const a = await asset(scope, 'song');
+    // The analysis saw no manual points; meanwhile a person set the cue-in at 15 s.
+    await updateCues(tdb.db, { actor: user, scope }, a.id, {
+      sampleRate: RATE,
+      cueIn: { samples: at(15) },
+    });
+    const stale = {
+      cueIn: at(2),
+      cueOut: at(22),
+      introEnd: at(8),
+      outroStart: at(19),
+      fadeIn: at(10),
+      fadeOut: at(30),
+      crossStartNext: at(12),
+    };
+    const ctx = { actor: system, scope };
+    const cues = await setAutoCues(tdb.db, ctx, a.id, {
+      sampleRate: RATE,
+      analyzerVersion: 'autocue/1',
+      points: stale,
+    });
+    expect(cues.cueIn).toMatchObject({ samples: at(15), source: 'manual' });
+    expect(cues.cueOut.samples).toBe(at(22));
+    // Before the cue-in: dropped, or clamped to it; durations fit in the 7 s that play.
+    expect(cues.introEnd.samples).toBeNull();
+    expect(cues.crossStartNext.samples).toBe(at(15));
+    expect(cues.outroStart.samples).toBe(at(19));
+    expect(cues.fadeIn.samples).toBe(at(7));
+    expect(cues.fadeOut.samples).toBe(at(7));
+    // A cue-in set past the detected cue-out: the auto cue-out gives way.
+    const b = await asset(scope, 'song');
+    await updateCues(tdb.db, { actor: user, scope }, b.id, {
+      sampleRate: RATE,
+      cueIn: { samples: at(23) },
+    });
+    const later = await setAutoCues(tdb.db, ctx, b.id, {
+      sampleRate: RATE,
+      analyzerVersion: 'autocue/1',
+      points: stale,
+    });
+    expect(later.cueIn.samples).toBe(at(23));
+    expect(later.cueOut.samples).toBeNull();
+  });
+
+  it('stores an empty result for a playout copy it cannot measure', async () => {
+    const scope = await tenant();
+    const corrupt = await asset(scope, 'corrupt', { durationSamples: at(3) });
+    const unreadable = await autocue(deps, corrupt.payload);
+    expect(unreadable?.analyzerVersion).toBe('autocue/1');
+    expect(unreadable?.cueIn.samples).toBeNull();
+    expect(unreadable?.cueOut.samples).toBeNull();
+    const noLength = await asset(scope, 'song', { durationSamples: null });
+    const unknown = await autocue(deps, noLength.payload);
+    expect(unknown?.analyzerVersion).toBe('autocue/1');
+    expect(unknown?.crossStartNext.samples).toBeNull();
+    // Neither is backfilled again.
+    expect(await listAssetsNeedingAutocue(tdb.db, scope, 'autocue/1')).toEqual([]);
   });
 
   it('does nothing for a replaced playout copy, a deleted asset or the same version', async () => {

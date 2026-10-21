@@ -8,6 +8,7 @@ import {
   type Db,
   getCues,
   getStationEngineSettings,
+  LibraryConflictError,
   listAssetFiles,
   NotFoundError,
   resolveStationScope,
@@ -67,6 +68,22 @@ export function autocueAnalyzerVersion(settings: AutocueSettings): string {
   return `${base}+${createHash('sha256').update(json).digest('hex').slice(0, 8)}`;
 }
 
+/** A station's thresholds; invalid ones fall back to their defaults, with a warning. */
+export function stationAutocueSettings(
+  engineSettings: Record<string, unknown>,
+  stationId: string,
+  log: (entry: Record<string, unknown>) => void = (entry) => console.log(JSON.stringify(entry)),
+): AutocueSettings {
+  return autocueSettingsOf(engineSettings, (keys) =>
+    log({
+      level: 'warn',
+      msg: 'autocue: invalid station thresholds, using their defaults',
+      stationId,
+      keys,
+    }),
+  );
+}
+
 export async function autocue(
   deps: AutocueDeps,
   payload: AutocueJobPayload,
@@ -86,15 +103,74 @@ export async function autocue(
   const files = await listAssetFiles(deps.db, scope, payload.assetId);
   const playout = files.find((f) => f.role === 'playout');
   if (!playout || playout.sha256 !== payload.playoutSha256) return null;
-  if (!playout.sampleRate || !playout.durationSamples) {
-    throw new Error(`playout copy of ${payload.assetId} has no sample rate or length`);
+  const sampleRate = playout.sampleRate;
+  // The schema requires it for playout copies; without it no cue can be stored at all.
+  if (!sampleRate) {
+    log({
+      level: 'warn',
+      msg: 'autocue: playout copy has no sample rate',
+      assetId: payload.assetId,
+    });
+    return null;
   }
 
   // 2. Thresholds, read now: they may have changed since the job was enqueued.
-  const settings = autocueSettingsOf(await getStationEngineSettings(deps.db, scope));
+  const settings = stationAutocueSettings(
+    await getStationEngineSettings(deps.db, scope),
+    scope.stationId,
+    log,
+  );
   const analyzerVersion = autocueAnalyzerVersion(settings);
   const existing = await getCues(deps.db, scope, payload.assetId);
   if (existing?.analyzerVersion === analyzerVersion) return existing;
+
+  /**
+   * Stores the result. `null`: the file can't be measured; only the version that tried is
+   * stored (the engine uses its defaults), so the backfill doesn't enqueue it forever.
+   */
+  const store = async (detected: DetectedCues | null, reason?: string) => {
+    const points: Partial<Record<CueField, number | null>> = detected
+      ? {
+          cueIn: detected.cueIn,
+          cueOut: detected.cueOut,
+          introEnd: detected.introEnd,
+          outroStart: detected.outroStart,
+          fadeIn: detected.fadeIn,
+          fadeOut: detected.fadeOut,
+          crossStartNext: detected.crossStartNext,
+        }
+      : {};
+    try {
+      const cues = await setAutoCues(deps.db, ctx, payload.assetId, {
+        sampleRate,
+        analyzerVersion,
+        points,
+      });
+      log({
+        level: 'info',
+        msg: 'autocue',
+        assetId: payload.assetId,
+        analyzerVersion,
+        ...(detected ? { points, flags: detected.flags } : { unmeasurable: reason }),
+      });
+      return cues;
+    } catch (error) {
+      // Deleted while we listened.
+      if (error instanceof NotFoundError) return null;
+      // The stored cues contradict this result (another sample rate): retrying gives the same.
+      if (error instanceof LibraryConflictError) {
+        log({
+          level: 'warn',
+          msg: 'autocue: result conflicts with the stored cues',
+          assetId: payload.assetId,
+          err: error.message,
+        });
+        return null;
+      }
+      throw error;
+    }
+  };
+  if (!playout.durationSamples) return store(null, 'no length');
 
   // 3. Analysis.
   let detected: DetectedCues | null = null;
@@ -106,7 +182,7 @@ export async function autocue(
     const series = await analyseFile(
       deps.tools,
       path,
-      { sampleRate: playout.sampleRate, totalSamples: playout.durationSamples },
+      { sampleRate, totalSamples: playout.durationSamples },
       { signal: run.signal },
     ).catch((error: unknown) => {
       if (!isFileError(error)) throw error;
@@ -123,37 +199,8 @@ export async function autocue(
     await rm(work, { recursive: true, force: true });
   }
 
-  // 4. Store (an unreadable file stores no points, only the version that tried).
-  const points: Partial<Record<CueField, number | null>> = detected
-    ? {
-        cueIn: detected.cueIn,
-        cueOut: detected.cueOut,
-        introEnd: detected.introEnd,
-        outroStart: detected.outroStart,
-        fadeIn: detected.fadeIn,
-        fadeOut: detected.fadeOut,
-        crossStartNext: detected.crossStartNext,
-      }
-    : {};
-  try {
-    const cues = await setAutoCues(deps.db, ctx, payload.assetId, {
-      sampleRate: playout.sampleRate,
-      analyzerVersion,
-      points,
-    });
-    log({
-      level: 'info',
-      msg: 'autocue',
-      assetId: payload.assetId,
-      analyzerVersion,
-      ...(detected ? { points, flags: detected.flags } : { unreadable: true }),
-    });
-    return cues;
-  } catch (error) {
-    // Deleted while we listened.
-    if (error instanceof NotFoundError) return null;
-    throw error;
-  }
+  // 4. Store.
+  return store(detected, detected ? undefined : 'unreadable');
 }
 
 /** Cue-in and cue-out a person set or locked: the other points must fit inside them. */

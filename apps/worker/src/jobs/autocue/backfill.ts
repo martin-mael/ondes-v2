@@ -1,8 +1,7 @@
 import { parseArgs } from 'node:util';
 import { createDb, type Db, listAssetsNeedingAutocue, listAutocueStations } from '@ondes/db';
 import { connectQueue, createJobPublisher, type JobPublisher } from '@ondes/queue';
-import { autocueSettingsOf } from '@ondes/shared';
-import { autocueAnalyzerVersion } from './autocue.ts';
+import { autocueAnalyzerVersion, stationAutocueSettings } from './autocue.ts';
 import { enqueueAutocue } from './trigger.ts';
 
 // Autocue backfill (#20): enqueues an `autocue` job for every asset whose playout copy has no
@@ -31,7 +30,8 @@ export async function backfillAutocue(
   const counts: Record<string, number> = {};
   for (const { scope, engineSettings } of await listAutocueStations(deps.db)) {
     if (wanted && !wanted.has(scope.stationId)) continue;
-    const analyzerVersion = autocueAnalyzerVersion(autocueSettingsOf(engineSettings));
+    const settings = stationAutocueSettings(engineSettings, scope.stationId);
+    const analyzerVersion = autocueAnalyzerVersion(settings);
     let count = 0;
     let after: string | undefined;
     for (;;) {
