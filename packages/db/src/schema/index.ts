@@ -9,6 +9,7 @@ export * from './jobs.ts';
 export * from './library.ts';
 export * from './log.ts';
 export * from './shows.ts';
+export * from './rotation.ts';
 export * from './storage.ts';
 export * from './streams.ts';
 export * from './tenancy.ts';

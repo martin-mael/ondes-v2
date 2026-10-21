@@ -10,6 +10,11 @@ import {
 } from '@tanstack/react-router';
 import { toast } from 'sonner';
 import { z } from 'zod';
+import { CategoriesPage } from '../features/rotation/categories/categories-page.tsx';
+import {
+  EditCategoryPage,
+  NewCategoryPage,
+} from '../features/rotation/categories/category-editor-page.tsx';
 import { AcceptInvitationPage } from './auth/accept-invitation-page.tsx';
 import { AccountPage } from './auth/account-page.tsx';
 import { AuthLayout } from './auth/auth-layout.tsx';
@@ -162,6 +167,25 @@ const dashboardRoute = createRoute({
   component: DashboardPage,
 });
 
+// Music rotation: categories (#37).
+const categoriesRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'categories',
+  component: CategoriesPage,
+});
+
+const newCategoryRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'categories/new',
+  component: NewCategoryPage,
+});
+
+const categoryRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'categories/$categoryId',
+  component: EditCategoryPage,
+});
+
 const routeTree = rootRoute.addChildren([
   authLayout.addChildren([
     loginRoute,
@@ -171,7 +195,11 @@ const routeTree = rootRoute.addChildren([
     resetPasswordRoute,
     acceptInvitationRoute,
   ]),
-  appLayout.addChildren([homeRoute, accountRoute, stationRoute.addChildren([dashboardRoute])]),
+  appLayout.addChildren([
+    homeRoute,
+    accountRoute,
+    stationRoute.addChildren([dashboardRoute, categoriesRoute, newCategoryRoute, categoryRoute]),
+  ]),
 ]);
 
 export function createAppRouter(
