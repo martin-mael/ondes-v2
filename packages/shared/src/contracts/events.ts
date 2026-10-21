@@ -10,6 +10,12 @@ import {
   logItemSchema,
   logUpdateCauseSchema,
 } from './log.ts';
+import {
+  islandStatusSchema,
+  segueChangeSchema,
+  segueProblemCodeSchema,
+  segueStatusSchema,
+} from './segues.ts';
 
 /**
  * Real-time events: what the api publishes on the RabbitMQ events fanout (`@ondes/queue`
@@ -299,9 +305,32 @@ export const uploadUpdatedEventSchema = z.object({
   data: uploadUpdatedDataSchema,
 });
 
+/**
+ * Something that changes how an asset plays was stored: its cue points (`cues`: autocue or a
+ * manual edit), its loudness measurement (`loudness`), or its playout settings (`settings`:
+ * normalisation, gain override, …). Rendered islands that use it are re-derived (#55).
+ */
+export const assetUpdatedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('asset.updated'),
+  data: z.object({
+    assetId: z.uuid(),
+    changes: z.array(z.enum(['cues', 'loudness', 'settings'])).min(1),
+  }),
+});
+
+/** An asset was deleted. */
+export const assetDeletedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('asset.deleted'),
+  data: z.object({ assetId: z.uuid() }),
+});
+
 export const libraryRealtimeEventSchema = z.discriminatedUnion('type', [
   assetIngestedEventSchema,
   uploadUpdatedEventSchema,
+  assetUpdatedEventSchema,
+  assetDeletedEventSchema,
 ]);
 export type LibraryRealtimeEvent = z.infer<typeof libraryRealtimeEventSchema>;
 export type AssetIngestedEvent = z.infer<typeof assetIngestedEventSchema>;
@@ -364,6 +393,67 @@ export const feederRealtimeEventSchema = z.discriminatedUnion('type', [
   feederItemPassedOverEventSchema,
 ]);
 
+// ---------------------------------------------------------------------------------------
+// Segues and islands (#55). Published after the change is committed; the segue editor (#58)
+// refetches over HTTP. `island.updated` with status `pending` is what the renderer (#56)
+// renders from (with a sweep of `GET …/islands?status=pending`, as events are transient).
+
+/** A segue was created, saved, deleted, or its status changed when the log or media moved. */
+export const segueChangedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('segue.changed'),
+  data: z.object({
+    segueId: z.uuid(),
+    change: segueChangeSchema,
+    /** Null once deleted. */
+    status: segueStatusSchema.nullable(),
+    problem: segueProblemCodeSchema.nullable(),
+    islandId: z.uuid().nullable(),
+    fromItemId: z.uuid().nullable(),
+    toItemId: z.uuid().nullable(),
+  }),
+});
+
+/** An island was created, its spec changed (`pending`: render it), or its render moved on. */
+export const islandUpdatedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('island.updated'),
+  data: z.object({
+    islandId: z.uuid(),
+    hash: z.string(),
+    status: islandStatusSchema,
+    segueIds: z.array(z.uuid()),
+    headItemId: z.uuid(),
+    tailItemId: z.uuid(),
+  }),
+});
+
+/** An island is no longer needed (its segues changed shape or were deleted). */
+export const islandRemovedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('island.removed'),
+  data: z.object({ islandId: z.uuid(), hash: z.string() }),
+});
+
+// ---------------------------------------------------------------------------------------
+// Stations. Published by whatever updates a station's settings.
+
+/** A station's settings changed; `fields` names them (e.g. `loudnessTargetLufs`). */
+export const stationUpdatedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('station.updated'),
+  data: z.object({ fields: z.array(z.string()).min(1) }),
+});
+
+export const stationRealtimeEventSchema = z.discriminatedUnion('type', [stationUpdatedEventSchema]);
+
+export const segueRealtimeEventSchema = z.discriminatedUnion('type', [
+  segueChangedEventSchema,
+  islandUpdatedEventSchema,
+  islandRemovedEventSchema,
+]);
+export type SegueRealtimeEvent = z.infer<typeof segueRealtimeEventSchema>;
+
 export const realtimeEventSchema = z.discriminatedUnion('type', [
   ...engineRealtimeEventSchema.options,
   ...logRealtimeEventSchema.options,
@@ -371,6 +461,8 @@ export const realtimeEventSchema = z.discriminatedUnion('type', [
   ...libraryRealtimeEventSchema.options,
   ...asRunRealtimeEventSchema.options,
   ...feederRealtimeEventSchema.options,
+  ...segueRealtimeEventSchema.options,
+  ...stationRealtimeEventSchema.options,
 ]);
 export type RealtimeEvent = z.infer<typeof realtimeEventSchema>;
 export type RealtimeEventType = RealtimeEvent['type'];
@@ -407,11 +499,19 @@ export const realtimeEventPermissions = {
   // Library (#18): new assets for every reader; upload progress only for those who upload.
   'asset.ingested': 'library:read',
   'upload.updated': 'library:write',
+  'asset.updated': 'library:read',
+  'asset.deleted': 'library:read',
   // As-run (#30): history and now playing, for everyone who reads the log.
   'asrun.started': 'log:read',
   'asrun.ended': 'log:read',
   // Feeder (#29): items that won't air.
   'feeder.item.passed_over': 'engine:read',
+  // Segues (#55): the segue editor and the timeline's VT badges.
+  'segue.changed': 'voice_track:read',
+  'island.updated': 'voice_track:read',
+  'island.removed': 'voice_track:read',
+  // Stations: settings screens refetch.
+  'station.updated': 'station:read',
 } as const satisfies Record<RealtimeEventType, Permission>;
 
 /** Permission needed to receive `type` over SSE; `null` for types the contract doesn't declare. */

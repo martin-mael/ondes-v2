@@ -9,7 +9,11 @@ import { type LibraryDeps, libraryRoutes, runRoute } from './routes.ts';
  * The routes carry their full `/api/v1/stations/:stationId/…` path: register without prefix.
  */
 export async function libraryPlugin(app: FastifyInstance) {
-  const deps: LibraryDeps = { db: app.db };
+  const rabbit = app.hasDecorator('rabbit') ? app.rabbit : undefined;
+  const deps: LibraryDeps = {
+    db: app.db,
+    ...(rabbit ? { publish: (event) => rabbit.events.publish(event) } : {}),
+  };
   for (const route of libraryRoutes) {
     app.route({
       method: route.method,

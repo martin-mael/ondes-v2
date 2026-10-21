@@ -1,5 +1,6 @@
 import { createDb } from '@ondes/db';
 import { createS3Storage, loadStorageConfig } from '@ondes/storage';
+import { eventPublisherFromEnv } from '../_events/asset-updated.ts';
 import { defaultTools } from '../ingest/ffmpeg.ts';
 import type { AutocueDeps } from './autocue.ts';
 
@@ -26,5 +27,6 @@ async function fromEnv(env: Record<string, string | undefined>): Promise<Autocue
     tools: defaultTools(env),
     tmpDir: env.AUTOCUE_TMP_DIR || env.INGEST_TMP_DIR || undefined,
     log: (entry) => console.log(JSON.stringify(entry)),
+    publish: await eventPublisherFromEnv('ondes-worker-autocue', env),
   };
 }

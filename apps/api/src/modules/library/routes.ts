@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   type Db,
   deleteAsset,
@@ -14,6 +15,8 @@ import {
 import {
   type Actor,
   type ListAssetsQuery,
+  type RealtimeEvent,
+  realtimeEventSchema,
   setAssetTagsSchema,
   updateAssetSchema,
   updateCuesSchema,
@@ -31,7 +34,39 @@ import { z } from 'zod';
 
 export interface LibraryDeps {
   db: Db;
+  /**
+   * Publishes `asset.updated` / `asset.deleted` after a committed change to how an asset plays
+   * (#55: islands re-derive). Optional: without RabbitMQ nothing is published.
+   */
+  publish?: (event: RealtimeEvent) => Promise<void>;
 }
+
+/** Publishes after the commit; a failed publish doesn't fail the request (the change is stored). */
+async function announce(
+  deps: LibraryDeps,
+  ctx: RequestContext,
+  event:
+    | { type: 'asset.updated'; data: { assetId: string; changes: AssetChange[] } }
+    | { type: 'asset.deleted'; data: { assetId: string } },
+) {
+  if (!deps.publish) return;
+  try {
+    await deps.publish(
+      realtimeEventSchema.parse({
+        id: randomUUID(),
+        stationId: ctx.scope.stationId,
+        at: new Date().toISOString(),
+        ...event,
+      }),
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({ msg: 'library event publish failed', type: event.type, err: String(error) }),
+    );
+  }
+}
+
+type AssetChange = 'cues' | 'loudness' | 'settings';
 
 export interface RequestContext {
   actor: Actor;
@@ -93,18 +128,25 @@ export const libraryRoutes: LibraryRoute[] = [
     method: 'PATCH',
     url: `${STATION}/assets/:assetId`,
     permission: write,
-    handler: async ({ db }, ctx, request) => ({
-      status: 200,
-      body: await updateAsset(db, ctx, assetId(request), updateAssetSchema.parse(request.body)),
-    }),
+    handler: async (deps, ctx, request) => {
+      const id = assetId(request);
+      const body = await updateAsset(deps.db, ctx, id, updateAssetSchema.parse(request.body));
+      await announce(deps, ctx, {
+        type: 'asset.updated',
+        data: { assetId: id, changes: ['settings'] },
+      });
+      return { status: 200, body };
+    },
   },
   {
     method: 'DELETE',
     url: `${STATION}/assets/:assetId`,
     permission: write,
-    handler: async ({ db }, ctx, request) => {
+    handler: async (deps, ctx, request) => {
+      const id = assetId(request);
       // Released objects are queued; the worker's storage sweep deletes them later.
-      await deleteAsset(db, ctx, assetId(request));
+      await deleteAsset(deps.db, ctx, id);
+      await announce(deps, ctx, { type: 'asset.deleted', data: { assetId: id } });
       return { status: 204 };
     },
   },
@@ -112,10 +154,15 @@ export const libraryRoutes: LibraryRoute[] = [
     method: 'PUT',
     url: `${STATION}/assets/:assetId/cues`,
     permission: write,
-    handler: async ({ db }, ctx, request) => ({
-      status: 200,
-      body: await updateCues(db, ctx, assetId(request), updateCuesSchema.parse(request.body)),
-    }),
+    handler: async (deps, ctx, request) => {
+      const id = assetId(request);
+      const body = await updateCues(deps.db, ctx, id, updateCuesSchema.parse(request.body));
+      await announce(deps, ctx, {
+        type: 'asset.updated',
+        data: { assetId: id, changes: ['cues'] },
+      });
+      return { status: 200, body };
+    },
   },
   {
     method: 'PUT',

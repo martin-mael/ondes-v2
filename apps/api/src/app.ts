@@ -26,6 +26,7 @@ import { logRoutes } from './modules/log/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
 import { rotationRoutes } from './modules/rotation/routes.ts';
 import { rotationRulesRoutes } from './modules/rotation/rules/routes.ts';
+import { type SeguesPluginOptions, seguesPlugin } from './modules/segues/plugin.ts';
 import { showsRoutes } from './modules/shows/routes.ts';
 import { type AuthConfig, authPlugin } from './plugins/auth.ts';
 import { type DbPluginOptions, dbPlugin } from './plugins/db.ts';
@@ -46,6 +47,8 @@ export interface AppOptions {
   alerts?: AlertsPluginOptions;
   /** As-run (#30): the durable queue name (tests). */
   asrun?: AsRunPluginOptions;
+  /** Segues (#55): the durable queue name (tests). */
+  segues?: SeguesPluginOptions;
   /** Playout cache (#31): readiness API and cache alerts. */
   cache?: CachePluginOptions;
   /** Safety playlist and emergency file (#34): alert interval, event queue (tests). */
@@ -94,6 +97,8 @@ export async function buildApp(options: AppOptions) {
   // As-run (#30): `GET …/asrun`, engine track events -> as-run entries (durable queue).
   await app.register(asRunPlugin, options.asrun ?? {});
   await app.register(showsRoutes, { prefix: '/api/v1' });
+  // Segues and islands (#55): routes, and log/asset events -> island re-sync (durable queue).
+  await app.register(seguesPlugin, options.segues ?? {});
   await app.register(rotationRoutes, { prefix: '/api/v1' });
   await app.register(rotationRulesRoutes, { prefix: '/api/v1' });
   await app.register(clocksRoutes, { prefix: '/api/v1' });

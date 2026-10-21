@@ -12,6 +12,7 @@ export * from './library.ts';
 export * from './log.ts';
 export * from './rotation.ts';
 export * from './safety.ts';
+export * from './segues.ts';
 export * from './shows.ts';
 export * from './storage.ts';
 export * from './streams.ts';

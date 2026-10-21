@@ -190,8 +190,20 @@ describe.skipIf(!enabled)('autocue (integration)', () => {
   it('cues a song: silence trimmed, the next track on the fade, a natural fade-out', async () => {
     const scope = await tenant();
     const a = await asset(scope, 'song');
-    const cues = await autocue(deps, a.payload);
+    const published: RealtimeEvent[] = [];
+    const publish = async (event: RealtimeEvent) => {
+      published.push(event);
+    };
+    const cues = await autocue({ ...deps, publish }, a.payload);
     expect(cues).toMatchObject({ sampleRate: RATE, analyzerVersion: 'autocue/1' });
+    // Islands that play it re-derive (#55).
+    expect(published).toEqual([
+      expect.objectContaining({
+        type: 'asset.updated',
+        stationId: scope.stationId,
+        data: { assetId: a.payload.assetId, changes: ['cues'] },
+      }),
+    ]);
     // The tone starts on a frame boundary: sample-exact.
     expect(cues?.cueIn).toMatchObject({ samples: at(2), source: 'auto', locked: false });
     // I ≈ -12.3 LUFS (the tone, a little less for the fade). -42 LU: the fade's last frame.
