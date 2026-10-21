@@ -12,17 +12,25 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
-import { bulkEdit } from './search-bulk.ts';
+import { type BulkDeps, bulkEdit } from './search-bulk.ts';
 import { assetActivity, libraryFacets, searchLibrary } from './search-repo.ts';
 
 // Library screen api (#23), under /api/v1/stations/:stationId/library. Search and facets are
 // POSTs because filters nest; they only read (`library:read`). Bulk edits need
 // `library:write` and audit every asset they change.
 
-const stationParams = z.object({ stationId: z.string() });
+const stationParams = z.object({ stationId: uuidSchema });
 const assetParams = stationParams.extend({ assetId: uuidSchema });
 
-export async function librarySearchRoutes(app: FastifyInstance) {
+export interface LibrarySearchRoutesOptions {
+  /** Announces bulk changes (`asset.updated`, `asset.deleted`) after the commit (#55). */
+  publish?: BulkDeps['publish'];
+}
+
+export async function librarySearchRoutes(
+  app: FastifyInstance,
+  options: LibrarySearchRoutesOptions,
+) {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const read = app.requirePermission('library', 'read');
   const write = app.requirePermission('library', 'write');
@@ -64,7 +72,11 @@ export async function librarySearchRoutes(app: FastifyInstance) {
       },
     },
     (request) =>
-      bulkEdit(app.db, { actor: actorOf(request), scope: stationScopeOf(request) }, request.body),
+      bulkEdit(
+        { db: app.db, publish: options.publish },
+        { actor: actorOf(request), scope: stationScopeOf(request) },
+        request.body,
+      ),
   );
 
   r.get(

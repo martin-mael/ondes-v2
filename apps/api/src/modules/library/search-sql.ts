@@ -23,7 +23,8 @@ import { type SQL, sql } from 'drizzle-orm';
 
 // Library filters, sorts and facet counts compiled to SQL over `asset` (#23). The search box
 // and the sort orders lean on the indexes of migration `*_library-search.sql`: the
-// expressions below must stay exactly the indexed ones (`search_text`, `ondes_fold(title)`,
+// expressions below must stay exactly the indexed ones (`ondes_asset_search_text(…)`,
+// `ondes_fold(title)`,
 // …) or Postgres falls back to scanning the station's assets.
 //
 // Per-asset lookups (analysis results, as-run) are correlated `exists` on primary keys or
@@ -39,11 +40,8 @@ export function searchWords(q: string | undefined): string[] {
   return [...new Set(q.split(/\s+/).filter(Boolean))].slice(0, 8);
 }
 
-/**
- * `asset.search_text`: `ondes_asset_search_text(title, artists, album)`, a stored generated
- * column with a trigram index (migration `*_library-search.sql`; not in the Drizzle schema).
- */
-const searchText = sql.raw('"asset"."search_text"');
+/** What the trigram index covers (migration `*_library-search.sql`). */
+const searchText = sql`ondes_asset_search_text(${asset.title}, ${asset.artists}, ${asset.album})`;
 
 /** Ids of the station's assets one search word matches: in their text or in a tag value. */
 function wordMatch(scope: StationScope, word: string): SQL {

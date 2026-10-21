@@ -39,14 +39,33 @@ type Selection = ParsedLibraryBulk['selection'];
 type ParsedLibraryBulk = ReturnType<typeof libraryBulkSchema.parse>;
 
 /**
+ * Events a committed bulk edit announces (#55: islands and segues re-sync from them). Typed
+ * here so this module builds before the contract lands; the shapes are `asset.updated` and
+ * `asset.deleted` of contracts/events.ts on the segues branch.
+ */
+export type LibraryChangeEvent =
+  | { type: 'asset.updated'; data: { assetId: string; changes: ['settings'] } }
+  | { type: 'asset.deleted'; data: { assetId: string } };
+
+export interface BulkDeps {
+  db: Db;
+  /** Called after the commit, once per event. Optional: without it nothing is announced. */
+  publish?: (event: LibraryChangeEvent) => Promise<void>;
+}
+
+/** Asset fields that change how it plays out. */
+const PLAYOUT_FIELDS = ['normalizeLoudness', 'gainOverrideDb'] as const;
+
+/**
  * Applies a bulk edit. 409 `selection_changed` when a filter selection no longer matches
  * `expectedCount`; 409 `asset_in_use` when deleting an asset something still needs.
  */
 export async function bulkEdit(
-  db: Db,
+  deps: Db | BulkDeps,
   ctx: StationContext,
   input: LibraryBulk,
 ): Promise<LibraryBulkResult> {
+  const { db, publish } = 'db' in deps ? deps : { db: deps, publish: undefined };
   const { selection, action } = libraryBulkSchema.parse(input);
   if (action.kind === 'category') {
     // Validated and resolved under locks, then written by the categories api.
@@ -56,9 +75,9 @@ export async function bulkEdit(
     if (ids.length === 0) return { matched: 0, changed: 0 };
     return { matched: ids.length, changed: await bulkCategory(db, ctx, ids, action) };
   }
-  return db.transaction(async (tx) => {
+  const { result, entries } = await db.transaction(async (tx) => {
     const before = await lockSelection(tx, ctx.scope, selection);
-    if (before.length === 0) return { matched: 0, changed: 0 };
+    if (before.length === 0) return { result: { matched: 0, changed: 0 }, entries: [] };
     const entries =
       action.kind === 'tags'
         ? await bulkTags(tx, ctx.scope, before, action)
@@ -66,8 +85,38 @@ export async function bulkEdit(
           ? await bulkUpdate(tx, ctx.scope, before, action.patch)
           : await bulkDelete(tx, ctx.scope, before);
     await writeAuditMany(tx, ctx, entries);
-    return { matched: before.length, changed: entries.length };
+    return { result: { matched: before.length, changed: entries.length }, entries };
   });
+  if (publish) await announce(publish, entries);
+  return result;
+}
+
+/** Publishes what the committed entries changed. A failed publish doesn't fail the edit. */
+async function announce(
+  publish: (event: LibraryChangeEvent) => Promise<void>,
+  entries: AuditEntry[],
+) {
+  for (const entry of entries) {
+    const assetId = entry.entity.id;
+    const event: LibraryChangeEvent | null =
+      entry.action === 'asset.delete'
+        ? { type: 'asset.deleted', data: { assetId } }
+        : entry.action === 'asset.update' && PLAYOUT_FIELDS.some((f) => entry.diff?.[f])
+          ? { type: 'asset.updated', data: { assetId, changes: ['settings'] } }
+          : null;
+    if (!event) continue;
+    try {
+      await publish(event);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          msg: 'library event publish failed',
+          type: event.type,
+          err: String(error),
+        }),
+      );
+    }
+  }
 }
 
 /**
@@ -298,9 +347,8 @@ async function bulkCategory(
           ...kept,
           ...ids.map((assetId) => {
             const current = before.get(assetId);
-            return current?.mode === mode
-              ? current
-              : { assetId, mode, maxPlaysPerDay: null, maxPlaysPerWeek: null };
+            // An entry already in that mode stays as it is (with whatever else it carries).
+            return current?.mode === mode ? current : { ...current, assetId, mode };
           }),
         ];
   await updateCategory(db, ctx, action.categoryId, { members });

@@ -7,6 +7,9 @@ import {
   createOrganization,
   createStation,
   type Db,
+  episode,
+  logDay,
+  logItem,
   putAssetFile,
   resolveOrgScope,
   resolveStationScope,
@@ -14,6 +17,9 @@ import {
   setAnalysis,
   setAssetTags,
   setLoudness,
+  show,
+  stationEmergencyAsset,
+  stationSafetyAsset,
   updateCues,
 } from '@ondes/db';
 import type {
@@ -28,7 +34,8 @@ import { contentKey } from '@ondes/storage';
 import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestApp, signUpAndLogin, type TestApp } from '../auth/testing.ts';
-import { bulkEdit } from './search-bulk.ts';
+import { createCategory, getCategory } from '../rotation/repo.ts';
+import { bulkEdit, type LibraryChangeEvent } from './search-bulk.ts';
 import { assetActivity, libraryFacets, matchingIds, searchLibrary } from './search-repo.ts';
 
 // Library search, facets and bulk edits (#23) against a throwaway database: results checked
@@ -330,6 +337,13 @@ describe('library search', () => {
     await expect(searchLibrary(db, scope, { cursor: 'garbage' })).rejects.toMatchObject({
       code: 'invalid_cursor',
     });
+    // A well-formed cursor whose value isn't of the sort's type never reaches the SQL cast.
+    const tampered = Buffer.from(
+      JSON.stringify({ s: 'year', d: 'desc', v: "1'; drop table asset; --", id: randomUUID() }),
+    ).toString('base64url');
+    await expect(
+      searchLibrary(db, scope, { sort: 'year', direction: 'desc', cursor: tampered }),
+    ).rejects.toMatchObject({ code: 'invalid_cursor' });
   });
 
   it('counts facets like the search does, each without its own filter', async () => {
@@ -488,6 +502,150 @@ describe('library bulk edits', () => {
     expect(queued?.count).toBe(1);
   });
 
+  it('refuses to delete assets something still needs, and says what', async () => {
+    const { scope } = await tenant();
+    const owner = { orgId: scope.orgId, stationId: scope.stationId };
+    const [ep, safe, emergency, logged, free] = (await seed(
+      scope,
+      ['episode', 'safety', 'emergency', 'logged', 'free'].map((title) => ({
+        type: 'song' as const,
+        title,
+      })),
+    )) as [string, string, string, string, string];
+    const [s1] = await db
+      .insert(show)
+      .values({ ...owner, name: 'Show' })
+      .returning();
+    const [e1] = await db
+      .insert(episode)
+      .values({
+        ...owner,
+        showId: s1?.id ?? '',
+        number: 1,
+        kind: 'prerecorded',
+        assetId: ep,
+        status: 'ready',
+      })
+      .returning();
+    await db.insert(stationSafetyAsset).values({ ...owner, assetId: safe });
+    await db.insert(stationEmergencyAsset).values({ ...owner, assetId: emergency });
+    const soon = new Date(Date.now() + 3600_000);
+    const [day] = await db
+      .insert(logDay)
+      .values({
+        ...owner,
+        localDate: '2099-01-01',
+        startsAt: soon,
+        endsAt: new Date(soon.getTime() + 86_400_000),
+      })
+      .returning();
+    const [item] = await db
+      .insert(logItem)
+      .values({
+        ...owner,
+        logDayId: day?.id ?? '',
+        position: 0,
+        kind: 'song',
+        plannedStart: soon,
+        plannedDurationMs: 1000,
+        assetId: logged,
+        originType: 'manual',
+      })
+      .returning();
+
+    const refusal = await bulkEdit(db, ctxOf(scope), {
+      selection: { ids: [ep, safe, emergency, logged, free] },
+      action: { kind: 'delete' },
+    }).catch((error: unknown) => error);
+    expect(refusal).toMatchObject({ code: 'asset_in_use' });
+    const usages = (refusal as { details: { usages: unknown[] } }).details.usages;
+    expect(usages).toEqual(
+      expect.arrayContaining([
+        { assetId: ep, kind: 'episode', usedBy: e1?.id },
+        { assetId: safe, kind: 'safety_playlist', usedBy: scope.stationId },
+        { assetId: emergency, kind: 'emergency_file', usedBy: scope.stationId },
+        { assetId: logged, kind: 'log_item', usedBy: item?.id },
+      ]),
+    );
+    expect(usages).toHaveLength(4);
+    // Nothing was deleted, not even the free one.
+    expect((await allPages(scope, {})).length).toBe(5);
+    // An aired episode no longer holds its audio.
+    await db
+      .update(episode)
+      .set({ status: 'aired' })
+      .where(eq(episode.id, e1?.id ?? ''));
+    expect(
+      await bulkEdit(db, ctxOf(scope), {
+        selection: { ids: [ep, free] },
+        action: { kind: 'delete' },
+      }),
+    ).toEqual({ matched: 2, changed: 2 });
+  });
+
+  it('announces deletes and playout changes after the commit', async () => {
+    const { scope } = await tenant();
+    const ids = await seed(scope, [
+      { type: 'song', title: 'A' },
+      { type: 'song', title: 'B', gainOverrideDb: -3 },
+    ]);
+    const events: LibraryChangeEvent[] = [];
+    const deps = {
+      db,
+      publish: async (e: LibraryChangeEvent) => {
+        events.push(e);
+      },
+    };
+    await bulkEdit(deps, ctxOf(scope), {
+      selection: { ids },
+      action: { kind: 'update', patch: { gainOverrideDb: -3, album: 'X' } },
+    });
+    // Only A's gain changed.
+    expect(events).toEqual([
+      { type: 'asset.updated', data: { assetId: ids[0], changes: ['settings'] } },
+    ]);
+    await bulkEdit(deps, ctxOf(scope), {
+      selection: { ids },
+      action: { kind: 'tags', add: [{ key: 'mood', value: 'x' }] },
+    });
+    expect(events).toHaveLength(1);
+    await bulkEdit(deps, ctxOf(scope), { selection: { ids }, action: { kind: 'delete' } });
+    expect(events.slice(1)).toEqual(
+      ids.map((assetId) => ({ type: 'asset.deleted', data: { assetId } })),
+    );
+  });
+
+  it("includes, excludes and removes the selection in a category's manual list", async () => {
+    const { scope } = await tenant();
+    const ids = (await seed(scope, [
+      { type: 'song', title: 'A' },
+      { type: 'song', title: 'B' },
+      { type: 'song', title: 'C' },
+    ])) as [string, string, string];
+    const category = await createCategory(db, ctxOf(scope), {
+      name: 'Hits',
+      members: [{ assetId: ids[2], mode: 'include' }],
+    });
+    const run = (mode: 'include' | 'exclude' | 'remove', selected: string[]) =>
+      bulkEdit(db, ctxOf(scope), {
+        selection: { ids: selected },
+        action: { kind: 'category', categoryId: category.id, mode },
+      });
+    const members = async () =>
+      (await getCategory(db, scope, category.id)).members
+        .map((m) => `${m.assetId}:${m.mode}`)
+        .sort();
+    expect(await run('include', ids)).toEqual({ matched: 3, changed: 2 });
+    // C was already included: unchanged.
+    expect(await members()).toEqual(
+      [`${ids[0]}:include`, `${ids[1]}:include`, `${ids[2]}:include`].sort(),
+    );
+    expect(await run('exclude', [ids[0]])).toEqual({ matched: 1, changed: 1 });
+    expect(await run('remove', [ids[1], ids[2]])).toEqual({ matched: 2, changed: 2 });
+    expect(await members()).toEqual([`${ids[0]}:exclude`]);
+    expect(await auditRows(scope, 'category.update')).toHaveLength(3);
+  });
+
   it("ignores another station's assets", async () => {
     const { scope } = await tenant();
     const { scope: other } = await tenant();
@@ -539,6 +697,20 @@ describe('library search routes', () => {
     expect(ok.statusCode).toBe(200);
     expect(ok.json()).toEqual({ matched: 1, changed: 1 });
     expect((await call(outsider, 'POST', '/search', {})).statusCode).toBe(404);
+    // The single-asset delete applies the same in-use rule.
+    await db
+      .insert(stationSafetyAsset)
+      .values({ orgId: scope.orgId, stationId: scope.stationId, assetId: id ?? '' });
+    const remove = (assetId: string) =>
+      t.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/stations/${scope.stationId}/assets/${assetId}`,
+        cookies: { ondes_session: cookies.programmer ?? '' },
+      });
+    const refused = await remove(id ?? '');
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ error: 'asset_in_use' });
+    expect((await remove(randomUUID())).statusCode).toBe(404);
     const invalid = await call(cookies.programmer ?? '', 'POST', '/bulk', {
       selection: { ids: [id] },
       action: { kind: 'tags', add: [], remove: [] },

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import {
   createOrganization,
   createStation,
@@ -142,6 +143,33 @@ describe(`library search on ${ASSETS} assets`, () => {
       expect(ms, name).toBeLessThan(bound);
     }
   }, 600_000);
+
+  // What the migration costs on a populated library: each CREATE INDEX holds a SHARE lock on
+  // its table (writes wait) while it builds. Rebuilt here from the migration's own statements.
+  it('builds the search indexes in seconds (migration lock time)', async () => {
+    const file = readFileSync(
+      new URL(
+        '../../../../../packages/db/migrations/20261021145106_library-search.sql',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    const statements = file
+      .split('--> statement-breakpoint')
+      .map((s) => s.replace(/^--.*$/gm, '').trim())
+      .filter((s) => s.startsWith('CREATE INDEX'));
+    const timings: Record<string, number> = {};
+    for (const statement of statements) {
+      const name = statement.match(/EXISTS (\w+)/)?.[1] ?? statement;
+      await tdb.db.execute(sql.raw(`drop index ${name}`));
+      const start = performance.now();
+      await tdb.db.execute(sql.raw(statement));
+      timings[name] = Math.round(performance.now() - start);
+    }
+    console.table(timings);
+    const total = Object.values(timings).reduce((a, b) => a + b, 0);
+    expect(total).toBeLessThan(60_000);
+  }, 120_000);
 
   // The planner may prefer a scan on a small fixture; with scans priced out, a plan that still
   // scans means the query's expressions no longer match the indexed ones.

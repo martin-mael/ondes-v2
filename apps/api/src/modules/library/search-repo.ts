@@ -27,6 +27,7 @@ import {
   type LibraryItem,
   type LibrarySearch,
   type LibrarySearchPage,
+  type LibrarySort,
   libraryFacetsQuerySchema,
   libraryFilterSchema,
   librarySearchSchema,
@@ -59,6 +60,21 @@ const cursorSchema = z.object({
   id: z.uuid(),
 });
 
+const intText = z.string().regex(/^-?\d{1,10}$/);
+/** Sort values as the sort expressions print them (`::text`). */
+const CURSOR_VALUE: Record<LibrarySort, z.ZodType> = {
+  added: z.null(),
+  title: z.string().max(2000),
+  artist: z.string().max(2000),
+  album: z.string().max(2000),
+  year: intText,
+  duration: intText,
+  bpm: z
+    .string()
+    .regex(/^-?\d+(\.\d+)?(e[+-]?\d+)?$/)
+    .max(40),
+};
+
 /** Opaque to clients: the sort it belongs to and the last row's sort value and id. */
 export function encodeCursor(sort: string, direction: string, keyset: Keyset): string {
   const json = JSON.stringify({ s: sort, d: direction, v: keyset.value, id: keyset.id });
@@ -74,6 +90,10 @@ function decodeCursor(cursor: string, sort: string, direction: string): Keyset {
   }
   if (parsed.s !== sort || parsed.d !== direction) {
     throw new HttpError(400, 'invalid_cursor', 'the cursor belongs to another sort order');
+  }
+  // The value reaches a SQL cast: it must be of the sort's type.
+  if (!CURSOR_VALUE[sort as LibrarySort].safeParse(parsed.v).success) {
+    throw new HttpError(400, 'invalid_cursor', 'invalid cursor');
   }
   return { value: parsed.v, id: parsed.id };
 }

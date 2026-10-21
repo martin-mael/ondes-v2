@@ -1,6 +1,5 @@
 import {
   type Db,
-  deleteAsset,
   getAssetDetail,
   LibraryConflictError,
   listAssets,
@@ -20,6 +19,7 @@ import {
   uuidSchema,
 } from '@ondes/shared';
 import { z } from 'zod';
+import { bulkEdit } from './search-bulk.ts';
 
 // Library read/update API (#17), under /api/v1/stations/:stationId/…
 //
@@ -103,8 +103,15 @@ export const libraryRoutes: LibraryRoute[] = [
     url: `${STATION}/assets/:assetId`,
     permission: write,
     handler: async ({ db }, ctx, request) => {
-      // Released objects are queued; the worker's storage sweep deletes them later.
-      await deleteAsset(db, ctx, assetId(request));
+      // The bulk delete's checks (#23): 409 `asset_in_use` while an episode, the safety
+      // selections or a coming log item need it. Released objects are queued; the worker's
+      // storage sweep deletes them later.
+      const id = assetId(request);
+      const { matched } = await bulkEdit(db, ctx, {
+        selection: { ids: [id] },
+        action: { kind: 'delete' },
+      });
+      if (matched === 0) throw new NotFoundError('asset', id);
       return { status: 204 };
     },
   },
