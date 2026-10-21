@@ -1,3 +1,4 @@
+import { createS3Storage, loadStorageConfig } from '@ondes/storage';
 import { buildApp } from './app.ts';
 import { authConfigFromEnv } from './plugins/auth.ts';
 import { dbConfigFromEnv } from './plugins/db.ts';
@@ -14,6 +15,7 @@ const app = await buildApp({
   rabbit: { url: rabbitUrl },
   mail: { config: mailConfigFromEnv(env) },
   auth: authConfigFromEnv(env),
+  storage: createS3Storage(loadStorageConfig(env)),
   fastify: {
     logger: { level: env.LOG_LEVEL ?? 'info' },
     // Behind Caddy in production: trust its X-Forwarded-For so rate limits see client IPs.
