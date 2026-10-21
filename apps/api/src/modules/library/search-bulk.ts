@@ -23,71 +23,88 @@ import {
 import { releaseStoredObject } from '@ondes/storage';
 import { and, asc, inArray, or, sql } from 'drizzle-orm';
 import { HttpError } from '../../plugins/errors.ts';
-import { matchingIds, uuidArray } from './search-repo.ts';
+import { getCategory, updateCategory } from '../rotation/repo.ts';
+import { uuidArray } from './search-repo.ts';
+import { compileFilter, filterSql } from './search-sql.ts';
+import { assetUsages } from './search-usage.ts';
 
-// Bulk edits of the library (#23): tags, shared fields or deletion on a selection of assets,
-// in one transaction. Each changed asset gets its own audit row, with the same action and
-// diff as the single-asset routes (`asset.tag`, `asset.update`, `asset.delete`), so an
-// asset's history reads the same whichever way it was edited.
+// Bulk edits of the library (#23): tags, shared fields, deletion or a category's manual list,
+// on a selection of assets. The selection is resolved and row-locked inside the edit's
+// transaction, so what is checked is what gets changed. Each changed asset gets its own audit
+// row, with the same action and diff as the single-asset routes (`asset.tag`, `asset.update`,
+// `asset.delete`), so an asset's history reads the same whichever way it was edited.
 
 type AssetRow = typeof asset.$inferSelect;
+type Selection = ParsedLibraryBulk['selection'];
+type ParsedLibraryBulk = ReturnType<typeof libraryBulkSchema.parse>;
 
-/** Applies a bulk edit. 409 `selection_changed` when a filter selection no longer matches. */
+/**
+ * Applies a bulk edit. 409 `selection_changed` when a filter selection no longer matches
+ * `expectedCount`; 409 `asset_in_use` when deleting an asset something still needs.
+ */
 export async function bulkEdit(
   db: Db,
   ctx: StationContext,
   input: LibraryBulk,
 ): Promise<LibraryBulkResult> {
   const { selection, action } = libraryBulkSchema.parse(input);
-  const ids =
-    'ids' in selection
-      ? [...new Set(selection.ids)]
-      : await matchingIds(db, ctx.scope, selection.filter, MAX_BULK_ASSETS + 1);
-  if (!('ids' in selection)) {
-    if (ids.length > MAX_BULK_ASSETS) {
-      throw new HttpError(400, 'too_many_assets', `at most ${MAX_BULK_ASSETS} assets at once`);
-    }
-    if (ids.length !== selection.expectedCount) {
-      throw new HttpError(
-        409,
-        'selection_changed',
-        `the filter now matches ${ids.length} assets, not ${selection.expectedCount}`,
-        { count: ids.length },
-      );
-    }
+  if (action.kind === 'category') {
+    // Validated and resolved under locks, then written by the categories api.
+    const ids = await db.transaction(async (tx) =>
+      (await lockSelection(tx, ctx.scope, selection)).map((a) => a.id),
+    );
+    if (ids.length === 0) return { matched: 0, changed: 0 };
+    return { matched: ids.length, changed: await bulkCategory(db, ctx, ids, action) };
   }
-
-  try {
-    return await db.transaction(async (tx) => {
-      const before = await lockAssets(tx, ctx.scope, ids);
-      if (before.length === 0) return { matched: 0, changed: 0 };
-      const entries =
-        action.kind === 'tags'
-          ? await bulkTags(tx, ctx.scope, before, action)
-          : action.kind === 'update'
-            ? await bulkUpdate(tx, ctx.scope, before, action.patch)
-            : await bulkDelete(tx, ctx.scope, before);
-      await writeAuditMany(tx, ctx, entries);
-      return { matched: before.length, changed: entries.length };
-    });
-  } catch (error) {
-    // Another table still refers to an asset through a restricting foreign key.
-    if ((error as { cause?: { code?: string } }).cause?.code === '23503') {
-      throw new HttpError(409, 'asset_in_use', 'an asset is still used elsewhere');
-    }
-    throw error;
-  }
+  return db.transaction(async (tx) => {
+    const before = await lockSelection(tx, ctx.scope, selection);
+    if (before.length === 0) return { matched: 0, changed: 0 };
+    const entries =
+      action.kind === 'tags'
+        ? await bulkTags(tx, ctx.scope, before, action)
+        : action.kind === 'update'
+          ? await bulkUpdate(tx, ctx.scope, before, action.patch)
+          : await bulkDelete(tx, ctx.scope, before);
+    await writeAuditMany(tx, ctx, entries);
+    return { matched: before.length, changed: entries.length };
+  });
 }
 
-/** The station's assets among `ids`, locked in id order (no deadlock between two bulk edits). */
-async function lockAssets(tx: Tx, scope: StationScope, ids: string[]): Promise<AssetRow[]> {
-  if (ids.length === 0) return [];
-  return tx
+/**
+ * Locks the selected assets of the station, in id order (no deadlock between two bulk edits).
+ * A filter is evaluated here, under the locks: Postgres re-checks a row that changed meanwhile
+ * against the filter before locking it, so the locked rows are exactly the matching ones, and
+ * their count must still be the one the person saw.
+ */
+async function lockSelection(tx: Tx, scope: StationScope, selection: Selection) {
+  if ('ids' in selection) {
+    const ids = [...new Set(selection.ids)];
+    return tx
+      .select()
+      .from(asset)
+      .where(and(whereStation(asset, scope), sql`${asset.id} = any(${uuidArray(ids)})`))
+      .orderBy(asc(asset.id))
+      .for('update');
+  }
+  const rows = await tx
     .select()
     .from(asset)
-    .where(and(whereStation(asset, scope), sql`${asset.id} = any(${uuidArray(ids)})`))
+    .where(filterSql(compileFilter(scope, selection.filter, new Date())))
     .orderBy(asc(asset.id))
+    .limit(MAX_BULK_ASSETS + 1)
     .for('update');
+  if (rows.length > MAX_BULK_ASSETS) {
+    throw new HttpError(400, 'too_many_assets', `at most ${MAX_BULK_ASSETS} assets at once`);
+  }
+  if (rows.length !== selection.expectedCount) {
+    throw new HttpError(
+      409,
+      'selection_changed',
+      `the filter now matches ${rows.length} assets, not ${selection.expectedCount}`,
+      { count: rows.length },
+    );
+  }
+  return rows;
 }
 
 // --- Tags --------------------------------------------------------------------------------
@@ -219,6 +236,14 @@ async function bulkUpdate(
  * without a reference left are queued for the storage sweep, in the same transaction.
  */
 async function bulkDelete(tx: Tx, scope: StationScope, assets: AssetRow[]): Promise<AuditEntry[]> {
+  const usages = await assetUsages(
+    tx,
+    scope,
+    assets.map((a) => a.id),
+  );
+  if (usages.length > 0) {
+    throw new HttpError(409, 'asset_in_use', 'some assets are still used', { usages });
+  }
   const ids = uuidArray(assets.map((a) => a.id));
   const files = await tx
     .delete(assetFile)
@@ -241,4 +266,43 @@ async function bulkDelete(tx: Tx, scope: StationScope, assets: AssetRow[]): Prom
     entity: { type: 'asset', id: a.id },
     diff: auditDiff(a, null, ['orgId', 'stationId']),
   }));
+}
+
+// --- Category ----------------------------------------------------------------------------
+
+/**
+ * Puts the assets in a category's manual list (`include`/`exclude`, replacing their entry)
+ * or takes them out of it (`remove`), through the categories api (one `category.update`
+ * audit row). Returns the number of entries that changed.
+ */
+async function bulkCategory(
+  db: Db,
+  ctx: StationContext,
+  ids: string[],
+  action: { categoryId: string; mode: 'include' | 'exclude' | 'remove' },
+): Promise<number> {
+  const category = await getCategory(db, ctx.scope, action.categoryId);
+  const selected = new Set(ids);
+  const kept = category.members.filter((m) => !selected.has(m.assetId));
+  const before = new Map(category.members.map((m) => [m.assetId, m]));
+  const changed =
+    action.mode === 'remove'
+      ? category.members.length - kept.length
+      : ids.filter((id) => before.get(id)?.mode !== action.mode).length;
+  if (changed === 0) return 0;
+  const { mode } = action;
+  const members =
+    mode === 'remove'
+      ? kept
+      : [
+          ...kept,
+          ...ids.map((assetId) => {
+            const current = before.get(assetId);
+            return current?.mode === mode
+              ? current
+              : { assetId, mode, maxPlaysPerDay: null, maxPlaysPerWeek: null };
+          }),
+        ];
+  await updateCategory(db, ctx, action.categoryId, { members });
+  return changed;
 }

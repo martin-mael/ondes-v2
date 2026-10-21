@@ -203,7 +203,18 @@ export const bulkActionSchema = z.discriminatedUnion('kind', [
     })
     .refine((a) => a.add.length + a.remove.length > 0, 'nothing to change'),
   z.object({ kind: z.literal('update'), patch: bulkAssetPatchSchema }),
+  /** Refused with 409 `asset_in_use` (details: `{ usages }`) while something needs an asset. */
   z.object({ kind: z.literal('delete') }),
+  /**
+   * A category's manual list (#37), through the categories api: `include` or `exclude` the
+   * selection (replacing their current entry), or `remove` their entries. Audited as one
+   * `category.update`.
+   */
+  z.object({
+    kind: z.literal('category'),
+    categoryId: uuidSchema,
+    mode: z.enum(['include', 'exclude', 'remove']),
+  }),
 ]);
 export type BulkAction = z.input<typeof bulkActionSchema>;
 
@@ -217,10 +228,28 @@ export type LibraryBulk = z.input<typeof libraryBulkSchema>;
 export const libraryBulkResultSchema = z.object({
   /** Assets selected. */
   matched: z.int(),
-  /** Assets actually changed (a tag already there changes nothing). */
+  /** Assets actually changed (a tag already there changes nothing; for `category`, entries). */
   changed: z.int(),
 });
 export type LibraryBulkResult = z.infer<typeof libraryBulkResultSchema>;
+
+/**
+ * Why an asset can't be deleted: an episode not aired yet, the safety playlist, the emergency
+ * file, or a log item from now on. `usedBy` is that thing's id (the station's for the safety
+ * selections).
+ */
+export const assetUsageKindSchema = z.enum([
+  'episode',
+  'safety_playlist',
+  'emergency_file',
+  'log_item',
+]);
+export const assetUsageSchema = z.object({
+  assetId: uuidSchema,
+  kind: assetUsageKindSchema,
+  usedBy: z.string(),
+});
+export type AssetUsage = z.infer<typeof assetUsageSchema>;
 
 // --- Asset activity ----------------------------------------------------------------------
 
