@@ -105,6 +105,27 @@ describe('buildPushItem', () => {
     expect(buildPushItem(source(disabled), { station }).amplify_db).toBeUndefined();
   });
 
+  it('clamps a log gain override to the true-peak ceiling, like any gain', () => {
+    // True peak −4 dBTP, ceiling −1 dBTP: at most +3 dB, whatever the log asks for.
+    const loud = media({
+      gain: {
+        normalizeLoudness: false,
+        gainOverrideDb: null,
+        loudness: { integratedLufs: -20, truePeakDbtp: -4 },
+      },
+    });
+    expect(
+      buildPushItem(source(loud, { cueOverrides: { gainDb: 6 } }), { station }).amplify_db,
+    ).toBe(3);
+    expect(
+      buildPushItem(source(loud, { cueOverrides: { gainDb: -2.04 } }), { station }).amplify_db,
+    ).toBe(-2);
+    // Unmeasured: applied as given, as getPlayoutGain does for an override.
+    expect(
+      buildPushItem(source(media(), { cueOverrides: { gainDb: 6 } }), { station }).amplify_db,
+    ).toBe(6);
+  });
+
   it('sets cross_in from the previous entry and cross_out from the log or the cues', () => {
     const m = media({ cues: cues({ cueOut: 441_000, crossStartNext: 352_800 }) });
     expect(crossOutMsOf(source(m))).toBe(2000);

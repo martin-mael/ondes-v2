@@ -3,7 +3,7 @@ import fp from 'fastify-plugin';
 import { listRunningStationScopes } from '../lifecycle/repo.ts';
 import type { FeederOptions } from './feeder.ts';
 import { createFeederLeases } from './leases.ts';
-import { loadFeedWindow } from './repo.ts';
+import { createFeederPushStore, loadFeedWindow, openFeederAlerts } from './repo.ts';
 import { createFeederService, type FeederService } from './service.ts';
 
 declare module 'fastify' {
@@ -37,8 +37,13 @@ export const feederPlugin = fp(
       depsFor: (scope) => ({
         engine: () => app.engineLifecycle.adapterFor(scope.stationId),
         load: (range) => loadFeedWindow(app.db, scope, range),
+        store: createFeederPushStore(app.db, scope),
         cache: app.playoutCache,
-        alerts: app.alerts,
+        alerts: {
+          raise: (s, input) => app.alerts.raise(s, input),
+          resolve: (s, key, opts) => app.alerts.resolve(s, key, opts),
+          openKeys: (s) => openFeederAlerts(app.db, s),
+        },
         publish: (event) => app.rabbit.events.publish(event),
       }),
       options: options.options,

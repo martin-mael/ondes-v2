@@ -89,13 +89,22 @@ describe('planFeed: how far ahead', () => {
 });
 
 describe('planFeed: the log not on air', () => {
-  it('starts with the current item if it started less than a minute ago, else the next', () => {
+  it('starts with the current item if it started less than a minute ago', () => {
     const entries = songs(6);
-    expect(ids(planFeed({ nowMs: T0 + 30_000, onAir: null, entries }), 1)).toEqual(['s0']);
-    const late = planFeed({ nowMs: T0 + 90_000, onAir: null, entries });
-    expect(ids(late, 1)).toEqual(['s1']);
+    const plan = planFeed({ nowMs: T0 + 30_000, onAir: null, entries });
+    expect(ids(plan, 1)).toEqual(['s0']);
     // It airs as soon as it's pushed.
-    expect(late.wanted[0]?.startMs).toBe(T0 + 90_000);
+    expect(plan.wanted[0]?.startMs).toBe(T0 + 30_000);
+  });
+
+  it('else waits for the planned end of the current item, keeping the log on time', () => {
+    const entries = songs(6);
+    const late = planFeed({ nowMs: T0 + 90_000, onAir: null, entries });
+    expect(late.wanted).toEqual([]);
+    expect(late.hold).toEqual({ itemId: 's1', untilMs: T0 + 3 * MIN - 500 });
+    // Close to its end (within holdGapMs), the next item goes straight away.
+    const close = planFeed({ nowMs: T0 + 3 * MIN - 3_000, onAir: null, entries });
+    expect(close.wanted[0]).toMatchObject({ entry: { id: 's1' }, startMs: T0 + 3 * MIN - 3_000 });
   });
 
   it('never replays what aired during this boot', () => {
@@ -138,6 +147,43 @@ describe('planFeed: items it cannot play', () => {
     expect(plan.hold).toEqual({ itemId: 's1', untilMs: T0 + 63 * MIN - 500 });
     const atEnd = planFeed({ nowMs: T0 + 63 * MIN - 400, onAir: null, entries });
     expect(ids(atEnd, 1)).toEqual(['s1']);
+  });
+
+  const show = () => [
+    entry('s0', T0),
+    entry('live', T0 + 3 * MIN, {
+      kind: 'live_slot',
+      slotMs: 60 * MIN,
+      flexMs: 0,
+      timing: 'hard',
+      anchorAtMs: T0 + 3 * MIN,
+    }),
+    entry('s1', T0 + 63 * MIN),
+    entry('s2', T0 + 66 * MIN),
+  ];
+
+  it('holds the items after a live slot while the DJ is on air mid-slot', () => {
+    // 10:08, five minutes into the 10:03–11:03 show, the DJ on air.
+    const plan = planFeed({
+      nowMs: T0 + 8 * MIN,
+      onAir: { itemId: null, segmentId: null, source: 'live', elapsedMs: 5 * MIN },
+      entries: show(),
+    });
+    expect(plan.wanted).toEqual([]);
+    expect(plan.hold).toEqual({ itemId: 's1', untilMs: T0 + 63 * MIN - 500 });
+  });
+
+  it('holds them too when safety fills a live slot with no DJ', () => {
+    const plan = planFeed({
+      nowMs: T0 + 30 * MIN,
+      onAir: { itemId: null, segmentId: null, source: 'safety', elapsedMs: 20_000 },
+      entries: show(),
+    });
+    expect(plan.wanted).toEqual([]);
+    expect(plan.hold?.itemId).toBe('s1');
+    // At the slot's end the log takes the air back.
+    const after = planFeed({ nowMs: T0 + 63 * MIN, onAir: null, entries: show() });
+    expect(ids(after, 2)).toEqual(['s1', 's2']);
   });
 });
 

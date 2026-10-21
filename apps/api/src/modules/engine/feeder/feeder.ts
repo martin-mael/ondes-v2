@@ -90,14 +90,37 @@ export type FeederDeps = {
       dedupeKey: string,
       options?: { reason?: string },
     ): Promise<unknown>;
+    /** Dedupe keys of the station's open feeder alerts, read once so a boot resolves nothing. */
+    openKeys?(scope: StationScope): Promise<ReadonlySet<string>>;
   };
   /** Real-time events (`feeder.item.passed_over`). */
   publish?(event: FeederItemPassedOverEvent): Promise<void>;
   /** Still the station's only feeder? Checked before every change to the engine queue. */
   owns?(): Promise<boolean>;
+  /**
+   * What was pushed during each boot (repo.ts `createFeederPushStore`), so a feeder taking over
+   * the station resumes: same trims, no re-push of a queue that already matches.
+   */
+  store?: FeederPushStore;
   now?(): number;
   logger?: Logger;
   options?: FeederOptions;
+};
+
+/** Persisted record of the entries pushed to one engine boot. */
+export type FeederPushStore = {
+  load(
+    bootId: string,
+  ): Promise<{ entryId: string; fingerprint: string; trimMs: number; aired: boolean }[]>;
+  save(
+    bootId: string,
+    entryId: string,
+    push: { fingerprint: string; trimMs: number },
+  ): Promise<void>;
+  remove(bootId: string, entryIds: readonly string[]): Promise<void>;
+  markAired(bootId: string, entryIds: readonly string[]): Promise<void>;
+  /** Drops the records of other boots (and very old ones). */
+  prune(bootId: string): Promise<void>;
 };
 
 export type SyncResult = {
@@ -148,11 +171,37 @@ export function createStationFeeder(deps: FeederDeps) {
   let again = false;
   let stopped = false;
 
-  function resetBoot(id: string) {
-    bootId = id;
+  /** A new engine boot (or a feeder taking over): its queue, from the store. */
+  async function enterBoot(id: string) {
     pushed.clear();
     aired.clear();
     reported.clear();
+    bootId = id;
+    if (!deps.store) return;
+    try {
+      for (const row of await deps.store.load(id)) {
+        if (row.fingerprint) pushed.set(row.entryId, row);
+        if (row.aired) aired.add(row.entryId);
+      }
+      await deps.store.prune(id);
+    } catch (err) {
+      logger.warn({ err, stationId: scope.stationId }, 'Loading what the feeder pushed failed');
+    }
+  }
+
+  /** Store writes are best-effort: memory stays right for this process. */
+  function persist(what: string, write: (store: FeederPushStore, boot: string) => Promise<void>) {
+    if (!deps.store || !bootId) return Promise.resolve();
+    return write(deps.store, bootId).catch((err: unknown) => {
+      logger.warn({ err, stationId: scope.stationId }, `Recording ${what} failed`);
+    });
+  }
+
+  async function noteAired(ids: (string | null | undefined)[]) {
+    const fresh = ids.filter((id): id is string => !!id && !aired.has(id));
+    if (!fresh.length) return;
+    for (const id of fresh) aired.add(id);
+    await persist('what aired', (store, boot) => store.markAired(boot, fresh));
   }
 
   /** Whether `key` may be requested again, and records it. */
@@ -254,8 +303,11 @@ export function createStationFeeder(deps: FeederDeps) {
     return out;
   }
 
+  /** Before every engine mutation: stopped, or no longer the station's feeder, aborts the run. */
   async function assertOwner() {
-    if (deps.owns && !(await deps.owns())) throw new FeederNotOwnerError(scope.stationId);
+    if (stopped || (deps.owns && !(await deps.owns()))) {
+      throw new FeederNotOwnerError(scope.stationId);
+    }
   }
 
   async function requestFetches(plan: FeedPlan, built: Map<string, Built>) {
@@ -270,7 +322,22 @@ export function createStationFeeder(deps: FeederDeps) {
     }
   }
 
+  /**
+   * Before the first evaluation: which feeder alerts are open (an earlier feeder may have raised
+   * them), so a boot neither re-raises nor resolves for nothing. Without a reader, the first
+   * evaluation raises or resolves both (a resolve with nothing open is a no-op).
+   */
+  async function knownAlerts() {
+    if (!deps.alerts.openKeys) return;
+    if (alertState.skipped !== undefined && alertState.empty !== undefined) return;
+    const open = await deps.alerts.openKeys(scope);
+    // `?`: open, raised earlier: the first evaluation raises the current list or resolves it.
+    alertState.skipped ??= open.has(alertTypes.feederItemsSkipped) ? '?' : null;
+    alertState.empty ??= open.has(alertTypes.feederLogEmpty);
+  }
+
   async function updateAlerts(plan: FeedPlan, state: EngineState, items: Map<string, LogItem>) {
+    await knownAlerts();
     const skipped = plan.skipped.filter((s) => s.reason !== 'dropped');
     const key = skipped.length
       ? skipped
@@ -370,10 +437,9 @@ export function createStationFeeder(deps: FeederDeps) {
 
     for (let round = 0; round < 4; round++) {
       const state = await engine.state();
-      if (state.boot_id !== bootId) resetBoot(state.boot_id);
+      if (state.boot_id !== bootId) await enterBoot(state.boot_id);
       const onAirId = state.on_air.source === 'queue' ? state.on_air : null;
-      if (onAirId?.item_id) aired.add(onAirId.item_id);
-      if (onAirId?.segment_id) aired.add(onAirId.segment_id);
+      await noteAired([onAirId?.item_id, onAirId?.segment_id]);
 
       const at = now();
       const window = await deps.load({
@@ -420,11 +486,12 @@ export function createStationFeeder(deps: FeederDeps) {
       const actions = diffQueue(queuedOf(state), wanted, plan.need, trimToleranceMs);
 
       if (actions.remove.length) {
-        await assertOwner();
         if (actions.remove.length === queuedOf(state).length) {
+          await assertOwner();
           await engine.clear();
         } else {
           for (const id of actions.remove) {
+            await assertOwner();
             await engine.remove(id).catch((error: unknown) => {
               // Already on air or gone: the next round sees it.
               if (!(error instanceof EngineNotQueuedError)) throw error;
@@ -432,15 +499,16 @@ export function createStationFeeder(deps: FeederDeps) {
           }
         }
         for (const id of actions.remove) pushed.delete(id);
+        await persist('removals', (store, boot) => store.remove(boot, actions.remove));
         result.removed.push(...actions.remove);
         continue;
       }
 
       let refused = false;
-      if (actions.push.length) await assertOwner();
       for (const index of actions.push) {
         const w = wanted[index];
         if (!w) break;
+        await assertOwner();
         const payload = body(w.built, window.station, w.crossInMs, w.trimMs);
         try {
           if (w.built.isSegment) await engine.pushSegment(payload as EnginePushSegment);
@@ -463,7 +531,9 @@ export function createStationFeeder(deps: FeederDeps) {
           refused = true;
           break;
         }
-        pushed.set(w.id, { fingerprint: w.fingerprint, trimMs: w.trimMs });
+        const record = { fingerprint: w.fingerprint, trimMs: w.trimMs };
+        pushed.set(w.id, record);
+        await persist('a push', (store, boot) => store.save(boot, w.id, record));
         result.pushed.push(w.id);
       }
       if (refused) continue;
@@ -519,12 +589,12 @@ export function createStationFeeder(deps: FeederDeps) {
       if (event.stationId !== scope.stationId) return;
       switch (event.type) {
         case 'engine.booted':
-          if (event.data.bootId !== bootId) resetBoot(event.data.bootId);
+          // The next run enters the new boot (and loads what was pushed to it, if anything).
+          if (event.data.bootId !== bootId) bootId = null;
           break;
         case 'engine.track.started':
           if (event.data.bootId === bootId) {
-            if (event.data.itemId) aired.add(event.data.itemId);
-            if (event.data.segmentId) aired.add(event.data.segmentId);
+            void noteAired([event.data.itemId, event.data.segmentId]);
           }
           break;
         case 'engine.up':

@@ -92,6 +92,8 @@ beforeAll(async () => {
     rabbit: { rabbit },
     // Its own durable queue and no sweep, so it never competes with the alerts tests.
     alerts: { eventQueue: `alerts-lifecycle-it-${randomUUID()}`, sweepIntervalMs: 0 },
+    // The feeder (#29) has its own tests; here it would only poll the fake engines.
+    feeder: false,
     fastify: { logger: { level: process.env.TEST_LOG_LEVEL ?? 'silent' } },
     engine: {
       config,

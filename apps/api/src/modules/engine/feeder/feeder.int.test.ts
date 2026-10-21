@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
+import { type AddressInfo, createServer as createNetServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
@@ -29,11 +30,11 @@ import { createEngineEventsHandler } from '../adapter/route.ts';
 import { createStationEngine, type StationEngine } from '../adapter/station.ts';
 import { renderStationScript } from '../config/index.ts';
 import { createStationFeeder, type StationFeeder } from './feeder.ts';
-import { loadFeedWindow } from './repo.ts';
+import { createFeederPushStore, loadFeedWindow } from './repo.ts';
 
 /**
  * The feeder against a real Liquidsoap running the station template (testing/compose.yml,
- * its own compose project and ports) and a real database: the log, the library and the cache
+ * its own compose project and free ports per run) and a real database: the log, the library and the cache
  * table are the real ones, the files are sine tones in the engine's playout cache. Engine
  * events go straight from the adapter's ingest to the feeder (no RabbitMQ needed).
  * Needs Docker and Postgres (`pnpm dev:up`).
@@ -42,11 +43,13 @@ import { loadFeedWindow } from './repo.ts';
 const run = promisify(execFile);
 const here = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 const composeFile = here('./testing/compose.yml');
-const renderedDir = here('./testing/.rendered/');
-const cacheDir = here('./testing/.cache/');
-const project = 'ondes-engine-feeder-it';
-const controlPort = Number(process.env.FEEDER_IT_CONTROL_PORT ?? 17380);
-const eventsPort = Number(process.env.FEEDER_IT_EVENTS_PORT ?? 17381);
+// Per run: compose project, host ports and files, so two worktrees (or two runs) never collide.
+const runId = randomUUID().slice(0, 8);
+const renderedDir = here(`./testing/.rendered/${runId}/`);
+const cacheDir = here(`./testing/.cache/${runId}/`);
+const project = `ondes-engine-feeder-it-${runId}`;
+let controlPort = 0;
+let eventsPort = 0;
 const system: Actor = { type: 'system', name: 'test' };
 const SR = 44_100;
 /** Each tone is 6 s; each item plays 5 s of it and overlaps the next by 0.5 s. */
@@ -56,7 +59,12 @@ const SLOT_MS = PLAY_MS - OVERLAP_MS + 20;
 
 const compose = (...args: string[]) =>
   run('docker', ['compose', '-p', project, '-f', composeFile, ...args], {
-    env: { ...process.env, FEEDER_IT_CONTROL_PORT: String(controlPort) },
+    env: {
+      ...process.env,
+      FEEDER_IT_CONTROL_PORT: String(controlPort),
+      FEEDER_IT_RENDERED: renderedDir,
+      FEEDER_IT_CACHE: cacheDir,
+    },
   });
 
 let tdb: TestDatabase;
@@ -71,6 +79,15 @@ const fetches: string[] = [];
 let items: { id: string; assetId: string; sha256: string }[] = [];
 let uncached: { id: string; fileId: string };
 let spare: { assetId: string; sha256: string };
+
+/** A host port free right now (Docker binds it a moment later). */
+async function freePort(): Promise<number> {
+  const probe = createNetServer();
+  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const { port } = probe.address() as AddressInfo;
+  await new Promise((resolve) => probe.close(resolve));
+  return port;
+}
 
 /** 16-bit stereo PCM WAV of a sine tone. */
 function tone(hz: number, seconds: number): Buffer {
@@ -152,6 +169,7 @@ const started = (itemId: string, after = 0) =>
     | undefined;
 
 beforeAll(async () => {
+  controlPort = await freePort();
   tdb = await createTestDatabase();
   const org = await createOrganization(tdb.db, system, { slug: 'feeder', name: 'Feeder' });
   const st = await createStation(
@@ -167,6 +185,49 @@ beforeAll(async () => {
   for (let i = 0; i < 40; i++) assets.push(await toneAsset(300 + i * 20, i !== 1));
   spare = await toneAsset(1500, true);
 
+  station = createStationEngine({
+    stationId: scope.stationId,
+    baseUrl: `http://127.0.0.1:${controlPort}`,
+    token: 'it-token',
+    publish: async (event) => {
+      received.push(event);
+      feeder?.onEvent(event);
+    },
+    health: { intervalMs: 250, downAfter: 2 },
+  });
+  const handle = createEngineEventsHandler({ ingestFor: () => station.ingest, token: 'it-token' });
+  server = createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const match = req.url?.match(/^\/internal\/engine\/stations\/([^/]+)\/events$/);
+    if (req.method !== 'POST' || !match?.[1]) return res.writeHead(404).end();
+    const out = await handle({
+      stationId: decodeURIComponent(match[1]),
+      headers: req.headers,
+      body: JSON.parse(raw || 'null'),
+    });
+    res.writeHead(out.status, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(out.body));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '0.0.0.0', resolve));
+  eventsPort = (server.address() as AddressInfo).port;
+
+  const rendered = renderStationScript({
+    stationId: scope.stationId,
+    name: 'Ondes feeder test',
+    eventsUrl: `http://host.docker.internal:${eventsPort}/internal/engine/stations/${scope.stationId}/events`,
+    paths: { safetyDir: '/cache/safety', emergencyFile: '/cache/emergency.wav' },
+    crossfade: { duration: 0.5 },
+    outputs: [{ mount: 'feeder-it.mp3', format: 'mp3', bitrate: 128 }],
+  });
+  mkdirSync(renderedDir, { recursive: true });
+  writeFileSync(`${renderedDir}station.liq`, rendered.script);
+
+  await compose('up', '-d');
+  station.start();
+  await waitFor('engine up', () => station.health.status() === 'up', 120_000);
+
+  // Seeded once the engine is up, so a slow start (an image pull) can't make the log late.
   // A published day with 40 back-to-back items from now, the second one not in the cache.
   const start = Date.now() + 1_000;
   const [day] = await tdb.db
@@ -204,48 +265,6 @@ beforeAll(async () => {
     sha256: assets[i]?.sha256 as string,
   }));
   uncached = { id: items[1]?.id as string, fileId: assets[1]?.fileId as string };
-
-  station = createStationEngine({
-    stationId: scope.stationId,
-    baseUrl: `http://127.0.0.1:${controlPort}`,
-    token: 'it-token',
-    publish: async (event) => {
-      received.push(event);
-      feeder?.onEvent(event);
-    },
-    health: { intervalMs: 250, downAfter: 2 },
-  });
-  const handle = createEngineEventsHandler({ ingestFor: () => station.ingest, token: 'it-token' });
-  server = createServer(async (req, res) => {
-    let raw = '';
-    for await (const chunk of req) raw += chunk;
-    const match = req.url?.match(/^\/internal\/engine\/stations\/([^/]+)\/events$/);
-    if (req.method !== 'POST' || !match?.[1]) return res.writeHead(404).end();
-    const out = await handle({
-      stationId: decodeURIComponent(match[1]),
-      headers: req.headers,
-      body: JSON.parse(raw || 'null'),
-    });
-    res.writeHead(out.status, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(out.body));
-  });
-  await new Promise<void>((resolve) => server.listen(eventsPort, '0.0.0.0', resolve));
-
-  const rendered = renderStationScript({
-    stationId: scope.stationId,
-    name: 'Ondes feeder test',
-    eventsUrl: `http://host.docker.internal:${eventsPort}/internal/engine/stations/${scope.stationId}/events`,
-    paths: { safetyDir: '/cache/safety', emergencyFile: '/cache/emergency.wav' },
-    crossfade: { duration: 0.5 },
-    outputs: [{ mount: 'feeder-it.mp3', format: 'mp3', bitrate: 128 }],
-  });
-  mkdirSync(renderedDir, { recursive: true });
-  writeFileSync(`${renderedDir}station.liq`, rendered.script);
-
-  await compose('down', '-v', '--remove-orphans');
-  await compose('up', '-d');
-  station.start();
-  await waitFor('engine up', () => station.health.status() === 'up', 120_000);
 }, 300_000);
 
 afterAll(async () => {
@@ -254,27 +273,35 @@ afterAll(async () => {
   station?.stop();
   await compose('down', '-v', '--remove-orphans').catch(() => {});
   await new Promise((resolve) => server?.close(resolve));
+  rmSync(renderedDir, { recursive: true, force: true });
+  rmSync(cacheDir, { recursive: true, force: true });
   await tdb?.drop();
 }, 60_000);
 
+/** A feeder for the test's station, recording what it pushed in `feeder_push`. */
+function newFeeder(): StationFeeder {
+  return createStationFeeder({
+    scope,
+    engine: async () => station.adapter,
+    load: (range) => loadFeedWindow(tdb.db, scope, range),
+    store: createFeederPushStore(tdb.db, scope),
+    cache: {
+      requestUrgentFetch: async (_s, fileId) => {
+        fetches.push(fileId);
+      },
+      requestSync: async () => {},
+    },
+    alerts: { raise: async () => {}, resolve: async () => {} },
+    publish: async (e) => {
+      skips.push(e);
+    },
+    options: { minItems: 2, minAheadMs: 8_000, lookaheadMs: 60_000 },
+  });
+}
+
 describe('feeder against Liquidsoap', () => {
   it('plays the log in order from the cache, skipping the uncached item', async () => {
-    feeder = createStationFeeder({
-      scope,
-      engine: async () => station.adapter,
-      load: (range) => loadFeedWindow(tdb.db, scope, range),
-      cache: {
-        requestUrgentFetch: async (_s, fileId) => {
-          fetches.push(fileId);
-        },
-        requestSync: async () => {},
-      },
-      alerts: { raise: async () => {}, resolve: async () => {} },
-      publish: async (e) => {
-        skips.push(e);
-      },
-      options: { minItems: 2, minAheadMs: 8_000, lookaheadMs: 60_000 },
-    });
+    feeder = newFeeder();
     ticker = setInterval(() => void feeder.sync().catch(() => {}), 1_000);
     await feeder.sync();
 
@@ -319,6 +346,21 @@ describe('feeder against Liquidsoap', () => {
     expect(ended?.type === 'engine.track.ended' && ended.data.played).toBeGreaterThan(3);
   }, 45_000);
 
+  it('a feeder taking over the station resumes the queue without re-pushing it', async () => {
+    // Replica A stops; replica B starts from nothing but the database and the engine.
+    clearInterval(ticker);
+    feeder.stop();
+    await feeder.sync().catch(() => {});
+    const before = (await station.adapter.state()).queue.map((r) => r.item_id);
+    expect(before.length).toBeGreaterThanOrEqual(1);
+    feeder = newFeeder();
+    const result = await feeder.sync();
+    // Same queue, nothing removed; it only tops up if an item went on air meanwhile.
+    expect(result.removed).toEqual([]);
+    expect(result.pushed.filter((id) => before.includes(id))).toEqual([]);
+    ticker = setInterval(() => void feeder.sync().catch(() => {}), 1_000);
+  }, 30_000);
+
   it('re-feeds the engine after it restarts with an empty queue', async () => {
     const oldBoot = (await station.adapter.state()).boot_id;
     const mark = received.length;
@@ -345,6 +387,13 @@ describe('feeder against Liquidsoap', () => {
       30_000,
     );
     expect(back).toBeDefined();
-    expect((await station.adapter.state()).queue.length).toBeGreaterThanOrEqual(1);
+    // And the queue is kept ahead again (topped up within a tick of each track change).
+    const deadline = Date.now() + 10_000;
+    let queued = 0;
+    while (queued < 1 && Date.now() < deadline) {
+      queued = (await station.adapter.state()).queue.length;
+      if (queued < 1) await new Promise((r) => setTimeout(r, 200));
+    }
+    expect(queued).toBeGreaterThanOrEqual(1);
   }, 90_000);
 });

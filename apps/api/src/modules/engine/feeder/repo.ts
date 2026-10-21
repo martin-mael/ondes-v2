@@ -1,17 +1,20 @@
 import {
+  alert,
   asset,
   assetCues,
   assetFile,
   assetLoudness,
   type Executor,
+  feederPush,
   playoutCacheFile,
   type StationScope,
   station,
   whereStation,
 } from '@ondes/db';
-import { cacheExtOf, type LogItem, type PlayoutGainStation } from '@ondes/shared';
-import { and, eq, inArray } from 'drizzle-orm';
+import { alertTypes, cacheExtOf, type LogItem, type PlayoutGainStation } from '@ondes/shared';
+import { and, eq, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { getLogRange } from '../../log/repo.ts';
+import type { FeederPushStore } from './feeder.ts';
 import type { FeedMedia } from './push.ts';
 
 // Reads for the feeder: the log around now (published days only) and, in one query, the
@@ -149,4 +152,92 @@ export async function loadMedia(
     });
   }
   return media;
+}
+
+/** Records of other boots and older than this are dropped by `prune`. */
+const PUSH_RECORD_MAX_AGE_MS = 2 * 24 * 3_600_000;
+
+/** `feeder_push`: what the station's feeder pushed during the engine's current boot. */
+export function createFeederPushStore(db: Executor, scope: StationScope): FeederPushStore {
+  const where = (bootId: string) =>
+    and(whereStation(feederPush, scope), eq(feederPush.bootId, bootId));
+  return {
+    async load(bootId) {
+      return db
+        .select({
+          entryId: feederPush.entryId,
+          fingerprint: feederPush.fingerprint,
+          trimMs: feederPush.trimMs,
+          aired: feederPush.aired,
+        })
+        .from(feederPush)
+        .where(where(bootId));
+    },
+
+    async save(bootId, entryId, push) {
+      await db
+        .insert(feederPush)
+        .values({ ...scope, bootId, entryId, ...push, pushedAt: new Date() })
+        .onConflictDoUpdate({
+          target: [feederPush.stationId, feederPush.bootId, feederPush.entryId],
+          set: { fingerprint: push.fingerprint, trimMs: push.trimMs, pushedAt: new Date() },
+        });
+    },
+
+    async remove(bootId, entryIds) {
+      if (!entryIds.length) return;
+      // Something that aired stays recorded as aired.
+      await db
+        .delete(feederPush)
+        .where(
+          and(
+            where(bootId),
+            inArray(feederPush.entryId, [...entryIds]),
+            eq(feederPush.aired, false),
+          ),
+        );
+    },
+
+    async markAired(bootId, entryIds) {
+      if (!entryIds.length) return;
+      await db
+        .insert(feederPush)
+        .values(
+          entryIds.map((entryId) => ({ ...scope, bootId, entryId, fingerprint: '', aired: true })),
+        )
+        .onConflictDoUpdate({
+          target: [feederPush.stationId, feederPush.bootId, feederPush.entryId],
+          set: { aired: sql`true` },
+        });
+    },
+
+    async prune(bootId) {
+      await db
+        .delete(feederPush)
+        .where(
+          and(
+            whereStation(feederPush, scope),
+            or(
+              ne(feederPush.bootId, bootId),
+              lt(feederPush.pushedAt, new Date(Date.now() - PUSH_RECORD_MAX_AGE_MS)),
+            ),
+          ),
+        );
+    },
+  };
+}
+
+/** Dedupe keys of the station's open feeder alerts. */
+export async function openFeederAlerts(db: Executor, scope: StationScope): Promise<Set<string>> {
+  const rows = await db
+    .select({ dedupeKey: alert.dedupeKey })
+    .from(alert)
+    .where(
+      and(
+        whereStation(alert, scope),
+        isNull(alert.resolvedAt),
+        inArray(alert.type, [alertTypes.feederItemsSkipped, alertTypes.feederLogEmpty]),
+      ),
+    );
+  return new Set(rows.map((r) => r.dedupeKey));
 }

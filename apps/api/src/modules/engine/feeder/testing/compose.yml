@@ -3,7 +3,8 @@
 # (./.cache, written by the test) mounted read-only at /cache like a real station's.
 #
 # Its own project name and ports, so it never touches the shared ondes-dev stack. The test
-# starts it and tears it down; by hand:
+# runs it as `ondes-engine-feeder-it-<run id>` on a free port, with its own rendered script
+# and cache directory, so parallel runs don't collide; it tears it down. By hand:
 #
 #   docker compose -f apps/api/src/modules/engine/feeder/testing/compose.yml up -d
 #   docker compose -f apps/api/src/modules/engine/feeder/testing/compose.yml down -v
@@ -44,8 +45,8 @@ services:
     ports:
       - 127.0.0.1:${FEEDER_IT_CONTROL_PORT:-17380}:7000
     volumes:
-      - ./.rendered:/engine:ro
-      - ./.cache:/cache:ro
+      - ${FEEDER_IT_RENDERED:-./.rendered}:/engine:ro
+      - ${FEEDER_IT_CACHE:-./.cache}:/cache:ro
     depends_on:
       icecast:
         condition: service_healthy

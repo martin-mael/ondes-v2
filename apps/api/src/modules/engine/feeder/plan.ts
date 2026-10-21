@@ -147,6 +147,8 @@ export function planFeed(input: PlanInput): FeedPlan {
   let hold: FeedPlan['hold'] = null;
 
   const onAirIndex = locateOnAir(entries, input.onAir);
+  /** Floor set by a live slot (or a long item not joined): what follows waits for its end. */
+  let notBefore: number | null = null;
   let t: number;
   let from: number;
   let onAirEndMs: number | null = null;
@@ -161,6 +163,18 @@ export function planFeed(input: PlanInput): FeedPlan {
     t = nowMs;
     from = entries.findIndex((e) => e.plannedStartMs >= nowMs - o.joinLateMs && !aired.has(e.id));
     if (from < 0) from = entries.length;
+    // The entry planned over `now`, if it started too long ago to join (a live slot, an
+    // episode half-way through): what follows waits for its planned end, as it would on air.
+    const current = findLastIndex(
+      entries,
+      (e) =>
+        e.kind !== 'marker' && e.plannedStartMs <= nowMs && nowMs < e.plannedStartMs + e.slotMs,
+    );
+    const c = entries[current];
+    if (c && current < from && !aired.has(c.id)) {
+      from = current + 1;
+      notBefore = c.plannedStartMs + c.slotMs;
+    }
   }
 
   /** Removes `wanted[j]` or cuts its end by `ms`; later entries move earlier by as much. */
@@ -208,9 +222,6 @@ export function planFeed(input: PlanInput): FeedPlan {
     t = Math.max(t, nowMs);
     return true;
   };
-
-  /** Floor set by a live slot: what follows waits for the slot's end. */
-  let notBefore: number | null = null;
 
   for (let i = from; i < entries.length; i++) {
     const e = entries[i] as FeedEntry;
@@ -265,6 +276,11 @@ export function planFeed(input: PlanInput): FeedPlan {
     need++;
   }
   return { onAirIndex, onAirEndMs, wanted, need, skipped, hold, late };
+}
+
+function findLastIndex<T>(list: readonly T[], test: (item: T) => boolean): number {
+  for (let i = list.length - 1; i >= 0; i--) if (test(list[i] as T)) return i;
+  return -1;
 }
 
 function locateOnAir(entries: readonly FeedEntry[], onAir: OnAir | null): number | null {

@@ -11,7 +11,12 @@ import type {
 } from '@ondes/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { EngineUnresolvableError } from '../adapter/errors.ts';
-import { createStationFeeder, type FeederEngine, FeederNotOwnerError } from './feeder.ts';
+import {
+  createStationFeeder,
+  type FeederEngine,
+  FeederNotOwnerError,
+  type FeederPushStore,
+} from './feeder.ts';
 import type { FeedMedia } from './push.ts';
 import type { FeedWindow } from './repo.ts';
 
@@ -187,8 +192,49 @@ function setLog(
   window = { items, media: map, station: { loudnessTargetLufs: -16, truePeakLimitDbtp: -1 } };
 }
 
+/** `feeder_push` in memory, shared by the feeders of one test (two replicas). */
+function memoryStore(): FeederPushStore & {
+  rows: Map<string, { entryId: string; fingerprint: string; trimMs: number; aired: boolean }>;
+} {
+  const rows = new Map<
+    string,
+    { entryId: string; fingerprint: string; trimMs: number; aired: boolean }
+  >();
+  const key = (boot: string, id: string) => `${boot}/${id}`;
+  return {
+    rows,
+    async load(boot) {
+      return [...rows.entries()].filter(([k]) => k.startsWith(`${boot}/`)).map(([, v]) => v);
+    },
+    async save(boot, entryId, push) {
+      const prev = rows.get(key(boot, entryId));
+      rows.set(key(boot, entryId), { entryId, ...push, aired: prev?.aired ?? false });
+    },
+    async remove(boot, ids) {
+      for (const id of ids) if (!rows.get(key(boot, id))?.aired) rows.delete(key(boot, id));
+    },
+    async markAired(boot, ids) {
+      for (const entryId of ids) {
+        const prev = rows.get(key(boot, entryId));
+        rows.set(key(boot, entryId), {
+          entryId,
+          fingerprint: prev?.fingerprint ?? '',
+          trimMs: prev?.trimMs ?? 0,
+          aired: true,
+        });
+      }
+    },
+    async prune(boot) {
+      for (const k of [...rows.keys()]) if (!k.startsWith(`${boot}/`)) rows.delete(k);
+    },
+  };
+}
+
+let store: ReturnType<typeof memoryStore> | undefined;
+
 function feeder() {
   return createStationFeeder({
+    store,
     scope,
     engine: async () => engine,
     load: async () => window,
@@ -219,6 +265,7 @@ function feeder() {
 const queuedIds = () => engine.queue.map((q) => q.id);
 
 beforeEach(() => {
+  store = undefined;
   now = T0;
   engine = new SimEngine(() => now);
   fetches = [];
@@ -427,5 +474,75 @@ describe('station feeder', () => {
     const pushes = engine.calls.filter((c) => c.startsWith('push'));
     expect(pushes).toHaveLength(4);
     expect(new Set(pushes).size).toBe(4);
+  });
+
+  it('resumes after a lease handover: same trims, nothing re-pushed', async () => {
+    store = memoryStore();
+    // Running 40 s late into a hard start at 10:12: the last song before it is trimmed.
+    const items = Array.from({ length: 4 }, (_, i) => item(T0 + i * 3 * MIN));
+    const episode = item(T0 + 12 * MIN, {
+      kind: 'episode',
+      timing: 'hard',
+      anchorAt: new Date(T0 + 12 * MIN).toISOString(),
+      plannedDurationMs: 30 * MIN,
+      cueOverrides: null,
+    });
+    setLog([...items, episode]);
+    now = T0 + 40_000;
+    const a = feeder();
+    await a.sync();
+    engine.next(); // items[0] on air, 40 s late
+    now += 1000;
+    await a.sync();
+    const trimmed = [...store.rows.values()].find((r) => r.trimMs > 0);
+    expect(trimmed?.entryId).toBe(items[3]?.id);
+    expect(trimmed?.trimMs).toBeGreaterThanOrEqual(39_000);
+
+    // Replica A goes away; replica B takes the station over with the same engine state.
+    a.stop();
+    engine.calls = [];
+    const b = feeder();
+    now += 1000;
+    await b.sync();
+    expect(engine.calls).toEqual([]);
+    // The item on air is known as aired: never planned again in this boot.
+    expect(store.rows.get(`boot-1/${items[0]?.id}`)?.aired).toBe(true);
+  });
+
+  it('a feeder stopped mid-run makes no more engine calls', async () => {
+    setLog(Array.from({ length: 8 }, (_, i) => item(T0 + i * 3 * MIN)));
+    const f = feeder();
+    const push = engine.push.bind(engine);
+    engine.push = async (body) => {
+      const out = await push(body);
+      f.stop();
+      return out;
+    };
+    await expect(f.sync()).rejects.toBeInstanceOf(FeederNotOwnerError);
+    expect(engine.calls.filter((c) => c.startsWith('push'))).toHaveLength(1);
+  });
+
+  it('resolves nothing at boot when no feeder alert is open', async () => {
+    setLog(Array.from({ length: 4 }, (_, i) => item(T0 + i * 3 * MIN)));
+    const f = createStationFeeder({
+      scope,
+      engine: async () => engine,
+      load: async () => window,
+      cache: { requestUrgentFetch: async () => {}, requestSync: async () => {} },
+      alerts: {
+        raise: async (_s, input) => {
+          raised.push(input);
+        },
+        resolve: async (_s, key) => {
+          resolved.push(key);
+        },
+        openKeys: async () => new Set(['feeder.log_empty']),
+      },
+      now: () => now,
+    });
+    await f.sync();
+    // log_empty was open (an earlier feeder): resolved. items_skipped wasn't: left alone.
+    expect(resolved).toEqual(['feeder.log_empty']);
+    expect(raised).toEqual([]);
   });
 });

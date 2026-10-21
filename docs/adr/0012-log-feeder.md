@@ -28,7 +28,8 @@ There are several api replicas, and every one of them holds an adapter for every
 Consequences:
 - an engine restart, a missed event, a failover and a log edit are all the same case;
 - the item on air is never in the engine queue, so a re-plan can't touch it (acceptance of #29);
-- in memory there are only caches: what it pushed during this boot (body fingerprints, to avoid re-pushing), what aired, files the engine refused.
+- what it pushed during the current boot (body fingerprint, trim, aired) is recorded in `feeder_push`, so a feeder that takes over (lease handover, api restart) resumes: it doesn't re-push a queue that matches, and predicts the on-air item's end with its trim. Records of other boots are pruned;
+- in memory there are only caches: files the engine refused, request cooldowns, alert state.
 
 **Triggers.**
 - A 5 s tick per station.
@@ -52,7 +53,9 @@ Consequences:
 - Markers (#52) only add anchors the planner already handles.
 
 ## Consequences
-- Every sync costs one `GET /v1/state` and two queries (the log window, then media for its assets). That's every 5 s per station, plus events.
+- Every sync costs one `GET /v1/state` and two queries (the log window, then media for its assets). That's every 5 s per station, plus events. Each push, removal and newly aired item writes one `feeder_push` row.
+- The playout cache is read once per sync (the media query joins `playout_cache_file`), not with one `isCached` call per push. A file that leaves the disk between the sync and the push is caught by the engine's 422, which is handled like a miss.
+- New table `feeder_push` (migration `*_feeder`).
 - Additive contract changes:
   - alert types `feeder.items_skipped` and `feeder.log_empty`;
   - real-time event `feeder.item.passed_over` (`engine:read`): items that will not air, for the log-vs-as-run view (#53). As-run (#30) records only what aired and does not consume it.

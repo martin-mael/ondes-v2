@@ -8,20 +8,29 @@ Keeps each station's engine queue a few items ahead of air, following the publis
 |---|---|---|
 | Planner | `plan.ts` | Pure. Engine state + log around now → which entries to have queued, in order, with their trims; `diffQueue` compares that with the engine queue. |
 | Push bodies | `push.ts` | Pure. One log item (or segment) + its media → `POST /v1/queue` / `POST /v1/segment` body: cache path, biased cue points, fades, crossfades, gain, ICY metadata. |
-| Repo | `repo.ts` | The log around now (published days only) and, in one query, each asset's playout file, cues, loudness and cache state. |
+| Repo | `repo.ts` | The log around now (published days only) and, in one query, each asset's playout file, cues, loudness and cache state. `feeder_push`: what was pushed to the current boot. |
 | Feeder | `feeder.ts` | One station: `sync()` reads the state and the log, plans, removes and pushes. Alerts, urgent fetches, `feeder.item.passed_over`. |
 | Leases | `leases.ts` | One feeder per station across replicas: a session-level advisory lock per station on one reserved connection. |
 | Service, plugin | `service.ts`, `plugin.ts` | `app.feeder`: lease rounds, the tick, fanout events → the right feeder. |
 
 ## How a sync works
 
-1. `GET /v1/state`: boot id, item on air, queue. A new boot id forgets what was pushed.
+1. `GET /v1/state`: boot id, item on air, queue.
+   - A new boot id (or a feeder taking over the station) loads what was pushed to that boot from
+     `feeder_push`: each entry's body fingerprint, trim, and whether it aired.
+   - Without it, a new feeder couldn't tell a matching queue from a stale one and would re-push
+     it all, and it would mispredict the on-air item's end (its trim). Rows of other boots are
+     pruned.
 2. The log from 3 h back to the lookahead (45 min) + 1 h ahead, published days only.
 3. **Where to start.** The log's item on air, found by its `item_id` / `segment_id`.
    - Its predicted end chains from `elapsed`, so drift shows against the anchors.
    - When the log isn't on air (boot, safety, live), it starts from the first item planned less
      than `joinLateMs` (60 s) ago that didn't air during this boot. It airs as soon as it's
      pushed (the queue takes over from safety right away).
+   - Unless the entry planned over now started before that (a live slot with the DJ on air or
+     safety filling it, an episode half-way through): then what follows waits for its planned
+     end, like any hold. The log stays on its plan instead of airing the next hour's items
+     during a show.
 4. **How far.** At least `minItems` (2) entries and `minAheadMs` (10 min) of audio queued past the
    item on air, at most `maxItems` (8).
 5. **What's skipped.**
@@ -56,8 +65,11 @@ Keeps each station's engine queue a few items ahead of air, following the publis
     default).
   - `cross_in` = the log's `crossInMs`, else the previous entry's `cross_out`.
   - The overlap is the min of the two (ADR 0002).
-- **`amplify_db`**: the log's `gainDb` override, else `getPlayoutGain` (#19); omitted at 0.
-  Segments carry it per part.
+- **`amplify_db`**: `getPlayoutGain` (#19), omitted at 0. Segments carry it per part.
+  - The log's `gainDb` goes in as the override, even when the asset's normalisation is off
+    (someone set it on this item).
+  - It gets the same true-peak ceiling, rounding and bounds as every gain, so a log edit can't
+    push an item past the ceiling.
 - **Title, artist**: the item's title, else the asset's; artists joined with `, `.
 
 ## Cache, alerts, as-run
@@ -67,7 +79,8 @@ Keeps each station's engine queue a few items ahead of air, following the publis
   raises `cache.item_missing` itself.
 - **422 at push time**: the file is skipped for 60 s, fetched urgently, and
   `playoutCache.requestSync(scope)` reconciles the cache table with the disk.
-- **Alerts** (`app.alerts`), raised and resolved on change only:
+- **Alerts** (`app.alerts`), raised and resolved on change only. A new feeder first reads
+  which feeder alerts are open, so a boot neither re-raises nor resolves for nothing:
   - `feeder.items_skipped` (warning, one per station): the window has items that can't be
     played; `details.items`.
   - `feeder.log_empty` (warning, critical after 15 min): nothing queued, to push or held. The
@@ -92,8 +105,8 @@ Keeps each station's engine queue a few items ahead of air, following the publis
     on its reserved connection for every station whose engine should run.
   - The holder feeds the station. The lock dies with the session, so another replica takes over
     within a lease round.
-  - Before every change to an engine queue, the feeder checks that its session (and so its
-    lock) is still alive.
+  - Before every engine mutation (each remove, clear and push), the feeder checks that it wasn't
+    stopped and that its session (and so its lock) is still alive. Otherwise it aborts the run.
 - The engine adapter comes from `engineLifecycle.adapterFor(stationId)`, which works on any
   replica.
 
@@ -103,11 +116,16 @@ Keeps each station's engine queue a few items ahead of air, following the publis
   - The planner: how far ahead, the start point, skips, anchors, re-planning after an edit,
     the diff, and two DST days of the Europe/Paris fixture log.
   - The push bodies.
-  - The feeder loop against an in-memory engine.
+  - The feeder loop against an in-memory engine, including a handover through the push store
+    and a feeder stopped mid-run.
 - `feeder.int.test.ts` (integration project `engine`): a real Liquidsoap running the station
-  template, a real database (log, library, cache table), sine tones in the engine's cache.
-  - Its own compose project `ondes-engine-feeder-it`: control on 127.0.0.1:17380, events
-    server on :17381. Override with `FEEDER_IT_CONTROL_PORT` / `FEEDER_IT_EVENTS_PORT`.
+  template, a real database (log, library, cache table, `feeder_push`), sine tones in the
+  engine's cache.
+  - Its own compose project per run, `ondes-engine-feeder-it-<run id>`, on free host ports,
+    with its own rendered script and cache directory. Parallel runs and worktrees don't collide.
   - Plays the log in order and skips the uncached item.
   - Edits the item after next and checks it airs while the item on air plays out.
+  - A second feeder takes the station over and removes or re-pushes nothing.
   - Restarts the engine and checks the log comes back.
+- `leases.int.test.ts`: two replicas compete for stations; locks are handed over on release,
+  close and when a session dies.

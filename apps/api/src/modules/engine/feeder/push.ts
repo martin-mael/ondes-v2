@@ -22,7 +22,8 @@ import {
 //   an entry gets cross_in = the previous entry's cross_out (ADR 0002). Its own cross_out is the
 //   log's `crossOutMs`, else the asset's natural overlap (`cueOut − crossStartNext`), else unset
 //   (the station default).
-// - Gain: the log's `gainDb` override, else `getPlayoutGain` (#19); omitted when 0.
+// - Gain: `getPlayoutGain` (#19), with the log's `gainDb` as the override when set (so it is
+//   clamped to the true-peak ceiling like any other gain); omitted when 0.
 // - A trim (hard-start re-plan, ADR 0003) cuts the item's end and makes sure it fades out.
 
 /** The playout copy of an asset and what plays it, as the repo loads it. */
@@ -135,8 +136,18 @@ export function playLengthMs(source: PushSource): number | null {
   return Math.max(0, Math.round(((end.n - start) * 1000) / end.sr));
 }
 
+/**
+ * The log's `gainDb` is the item's own override: it replaces the asset's gain (even when the
+ * asset's normalisation is off: someone set it on this item) but goes through the same true-peak
+ * ceiling, rounding and bounds as every gain (#19), so a log edit can't push an item past it.
+ */
 function gainOf(source: PushSource, station: PlayoutGainStation): number | undefined {
-  const db = source.cueOverrides?.gainDb ?? getPlayoutGain(source.media.gain, station).gainDb;
+  const override = source.cueOverrides?.gainDb;
+  const asset =
+    override === undefined
+      ? source.media.gain
+      : { ...source.media.gain, normalizeLoudness: true, gainOverrideDb: override };
+  const db = getPlayoutGain(asset, station).gainDb;
   return db === 0 ? undefined : db;
 }
 
