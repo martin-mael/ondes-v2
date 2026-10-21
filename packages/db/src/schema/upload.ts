@@ -39,6 +39,16 @@ export const upload = pgTable(
     partSize: integer('part_size').notNull(),
     partCount: integer('part_count').notNull(),
     sha256: text('sha256'),
+    /**
+     * Bumped by each retry of a failed upload; part of the ingest job key
+     * (`upload:<id>:<generation>`), so a retry is a new unit of work.
+     */
+    generation: integer('generation').notNull().default(0),
+    /**
+     * While another upload of the station ingests the same file: that upload. It settles this
+     * one (duplicate, quarantined or failed like itself) when it finishes.
+     */
+    waitingOnUploadId: uuid('waiting_on_upload_id'),
     /** Asset created by ingest. Not a foreign key: the asset may be deleted later. */
     assetId: uuid('asset_id'),
     duplicateOfAssetId: uuid('duplicate_of_asset_id'),
@@ -62,6 +72,8 @@ export const upload = pgTable(
     index('upload_station_status_idx').on(t.stationId, t.status),
     // Dedupe of concurrent uploads of one file (see repos/upload.ts).
     index('upload_station_sha256_idx').on(t.stationId, t.sha256),
+    // Sweeps of stale `uploading` and stuck `queued` uploads, across tenants.
+    index('upload_status_updated_idx').on(t.status, t.updatedAt),
     check(
       'upload_status_check',
       sql`${t.status} in ('uploading', 'queued', 'processing', 'ingested', 'duplicate', 'quarantined', 'failed', 'aborted')`,

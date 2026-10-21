@@ -1,5 +1,5 @@
 {
-  "id": "706dd4aa-474e-41b8-bcaf-c88d5746582f",
+  "id": "cf91229b-6430-426b-80ef-14a59af9d6ba",
   "prevId": "e281989a-a356-4950-aa88-2bbd0d39d84a",
   "version": "7",
   "dialect": "postgresql",
@@ -2922,6 +2922,19 @@
           "primaryKey": false,
           "notNull": false
         },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "waiting_on_upload_id": {
+          "name": "waiting_on_upload_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "asset_id": {
           "name": "asset_id",
           "type": "uuid",
@@ -3021,6 +3034,27 @@
             },
             {
               "expression": "sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "upload_status_updated_idx": {
+          "name": "upload_status_updated_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

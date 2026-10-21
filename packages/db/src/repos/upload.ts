@@ -6,9 +6,9 @@ import {
   type UploadPage,
   type UploadStatus,
 } from '@ondes/shared';
-import { and, desc, eq, inArray, lt, ne, type SQL, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, lt, lte, ne, type SQL, sql } from 'drizzle-orm';
 import { auditDiff, withAudit } from '../audit.ts';
-import type { Db, Executor } from '../client.ts';
+import type { Db, Executor, Tx } from '../client.ts';
 import { NotFoundError } from '../errors.ts';
 import { assetFile } from '../schema/library.ts';
 import { storageObject } from '../schema/storage.ts';
@@ -28,7 +28,14 @@ export type UploadRecord = UploadRow;
 
 /** Public view: drops the storage internals. */
 export function toUpload(row: UploadRow): Upload {
-  const { stagingKey: _key, s3UploadId: _s3, createdBy: _by, ...rest } = row;
+  const {
+    stagingKey: _key,
+    s3UploadId: _s3,
+    createdBy: _by,
+    generation: _generation,
+    waitingOnUploadId: _waiting,
+    ...rest
+  } = row;
   return { ...rest, errorCode: rest.errorCode ?? null };
 }
 
@@ -168,15 +175,25 @@ export type ContentClaim =
   | { kind: 'claimed' }
   /** The station already has an asset whose master is this exact file. */
   | { kind: 'duplicate'; assetId: string }
-  /** Another upload of the same file is being ingested right now. Retry later. */
-  | { kind: 'busy'; uploadId: string };
+  /**
+   * Another upload of the same file is being ingested right now. This one now waits on it
+   * (`waiting_on_upload_id`) and is settled by {@link finishUpload} when that one ends.
+   */
+  | { kind: 'waiting'; uploadId: string };
+
+/** Lock serializing dedupe and settlement of one file in one station (transaction-scoped). */
+async function lockContent(tx: Tx, stationId: string, sha256: string): Promise<void> {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`upload:${stationId}:${sha256}`}, 0))`,
+  );
+}
 
 /**
- * Dedupe step of ingest. Under a transaction-scoped advisory lock on (station, sha256), so two
- * concurrent uploads of one file can't both pass:
+ * Dedupe step of ingest. Under the content lock, so two concurrent uploads of one file can't
+ * both pass:
  * - an asset of the station with this master SHA-256 (other than the upload's own asset,
  *   from an earlier attempt) makes it a `duplicate`;
- * - another upload of the station being processed with this SHA-256 makes it `busy`;
+ * - another upload of the station ingesting this SHA-256 (the holder) makes it `waiting`;
  * - otherwise the upload records the SHA-256 (its claim) and gets `claimed`.
  */
 export async function claimUploadContent(
@@ -186,9 +203,7 @@ export async function claimUploadContent(
   sha256: string,
 ): Promise<ContentClaim> {
   return withAudit(db, ctx, async (tx, audit) => {
-    await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${`upload:${ctx.scope.stationId}:${sha256}`}, 0))`,
-    );
+    await lockContent(tx, ctx.scope.stationId, sha256);
     const [own] = await tx
       .select()
       .from(upload)
@@ -219,7 +234,7 @@ export async function claimUploadContent(
       return { kind: 'duplicate', assetId: existing.assetId };
     }
 
-    const [other] = await tx
+    const [holder] = await tx
       .select({ id: upload.id })
       .from(upload)
       .where(
@@ -227,20 +242,25 @@ export async function claimUploadContent(
           whereStation(upload, ctx.scope),
           eq(upload.sha256, sha256),
           ne(upload.id, id),
-          inArray(upload.status, ['processing']),
+          eq(upload.status, 'processing'),
+          isNull(upload.waitingOnUploadId),
         ),
       )
       .limit(1);
-    if (other) {
+    if (holder) {
+      await tx
+        .update(upload)
+        .set({ sha256, waitingOnUploadId: holder.id })
+        .where(eq(upload.id, id));
       await audit({
-        action: 'upload.dedupe',
+        action: 'upload.wait',
         entity: { type: 'upload', id },
-        diff: { busyWith: { from: null, to: other.id } },
+        diff: { waitingOnUploadId: { from: own.waitingOnUploadId, to: holder.id } },
       });
-      return { kind: 'busy', uploadId: other.id };
+      return { kind: 'waiting', uploadId: holder.id };
     }
 
-    await tx.update(upload).set({ sha256 }).where(eq(upload.id, id));
+    await tx.update(upload).set({ sha256, waitingOnUploadId: null }).where(eq(upload.id, id));
     await audit({
       action: 'upload.claim',
       entity: { type: 'upload', id },
@@ -250,8 +270,174 @@ export async function claimUploadContent(
   });
 }
 
+export type FinalUploadStatus = 'ingested' | 'duplicate' | 'quarantined' | 'failed';
+
+/**
+ * Ends ingest of a `processing` upload with `patch` (a final status) and, under the content
+ * lock, settles the uploads waiting on it: duplicates of its asset when it was ingested, or
+ * quarantined/failed like it. Returns the upload and the settled waiters.
+ */
+export async function finishUpload(
+  db: Db,
+  ctx: StationContext,
+  id: string,
+  patch: UploadPatch & { status: FinalUploadStatus },
+): Promise<{ upload: UploadRecord; waiters: UploadRecord[] }> {
+  return withAudit(db, ctx, async (tx, audit) => {
+    const [current] = await tx
+      .select({ sha256: upload.sha256 })
+      .from(upload)
+      .where(and(eq(upload.id, id), whereStation(upload, ctx.scope)));
+    if (!current) throw new NotFoundError('upload', id);
+    const sha256 = patch.sha256 ?? current.sha256;
+    if (sha256) await lockContent(tx, ctx.scope.stationId, sha256);
+
+    const [before] = await tx
+      .select()
+      .from(upload)
+      .where(and(eq(upload.id, id), whereStation(upload, ctx.scope)))
+      .for('update');
+    if (!before) throw new NotFoundError('upload', id);
+    if (before.status !== 'processing') {
+      throw new LibraryConflictError(`upload ${id} is ${before.status}`);
+    }
+    const [row] = await tx
+      .update(upload)
+      .set({ ...patch, waitingOnUploadId: null })
+      .where(eq(upload.id, id))
+      .returning();
+    if (!row) throw new NotFoundError('upload', id);
+    await audit({
+      action: `upload.${patch.status}`,
+      entity: { type: 'upload', id },
+      diff: auditDiff(toUpload(before), toUpload(row)),
+    });
+
+    const settle: UploadPatch =
+      row.status === 'ingested' && row.assetId
+        ? {
+            status: 'duplicate',
+            duplicateOfAssetId: row.assetId,
+            errorCode: null,
+            error: `same file as asset ${row.assetId}`,
+          }
+        : {
+            status: row.status === 'quarantined' ? 'quarantined' : 'failed',
+            errorCode: row.errorCode ?? 'internal',
+            error: `same file as upload ${id}: ${row.error ?? row.status}`.slice(0, 4000),
+          };
+    const waiters = await tx
+      .update(upload)
+      .set({ ...settle, waitingOnUploadId: null })
+      .where(
+        and(
+          whereStation(upload, ctx.scope),
+          eq(upload.waitingOnUploadId, id),
+          eq(upload.status, 'processing'),
+        ),
+      )
+      .returning();
+    for (const waiter of waiters) {
+      await audit({
+        action: `upload.${waiter.status}`,
+        entity: { type: 'upload', id: waiter.id },
+        diff: {
+          status: { from: 'processing', to: waiter.status },
+          settledBy: { from: null, to: id },
+        },
+      });
+    }
+    return { upload: row, waiters };
+  });
+}
+
+/**
+ * Queues a `failed` upload again under a new generation (a new ingest job key). Its staging
+ * object is still there: failures keep it.
+ */
+export async function retryUpload(db: Db, ctx: StationContext, id: string): Promise<UploadRecord> {
+  return withAudit(db, ctx, async (tx, audit) => {
+    const [before] = await tx
+      .select()
+      .from(upload)
+      .where(and(eq(upload.id, id), whereStation(upload, ctx.scope)))
+      .for('update');
+    if (!before) throw new NotFoundError('upload', id);
+    if (before.status !== 'failed') {
+      throw new LibraryConflictError(`upload ${id} is ${before.status}, not failed`);
+    }
+    const [row] = await tx
+      .update(upload)
+      .set({
+        status: 'queued',
+        generation: before.generation + 1,
+        errorCode: null,
+        error: null,
+        waitingOnUploadId: null,
+      })
+      .where(eq(upload.id, id))
+      .returning();
+    if (!row) throw new NotFoundError('upload', id);
+    await audit({
+      action: 'upload.retry',
+      entity: { type: 'upload', id },
+      diff: auditDiff(toUpload(before), toUpload(row)),
+    });
+    return row;
+  });
+}
+
+/**
+ * Bytes the org's unfinished uploads (`uploading`, `queued`, `processing`) may still add:
+ * counted on top of its usage by quota checks, so many open uploads can't overshoot it.
+ */
+export async function reservedUploadBytes(
+  db: Executor,
+  orgId: string,
+  excludeUploadId?: string,
+): Promise<number> {
+  const [row] = await db
+    .select({ total: sql<string | null>`sum(${upload.sizeBytes})` })
+    .from(upload)
+    .where(
+      and(
+        eq(upload.orgId, orgId),
+        inArray(upload.status, ['uploading', 'queued', 'processing']),
+        excludeUploadId ? ne(upload.id, excludeUploadId) : undefined,
+      ),
+    );
+  return Number(row?.total ?? 0);
+}
+
+/**
+ * Uploads of every tenant in `status` not updated for `olderThanMs`, oldest first: for the
+ * worker's sweeps (expired multipart uploads, `queued` uploads whose job got lost). The
+ * caller resolves each row's station scope before changing it.
+ */
+export async function listStaleUploads(
+  db: Executor,
+  status: 'uploading' | 'queued',
+  olderThanMs: number,
+  limit = 100,
+): Promise<UploadRecord[]> {
+  return db
+    .select()
+    .from(upload)
+    .where(
+      and(
+        eq(upload.status, status),
+        lte(upload.updatedAt, sql`now() - ${`${olderThanMs} milliseconds`}::interval`),
+      ),
+    )
+    .orderBy(asc(upload.updatedAt))
+    .limit(limit);
+}
+
 /** Sets the final error of an upload (quarantine or failure). */
-export function uploadError(code: UploadErrorCode, message: string): UploadPatch {
+export function uploadError(
+  code: UploadErrorCode,
+  message: string,
+): Pick<UploadPatch, 'errorCode' | 'error'> {
   return { errorCode: code, error: message.slice(0, 4000) };
 }
 

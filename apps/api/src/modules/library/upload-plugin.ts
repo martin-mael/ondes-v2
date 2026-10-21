@@ -13,6 +13,7 @@ import {
   listUploadedParts,
   presignParts,
   removeUpload,
+  retryUpload,
   type UploadDeps,
 } from './upload-service.ts';
 
@@ -101,6 +102,15 @@ const routes: {
     handler: async (deps, ctx, request) => ({
       status: 200,
       body: await abortUpload(deps, ctx, uploadId(request)),
+    }),
+  },
+  {
+    method: 'POST',
+    url: `${STATION}/uploads/:uploadId/retry`,
+    action: 'write',
+    handler: async (deps, ctx, request) => ({
+      status: 202,
+      body: await retryUpload(deps, ctx, uploadId(request)),
     }),
   },
   {

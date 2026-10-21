@@ -1,7 +1,8 @@
 import { fileURLToPath } from 'node:url';
 import { createDb, PostgresJobRunStore, runMigrations, sweepStorageDeletions } from '@ondes/db';
-import { connectQueue, createJobWorker } from '@ondes/queue';
+import { connectQueue, createJobPublisher, createJobWorker } from '@ondes/queue';
 import { createS3Storage, loadStorageConfig } from '@ondes/storage';
+import { sweepUploads } from './jobs/ingest/sweep.ts';
 import { discoverJobs } from './registry.ts';
 
 // Worker bootstrap (#8): connect, declare the topology, discover jobs/<job>/ and consume.
@@ -24,6 +25,7 @@ await worker.ready;
 // Deferred bucket deletes (#17): objects released by asset deletes are removed once their
 // grace period is over. Safe to run from every worker replica (row locks, skip locked).
 const storage = createS3Storage(loadStorageConfig(process.env));
+const publisher = createJobPublisher(queue.rabbit, queue.topology);
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 let sweeping = false;
 async function sweep() {
@@ -38,6 +40,15 @@ async function sweep() {
     console.error(
       JSON.stringify({ level: 'error', msg: 'storage sweep failed', err: String(err) }),
     );
+  }
+  try {
+    // Uploads (#18): expire abandoned multipart uploads, re-enqueue lost ingest jobs.
+    const uploads = await sweepUploads({ db: database.db, storage, jobs: publisher });
+    if (uploads.expired.length || uploads.requeued.length) {
+      console.log(JSON.stringify({ level: 'info', msg: 'upload sweep', ...uploads }));
+    }
+  } catch (err) {
+    console.error(JSON.stringify({ level: 'error', msg: 'upload sweep failed', err: String(err) }));
   } finally {
     sweeping = false;
   }
@@ -60,6 +71,7 @@ async function stop(signal: string) {
   console.log(JSON.stringify({ level: 'info', msg: 'worker stopping', signal }));
   clearInterval(sweepTimer);
   await worker.close();
+  await publisher.close();
   await queue.close();
   await database.close();
   process.exit(0);

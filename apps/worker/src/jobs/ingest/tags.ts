@@ -62,7 +62,7 @@ export function readTags(probe: ProbeResult, stream: ProbeStream, filename: stri
 
   const metadata: AssetMetadata = {};
   const composer = pick('composer', 'tcom');
-  const label = pick('label', 'organization', 'tpub_label');
+  const label = pick('label', 'organization');
   const publisher = pick('publisher', 'tpub');
   const comment = clean(all.comment ?? all.description ?? all.icmt, 5000);
   if (composer) metadata.composer = composer;

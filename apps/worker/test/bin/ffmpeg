@@ -1,0 +1,13 @@
+#!/bin/sh
+# ffmpeg/ffprobe from the worker image's `ffmpeg` stage, for the ingest integration tests (CI
+# and local), so they run the exact binaries production runs (7.1, with libsoxr). Build once:
+#   docker build --target ffmpeg -t ondes-ffmpeg:dev -f deploy/docker/worker.Dockerfile .
+# then put this folder first on the PATH (or set FFMPEG_PATH/FFPROBE_PATH to these files).
+# Paths are passed as they are, so the temp dir is mounted at the same path in the container.
+set -eu
+tool=$(basename "$0")
+tmp=${TMPDIR:-/tmp}
+tmp=${tmp%/}
+exec docker run --rm -i --network host --user "$(id -u):$(id -g)" \
+  -v "$tmp:$tmp" -v /tmp:/tmp \
+  "${ONDES_FFMPEG_IMAGE:-ondes-ffmpeg:dev}" "$tool" "$@"

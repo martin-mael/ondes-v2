@@ -4,10 +4,12 @@ import {
   createOrganization,
   createStation,
   getUpload,
+  reservedUploadBytes,
   resolveOrgScope,
   resolveStationScope,
   type StationScope,
   setOrgStorageLimit,
+  transitionUpload,
 } from '@ondes/db';
 import { createTestDatabase } from '@ondes/db/testing';
 import type { Actor, IngestJobPayload, Upload } from '@ondes/shared';
@@ -131,6 +133,7 @@ describe.skipIf(!enabled)('upload api (integration)', () => {
       uploadId: upload.id,
       orgId: scope.orgId,
       stationId: scope.stationId,
+      generation: 0,
     });
 
     const row = await getUpload(t.tdb.db, scope, upload.id);
@@ -167,18 +170,20 @@ describe.skipIf(!enabled)('upload api (integration)', () => {
   });
 
   it('refuses an upload over the org quota before handing out any URL', async () => {
-    await setOrgStorageLimit(t.tdb.db, scope.orgId, 10 * MiB);
+    // Earlier tests' unfinished uploads are reserved too: the limit leaves 10 MiB on top.
+    const limit = (await reservedUploadBytes(t.tdb.db, scope.orgId)) + 10 * MiB;
+    await setOrgStorageLimit(t.tdb.db, scope.orgId, limit);
     try {
       const res = await api('POST', '/uploads', { filename: 'big.wav', sizeBytes: 11 * MiB });
       expect(res.statusCode).toBe(413);
       expect(res.json()).toMatchObject({
         error: 'quota_exceeded',
-        details: { limitBytes: 10 * MiB },
+        details: { limitBytes: limit },
       });
 
       // Allowed when created, refused once the quota shrank: no more part URLs.
       const upload = await create(6 * MiB);
-      await setOrgStorageLimit(t.tdb.db, scope.orgId, 1 * MiB);
+      await setOrgStorageLimit(t.tdb.db, scope.orgId, limit - 5 * MiB);
       const parts = await api('POST', `/uploads/${upload.id}/parts`, { partNumbers: [1] });
       expect(parts.statusCode).toBe(413);
     } finally {
@@ -186,14 +191,68 @@ describe.skipIf(!enabled)('upload api (integration)', () => {
     }
   });
 
-  it('refuses a completed object whose size differs from the declared one', async () => {
-    const upload = await create(1000);
-    await sendParts(upload, randomBytes(999), [1]);
-    const res = await api('POST', `/uploads/${upload.id}/complete`);
-    expect(res.statusCode).toBe(409);
-    expect((await api('GET', `/uploads/${upload.id}`)).json()).toMatchObject({
-      status: 'aborted',
-      errorCode: 'size_mismatch',
+  it('signs each part URL for its exact size: no client can store more than declared', async () => {
+    const bytes = randomBytes(20 * MiB);
+    const upload = await create(bytes.length);
+    const res = await api('POST', `/uploads/${upload.id}/parts`, { partNumbers: [1, 2] });
+    const [first, last] = res.json().parts as { url: string }[];
+    // Part 1 is exactly partSize; part 2 is the remaining 4 MiB.
+    // S3 answers 403, or (Garage) drops the connection before reading the whole body.
+    const accepted = (url: string | undefined, body: Uint8Array) =>
+      fetch(url as string, { method: 'PUT', body }).then(
+        (r) => r.ok,
+        () => false,
+      );
+    expect(await accepted(first?.url, randomBytes(17 * MiB))).toBe(false);
+    expect(await accepted(last?.url, randomBytes(16 * MiB))).toBe(false);
+    await sendParts(upload, bytes, [1, 2]);
+    expect((await api('POST', `/uploads/${upload.id}/complete`)).statusCode).toBe(202);
+  });
+
+  it('counts unfinished uploads against the quota', async () => {
+    const base = await api('POST', '/uploads', { filename: 'a.wav', sizeBytes: 1 });
+    expect(base.statusCode).toBe(201);
+    // Everything not finished so far in this file is reserved: allow 8 MiB more than that.
+    const reserved = await reservedUploadBytes(t.tdb.db, scope.orgId);
+    await setOrgStorageLimit(t.tdb.db, scope.orgId, reserved + 8 * MiB);
+    try {
+      const first = await create(6 * MiB, 'one.wav');
+      // 6 MiB open + 6 MiB more > 8 MiB, though each fits alone.
+      const second = await api('POST', '/uploads', { filename: 'two.wav', sizeBytes: 6 * MiB });
+      expect(second.statusCode).toBe(413);
+      // The open upload itself still gets its URLs (its own size isn't counted twice).
+      const parts = await api('POST', `/uploads/${first.id}/parts`, { partNumbers: [1] });
+      expect(parts.statusCode).toBe(200);
+      // Aborting frees the reservation.
+      await api('POST', `/uploads/${first.id}/abort`);
+      expect(
+        (await api('POST', '/uploads', { filename: 'two.wav', sizeBytes: 6 * MiB })).statusCode,
+      ).toBe(201);
+    } finally {
+      await setOrgStorageLimit(t.tdb.db, scope.orgId, null);
+    }
+  });
+
+  it('retries a failed upload under a new generation', async () => {
+    const bytes = randomBytes(1000);
+    const upload = await create(bytes.length);
+    await sendParts(upload, bytes, [1]);
+    await api('POST', `/uploads/${upload.id}/complete`);
+    expect((await api('POST', `/uploads/${upload.id}/retry`)).statusCode).toBe(409);
+    // What ingest does after its last attempt.
+    await transitionUpload(t.tdb.db, { actor: system, scope }, upload.id, ['queued'], {
+      status: 'failed',
+      errorCode: 'internal',
+      error: 'S3 unavailable',
+    });
+    const res = await api('POST', `/uploads/${upload.id}/retry`);
+    expect(res.statusCode, res.body).toBe(202);
+    expect(res.json()).toMatchObject({ status: 'queued', errorCode: null, error: null });
+    expect(enqueued.at(-1)).toEqual({
+      uploadId: upload.id,
+      orgId: scope.orgId,
+      stationId: scope.stationId,
+      generation: 1,
     });
   });
 

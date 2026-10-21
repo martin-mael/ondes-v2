@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { bitDepth, durationSamples, isLossless, parseFlacStreamInfo } from './ffmpeg.ts';
+import {
+  bitDepth,
+  durationSamples,
+  isFileError,
+  isLossless,
+  parseFlacStreamInfo,
+  ToolError,
+  ToolKilledError,
+  transcodeTimeoutMs,
+} from './ffmpeg.ts';
 
 /** `fLaC` + a STREAMINFO block, like ffmpeg writes it. */
 function streamInfo(o: {
@@ -66,5 +75,26 @@ describe('stream helpers', () => {
         probe,
       ),
     ).toBe(132_300);
+  });
+});
+
+describe('isFileError', () => {
+  it('quarantines only a tool that ran and rejected the file', () => {
+    expect(
+      isFileError(new ToolError('ffprobe', 1, 'Invalid data found when processing input')),
+    ).toBe(true);
+    expect(isFileError(new ToolKilledError('ffmpeg', 'killed by SIGKILL'))).toBe(false);
+    expect(isFileError(Object.assign(new Error('spawn ffmpeg ENOENT'), { code: 'ENOENT' }))).toBe(
+      false,
+    );
+    expect(isFileError(new ToolError('ffmpeg', 1, 'Error: No space left on device'))).toBe(false);
+    expect(
+      isFileError(new ToolError('ffmpeg', 234, 'Requested resampling engine is unavailable')),
+    ).toBe(false);
+  });
+
+  it('gives transcodes a base time plus the audio duration', () => {
+    expect(transcodeTimeoutMs(60)).toBe(180_000);
+    expect(transcodeTimeoutMs(undefined)).toBe(120_000 + 3_600_000);
   });
 });

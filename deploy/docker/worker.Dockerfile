@@ -18,15 +18,20 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile --prod --filter "@ondes/worker..." --store-dir /pnpm/store
 # Drop the other apps and the tests.
 RUN find apps -mindepth 1 -maxdepth 1 ! -name worker -exec rm -rf {} + \
- && find apps packages -name '*.test.ts' -delete
+ && find apps packages -name '*.test.ts' -delete \
+ && rm -rf apps/worker/test
 
-FROM ${NODE_IMAGE} AS runtime
 # ffmpeg/ffprobe for ingest (#18). The Debian release of the pinned base image fixes the
-# version line (trixie: 7.1.x); security updates within it are taken. Ingest checks the
-# playout encoding (FLAC, 1024-sample blocks) itself, so a changed encoder can't slip through.
+# version line (trixie: 7.1.x, built with libsoxr); security updates within it are taken.
+# Ingest checks the playout encoding (FLAC, 1024-sample blocks) itself, so a changed encoder
+# can't slip through. CI runs the ingest tests with this stage's binaries
+# (`docker build --target ffmpeg`, apps/worker/test/bin).
+FROM ${NODE_IMAGE} AS ffmpeg
 RUN apt-get update \
  && apt-get install -y --no-install-recommends 'ffmpeg=7:7.1.*' \
  && rm -rf /var/lib/apt/lists/*
+
+FROM ffmpeg AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build --chown=root:root /app /app

@@ -12,6 +12,8 @@ CREATE TABLE "upload" (
 	"part_size" integer NOT NULL,
 	"part_count" integer NOT NULL,
 	"sha256" text,
+	"generation" integer DEFAULT 0 NOT NULL,
+	"waiting_on_upload_id" uuid,
 	"asset_id" uuid,
 	"duplicate_of_asset_id" uuid,
 	"error_code" text,
@@ -27,4 +29,5 @@ CREATE TABLE "upload" (
 ALTER TABLE "upload" ADD CONSTRAINT "upload_station_org_fk" FOREIGN KEY ("station_id","org_id") REFERENCES "public"."station"("id","org_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "upload_station_id_idx" ON "upload" USING btree ("station_id","id");--> statement-breakpoint
 CREATE INDEX "upload_station_status_idx" ON "upload" USING btree ("station_id","status");--> statement-breakpoint
-CREATE INDEX "upload_station_sha256_idx" ON "upload" USING btree ("station_id","sha256");
+CREATE INDEX "upload_station_sha256_idx" ON "upload" USING btree ("station_id","sha256");--> statement-breakpoint
+CREATE INDEX "upload_status_updated_idx" ON "upload" USING btree ("status","updated_at");

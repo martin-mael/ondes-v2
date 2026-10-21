@@ -9,9 +9,12 @@ import {
   createAsset,
   createPostgresQuotaStore,
   type Db,
+  deleteAsset,
+  finishUpload,
   getUpload,
   listAssetFiles,
   putAssetFile,
+  reservedUploadBytes,
   resolveStationScope,
   type StationContext,
   setAssetTags,
@@ -37,6 +40,7 @@ import {
   bitDepth,
   durationSamples,
   ffprobe,
+  isFileError,
   type ProbeResult,
   readFlacStreamInfo,
   ToolError,
@@ -53,15 +57,21 @@ import { readTags } from './tags.ts';
 //   4. playout copy: FLAC 44.1 kHz, 1024-sample blocks (spike #12); the master is the
 //      original as uploaded
 //   5. tags (ID3/Vorbis/…) into the asset
-//   6. `putAssetFile` for both files (charges the content keys), then make sure each object
-//      exists in the bucket and upload it if not (charge first, then ensure: a key released
-//      and swept just before the charge must be uploaded again)
+//   6. the asset, its tags and both files in one transaction (`putAssetFile` charges the
+//      content keys), then make sure each object exists in the bucket and upload it if not
+//      (charge first, then ensure: a key released and swept just before the charge must be
+//      uploaded again)
 //   7. `asset.ingested`
 //
 // Idempotent: the upload row records progress (status, sha256, assetId) and every write is
-// keyed by content, so a retried or redelivered job resumes or does nothing. Broken files are
-// quarantined (no retry); infrastructure errors throw and are retried by the queue, and mark
-// the upload `failed` on the last attempt.
+// keyed by content, so a retried or redelivered job resumes or does nothing. Only a tool that
+// ran and rejected the file quarantines it (no retry). Anything else (S3, Postgres, a killed
+// or timed-out tool, shutdown) throws and is retried by the queue; on the last attempt the
+// upload is marked `failed` and its half-made asset deleted. `POST …/retry` starts over.
+//
+// A second upload of a file another upload is still ingesting waits on it: its job ends, and
+// the first one settles it when it finishes (`finishUpload`), as a duplicate of its asset or
+// with the same failure.
 
 export const INGEST_ACTOR = { type: 'system', name: 'ingest' } as const;
 
@@ -80,7 +90,7 @@ export interface IngestRun {
   signal?: AbortSignal;
 }
 
-/** A file that can't be ingested as it is: quarantine it, don't retry. */
+/** A file that can't be ingested as it is: settle the upload, don't retry. */
 export class QuarantineError extends Error {
   readonly code: UploadErrorCode;
 
@@ -91,18 +101,15 @@ export class QuarantineError extends Error {
   }
 }
 
-/** Another upload of the same file is being ingested: try again once it's done. */
-export class ContentBusyError extends Error {
-  override name = 'ContentBusyError';
-}
-
-/** Upload error codes that are final but not a broken file. */
+/** Upload error codes that are final but not a broken file (`failed`, retryable by hand). */
 const FAILED_CODES: readonly UploadErrorCode[] = ['quota_exceeded'];
 
+/** ffprobe format name → master extension. Never the client's file name: it can lie. */
 const MASTER_EXTENSIONS: Record<string, string> = {
   wav: 'wav',
   w64: 'w64',
   mp3: 'mp3',
+  aac: 'aac',
   flac: 'flac',
   ogg: 'ogg',
   aiff: 'aiff',
@@ -118,19 +125,21 @@ const MIME_TYPES: Record<string, string> = {
   wav: 'audio/wav',
   w64: 'audio/x-w64',
   mp3: 'audio/mpeg',
+  aac: 'audio/aac',
   flac: 'audio/flac',
   ogg: 'audio/ogg',
   aiff: 'audio/aiff',
   m4a: 'audio/mp4',
   mka: 'audio/x-matroska',
   wv: 'audio/x-wavpack',
+  caf: 'audio/x-caf',
+  au: 'audio/basic',
 };
+const UNKNOWN_MIME = 'application/octet-stream';
 
-function masterExtension(probe: ProbeResult, filename: string): string {
+export function masterExtension(probe: ProbeResult): string {
   const format = probe.format?.format_name;
-  if (format && MASTER_EXTENSIONS[format]) return MASTER_EXTENSIONS[format];
-  const ext = filename.match(/\.([A-Za-z0-9]{1,10})$/)?.[1]?.toLowerCase();
-  return ext ?? 'bin';
+  return (format && MASTER_EXTENSIONS[format]) || 'bin';
 }
 
 export async function ingest(
@@ -141,6 +150,8 @@ export async function ingest(
   const scope = await resolveStationScope(deps.db, payload.orgId, payload.stationId);
   const ctx: StationContext = { actor: INGEST_ACTOR, scope };
   let row = await getUpload(deps.db, scope, payload.uploadId);
+  // A job of an earlier generation, redelivered after a retry was queued.
+  if (payload.generation !== row.generation) return;
 
   switch (row.status) {
     case 'uploading':
@@ -158,6 +169,8 @@ export async function ingest(
       await publishUpload(deps, row);
       break;
     case 'processing':
+      // Waiting on another upload of the same file: that one settles this one.
+      if (row.waitingOnUploadId) return;
       break;
   }
 
@@ -166,25 +179,52 @@ export async function ingest(
     await runIngest(deps, ctx, row, work, run);
   } catch (error) {
     if (error instanceof QuarantineError) {
-      const status = FAILED_CODES.includes(error.code) ? 'failed' : 'quarantined';
-      const done = await transitionUpload(deps.db, ctx, row.id, ['processing'], {
-        status,
+      await finish(deps, ctx, row, {
+        status: FAILED_CODES.includes(error.code) ? 'failed' : 'quarantined',
         ...uploadError(error.code, error.message),
       });
-      await publishUpload(deps, done);
       return;
     }
-    if (run.isLastAttempt) {
-      const done = await transitionUpload(deps.db, ctx, row.id, ['processing'], {
-        status: 'failed',
-        ...uploadError('internal', error instanceof Error ? error.message : String(error)),
-      }).catch(() => null);
-      if (done) await publishUpload(deps, done).catch(() => {});
-    }
+    if (run.isLastAttempt) await giveUp(deps, ctx, row.id, error);
     throw error;
   } finally {
     await rm(work, { recursive: true, force: true });
   }
+}
+
+/** Last attempt failed: delete the half-made asset (if any) and mark the upload `failed`. */
+async function giveUp(deps: IngestDeps, ctx: StationContext, id: string, error: unknown) {
+  try {
+    const row = await getUpload(deps.db, ctx.scope, id);
+    if (row.status !== 'processing') return;
+    if (row.assetId) await deleteAsset(deps.db, ctx, row.assetId).catch(() => {});
+    await finish(deps, ctx, row, {
+      status: 'failed',
+      assetId: null,
+      ...uploadError('internal', error instanceof Error ? error.message : String(error)),
+    });
+  } catch {
+    // The original error is what the queue records.
+  }
+}
+
+/** Final status, waiters settled, events out; staging objects of settled duplicates removed. */
+async function finish(
+  deps: IngestDeps,
+  ctx: StationContext,
+  row: UploadRecord,
+  patch: Parameters<typeof finishUpload>[3],
+): Promise<UploadRecord> {
+  const { upload, waiters } = await finishUpload(deps.db, ctx, row.id, patch);
+  for (const done of [upload, ...waiters]) {
+    if (done.status === 'ingested' || done.status === 'duplicate') {
+      await deleteStaging(deps.storage, done.stagingKey);
+    }
+  }
+  if (upload.status === 'ingested') await publishIngested(deps, ctx, upload);
+  else await publishUpload(deps, upload);
+  for (const waiter of waiters) await publishUpload(deps, waiter);
+  return upload;
 }
 
 async function runIngest(
@@ -201,7 +241,8 @@ async function runIngest(
   const sourcePath = join(work, 'source');
   const source = await download(storage, row.stagingKey, sourcePath);
   const probe = await ffprobe(deps.tools, sourcePath, run.signal).catch((error: unknown) => {
-    throw new QuarantineError('probe_failed', toolMessage(error));
+    if (isFileError(error)) throw new QuarantineError('probe_failed', toolMessage(error));
+    throw error;
   });
   const stream = audioStream(probe);
   if (!stream) throw new QuarantineError('not_audio', 'no audio stream in the file');
@@ -209,29 +250,26 @@ async function runIngest(
 
   // 3. Dedupe within the station.
   const claim = await claimUploadContent(db, ctx, row.id, source.sha256);
-  if (claim.kind === 'busy') {
-    throw new ContentBusyError(`the same file is being ingested by upload ${claim.uploadId}`);
-  }
+  if (claim.kind === 'waiting') return;
   if (claim.kind === 'duplicate') {
-    const done = await transitionUpload(db, ctx, row.id, ['processing'], {
+    await finish(deps, ctx, row, {
       status: 'duplicate',
       sha256: source.sha256,
       duplicateOfAssetId: claim.assetId,
       error: `same file as asset ${claim.assetId}`,
     });
-    await deleteStaging(storage, row.stagingKey);
-    await publishUpload(deps, done);
     return;
   }
 
   // 4. Playout copy.
   const playoutPath = join(work, 'playout.flac');
-  await transcodePlayout(deps.tools, sourcePath, playoutPath, stream, run.signal).catch(
-    (error: unknown) => {
-      if (run.signal?.aborted) throw error;
-      throw new QuarantineError('transcode_failed', toolMessage(error));
-    },
-  );
+  await transcodePlayout(deps.tools, sourcePath, playoutPath, stream, {
+    signal: run.signal,
+    durationSeconds: stream.duration ?? probe.format?.duration,
+  }).catch((error: unknown) => {
+    if (isFileError(error)) throw new QuarantineError('transcode_failed', toolMessage(error));
+    throw error;
+  });
   const info = await readFlacStreamInfo(playoutPath);
   if (
     info.minBlockSize !== PLAYOUT_FLAC_BLOCK_SIZE ||
@@ -246,21 +284,23 @@ async function runIngest(
   if (info.totalSamples === 0) throw new QuarantineError('empty', 'the file has no audio samples');
   const playout = await hashFile(playoutPath);
 
-  const masterExt = masterExtension(probe, row.filename);
+  const masterExt = masterExtension(probe);
+  const masterMime = MIME_TYPES[masterExt] ?? UNKNOWN_MIME;
   const masterKey = contentKey({ orgId, sha256: source.sha256, ext: masterExt });
   const playoutKey = contentKey({ orgId, sha256: playout.sha256, ext: 'flac' });
 
-  // Quota: only bytes of objects the org doesn't hold yet count.
+  // Quota: bytes of objects the org doesn't hold yet, plus its other unfinished uploads.
   const sizes = new Map([
     [masterKey, source.sizeBytes],
     [playoutKey, playout.sizeBytes],
   ]);
   const newKeys = await unreferencedKeys(db, orgId, [...sizes.keys()]);
+  const reserved = await reservedUploadBytes(db, orgId, row.id);
   try {
     await assertQuota(
       createPostgresQuotaStore(db),
       orgId,
-      newKeys.reduce((sum, key) => sum + (sizes.get(key) ?? 0), 0),
+      reserved + newKeys.reduce((sum, key) => sum + (sizes.get(key) ?? 0), 0),
     );
   } catch (error) {
     if (error instanceof QuotaExceededError) {
@@ -269,62 +309,62 @@ async function runIngest(
     throw error;
   }
 
-  // 5. The asset, created once: its id is stored on the upload in the same transaction.
+  // 5–6. Asset, tags and both files at once: an asset never exists without its files. Its id
+  // goes on the upload in the same transaction, so a retry reuses it (and re-puts the same
+  // keys, which leaves the reference counts as they are).
   const read = readTags(probe, stream, row.filename);
-  let assetId = row.assetId;
-  if (!assetId) {
-    assetId = await db.transaction(async (tx) => {
+  const lossless = bitDepth(stream) !== null;
+  const assetId = await db.transaction(async (tx) => {
+    let id = row.assetId;
+    if (!id) {
       const asset = await createAsset(tx, ctx, {
         ...read.asset,
         type: row.assetType,
         durationMs: Math.round((info.totalSamples / PLAYOUT_SAMPLE_RATE) * 1000),
       });
-      if (read.tags.length) await setAssetTags(tx, ctx, asset.id, { tags: read.tags });
-      await setUploadAsset(tx, ctx.scope, row.id, asset.id);
-      return asset.id;
+      id = asset.id;
+      if (read.tags.length) await setAssetTags(tx, ctx, id, { tags: read.tags });
+      await setUploadAsset(tx, ctx.scope, row.id, id);
+    }
+    await putAssetFile(tx, ctx, id, {
+      role: 'master',
+      storageKey: masterKey,
+      sha256: source.sha256,
+      sizeBytes: source.sizeBytes,
+      codec: stream.codec_name ?? 'unknown',
+      mimeType: masterMime,
+      sampleRate: stream.sample_rate,
+      channels: stream.channels ?? null,
+      bitDepth: lossless ? bitDepth(stream) : null,
+      durationSamples: durationSamples(stream, probe),
     });
-  }
-
-  // 6. Charge both keys, then make sure the objects are there.
-  const lossless = bitDepth(stream) !== null;
-  await putAssetFile(db, ctx, assetId, {
-    role: 'master',
-    storageKey: masterKey,
-    sha256: source.sha256,
-    sizeBytes: source.sizeBytes,
-    codec: stream.codec_name ?? 'unknown',
-    mimeType: MIME_TYPES[masterExt] ?? row.contentType,
-    sampleRate: stream.sample_rate,
-    channels: stream.channels ?? null,
-    bitDepth: lossless ? bitDepth(stream) : null,
-    durationSamples: durationSamples(stream, probe),
+    await putAssetFile(tx, ctx, id, {
+      role: 'playout',
+      storageKey: playoutKey,
+      sha256: playout.sha256,
+      sizeBytes: playout.sizeBytes,
+      codec: 'flac',
+      mimeType: 'audio/flac',
+      sampleRate: info.sampleRate,
+      channels: info.channels,
+      bitDepth: info.bitsPerSample,
+      durationSamples: info.totalSamples,
+      flacBlockSize: info.minBlockSize,
+    });
+    return id;
   });
-  await putAssetFile(db, ctx, assetId, {
-    role: 'playout',
-    storageKey: playoutKey,
-    sha256: playout.sha256,
-    sizeBytes: playout.sizeBytes,
-    codec: 'flac',
-    mimeType: 'audio/flac',
-    sampleRate: info.sampleRate,
-    channels: info.channels,
-    bitDepth: info.bitsPerSample,
-    durationSamples: info.totalSamples,
-    flacBlockSize: info.minBlockSize,
-  });
-  await ensureObject(storage, masterKey, sourcePath, source.sizeBytes, MIME_TYPES[masterExt]);
+  // Charged: now make sure the objects are there.
+  await ensureObject(storage, masterKey, sourcePath, source.sizeBytes, masterMime);
   await ensureObject(storage, playoutKey, playoutPath, playout.sizeBytes, 'audio/flac');
 
   // 7. Done.
-  const done = await transitionUpload(db, ctx, row.id, ['processing'], {
+  await finish(deps, ctx, row, {
     status: 'ingested',
     sha256: source.sha256,
     assetId,
     errorCode: null,
     error: null,
   });
-  await deleteStaging(storage, row.stagingKey);
-  await publishIngested(deps, ctx, done);
 }
 
 async function download(storage: Storage, key: string, path: string) {

@@ -5,6 +5,11 @@ import { z } from 'zod';
 
 // ffprobe/ffmpeg wrappers for ingest. Binaries come from FFPROBE_PATH / FFMPEG_PATH (default:
 // on the PATH; the worker image installs Debian's ffmpeg).
+//
+// Uploaded files are untrusted. Both tools only read local files (`-protocol_whitelist file`)
+// through the audio demuxers below (`-format_whitelist`): a ".mp3" that is really an HLS or
+// concat playlist can't make ffmpeg fetch URLs (SSRF) or read other local files. The worker
+// should also have no network egress beyond Postgres, RabbitMQ and S3 (deploy/README.md).
 
 export interface Tools {
   ffmpeg: string;
@@ -16,34 +21,105 @@ export const defaultTools = (env: Record<string, string | undefined> = process.e
   ffprobe: env.FFPROBE_PATH || 'ffprobe',
 });
 
-/** A tool exited non-zero. `stderr` is its last lines, for the upload's error. */
+/** Demuxers ingest accepts (ffmpeg names; `mov` covers mp4/m4a, `matroska` covers webm). */
+export const AUDIO_DEMUXERS = [
+  'wav',
+  'w64',
+  'mp3',
+  'aac',
+  'flac',
+  'ogg',
+  'aiff',
+  'mov',
+  'mp4',
+  'm4a',
+  'matroska',
+  'webm',
+  'wv',
+  'ape',
+  'caf',
+  'au',
+] as const;
+
+/** Input options for an untrusted file: local file protocol and audio demuxers only. */
+export const SAFE_INPUT = [
+  '-protocol_whitelist',
+  'file',
+  '-format_whitelist',
+  AUDIO_DEMUXERS.join(','),
+] as const;
+
+/** Time limits: probing is quick; transcoding gets a base plus one second per audio second. */
+export const PROBE_TIMEOUT_MS = 60_000;
+export const transcodeTimeoutMs = (durationSeconds: number | undefined) =>
+  120_000 + Math.ceil(durationSeconds ?? 3600) * 1000;
+
+/**
+ * The tool ran and rejected the file (non-zero exit). `stderr` is its last lines, for the
+ * upload's error. Only this means "broken file"; see {@link isFileError}.
+ */
 export class ToolError extends Error {
   readonly stderr: string;
+  readonly exitCode: number;
 
-  constructor(tool: string, code: number | null, stderr: string) {
-    super(`${tool} exited with ${code}: ${stderr || '(no output)'}`);
+  constructor(tool: string, exitCode: number, stderr: string) {
+    super(`${tool} exited with ${exitCode}: ${stderr || '(no output)'}`);
     this.name = 'ToolError';
     this.stderr = stderr;
+    this.exitCode = exitCode;
   }
+}
+
+/** The tool was killed (OOM, SIGKILL, shutdown) or timed out: not the file's fault. */
+export class ToolKilledError extends Error {
+  constructor(tool: string, reason: string) {
+    super(`${tool} ${reason}`);
+    this.name = 'ToolKilledError';
+  }
+}
+
+// ffmpeg exits non-zero for these too, but they are about the machine, not the file.
+const MACHINE_ERRORS = [
+  /No space left on device/i,
+  /Cannot allocate memory/i,
+  /Requested resampling engine is unavailable/i,
+  /Unknown encoder/i,
+  /Permission denied/i,
+];
+
+/** True when `error` says the file itself is broken or unsupported (quarantine, no retry). */
+export function isFileError(error: unknown): error is ToolError {
+  return error instanceof ToolError && !MACHINE_ERRORS.some((re) => re.test(error.stderr));
 }
 
 async function run(
   command: string,
-  args: string[],
-  signal?: AbortSignal,
+  args: readonly string[],
+  options: { signal?: AbortSignal; timeoutMs: number },
 ): Promise<{ stdout: string }> {
+  const timeout = AbortSignal.timeout(options.timeoutMs);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], signal });
     const out: Buffer[] = [];
     let err = '';
+    let failed = false;
     child.stdout.on('data', (chunk: Buffer) => out.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => {
       // Keep the tail only: ffmpeg can be chatty on broken input.
       err = (err + chunk.toString('utf8')).slice(-8000);
     });
-    child.on('error', reject);
-    child.on('close', (code) => {
+    child.on('error', (error) => {
+      // Spawn failures (ENOENT) and aborts (shutdown, timeout).
+      failed = true;
+      if (timeout.aborted) {
+        reject(new ToolKilledError(command, `timed out after ${options.timeoutMs} ms`));
+      } else reject(error);
+    });
+    child.on('close', (code, signalName) => {
+      if (failed) return;
       if (code === 0) resolve({ stdout: Buffer.concat(out).toString('utf8') });
+      else if (code === null) reject(new ToolKilledError(command, `killed by ${signalName}`));
       else reject(new ToolError(command, code, tail(err)));
     });
   });
@@ -97,10 +173,21 @@ export type ProbeStream = z.infer<typeof probeStreamSchema>;
 export async function ffprobe(tools: Tools, path: string, signal?: AbortSignal) {
   const { stdout } = await run(
     tools.ffprobe,
-    ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', path],
-    signal,
+    ['-v', 'error', ...SAFE_INPUT, '-print_format', 'json', '-show_format', '-show_streams', path],
+    { signal, timeoutMs: PROBE_TIMEOUT_MS },
   );
-  return probeSchema.parse(JSON.parse(stdout));
+  const parsed = probeSchema.safeParse(safeJson(stdout));
+  // Output we can't read comes from the file (odd tags, broken headers), not the machine.
+  if (!parsed.success) throw new ToolError(tools.ffprobe, 0, 'unreadable ffprobe output');
+  return parsed.data;
+}
+
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 /** The first real audio stream (not cover art). */
@@ -139,7 +226,8 @@ export function durationSamples(stream: ProbeStream, probe: ProbeResult): number
 /**
  * Encodes the playout copy (spike #12): FLAC, 44.1 kHz, fixed 1024-sample blocks, first audio
  * stream only, no tags or pictures, bit-exact (the same input always gives the same bytes, so
- * a retried ingest finds the object it already stored). 24-bit when the source is lossless
+ * a retried ingest finds the object it already stored). Resampled with SoX's resampler at
+ * high precision, with triangular dither when reducing the bit depth. 24-bit when the source is lossless
  * and deeper than 16 bits, 16-bit otherwise; more than two channels are downmixed to stereo.
  */
 export async function transcodePlayout(
@@ -147,7 +235,7 @@ export async function transcodePlayout(
   input: string,
   output: string,
   stream: ProbeStream,
-  signal?: AbortSignal,
+  options: { signal?: AbortSignal; durationSeconds?: number } = {},
 ): Promise<void> {
   const deep = (bitDepth(stream) ?? 16) > 16;
   await run(
@@ -157,6 +245,7 @@ export async function transcodePlayout(
       '-v',
       'error',
       '-y',
+      ...SAFE_INPUT,
       '-i',
       input,
       '-map',
@@ -165,6 +254,8 @@ export async function transcodePlayout(
       '-map_metadata',
       '-1',
       ...((stream.channels ?? 2) > 2 ? ['-ac', '2'] : []),
+      '-af',
+      `aresample=${PLAYOUT_SAMPLE_RATE}:resampler=soxr:precision=28:dither_method=triangular`,
       '-ar',
       String(PLAYOUT_SAMPLE_RATE),
       '-c:a',
@@ -180,7 +271,7 @@ export async function transcodePlayout(
       'flac',
       output,
     ],
-    signal,
+    { signal: options.signal, timeoutMs: transcodeTimeoutMs(options.durationSeconds) },
   );
 }
 

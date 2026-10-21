@@ -21,8 +21,10 @@ import { uuidSchema } from './tenancy.ts';
  *   was created. Reported, never dropped silently.
  * - `quarantined`: the file is broken or not audio (`error`). The uploaded object is kept for
  *   inspection until the upload is deleted.
- * - `failed`: ingest ran out of retries on an infrastructure error (`error`).
- * - `aborted`: cancelled by the client before completing.
+ * - `failed`: ingest ran out of retries on an infrastructure error, or the org ran out of
+ *   quota (`error`). `POST …/uploads/:id/retry` queues it again.
+ * - `aborted`: cancelled by the client before completing, or left unfinished for a day
+ *   (`expired`).
  */
 export const uploadStatusSchema = z.enum([
   'uploading',
@@ -48,7 +50,7 @@ export const FINAL_UPLOAD_STATUSES = [
 /**
  * Machine code of a quarantine or failure: `not_audio` (no audio stream), `probe_failed`
  * (ffprobe can't read it), `transcode_failed` (ffmpeg can't decode it), `empty` (no audio
- * samples), `quota_exceeded`, `size_mismatch`, `internal`.
+ * samples), `quota_exceeded`, `size_mismatch`, `expired` (never completed), `internal`.
  */
 export const uploadErrorCodeSchema = z.enum([
   'not_audio',
@@ -57,6 +59,7 @@ export const uploadErrorCodeSchema = z.enum([
   'empty',
   'quota_exceeded',
   'size_mismatch',
+  'expired',
   'internal',
 ]);
 export type UploadErrorCode = z.infer<typeof uploadErrorCodeSchema>;
@@ -159,16 +162,19 @@ export type UploadPage = z.infer<typeof uploadPageSchema>;
 /** Job name of the worker's `jobs/ingest`. */
 export const INGEST_JOB = 'ingest';
 
-/** Enqueued when an upload completes. */
+/** Enqueued when an upload completes, and again when a failed upload is retried. */
 export const ingestJobPayloadSchema = z.object({
   uploadId: uuidSchema,
   orgId: uuidSchema,
   stationId: uuidSchema,
+  /** The upload's retry count; a job for an older generation does nothing. */
+  generation: z.int().min(0).default(0),
 });
 export type IngestJobPayload = z.infer<typeof ingestJobPayloadSchema>;
 
-/** Explicit key: one upload is ingested once (ADR 0006 `once` mode). */
-export const ingestIdempotencyKey = (payload: IngestJobPayload) => `upload:${payload.uploadId}`;
+/** Explicit key: each generation of an upload is ingested once (ADR 0006 `once` mode). */
+export const ingestIdempotencyKey = (payload: IngestJobPayload) =>
+  `upload:${payload.uploadId}:${payload.generation}`;
 
 // --- asset.ingested ----------------------------------------------------------------------
 

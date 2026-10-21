@@ -6,6 +6,8 @@ import {
   deleteUpload,
   getUpload,
   LibraryConflictError,
+  reservedUploadBytes,
+  retryUpload as retryUploadRow,
   type StationContext,
   toUpload,
   transitionUpload,
@@ -35,7 +37,12 @@ import { assertQuota, orgPrefix, type Storage, type UploadedPart } from '@ondes/
 // 2. `presignParts`: URLs for the parts the browser sends (quota checked again).
 // 3. `listParts`: the parts S3 already has, so an interrupted upload resumes with the rest.
 // 4. `complete`: every part present → S3 complete → size check → `queued` → ingest job.
-// `abort` cancels an open upload; `remove` deletes a finished one and its staging object.
+// `abort` cancels an open upload; `remove` deletes a finished one and its staging object;
+// `retry` queues a failed one again.
+//
+// Quota checks count the org's usage plus the declared size of its unfinished uploads, and
+// each part URL is signed for that part's exact size: a client can't store more than it
+// declared. The worker aborts uploads left open for a day (see jobs/ingest/sweep.ts).
 
 export const ingestJob = jobType(INGEST_JOB, ingestJobPayloadSchema, {
   idempotencyKey: ingestIdempotencyKey,
@@ -58,7 +65,7 @@ export async function createUploadSession(
 ): Promise<Upload> {
   const input = createUploadSchema.parse(body);
   const orgId = ctx.scope.orgId;
-  await assertQuota(createPostgresQuotaStore(deps.db), orgId, input.sizeBytes);
+  await assertUploadQuota(deps.db, orgId, input.sizeBytes);
   const partSize = uploadPartSize(input.sizeBytes);
   const stagingKey = `${orgPrefix(orgId)}uploads/${randomUUID()}`;
   const { uploadId } = await deps.storage.createMultipartUpload(stagingKey, {
@@ -82,6 +89,25 @@ export async function createUploadSession(
   }
 }
 
+/** Usage + unfinished uploads (other than `excludeUploadId`) + `incomingBytes` ≤ limit. */
+async function assertUploadQuota(
+  db: Db,
+  orgId: string,
+  incomingBytes: number,
+  excludeUploadId?: string,
+): Promise<void> {
+  const reserved = await reservedUploadBytes(db, orgId, excludeUploadId);
+  await assertQuota(createPostgresQuotaStore(db), orgId, incomingBytes + reserved);
+}
+
+/** Exact size of part `n` (1-based): `partSize`, except the last one. */
+export function partLength(
+  row: Pick<UploadRecord, 'sizeBytes' | 'partSize' | 'partCount'>,
+  n: number,
+) {
+  return n < row.partCount ? row.partSize : row.sizeBytes - (row.partCount - 1) * row.partSize;
+}
+
 function openUpload(row: UploadRecord): UploadRecord & { s3UploadId: string } {
   if (row.status !== 'uploading' || !row.s3UploadId) {
     throw new LibraryConflictError(`upload ${row.id} is ${row.status}, not uploading`);
@@ -101,11 +127,12 @@ export async function presignParts(
   if (beyond.length) {
     throw new LibraryConflictError(`upload ${id} has ${row.partCount} parts, not ${beyond[0]}`);
   }
-  await assertQuota(createPostgresQuotaStore(deps.db), ctx.scope.orgId, row.sizeBytes);
+  await assertUploadQuota(deps.db, ctx.scope.orgId, row.sizeBytes, row.id);
   const expiresIn = deps.presignExpiresIn ?? DEFAULT_PRESIGN_EXPIRES_IN;
   const unique = [...new Set(partNumbers)].sort((a, b) => a - b);
   const parts = await deps.storage.presignUploadParts(row.stagingKey, row.s3UploadId, unique, {
     expiresIn,
+    contentLengths: Object.fromEntries(unique.map((n) => [n, partLength(row, n)])),
   });
   return { parts, expiresIn };
 }
@@ -165,9 +192,27 @@ export async function completeUpload(
       'upload.complete',
     );
   }
-  if (row.status === 'queued') {
-    await deps.enqueueIngest({ uploadId: row.id, orgId: row.orgId, stationId: row.stationId });
-  }
+  if (row.status === 'queued') await enqueueUpload(deps, row);
+  return toUpload(row);
+}
+
+export async function enqueueUpload(deps: Pick<UploadDeps, 'enqueueIngest'>, row: UploadRecord) {
+  await deps.enqueueIngest({
+    uploadId: row.id,
+    orgId: row.orgId,
+    stationId: row.stationId,
+    generation: row.generation,
+  });
+}
+
+/** Queues a `failed` upload again (new generation, so a new ingest job). */
+export async function retryUpload(
+  deps: UploadDeps,
+  ctx: StationContext,
+  id: string,
+): Promise<Upload> {
+  const row = await retryUploadRow(deps.db, ctx, id);
+  await enqueueUpload(deps, row);
   return toUpload(row);
 }
 
