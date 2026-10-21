@@ -94,7 +94,20 @@ Every PR must pass, locally and in CI:
   - **Never run `pnpm dev:down`, `pnpm dev:reset` or `docker compose … down` from a session**, and don't restart or recreate its services. You'd cut off every other session mid-test. Stopping the stack is for the human.
   - Integration tests stay isolated on the shared stack: a throwaway database per test file (`createTestDatabase`), random queue prefixes, random S3 keys. Keep it that way in new tests.
   - If you need extra containers (e.g. a spike's own engine), use your own compose project name and your own ports, like `engine/spikes/control` does.
-- CI (`.github/workflows/ci.yml`) runs lint, typecheck and unit tests, plus `pnpm test:integration` against Postgres 18 and RabbitMQ 4 service containers. `images.yml` builds the production images on every PR and pushes them to GHCR from `main`.
+- Integration tests are split into the projects of `vitest.integration.config.ts`: `core`, `engine` (tests that start their own Liquidsoap/Icecast compose project) and `worker` (worker jobs, which need the ffmpeg image above). `pnpm test:integration` runs all three; `pnpm test:integration --project worker` runs one. A new `*.int.test.ts` lands in `core` unless it's under `apps/worker/src` or `apps/api/src/modules/engine`; add it to `engine` in that config if it starts Liquidsoap.
+- CI (`.github/workflows/ci.yml`) runs only what a PR needs. A `changes` job (path filters) decides; on `main`, on manual runs and on a PR labelled `ci:full`, everything runs. To force a full run that gates a PR, add the `ci:full` label: it starts a new pull_request run on the PR head (other labels don't cancel the run in flight). `gh workflow run ci.yml --ref <branch>` is for ad-hoc runs only: it isn't the PR's pull_request run, so don't rely on it for the PR's `CI ok`.
+
+  | Job | Runs on a PR when it touches |
+  |---|---|
+  | Lint, typecheck, unit tests | always |
+  | Web build | `apps/web`, `packages/shared` |
+  | Integration (core) | `apps/api`, `packages`, `deploy/compose.dev.yml`, `deploy/dev` |
+  | Integration (engine) | same as core, plus everything that triggers the engine jobs |
+  | Integration (worker) | `apps/worker`, `apps/api/src/modules/library`, `packages`, `deploy/docker/worker.Dockerfile`, `deploy/compose.dev.yml`, `deploy/dev` |
+  | Engine templates, Engine island splice | `engine`, `apps/api/src/modules/engine/config`, `packages/shared`, `deploy/compose.dev.yml` |
+
+  Changes to `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.nvmrc`, `tsconfig.base.json` or `ci.yml` run every job. Skipped jobs report as skipped, not pending: **branch protection on `main` should require only the `CI ok` check** (never the individual jobs), which fails when any job failed or was cancelled. The repo has no branch protection rule yet. When you add a job, add it to `CI ok`'s `needs`; when you add a test folder, check the filters in the `changes` job cover it.
+- `images.yml` builds the production images on PRs only when their build inputs change (`deploy/docker`, any `package.json`, the lockfile, the workspace file, `.dockerignore`, `images.yml` itself) and pushes them to GHCR from `main`, where it runs on every commit. It isn't a required check.
 - Build a production image locally from the repo root: `docker build -f deploy/docker/api.Dockerfile .` (or `worker`). Images run the `.ts` sources directly (`docs/adr/0005-production-images.md`).
 
 If a command here is wrong, fix this file.
