@@ -140,6 +140,10 @@ ranges and defaults (`settings.test.ts`). After a change:
 - `engine.booted`: resolve (`engine_restarted`). A new boot's detector fires again if the
   output is still silent.
 - `engine.down` / `engine.up`: raise a critical `engine.down` / resolve it (`engine_up`).
+  - Every api replica's health monitor (#35) publishes these, with its own event ids. N
+    replicas mean N events per transition.
+  - The dedupe key folds them into one alert: `occurrences` counts them. A `down` older than
+    the last resolve is stale.
 
 **Actions**, through the engine adapter (`alertsPlugin({ engineFor })`, sync or async; with #35, `(id) => app.engineLifecycle.adapterFor(id)`, which reaches the engine from any replica):
 - `skip` (`engine.skip`): `skip()`, which ends the silent item on air.
