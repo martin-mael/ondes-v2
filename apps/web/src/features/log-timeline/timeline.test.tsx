@@ -329,7 +329,13 @@ describe('log timeline', () => {
     const { screen, user } = renderApp(
       `${base}/log`,
       routes('programmer', {
-        [`GET ${base}/assets`]: [200, { items: [tooLong, fits], nextCursor: null }],
+        [`GET ${base}/assets`]: [
+          200,
+          {
+            items: [tooLong, fits, { ...fits, id: queued.assetId, title: 'Same' }],
+            nextCursor: null,
+          },
+        ],
       }),
     );
     await screen.findByText('Saone Drift');
@@ -340,6 +346,8 @@ describe('log timeline', () => {
     expect(within(dialog).getByText('Fits the slot (3:20)')).toBeInTheDocument();
     await within(dialog).findByText('Confluence');
     expect(within(dialog).queryByText('Fete des Lumieres')).not.toBeInTheDocument();
+    // Not the asset it already plays.
+    expect(within(dialog).queryByText('Same')).not.toBeInTheDocument();
     expect(within(dialog).getByText('+3 s')).toBeInTheDocument();
     // Unticking "fits" shows everything.
     await user.click(within(dialog).getByRole('checkbox'));

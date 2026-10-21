@@ -134,7 +134,9 @@ function Timeline() {
 
   const reveal = (itemId: string) => {
     setSelected(itemId);
-    document.getElementById(`log-item-${itemId}`)?.scrollIntoView?.({ block: 'center' });
+    document
+      .getElementById(`log-item-${itemId}`)
+      ?.scrollIntoView?.({ block: 'center', inline: 'nearest' });
   };
   const revealHour = (hourStart: number) =>
     document.getElementById(`log-hour-${hourStart}`)?.scrollIntoView?.({ block: 'start' });
@@ -147,7 +149,9 @@ function Timeline() {
     const target = onAir?.itemId ?? items.find((i) => startMs(i) >= live.now)?.id;
     if (target) {
       requestAnimationFrame(() =>
-        document.getElementById(`log-item-${target}`)?.scrollIntoView?.({ block: 'center' }),
+        document
+          .getElementById(`log-item-${target}`)
+          ?.scrollIntoView?.({ block: 'center', inline: 'nearest' }),
       );
     }
   }, [log.isSuccess, date, today, onAir?.itemId, items, live.now]);
@@ -277,7 +281,7 @@ function Timeline() {
   const onAirLog = onAir ? (log.data?.items ?? []).find((i) => i.id === onAir.itemId) : undefined;
 
   return (
-    <div className="flex flex-col gap-4 p-6">
+    <div className="flex min-w-0 flex-col gap-4 p-6">
       <header className="flex flex-wrap items-start gap-4">
         <div className="flex flex-col gap-1">
           <h1 className="font-heading text-xl font-semibold">{t('title')}</h1>
@@ -480,6 +484,7 @@ function Timeline() {
             : INSERT_KINDS
         }
         targetMs={editing?.type === 'replace' ? editing.item.plannedDurationMs : undefined}
+        exclude={editing?.type === 'replace' ? editing.item.assetId : null}
         pending={edit.isPending}
         onPick={(asset, kind) => {
           if (editing?.type === 'insert') {

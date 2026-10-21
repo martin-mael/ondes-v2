@@ -45,6 +45,7 @@ export function AssetPickerDialog({
   initialKind,
   kinds,
   targetMs,
+  exclude,
   pending,
   onPick,
 }: {
@@ -57,6 +58,8 @@ export function AssetPickerDialog({
   kinds: readonly PickKind[];
   /** The slot to fit (replacements). */
   targetMs?: number;
+  /** The asset being replaced: not offered. */
+  exclude?: string | null;
   pending?: boolean;
   onPick(asset: Asset, kind: PickKind): void;
 }) {
@@ -90,7 +93,7 @@ export function AssetPickerDialog({
   });
   const delta = (asset: Asset) =>
     targetMs === undefined || asset.durationMs === null ? null : asset.durationMs - targetMs;
-  let items = results.data?.items ?? [];
+  let items = (results.data?.items ?? []).filter((a) => a.id !== exclude);
   if (fits && targetMs !== undefined) {
     items = items
       .filter((a) => {

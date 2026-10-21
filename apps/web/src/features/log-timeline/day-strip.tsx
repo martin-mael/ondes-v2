@@ -64,7 +64,7 @@ export function DayStrip({
   }, [px, dayStart, dayEnd]);
 
   return (
-    <section aria-label={t('strip.label')} className="flex flex-col gap-2">
+    <section aria-label={t('strip.label')} className="flex min-w-0 flex-col gap-2">
       <div className="flex items-center gap-1">
         <Button
           size="icon-sm"
@@ -85,7 +85,11 @@ export function DayStrip({
           <ZoomInIcon />
         </Button>
       </div>
-      <div ref={scroller} className="overflow-x-auto rounded-md border bg-muted/30">
+      <div
+        ref={scroller}
+        // Its content is the whole day: keep it from widening the page.
+        className="overflow-x-auto rounded-md border bg-muted/30 contain-inline-size"
+      >
         <div className="relative h-20" style={{ width }}>
           {hours.map((h) => (
             <div
