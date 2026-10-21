@@ -43,6 +43,10 @@ export const alertTypes = {
   engineDown: 'engine.down',
   /** An Icecast mount has no source: listeners hear the fallback (#32). `details.mount`. */
   streamSourceMissing: 'stream.source_missing',
+  /** A station's outputs fail validation; Icecast keeps the last good mounts (#32). */
+  streamConfigInvalid: 'stream.config_invalid',
+  /** Icecast's stats endpoint failed several polls in a row (#32). */
+  streamIcecastUnreachable: 'stream.icecast_unreachable',
 } as const;
 
 /**
