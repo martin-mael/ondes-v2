@@ -2,7 +2,7 @@ import { resolveStationScope } from '@ondes/db';
 import { defineJob } from '@ondes/queue';
 import { CACHE_SYNC_JOB, cacheSyncJobPayloadSchema } from '@ondes/shared';
 import { cacheDeps } from './deps.ts';
-import { syncStation } from './sync.ts';
+import { runCacheSync } from './sync.ts';
 
 // `cache-sync` job (#31, ADR 0004): one pass over a station's horizon. See sync.ts for the
 // pass, trigger.ts for what enqueues it (log changes, the 10 min sweep).
@@ -18,9 +18,19 @@ export default defineJob(
   cacheSyncJobPayloadSchema,
   async (payload, ctx) => {
     const deps = await cacheDeps();
-    if (!deps) return;
+    if (!deps) {
+      // Loud, not retried: another worker with a cache may take the next one.
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          msg: 'cache-sync job skipped: PLAYOUT_CACHE_ROOT is not set on this worker',
+          stationId: payload.stationId,
+        }),
+      );
+      return;
+    }
     const scope = await resolveStationScope(deps.db, payload.orgId, payload.stationId);
-    const report = await syncStation(deps, scope, ctx.signal);
+    const report = await runCacheSync(deps, scope, ctx.signal);
     if (report.fetched.length || report.failed.length || report.plan.evict.length) {
       console.log(
         JSON.stringify({

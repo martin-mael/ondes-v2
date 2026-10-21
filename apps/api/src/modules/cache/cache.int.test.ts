@@ -12,18 +12,22 @@ import {
   type OrgScope,
   putAssetFile,
   recordCachePass,
+  recordCachePassFailure,
   type StationScope,
   unsafeScope,
 } from '@ondes/db';
 import { createTestDatabase, type TestDatabase } from '@ondes/db/testing';
-import type { Actor, CacheStatus } from '@ondes/shared';
+import { defaultIdempotencyKey } from '@ondes/queue';
+import type { Actor, CacheStatus, JobEnvelope } from '@ondes/shared';
 import { contentKey } from '@ondes/storage';
 import { and, eq, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../../app.ts';
 import { createMemoryMailer } from '../../plugins/mail.ts';
+import { createTestRabbit } from '../alerts/testing.ts';
 import { cookieHeader, signUpAndLogin, TEST_AUTH_CONFIG, type TestApp } from '../auth/testing.ts';
+import { createPlayoutCache } from './service.ts';
 
 // The api side of the playout cache (#31): readiness, the station endpoint and the cache
 // alerts, from the tables the worker keeps (written here directly). Postgres only.
@@ -130,6 +134,14 @@ async function log(
   return rows.map((r) => r.id);
 }
 
+async function resolution(scope: StationScope, dedupeKey: string) {
+  const [row] = await tdb.db
+    .select({ resolution: alert.resolution })
+    .from(alert)
+    .where(and(eq(alert.stationId, scope.stationId), eq(alert.dedupeKey, dedupeKey)));
+  return row?.resolution;
+}
+
 async function openAlerts(scope: StationScope) {
   const rows = await tdb.db
     .select({ type: alert.type, dedupeKey: alert.dedupeKey, severity: alert.severity })
@@ -172,6 +184,7 @@ describe('playout cache (api)', () => {
     expect(await cache.isCached(scope, soon.assetFileId)).toBe(true);
     expect(await cache.evaluateAlerts(scope, new Date(now))).toEqual({ raised: 0, resolved: 1 });
     expect(await openAlerts(scope)).toEqual(['cache.horizon_degraded']);
+    expect(await resolution(scope, `cache.item_missing:${soonItem}`)).toBe('cache_ok');
 
     await markCacheFileReady(tdb.db, scope, {
       sha256: later.sha256,
@@ -227,5 +240,102 @@ describe('playout cache (api)', () => {
 
     const denied = await app.inject({ method: 'GET', url, headers: cookieHeader(outsider.cookie) });
     expect(denied.statusCode).toBe(404);
+  });
+
+  it('alerts for a station the worker never synced', async () => {
+    const scope = await newStation();
+    const now = Date.now();
+    const f = await file(scope);
+    const [item] = await log(scope, now, [{ assetId: f.assetId, at: 20 * 60_000 }]);
+    // No station_cache row: no worker with a cache ever ran a pass for it.
+    await app.playoutCache.evaluateAllAlerts(new Date(now));
+    expect(await openAlerts(scope)).toEqual(
+      [`cache.item_missing:${item}`, 'cache.horizon_degraded'].sort(),
+    );
+
+    // The item leaves the log without ever being cached.
+    await tdb.db.delete(logItem).where(eq(logItem.id, item as string));
+    await app.playoutCache.evaluateAllAlerts(new Date(now));
+    expect(await openAlerts(scope)).toEqual([]);
+    expect(await resolution(scope, `cache.item_missing:${item}`)).toBe('no_longer_needed');
+  });
+
+  it('alerts while passes fail, and shows the error', async () => {
+    const scope = await newStation();
+    await recordCachePassFailure(tdb.db, scope, "EACCES: permission denied, mkdir '/cache/x'");
+    await app.playoutCache.evaluateAllAlerts();
+    expect(await openAlerts(scope)).toEqual(['cache.sync_failing']);
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/stations/${scope.stationId}/cache`,
+      headers: cookieHeader(manager.cookie),
+    });
+    expect((res.json() as CacheStatus).lastError).toMatchObject({
+      message: "EACCES: permission denied, mkdir '/cache/x'",
+    });
+
+    await recordCachePass(tdb.db, scope, {
+      usedBytes: 0,
+      horizonBytes: 0,
+      deferred: [],
+      diskLow: false,
+    });
+    await app.playoutCache.evaluateAllAlerts();
+    expect(await openAlerts(scope)).toEqual([]);
+    expect(await resolution(scope, 'cache.sync_failing')).toBe('cache_ok');
+  });
+
+  it('refuses requests without RabbitMQ', async () => {
+    const scope = await newStation();
+    await expect(app.playoutCache.requestSync(scope)).rejects.toThrow(/RabbitMQ/);
+  });
+
+  it('enqueues the urgent fetch and the 422 resync on the high lane, collapsing duplicates', async () => {
+    const rabbit = await createTestRabbit();
+    try {
+      const envelopes: JobEnvelope[] = [];
+      const cache = createPlayoutCache({
+        db: tdb.db,
+        alerts: app.alerts,
+        logger: app.log,
+        enqueue: async (job, payload, scope) => {
+          envelopes.push(
+            await rabbit.jobs.enqueue(job, payload, {
+              orgId: scope.orgId,
+              stationId: scope.stationId,
+            }),
+          );
+        },
+      });
+      const scope = await newStation();
+      const f = await file(scope);
+      await cache.requestUrgentFetch(scope, f.assetFileId);
+      await cache.requestSync(scope);
+      const fetchPayload = {
+        orgId: scope.orgId,
+        stationId: scope.stationId,
+        assetFileId: f.assetFileId,
+      };
+      const syncPayload = { orgId: scope.orgId, stationId: scope.stationId };
+      expect(envelopes).toMatchObject([
+        {
+          name: 'cache-fetch',
+          payload: fetchPayload,
+          stationId: scope.stationId,
+          // A payload-hash key, in flight only: duplicates collapse while one runs, and the
+          // file can be fetched again after an eviction.
+          idempotency: 'in_flight',
+          idempotencyKey: defaultIdempotencyKey('cache-fetch', fetchPayload),
+        },
+        {
+          name: 'cache-sync',
+          payload: syncPayload,
+          idempotency: 'in_flight',
+          idempotencyKey: defaultIdempotencyKey('cache-sync', syncPayload),
+        },
+      ]);
+    } finally {
+      await rabbit.close();
+    }
   });
 });

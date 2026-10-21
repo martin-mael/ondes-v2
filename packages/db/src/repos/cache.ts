@@ -4,8 +4,22 @@ import {
   type CacheReadiness,
   cacheExtOf,
 } from '@ondes/shared';
-import { and, asc, eq, gt, inArray, isNotNull, lt, ne, notInArray, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  lt,
+  ne,
+  notInArray,
+  sql,
+} from 'drizzle-orm';
 import type { Db, Executor } from '../client.ts';
+import { alert } from '../schema/alerts.ts';
 import { playoutCacheFile, stationCache } from '../schema/cache.ts';
 import { assetFile } from '../schema/library.ts';
 import { logDay, logItem } from '../schema/log.ts';
@@ -127,6 +141,7 @@ export async function markCacheFileReady(
       ...file,
       state: 'ready',
       fetchedAt: now,
+      updatedAt: now,
     })
     .onConflictDoUpdate({
       target: [playoutCacheFile.stationId, playoutCacheFile.sha256],
@@ -139,6 +154,7 @@ export async function markCacheFileReady(
         errorMessage: null,
         attempts: 0,
         fetchedAt: now,
+        updatedAt: now,
       },
     });
 }
@@ -170,6 +186,7 @@ export async function markCacheFileFailed(
         error: file.error,
         errorMessage: message,
         attempts: sql`${playoutCacheFile.attempts} + 1`,
+        updatedAt: new Date(),
       },
       setWhere: eq(playoutCacheFile.state, 'failed'),
     });
@@ -179,11 +196,14 @@ export async function markCacheFileFailed(
  * Makes the table match a disk scan: every file on disk is `ready` (with its LRU stamp),
  * `ready` rows of files gone from disk are deleted, and `failed` rows are kept only for files
  * the horizon still needs (`needed`), so their alerts clear when the log moves on.
+ *
+ * `scannedAt`: when the scan started. Rows written after it (an urgent fetch that landed
+ * during the pass) are newer than the scan and left alone.
  */
 export async function reconcileCacheFiles(
   db: Db,
   scope: StationScope,
-  input: { onDisk: readonly CachedFileInput[]; needed: ReadonlySet<string> },
+  input: { onDisk: readonly CachedFileInput[]; needed: ReadonlySet<string>; scannedAt: Date },
 ): Promise<void> {
   await db.transaction(async (tx) => {
     const onDisk = input.onDisk.map((f) => f.sha256);
@@ -193,6 +213,7 @@ export async function reconcileCacheFiles(
         and(
           whereStation(playoutCacheFile, scope),
           eq(playoutCacheFile.state, 'ready'),
+          lt(playoutCacheFile.updatedAt, input.scannedAt),
           onDisk.length ? notInArray(playoutCacheFile.sha256, onDisk) : undefined,
         ),
       );
@@ -203,6 +224,7 @@ export async function reconcileCacheFiles(
         and(
           whereStation(playoutCacheFile, scope),
           eq(playoutCacheFile.state, 'failed'),
+          lt(playoutCacheFile.updatedAt, input.scannedAt),
           needed.length ? notInArray(playoutCacheFile.sha256, needed) : undefined,
         ),
       );
@@ -229,23 +251,32 @@ export async function reconcileCacheFiles(
             errorMessage: null,
             attempts: 0,
             fetchedAt: sql`coalesce(${playoutCacheFile.fetchedAt}, now())`,
+            updatedAt: sql`now()`,
           },
         });
     }
   });
 }
 
-/** Drops the rows of files evicted from disk. */
+/**
+ * Drops the rows of files evicted from disk, unless written after `before` (the file was
+ * fetched again meanwhile, e.g. by an urgent fetch).
+ */
 export async function forgetCacheFiles(
   db: Executor,
   scope: StationScope,
   sha256s: readonly string[],
+  before: Date,
 ): Promise<void> {
   if (!sha256s.length) return;
   await db
     .delete(playoutCacheFile)
     .where(
-      and(whereStation(playoutCacheFile, scope), inArray(playoutCacheFile.sha256, [...sha256s])),
+      and(
+        whereStation(playoutCacheFile, scope),
+        inArray(playoutCacheFile.sha256, [...sha256s]),
+        lt(playoutCacheFile.updatedAt, before),
+      ),
     );
 }
 
@@ -265,6 +296,8 @@ export type StationCacheState = {
   deferred: string[];
   diskLow: boolean;
   lastPassAt: Date | null;
+  /** The last failed pass, if none completed since. */
+  lastError: { at: Date; message: string } | null;
 };
 
 /** The station's cache settings (with defaults) and its last pass. */
@@ -283,6 +316,8 @@ export async function getStationCache(
     deferred: row?.deferred ?? [],
     diskLow: row?.diskLow ?? false,
     lastPassAt: row?.lastPassAt ?? null,
+    lastError:
+      row?.lastErrorAt && row.lastError ? { at: row.lastErrorAt, message: row.lastError } : null,
   };
 }
 
@@ -313,7 +348,22 @@ export async function recordCachePass(
     deferred: pass.deferred.slice(0, 1000),
     diskLow: pass.diskLow,
     lastPassAt: new Date(),
+    lastErrorAt: null,
+    lastError: null,
   };
+  await db
+    .insert(stationCache)
+    .values({ stationId: scope.stationId, orgId: scope.orgId, ...values })
+    .onConflictDoUpdate({ target: stationCache.stationId, set: values });
+}
+
+/** A pass that failed before the end: the UI shows it, `cache.sync_failing` alerts on it. */
+export async function recordCachePassFailure(
+  db: Executor,
+  scope: StationScope,
+  message: string,
+): Promise<void> {
+  const values = { lastErrorAt: new Date(), lastError: message.slice(0, 2000) };
   await db
     .insert(stationCache)
     .values({ stationId: scope.stationId, orgId: scope.orgId, ...values })
@@ -327,14 +377,38 @@ export async function listCacheStations(
   return db.select({ orgId: station.orgId, stationId: station.id }).from(station);
 }
 
-/** Stations the worker has synced at least once: the ones cache alerts are evaluated for. */
-export async function listSyncedCacheStations(
+/**
+ * Stations cache alerts are evaluated for: every station with log items in [now, until) that
+ * play a file, whether or not the worker ever synced it (a worker without a cache, or whose
+ * passes always fail, must not silence the alerts), every station the worker has a record
+ * for (budget, disk and failure alerts), and every station with an open `cache.*` alert (so
+ * it resolves once the cause is gone, e.g. its last item left the log).
+ */
+export async function listCacheAlertStations(
   db: Executor,
+  range: { from: Date; until: Date },
 ): Promise<Array<{ orgId: string; stationId: string }>> {
-  return db
-    .select({ orgId: stationCache.orgId, stationId: stationCache.stationId })
-    .from(stationCache)
-    .where(isNotNull(stationCache.lastPassAt));
+  const [withItems, recorded, alerted] = await Promise.all([
+    db
+      .selectDistinct({ orgId: logItem.orgId, stationId: logItem.stationId })
+      .from(logItem)
+      .where(
+        and(
+          isNotNull(logItem.assetId),
+          lt(logItem.plannedStart, range.until),
+          gt(logItem.plannedStart, new Date(range.from.getTime() - MAX_ITEM_MS)),
+          sql`${logItem.plannedStart} + ${logItem.plannedDurationMs} * interval '1 millisecond' > ${range.from.toISOString()}::timestamptz`,
+        ),
+      ),
+    db.select({ orgId: stationCache.orgId, stationId: stationCache.stationId }).from(stationCache),
+    db
+      .selectDistinct({ orgId: alert.orgId, stationId: alert.stationId })
+      .from(alert)
+      .where(and(isNull(alert.resolvedAt), like(alert.type, 'cache.%'))),
+  ]);
+  const out = new Map<string, { orgId: string; stationId: string }>();
+  for (const s of [...withItems, ...recorded, ...alerted]) out.set(s.stationId, s);
+  return [...out.values()];
 }
 
 // --- Readiness ---------------------------------------------------------------------------
@@ -462,7 +536,11 @@ export async function getCacheSourceFile(
   return row ? { ...row, ext: cacheExtOf(row.key) } : null;
 }
 
-/** A station's ids from its id alone, for event consumers (events carry only the station). */
+/**
+ * A station's ids from its id alone. Unscoped on purpose: a system-only lookup for the
+ * worker's log-event consumer, whose events carry only the station id (they were published by
+ * the api after a scoped write). Not reachable from any API route; never use it to authorise.
+ */
 export async function getCacheStation(
   db: Executor,
   stationId: string,

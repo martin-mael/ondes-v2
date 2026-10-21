@@ -61,6 +61,8 @@ export const alertTypes = {
   cacheChecksumMismatch: 'cache.checksum_mismatch',
   /** The cache disk is under its free-space reserve: fetching paused (#31). */
   cacheDiskLow: 'cache.disk_low',
+  /** The station's last cache-sync pass failed (`details.error`): nothing is being fetched (#31). */
+  cacheSyncFailing: 'cache.sync_failing',
 } as const;
 
 /**

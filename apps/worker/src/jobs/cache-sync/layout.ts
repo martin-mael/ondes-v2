@@ -1,6 +1,18 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { chmod, mkdir, open, readdir, rename, rm, stat, statfs, utimes } from 'node:fs/promises';
+import {
+  chmod,
+  link,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  statfs,
+  utimes,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { Transform, type TransformCallback } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -241,9 +253,14 @@ const STALE_LOCK_MS = 120_000;
 
 /**
  * Runs `fn` holding the download lock of one file (`.partial/<file>.lock`, created with
- * O_EXCL), across worker processes sharing the cache root. Null when another process holds it
- * and `wait` is false. A lock is stale when neither it nor its partial file changed for
- * two minutes (a crashed worker); it is then taken over.
+ * O_EXCL and holding a random token), across worker processes sharing the cache root. Null
+ * when another process holds it and `wait` is false.
+ *
+ * A lock is stale when neither it nor its partial file changed for two minutes (a crashed
+ * worker). It is taken over by renaming it aside (atomic: one process wins) and checking the
+ * token it held: if another process replaced it with a fresh lock in between, that lock is
+ * linked back in place (link fails rather than overwrite, so a third taker is safe too).
+ * Release removes the lock only if it still holds our token.
  */
 export async function withFileLock<T>(
   root: string,
@@ -253,17 +270,25 @@ export async function withFileLock<T>(
 ): Promise<{ value: T } | null> {
   const dir = join(root, '.partial');
   const lock = join(dir, `${obj.sha256}.${obj.ext}.lock`);
+  const token = randomUUID();
   await mkdir(dir, { recursive: true });
   for (;;) {
     try {
       const fh = await open(lock, 'wx');
-      await fh.close();
+      try {
+        await fh.writeFile(token);
+      } finally {
+        await fh.close();
+      }
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
-    if (await isStale(lock, partialPath(root, obj), options.staleMs ?? STALE_LOCK_MS)) {
-      await rm(lock, { force: true });
+    const held = await readLock(lock);
+    // A lock that vanished meanwhile: try again at once.
+    if (!held) continue;
+    if (await isStale(held.mtimeMs, partialPath(root, obj), options.staleMs ?? STALE_LOCK_MS)) {
+      await takeOver(lock, held.token);
       continue;
     }
     if (!options.wait || options.signal?.aborted) return null;
@@ -278,19 +303,37 @@ export async function withFileLock<T>(
     return { value: await fn() };
   } finally {
     clearInterval(heartbeat);
-    await rm(lock, { force: true });
+    if ((await readLock(lock))?.token === token) await rm(lock, { force: true });
   }
 }
 
-async function isStale(lock: string, part: string, staleMs: number): Promise<boolean> {
-  let newest = 0;
-  for (const path of [lock, part]) {
-    try {
-      newest = Math.max(newest, (await stat(path)).mtimeMs);
-    } catch {}
+async function readLock(lock: string): Promise<{ token: string; mtimeMs: number } | null> {
+  try {
+    const [st, token] = await Promise.all([stat(lock), readFile(lock, 'utf8')]);
+    return { token, mtimeMs: st.mtimeMs };
+  } catch {
+    return null;
   }
-  // A lock that vanished meanwhile: try again at once.
-  return newest === 0 || Date.now() - newest > staleMs;
+}
+
+async function takeOver(lock: string, staleToken: string): Promise<void> {
+  const aside = `${lock}.${randomUUID()}.stale`;
+  try {
+    await rename(lock, aside);
+  } catch {
+    return; // Another process took it over first.
+  }
+  const token = await readFile(aside, 'utf8').catch(() => '');
+  if (token !== staleToken) await link(aside, lock).catch(() => {});
+  await rm(aside, { force: true });
+}
+
+async function isStale(lockMtimeMs: number, part: string, staleMs: number): Promise<boolean> {
+  let newest = lockMtimeMs;
+  try {
+    newest = Math.max(newest, (await stat(part)).mtimeMs);
+  } catch {}
+  return Date.now() - newest > staleMs;
 }
 
 /** Files being downloaded by any process right now (their lock exists). */

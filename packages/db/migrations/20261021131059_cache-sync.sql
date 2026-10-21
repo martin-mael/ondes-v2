@@ -29,6 +29,8 @@ CREATE TABLE "station_cache" (
 	"deferred" text[] DEFAULT '{}'::text[] NOT NULL,
 	"disk_low" boolean DEFAULT false NOT NULL,
 	"last_pass_at" timestamp with time zone,
+	"last_error_at" timestamp with time zone,
+	"last_error" text,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "station_cache_settings_check" CHECK (("station_cache"."budget_bytes" is null or "station_cache"."budget_bytes" > 0)
         and ("station_cache"."horizon_hours" is null or "station_cache"."horizon_hours" between 1 and 168)

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -12,7 +12,9 @@ import {
   listCacheFiles,
   logDay,
   logItem,
+  markCacheFileReady,
   putAssetFile,
+  reconcileCacheFiles,
   resolveOrgScope,
   resolveStationScope,
   type StationScope,
@@ -26,12 +28,26 @@ import {
   type JobPublisher,
   type QueueConnection,
 } from '@ondes/queue';
-import { type Actor, playoutRelPath, realtimeEventSchema } from '@ondes/shared';
+import {
+  type Actor,
+  type CacheFetchJobPayload,
+  type CacheSyncJobPayload,
+  playoutRelPath,
+  realtimeEventSchema,
+} from '@ondes/shared';
 import { contentKey, createS3Storage, loadStorageConfig, type Storage } from '@ondes/storage';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import cacheFetchJob from '../cache-fetch/index.ts';
+import cacheSyncJob from './index.ts';
 import { scanCache, touch } from './layout.ts';
 import { HOUR } from './planner.ts';
-import { type CacheSyncDeps, createLimiter, stationCacheDir, syncStation } from './sync.ts';
+import {
+  type CacheSyncDeps,
+  createLimiter,
+  runCacheSync,
+  stationCacheDir,
+  syncStation,
+} from './sync.ts';
 import { startCacheTriggers } from './trigger.ts';
 import { urgentFetch } from './urgent.ts';
 
@@ -318,6 +334,141 @@ describe.skipIf(!enabled)('cache sync', () => {
   });
 });
 
+describe.skipIf(!enabled)('cache sync: failures and guards', () => {
+  it('records a failed pass, and clears it on the next good one', async () => {
+    const scope = await tenant();
+    const t = await track(scope, 10 * KB);
+    await log(scope, [{ track: t, at: 10 }]);
+    // A cache root that is a file: mkdir fails (ENOTDIR), like a broken mount.
+    const notADir = join(cacheRoot, `file-${randomUUID()}`);
+    await writeFile(notADir, '');
+    await expect(runCacheSync({ ...deps, cacheRoot: notADir }, scope)).rejects.toThrow();
+    const failed = await getStationCache(tdb.db, scope);
+    expect(failed.lastPassAt).toBeNull();
+    expect(failed.lastError?.message).toMatch(/ENOTDIR|EEXIST/);
+
+    await runCacheSync(deps, scope);
+    const ok = await getStationCache(tdb.db, scope);
+    expect(ok.lastError).toBeNull();
+    expect(ok.lastPassAt).not.toBeNull();
+  });
+
+  it('stops fetching under the disk reserve', async () => {
+    const scope = await tenant();
+    const t = await track(scope, 10 * KB);
+    await log(scope, [{ track: t, at: 10 }]);
+    const full = { ...deps, diskReserve: () => Number.MAX_SAFE_INTEGER };
+    const report = await syncStation(full, scope);
+    expect(report.diskLow).toBe(true);
+    expect(report.fetched).toEqual([]);
+    expect((await getStationCache(tdb.db, scope)).diskLow).toBe(true);
+    expect(await urgentFetch(full, scope, t.assetFileId)).toEqual({ kind: 'disk_low' });
+    expect(await isPlayoutCached(tdb.db, scope, t.assetFileId)).toBe(false);
+  });
+
+  it('keeps a row written after the scan it reconciles against', async () => {
+    const scope = await tenant();
+    const sha256 = randomBytes(32).toString('hex');
+    const scannedAt = new Date(Date.now() - 1000);
+    // An urgent fetch recorded this file after the pass's scan (which didn't see it).
+    await markCacheFileReady(tdb.db, scope, {
+      sha256,
+      ext: 'flac',
+      sizeBytes: 1,
+      lastNeededAt: null,
+    });
+    await reconcileCacheFiles(tdb.db, scope, { onDisk: [], needed: new Set(), scannedAt });
+    expect(await listCacheFiles(tdb.db, scope)).toHaveLength(1);
+    await reconcileCacheFiles(tdb.db, scope, {
+      onDisk: [],
+      needed: new Set(),
+      scannedAt: new Date(Date.now() + 1000),
+    });
+    expect(await listCacheFiles(tdb.db, scope)).toEqual([]);
+  });
+
+  it('drops only old, unlocked partial files of unplanned objects', async () => {
+    const scope = await tenant();
+    const root = stationCacheDir(cacheRoot, scope.stationId);
+    await mkdir(join(root, '.partial'), { recursive: true });
+    const fresh = join(root, '.partial', `${'c'.repeat(64)}.flac.part`);
+    const old = join(root, '.partial', `${'d'.repeat(64)}.flac.part`);
+    const lockedOld = join(root, '.partial', `${'e'.repeat(64)}.flac.part`);
+    for (const f of [fresh, old, lockedOld]) await writeFile(f, 'x');
+    const longAgo = new Date(Date.now() - 3_600_000);
+    await utimes(old, longAgo, longAgo);
+    await utimes(lockedOld, longAgo, longAgo);
+    await writeFile(join(root, '.partial', `${'e'.repeat(64)}.flac.lock`), 'other');
+    const report = await syncStation(deps, scope);
+    expect(report.partialsRemoved).toBe(1);
+    await expect(stat(old)).rejects.toThrow();
+    expect((await stat(fresh)).size).toBe(1);
+    expect((await stat(lockedOld)).size).toBe(1);
+  });
+});
+
+describe.skipIf(!enabled)('cache jobs', () => {
+  const ctx = (stationId: string) => ({
+    jobId: randomUUID(),
+    idempotencyKey: 'k',
+    attempt: 1,
+    isLastAttempt: false,
+    orgId: undefined,
+    stationId,
+    signal: new AbortController().signal,
+  });
+
+  beforeAll(() => {
+    // The jobs build their dependencies from the environment on first use.
+    process.env.PLAYOUT_CACHE_ROOT = cacheRoot;
+    process.env.DATABASE_URL = tdb.url;
+    process.env.CACHE_DISK_RESERVE_BYTES = '0';
+  });
+
+  it('are the high-lane cache-sync and cache-fetch jobs, without explicit keys', () => {
+    expect(cacheSyncJob).toMatchObject({ name: 'cache-sync', lane: 'high' });
+    expect(cacheFetchJob).toMatchObject({ name: 'cache-fetch', lane: 'high' });
+    // No explicit key: in_flight idempotency, so a later pass or refetch runs again.
+    expect(cacheSyncJob.idempotencyKey).toBeUndefined();
+    expect(cacheFetchJob.idempotencyKey).toBeUndefined();
+  });
+
+  it('cache-fetch fetches the file the feeder asked for', async () => {
+    const scope = await tenant();
+    const t = await track(scope, 20 * KB);
+    const payload: CacheFetchJobPayload = {
+      orgId: scope.orgId,
+      stationId: scope.stationId,
+      assetFileId: t.assetFileId,
+    };
+    await cacheFetchJob.handler(cacheFetchJob.schema.parse(payload), ctx(scope.stationId));
+    expect(await readFile(pathOf(scope, t))).toEqual(t.bytes);
+    expect(await isPlayoutCached(tdb.db, scope, t.assetFileId)).toBe(true);
+  });
+
+  it('cache-sync repairs a table that claims a file the disk lacks (the 422 path)', async () => {
+    const scope = await tenant();
+    const t = await track(scope, 20 * KB);
+    await log(scope, [{ track: t, at: 10 }]);
+    // The table says cached, the disk doesn't have it: the engine answers 422, the feeder
+    // calls requestSync, which enqueues this job.
+    await markCacheFileReady(tdb.db, scope, {
+      sha256: t.sha256,
+      ext: 'flac',
+      sizeBytes: t.bytes.length,
+      lastNeededAt: null,
+    });
+    expect(await isPlayoutCached(tdb.db, scope, t.assetFileId)).toBe(true);
+    await expect(stat(pathOf(scope, t))).rejects.toThrow();
+    const payload: CacheSyncJobPayload = { orgId: scope.orgId, stationId: scope.stationId };
+    await cacheSyncJob.handler(cacheSyncJob.schema.parse(payload), ctx(scope.stationId));
+    expect(await readFile(pathOf(scope, t))).toEqual(t.bytes);
+    expect(await listCacheFiles(tdb.db, scope)).toMatchObject([
+      { sha256: t.sha256, state: 'ready' },
+    ]);
+  });
+});
+
 describe.skipIf(!enabled)('cache sync triggers', () => {
   let queue: QueueConnection;
   const eventQueue = `cache-sync-it-${randomUUID().slice(0, 8)}`;
@@ -347,6 +498,7 @@ describe.skipIf(!enabled)('cache sync triggers', () => {
       jobs,
       db: tdb.db,
       sweepIntervalMs: 0,
+      trailingMs: 0,
       eventQueue,
     });
     await triggers.ready;
@@ -391,5 +543,52 @@ describe.skipIf(!enabled)('cache sync triggers', () => {
     });
     await events.close();
     await triggers.close();
+  });
+
+  it('enqueues again shortly after a change (a pass may have just missed it)', async () => {
+    const scope = await tenant();
+    const enqueued: unknown[] = [];
+    const jobs: JobPublisher = {
+      async enqueue(_job, payload) {
+        enqueued.push(payload);
+        return {} as never;
+      },
+      close: async () => {},
+    };
+    const name = `${eventQueue}-trailing`;
+    const triggers = startCacheTriggers({
+      queue,
+      jobs,
+      db: tdb.db,
+      sweepIntervalMs: 0,
+      trailingMs: 300,
+      eventQueue: name,
+    });
+    await triggers.ready;
+    const events = createEventPublisher(queue.rabbit, queue.topology, realtimeEventSchema);
+    const change = () =>
+      events.publish({
+        id: randomUUID(),
+        stationId: scope.stationId,
+        at: new Date().toISOString(),
+        type: 'log.updated',
+        data: {
+          from: new Date(Date.now() + HOUR).toISOString(),
+          to: new Date(Date.now() + 2 * HOUR).toISOString(),
+          days: [],
+          cause: 'edit',
+        },
+      });
+    await change();
+    await change();
+    const deadline = Date.now() + 10_000;
+    while (enqueued.length < 3 && Date.now() < deadline)
+      await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 500));
+    // Two immediate enqueues, one trailing one for the station (not one per change).
+    expect(enqueued).toHaveLength(3);
+    await events.close();
+    await triggers.close();
+    await deleteEventQueue(queue.rabbit, queue.topology, name).catch(() => {});
   });
 });

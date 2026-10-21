@@ -1,6 +1,6 @@
 import type { CacheReadiness } from '@ondes/shared';
 import { describe, expect, it } from 'vitest';
-import { cacheAlerts } from './alerts.ts';
+import { cacheAlertResolution, cacheAlerts } from './alerts.ts';
 
 const sha = 'a'.repeat(64);
 const ready: CacheReadiness = {
@@ -21,7 +21,13 @@ const missing: CacheReadiness['missing'][number] = {
   sha256: sha,
   reason: 'pending',
 };
-const state = { deferred: [], diskLow: false, horizonBytes: 10, budgetBytes: 100 };
+const state = {
+  deferred: [],
+  diskLow: false,
+  horizonBytes: 10,
+  budgetBytes: 100,
+  lastError: null,
+};
 
 describe('cacheAlerts', () => {
   it('raises nothing when everything is cached', () => {
@@ -56,5 +62,41 @@ describe('cacheAlerts', () => {
       `cache.checksum_mismatch:${'b'.repeat(64)}`,
       'cache.disk_low',
     ]);
+  });
+});
+
+describe('cache.sync_failing', () => {
+  it('is raised while the last pass failed', () => {
+    const alerts = cacheAlerts({
+      nextHour: ready,
+      nextSixHours: ready,
+      state: { ...state, lastError: { at: new Date('2026-06-10T12:00:00Z'), message: 'EACCES' } },
+      failed: [],
+    });
+    expect(alerts).toMatchObject([
+      {
+        type: 'cache.sync_failing',
+        severity: 'warning',
+        dedupeKey: 'cache.sync_failing',
+        details: { error: 'EACCES', at: '2026-06-10T12:00:00.000Z' },
+      },
+    ]);
+  });
+});
+
+describe('cacheAlertResolution', () => {
+  const item = '0199f6a0-0000-7000-8000-000000000001';
+  const ready = { itemIds: new Set([item]), sha256s: new Set([sha]) };
+  const none = { itemIds: new Set<string>(), sha256s: new Set<string>() };
+
+  it('says cache_ok when the file arrived', () => {
+    expect(cacheAlertResolution(`cache.item_missing:${item}`, ready)).toBe('cache_ok');
+    expect(cacheAlertResolution(`cache.source_missing:${sha}`, ready)).toBe('cache_ok');
+    expect(cacheAlertResolution('cache.disk_low', none)).toBe('cache_ok');
+  });
+
+  it('says no_longer_needed when the item aired or left the log uncached', () => {
+    expect(cacheAlertResolution(`cache.item_missing:${item}`, none)).toBe('no_longer_needed');
+    expect(cacheAlertResolution(`cache.checksum_mismatch:${sha}`, none)).toBe('no_longer_needed');
   });
 });

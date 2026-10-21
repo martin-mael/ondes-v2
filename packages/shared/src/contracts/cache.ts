@@ -108,8 +108,10 @@ export const cacheStatusSchema = z.object({
   horizonBytes: z.int().nonnegative(),
   deferredFiles: z.int().nonnegative(),
   diskLow: z.boolean(),
-  /** Null until the worker's first pass for the station. */
+  /** Null until the worker's first complete pass for the station. */
   lastPassAt: z.iso.datetime({ offset: true }).nullable(),
+  /** The last failed pass and why; null if none failed since the last complete one. */
+  lastError: z.object({ at: z.iso.datetime({ offset: true }), message: z.string() }).nullable(),
   readiness: cacheReadinessSchema,
 });
 export type CacheStatus = z.infer<typeof cacheStatusSchema>;

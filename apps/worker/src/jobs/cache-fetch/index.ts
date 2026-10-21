@@ -15,7 +15,17 @@ export default defineJob(
   cacheFetchJobPayloadSchema,
   async (payload, ctx) => {
     const deps = await cacheDeps();
-    if (!deps) return;
+    if (!deps) {
+      // Loud, not retried: another worker with a cache may take the next one.
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          msg: 'cache-fetch job skipped: PLAYOUT_CACHE_ROOT is not set on this worker',
+          stationId: payload.stationId,
+        }),
+      );
+      return;
+    }
     const scope = await resolveStationScope(deps.db, payload.orgId, payload.stationId);
     const outcome = await urgentFetch(deps, scope, payload.assetFileId, ctx.signal);
     console.log(

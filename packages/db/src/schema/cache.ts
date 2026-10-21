@@ -86,7 +86,11 @@ export const stationCache = pgTable(
     deferred: text('deferred').array().notNull().default(sql`'{}'::text[]`),
     /** Fetching paused: the host filesystem is under its free-space reserve. */
     diskLow: boolean('disk_low').notNull().default(false),
+    /** Last pass that ran to the end. */
     lastPassAt: timestamp('last_pass_at', { withTimezone: true }),
+    /** Last pass that failed (disk, database, configuration), and why. */
+    lastErrorAt: timestamp('last_error_at', { withTimezone: true }),
+    lastError: text('last_error'),
     updatedAt: updatedAt(),
   },
   (t) => [

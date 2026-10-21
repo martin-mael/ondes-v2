@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   type CachedFileInput,
@@ -11,9 +11,10 @@ import {
   markCacheFileReady,
   reconcileCacheFiles,
   recordCachePass,
+  recordCachePassFailure,
   type StationScope,
 } from '@ondes/db';
-import type { CacheFileError, CacheObject } from '@ondes/shared';
+import { type CacheFileError, type CacheObject, playoutRelPath } from '@ondes/shared';
 import { ObjectNotFoundError, type Storage } from '@ondes/storage';
 import {
   ChecksumMismatchError,
@@ -82,6 +83,27 @@ export function stationCacheDir(cacheRoot: string, stationId: string): string {
   return join(cacheRoot, stationId);
 }
 
+/** A partial file untouched this long belongs to no running download. */
+const STALE_PARTIAL_MS = 10 * 60_000;
+
+/**
+ * The `cache-sync` job's work: `syncStation`, recording a failed pass on `station_cache`
+ * (`cache.sync_failing`) before rethrowing it to the queue's retries.
+ */
+export async function runCacheSync(
+  deps: CacheSyncDeps,
+  scope: StationScope,
+  signal?: AbortSignal,
+): Promise<CachePassReport> {
+  try {
+    return await syncStation(deps, scope, signal);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await recordCachePassFailure(deps.db, scope, message).catch(() => {});
+    throw err;
+  }
+}
+
 /** Syncs one station; repeats (up to 3 passes) while the log keeps changing under it. */
 export async function syncStation(
   deps: CacheSyncDeps,
@@ -127,6 +149,8 @@ async function passOnce(
       durationMs: r.durationMs,
     });
   }
+  // Rows written after this (an urgent fetch landing mid-pass) are newer than the scan.
+  const scannedAt = new Date();
   const cached = await scanCache(root);
   const locked = await listLocked(root);
   const p = plan({
@@ -139,27 +163,43 @@ async function passOnce(
     inFlight: locked,
   });
 
-  // Partial files of objects no longer planned are dropped; planned ones are resumed.
+  // Partial files of objects no longer planned are dropped; planned ones are resumed. Only
+  // old ones, under their lock: an urgent fetch may have started one since the snapshot.
   const planned = new Set(p.fetch.map((f) => `${f.sha256}.${f.ext}.part`));
   let partialsRemoved = 0;
   for (const name of await listPartials(root)) {
-    if (planned.has(name) || locked.has(name.slice(0, 64))) continue;
-    await rm(join(root, '.partial', name), { force: true });
-    partialsRemoved++;
+    const m = /^([0-9a-f]{64})\.([a-z0-9]{1,10})\.part$/.exec(name);
+    if (!m?.[1] || !m[2] || planned.has(name)) continue;
+    const removed = await withFileLock(root, { sha256: m[1], ext: m[2] }, async () => {
+      const path = join(root, '.partial', name);
+      const st = await stat(path).catch(() => null);
+      if (!st || Date.now() - st.mtimeMs < STALE_PARTIAL_MS) return false;
+      await rm(path, { force: true });
+      return true;
+    });
+    if (removed?.value) partialsRemoved++;
   }
 
-  for (const e of p.evict) await evict(root, e);
-  await forgetCacheFiles(
-    db,
-    scope,
-    p.evict.map((e) => e.sha256),
-  );
+  // Evict under each file's lock, and only if its mtime is still the scanned one: an urgent
+  // fetch or another pass that touched it since needs it. The plan may be stale by then (the
+  // log changed mid-pass); a file it evicts that the new log needs is fetched again by the
+  // next pass, which the fingerprint check below triggers.
+  const evicted = new Set<string>();
+  for (const e of p.evict) {
+    const done = await withFileLock(root, e, async () => {
+      const st = await stat(join(root, playoutRelPath(e))).catch(() => null);
+      if (!st || st.mtimeMs !== e.lastNeededAt) return false;
+      await evict(root, e);
+      return true;
+    });
+    if (done?.value) evicted.add(e.sha256);
+  }
+  await forgetCacheFiles(db, scope, [...evicted], scannedAt);
   // mtime = last planned air time, so the LRU order follows the log, not download time.
   const lastAir = new Map(p.keep.map((k) => [k.sha256, k.lastAirAt]));
   for (const k of p.keep) {
     if (k.lastAirAt > k.lastNeededAt + 1000) await touch(root, k, k.lastAirAt);
   }
-  const evicted = new Set(p.evict.map((e) => e.sha256));
   const onDisk: CachedFileInput[] = cached
     .filter((c) => !evicted.has(c.sha256))
     .map((c) => ({
@@ -168,7 +208,7 @@ async function passOnce(
       sizeBytes: c.sizeBytes,
       lastNeededAt: new Date(Math.max(c.lastNeededAt, lastAir.get(c.sha256) ?? 0)),
     }));
-  await reconcileCacheFiles(db, scope, { onDisk, needed: p.needed });
+  await reconcileCacheFiles(db, scope, { onDisk, needed: p.needed, scannedAt });
 
   const reserve = deps.diskReserve ?? ((total) => diskReserveBytes(total));
   let diskLow = false;

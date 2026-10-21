@@ -139,6 +139,15 @@ describe('withFileLock', () => {
     expect(await listLocked(root)).toEqual(new Set());
   });
 
+  it('releases only a lock it still owns', async () => {
+    const lock = join(root, '.partial', `${obj.sha256}.flac.lock`);
+    await withFileLock(root, obj, async () => {
+      // Another process took the lock over meanwhile (it thought ours was stale).
+      await writeFile(lock, 'someone-else');
+    });
+    expect(await readFile(lock, 'utf8')).toBe('someone-else');
+  });
+
   it('takes over a stale lock', async () => {
     await mkdir(join(root, '.partial'), { recursive: true });
     const lock = join(root, '.partial', `${obj.sha256}.flac.lock`);

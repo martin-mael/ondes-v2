@@ -12,6 +12,7 @@ import { type CacheSyncDeps, createLimiter } from './sync.ts';
 //   default). Unset: the worker keeps no cache and the cache jobs do nothing.
 // CACHE_BUDGET_GB (40), CACHE_HORIZON_HOURS (48): defaults for stations without settings.
 // CACHE_CONCURRENCY (4 per station), CACHE_WORKER_DOWNLOADS (8 per process).
+// CACHE_DISK_RESERVE_BYTES: free space to keep on the host, instead of 5 % or 2 GB.
 
 export function cacheRootFromEnv(env = process.env): string | undefined {
   return env.PLAYOUT_CACHE_ROOT || env.ENGINE_CACHE_ROOT || undefined;
@@ -34,12 +35,18 @@ async function depsFromEnv(env = process.env): Promise<CacheSyncDeps | null> {
   if (!databaseUrl) throw new Error('DATABASE_URL is not set');
   const database = createDb(databaseUrl, { applicationName: 'ondes-worker-cache' });
   const budgetGb = positive(env, 'CACHE_BUDGET_GB');
+  const reserveRaw = env.CACHE_DISK_RESERVE_BYTES;
+  const reserve = reserveRaw ? Number(reserveRaw) : undefined;
+  if (reserve !== undefined && !(Number.isFinite(reserve) && reserve >= 0)) {
+    throw new Error('CACHE_DISK_RESERVE_BYTES must be a number of bytes');
+  }
   return {
     db: database.db,
     storage: createS3Storage(loadStorageConfig(env)),
     cacheRoot,
     slots: createLimiter(positive(env, 'CACHE_WORKER_DOWNLOADS') ?? 8),
     concurrency: positive(env, 'CACHE_CONCURRENCY') ?? 4,
+    diskReserve: reserve === undefined ? undefined : () => reserve,
     defaults: {
       budgetBytes: budgetGb ? Math.round(budgetGb * 1024 ** 3) : undefined,
       horizonHours: positive(env, 'CACHE_HORIZON_HOURS'),

@@ -1,5 +1,5 @@
 {
-  "id": "38cdd8b6-fd8e-4b2f-9532-9c25153796e8",
+  "id": "fe1ae274-3551-4538-ab6e-fd240267f1b7",
   "prevId": "b4e61de0-b306-4c9d-94d6-d5cb178e8b25",
   "version": "7",
   "dialect": "postgresql",
@@ -828,6 +828,18 @@
         "last_pass_at": {
           "name": "last_pass_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error_at": {
+          "name": "last_error_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

@@ -46,10 +46,30 @@ engine only ever plays local files. Design and measurements: `docs/adr/0004-play
 5. Record the pass on `station_cache`: bytes used, horizon size, deferred files, disk low.
 6. If the log days in the window changed meanwhile, run again (up to 3 passes).
 
+A pass that throws (unwritable cache root, database down) records `last_error` on
+`station_cache` before the queue retries it; the next complete pass clears it.
+
+### Concurrency with urgent fetches and other workers
+
+- Every download, partial-file removal and eviction happens under the file's lock
+  (`.partial/<file>.lock`, O_EXCL, holding a random token). A lock is stale after 2 min
+  without progress; it is taken over by renaming it aside and checking its token, and
+  released only by its owner.
+- Partial files are removed only when unplanned, untouched for 10 min and unlocked.
+- Eviction re-checks the file's mtime under its lock: a file touched since the scan (an urgent
+  fetch, another pass) stays. The pass may evict against a log that changed mid-pass; the
+  fingerprint check reruns it and the file is fetched again if needed.
+- Reconcile and forget only delete rows older than the pass's scan, so a row an urgent fetch
+  wrote meanwhile survives.
+
 ## Triggers
 
 - `log.updated` on the events fanout, through the durable queue `ondes.events.cache-sync`
-  (single active consumer), when it touches the next week: enqueue `cache-sync`.
+  (single active consumer), when it touches the next week: enqueue `cache-sync`, and again
+  30 s later (one trailing enqueue per station), for a change that lands just after a running
+  pass's last log check (its enqueue collapses into that pass's in-flight key). A failing
+  handler retries in process (1 s, 5 s, 30 s), then gives the event up to the sweep: the
+  queue never redelivers it in a loop.
 - Every 10 min: enqueue `cache-sync` for every station.
 - `app.playoutCache.requestSync(scope)` (a 422 from the engine) and
   `requestUrgentFetch(scope, assetFileId)` (a miss at push time), from the api.
@@ -64,8 +84,11 @@ duplicates collapse while one runs and later enqueues run again.
 `GET /api/v1/stations/:stationId/cache?hours=48` (`engine:read`) returns budget, usage, last
 pass and readiness (`pctAirTime`, `firstMissingAt`, each missing item and why).
 
-Every 30 s one api replica evaluates the alerts of each synced station from these tables and
-raises or resolves them through the alert framework (#33):
+Every 30 s one api replica evaluates the alerts from these tables and raises or resolves them
+through the alert framework (#33). It covers every station with file items in the next 6 h,
+**synced or not** (a worker without `PLAYOUT_CACHE_ROOT`, or whose passes always fail, must
+not silence them), every station with a cache record, and every station with an open cache
+alert:
 
 | Alert | Severity | When |
 |---|---|---|
@@ -75,15 +98,21 @@ raises or resolves them through the alert framework (#33):
 | `cache.source_missing:<sha256>` | critical | The object isn't in storage. |
 | `cache.checksum_mismatch:<sha256>` | critical | The object doesn't match its hash. |
 | `cache.disk_low` | critical | Fetching paused: the disk is under its reserve. |
+| `cache.sync_failing` | warning | The last pass failed (`details.error`). |
 
-Each one resolves (`cache_ok`) at the first evaluation where its cause is gone, e.g. as soon as
-the file is recorded `ready`.
+Each one resolves at the first evaluation where its cause is gone: `cache_ok` when the file is
+now cached (or the condition cleared), `no_longer_needed` when the item aired or left the log,
+or the file left the horizon, without being cached.
+
+The worker logs an error at startup, and for every cache job it skips, when
+`PLAYOUT_CACHE_ROOT` (or `ENGINE_CACHE_ROOT`) is unset.
 
 ## Configuration
 
 Worker environment (`.env.example`): `PLAYOUT_CACHE_ROOT` (defaults to `ENGINE_CACHE_ROOT`;
 unset turns the cache off), `CACHE_BUDGET_GB` (40), `CACHE_HORIZON_HOURS` (48),
-`CACHE_CONCURRENCY` (4), `CACHE_WORKER_DOWNLOADS` (8). Per station, `station_cache`
+`CACHE_CONCURRENCY` (4), `CACHE_WORKER_DOWNLOADS` (8), `CACHE_DISK_RESERVE_BYTES` (instead
+of 5 % or 2 GB). Per station, `station_cache`
 overrides the budget, horizon and a download cap (`bytes_per_sec`) — `setStationCacheSettings`.
 
 ## Tests

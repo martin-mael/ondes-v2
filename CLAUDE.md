@@ -29,10 +29,11 @@ apps/
     plugins/            # fastify plugins: db, auth, rabbit, sse, errors
     modules/<module>/   # routes.ts, service.ts, repo.ts, *.test.ts
                         # auth, orgs, stations, library, engine, asrun, rotation,
-                        # clocks, shows, log, public, jobs, alerts
+                        # clocks, shows, log, public, jobs, alerts, cache
   worker/src/
     jobs/<job>/         # one folder per job type: ingest, loudness, autocue, analysis,
-                        # peaks, dedupe, cache-sync, log-generate, island-render, …
+                        # peaks, dedupe, cache-sync (+ cache-fetch, its urgent
+                        # one-file variant), log-generate, island-render, …
   web/src/
     app/                # shell, routing (router.tsx), auth pages, layout, api client,
                         # SSE client (sse/), i18n

@@ -71,6 +71,14 @@ const cacheTriggers = cacheRootFromEnv()
         ),
     })
   : undefined;
+if (!cacheTriggers) {
+  console.error(
+    JSON.stringify({
+      level: 'error',
+      msg: 'PLAYOUT_CACHE_ROOT (or ENGINE_CACHE_ROOT) is not set: this worker keeps no playout cache, so no station files are fetched and engines will skip uncached items',
+    }),
+  );
+}
 
 console.log(
   JSON.stringify({

@@ -22,6 +22,7 @@ export const CACHE_ALERT_TYPES = [
   alertTypes.cacheSourceMissing,
   alertTypes.cacheChecksumMismatch,
   alertTypes.cacheDiskLow,
+  alertTypes.cacheSyncFailing,
 ] as const;
 
 export type CacheAlertInput = {
@@ -29,7 +30,10 @@ export type CacheAlertInput = {
   nextHour: CacheReadiness;
   /** Readiness over the next 6 h: anything missing is a warning on the station. */
   nextSixHours: CacheReadiness;
-  state: Pick<StationCacheState, 'deferred' | 'diskLow' | 'horizonBytes' | 'budgetBytes'>;
+  state: Pick<
+    StationCacheState,
+    'deferred' | 'diskLow' | 'horizonBytes' | 'budgetBytes' | 'lastError'
+  >;
   /** The station's `failed` cache rows (kept only while the horizon needs them). */
   failed: ReadonlyArray<Pick<CacheFileRow, 'sha256' | 'error' | 'errorMessage'>>;
 };
@@ -91,6 +95,19 @@ export function cacheAlerts(input: CacheAlertInput): DesiredAlert[] {
       details: { sha256: f.sha256 },
     });
   }
+  if (input.state.lastError) {
+    out.push({
+      type: alertTypes.cacheSyncFailing,
+      severity: 'warning',
+      dedupeKey: alertTypes.cacheSyncFailing,
+      title: 'Playout cache sync is failing',
+      message: input.state.lastError.message,
+      details: {
+        error: input.state.lastError.message,
+        at: input.state.lastError.at.toISOString(),
+      },
+    });
+  }
   if (input.state.diskLow) {
     out.push({
       type: alertTypes.cacheDiskLow,
@@ -101,4 +118,29 @@ export function cacheAlerts(input: CacheAlertInput): DesiredAlert[] {
     });
   }
   return out;
+}
+
+/**
+ * Why an open cache alert that is no longer wanted closes:
+ * - `cache_ok`: its file is now cached (or the station-wide condition cleared);
+ * - `no_longer_needed`: the item aired, left the next hour or the log, or the file left the
+ *   horizon, without ever being cached.
+ */
+export function cacheAlertResolution(
+  dedupeKey: string,
+  ready: { itemIds: ReadonlySet<string>; sha256s: ReadonlySet<string> },
+): 'cache_ok' | 'no_longer_needed' {
+  const [type, id] = splitKey(dedupeKey);
+  if (type === alertTypes.cacheItemMissing) {
+    return id && ready.itemIds.has(id) ? 'cache_ok' : 'no_longer_needed';
+  }
+  if (type === alertTypes.cacheSourceMissing || type === alertTypes.cacheChecksumMismatch) {
+    return id && ready.sha256s.has(id) ? 'cache_ok' : 'no_longer_needed';
+  }
+  return 'cache_ok';
+}
+
+function splitKey(key: string): [string, string | undefined] {
+  const i = key.indexOf(':');
+  return i < 0 ? [key, undefined] : [key.slice(0, i), key.slice(i + 1)];
 }
