@@ -11,6 +11,19 @@ import { uuidSchema } from './tenancy.ts';
 // engine works on 20 ms frames (ADR 0003), so milliseconds are exact enough to plan a hard
 // start to the frame. Cue overrides are sample positions at `sampleRate`, like the library's
 // cues, so island splices stay sample-exact (spike #12).
+//
+// Play order is `(day.startsAt, position)`, everywhere: the range read, `/now`, the feeder.
+// `plannedStart` follows from it (retiming after every write) but can disagree with it when
+// an anchored item lands before the previous item ends; the item then carries a `conflict`.
+//
+// Days chain at local midnight: the first item of a day is implicitly anchored there, like a
+// `soft` item (the previous day's last item plays out, then the new day starts). An overrun
+// or a gap across midnight shows as a `conflict` on the new day's first item. The feeder plays
+// days back to back in play order; it only plays `published` days (a `draft` is a plan being
+// edited, and the feeder treats a missing or draft day as no log: safety playlist).
+
+/** The engine's frame, added once per transition between top-level items (ADR 0003). */
+export const LOG_TRANSITION_MS = 20;
 
 /** Station-local calendar date, `YYYY-MM-DD`. */
 export const localDateSchema = z.iso.date();
@@ -84,8 +97,10 @@ const samples = z.int().min(0);
 
 /**
  * Per-item overrides of the asset's cues and transitions. Positions and fades are samples at
- * `sampleRate` (the playout copy's rate); crossfade overlaps are milliseconds, gain is dB.
- * Unset fields fall back to the asset's cues and the station defaults.
+ * `sampleRate`, which must be the asset's playout copy's rate (`PLAYOUT_SAMPLE_RATE`; the api
+ * refuses another rate once the playout file exists). Crossfade overlaps are milliseconds, gain
+ * is dB. Unset fields fall back to the asset's cues and the station defaults. On a `segment`,
+ * only `crossInMs`/`crossOutMs` apply: the transitions into and out of the whole segment.
  */
 export const cueOverridesSchema = z
   .object({
@@ -113,6 +128,17 @@ export type CueOverrides = z.infer<typeof cueOverridesSchema>;
 export const logDayStatusSchema = z.enum(['draft', 'published']);
 export type LogDayStatus = z.infer<typeof logDayStatusSchema>;
 
+/**
+ * A timing problem retiming found at an anchored item (or a day's first item, anchored at
+ * midnight): `overrun` = the items before it end `ms` after its anchor (they get cut or
+ * overlap it); `gap` = they end `ms` before it (back-timing, #46, should fill it).
+ */
+export const logTimingConflictSchema = z.object({
+  kind: z.enum(['overrun', 'gap']),
+  ms: z.int().positive(),
+});
+export type LogTimingConflict = z.infer<typeof logTimingConflictSchema>;
+
 // --- Read DTOs ---------------------------------------------------------------------------
 
 export const logDaySchema = z.object({
@@ -122,6 +148,7 @@ export const logDaySchema = z.object({
   /** The local day as a UTC range: 23, 24 or 25 hours long. */
   startsAt: isoTime,
   endsAt: isoTime,
+  /** The feeder plays `published` days only. */
   status: logDayStatusSchema,
   /** Bumped on every change to the day or its items. Cache sync keys on `logDayId:version`. */
   version: z.int().min(1),
@@ -150,9 +177,12 @@ const logItemFields = {
   /** Planned start, UTC with millisecond precision. */
   plannedStart: isoTime,
   /**
-   * How long the item occupies the log, in ms: the ADR 0003 slot, i.e. what it plays minus its
-   * overlap with the next item plus 20 ms per transition. The next `flow` item starts at
-   * `plannedStart + plannedDurationMs`.
+   * How long the item occupies the log, in ms. For a top-level item: the ADR 0003 slot, what it
+   * plays minus its overlap with the next item plus `LOG_TRANSITION_MS`; the next `flow` item
+   * starts at `plannedStart + plannedDurationMs`. For a `segment`: computed, the sum of its
+   * parts minus its `crossOutMs` plus `LOG_TRANSITION_MS` (one transition, out of the segment).
+   * For a segment part: its raw length (cue-out minus cue-in), with no transition: island
+   * joins are sample-exact splices, not crossfades.
    */
   plannedDurationMs: z.int().min(0),
   assetId: uuidSchema.nullable(),
@@ -173,6 +203,8 @@ const logItemFields = {
   relaxedRules: z.array(relaxedRuleSchema),
   /** The segment this item is a part of. */
   segmentId: uuidSchema.nullable(),
+  /** Set by retiming on anchored items and on a day's first item; null on parts. */
+  conflict: logTimingConflictSchema.nullable(),
 };
 
 export const logSegmentPartSchema = z.object(logItemFields);
@@ -222,9 +254,16 @@ export type LogNowQuery = z.input<typeof logNowQuerySchema>;
 
 export const logNowResponseSchema = z.object({
   at: isoTime,
-  /** The planned item at `at`, or null in a gap or outside any log. */
+  /**
+   * The planned item at `at`: the last item in play order whose planned range contains `at`
+   * (with an overrun, the later item wins, as the plan has it start there). Null in a gap or
+   * outside any log. It is the plan, not the as-run (#30).
+   */
   current: logItemSchema.nullable(),
-  /** The next items after `current` (or after `at`), in play order. */
+  /**
+   * The items after `current` in play order. Without a current item: from the first item in
+   * play order planned at or after `at` (a marker exactly at `at` included).
+   */
   next: z.array(logItemSchema),
 });
 export type LogNowResponse = z.infer<typeof logNowResponseSchema>;
@@ -243,6 +282,7 @@ const refineTiming = <T extends { timing: LogItemTiming; anchorAt?: string | nul
 const partInputSchema = z.object({
   kind: segmentPartKindSchema,
   assetId: uuidSchema,
+  /** Raw length in ms (cue-out minus cue-in): no transition time inside a segment. */
   plannedDurationMs: z.int().min(0),
   title: z.string().max(300).nullish(),
   cueOverrides: cueOverridesSchema.nullish(),
@@ -252,8 +292,9 @@ export type LogSegmentPartInput = z.input<typeof partInputSchema>;
 /**
  * An item to insert or a replacement. Rules per kind:
  * - asset kinds need `assetId`; `marker` has duration 0; `segment` has 2–16 `parts` and
- *   its duration is their sum (`plannedDurationMs` is ignored);
+ *   its duration is computed from them (see `plannedDurationMs`; the input value is ignored);
  * - `timing` other than `flow` needs `anchorAt`, `flow` must not have one; `capMs` is `soft` only.
+ *   The anchor must fall inside the item's local day (`startsAt <= anchorAt < endsAt`), or 422.
  * Manual items get `origin: manual`; `relaxedRules` are the generator's.
  */
 export const logItemInputSchema = z
@@ -341,5 +382,11 @@ export const logItemChangeSchema = z.enum([
 export type LogItemChange = z.infer<typeof logItemChangeSchema>;
 
 /** Why a log changed, in `log.updated`. */
-export const logUpdateCauseSchema = z.enum(['edit', 'generate', 'fixture']);
+export const logUpdateCauseSchema = z.enum(['edit', 'status', 'generate', 'fixture']);
 export type LogUpdateCause = z.infer<typeof logUpdateCauseSchema>;
+
+/** `PUT …/log/days/:localDate/status`: publish a day (the feeder plays it) or take it back. */
+export const setLogDayStatusSchema = z.object({ status: logDayStatusSchema });
+export type SetLogDayStatus = z.input<typeof setLogDayStatusSchema>;
+
+export const logDayResponseSchema = z.object({ day: logDaySchema });

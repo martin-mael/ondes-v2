@@ -70,19 +70,60 @@ describe('retime', () => {
   });
 
   it('sizes a segment from its parts and lays the parts inside it', () => {
-    const seg = item({ kind: 'segment', plannedDurationMs: 0 });
+    // Raw part lengths, minus the overlap out of the segment, plus one 20 ms transition.
+    const seg = item({ kind: 'segment', plannedDurationMs: 0, crossOutMs: 500 });
     const parts = [1_000, 2_500, 500].map((ms) =>
       item({ plannedDurationMs: ms, segmentId: seg.id }),
     );
     const after = item({ plannedDurationMs: 1_000 });
     const timed = retime([seg, ...parts, after], day);
     expect(timed.map((t) => [t.plannedStart, t.plannedDurationMs])).toEqual([
-      [at(0), 4_000],
+      [at(0), 3_520],
       [at(0), 1_000],
       [at(1), 2_500],
       [at(3.5), 500],
-      [at(4), 1_000],
+      [at(3.52), 1_000],
     ]);
+  });
+
+  it('reports overruns and gaps at anchors', () => {
+    const timed = retime(
+      [
+        item({ plannedDurationMs: 12_000 }),
+        // The song before ends at 12 s: a 2 s overrun into the hard start.
+        item({ plannedDurationMs: 5_000, timing: 'hard', anchorAt: at(10) }),
+        // Ends at 15 s: 5 s of gap before the soft anchor.
+        item({ plannedDurationMs: 1_000, timing: 'soft', anchorAt: at(20) }),
+        // not_before waits: a gap. An earlier anchor would be no conflict.
+        item({ plannedDurationMs: 1_000, timing: 'not_before', anchorAt: at(25) }),
+        item({ plannedDurationMs: 1_000, timing: 'not_before', anchorAt: at(1) }),
+        item({ plannedDurationMs: 1_000 }),
+      ],
+      day,
+    );
+    expect(timed.map((t) => t.conflict)).toEqual([
+      null,
+      { kind: 'overrun', ms: 2_000 },
+      { kind: 'gap', ms: 5_000 },
+      { kind: 'gap', ms: 4_000 },
+      null,
+      null,
+    ]);
+  });
+
+  it('anchors the first item at midnight against the previous day', () => {
+    const first = [item({ plannedDurationMs: 1_000 })];
+    expect(retime(first, day)[0]?.conflict).toBeNull();
+    expect(retime(first, day, at(-3))[0]).toEqual({
+      plannedStart: at(0),
+      plannedDurationMs: 1_000,
+      conflict: { kind: 'gap', ms: 3_000 },
+    });
+    expect(retime(first, day, at(4))[0]?.conflict).toEqual({ kind: 'overrun', ms: 4_000 });
+    // An anchored first item measures against the previous day's end too.
+    const hard = [item({ plannedDurationMs: 1_000, timing: 'hard', anchorAt: at(60) })];
+    expect(retime(hard, day)[0]?.conflict).toEqual({ kind: 'gap', ms: 60_000 });
+    expect(retime(hard, day, at(30))[0]?.conflict).toEqual({ kind: 'gap', ms: 30_000 });
   });
 
   it('refuses a part that is not right after its segment', () => {
@@ -196,6 +237,7 @@ describe('buildFixtureDay', () => {
       }
       const { startsAt, endsAt } = localDayBounds(localDate, PARIS);
       const timed = retime(rows, startsAt);
+      expect(timed.filter((x) => x.conflict)).toEqual([]);
       const tops = timed.filter((_, i) => rows[i]?.segmentId === null);
       // Back to back: every top-level item starts where the one before ends.
       for (let i = 1; i < tops.length; i++) {

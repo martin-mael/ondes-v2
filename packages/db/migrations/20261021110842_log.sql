@@ -43,8 +43,11 @@ CREATE TABLE "log_item" (
 	"locked" boolean DEFAULT false NOT NULL,
 	"relaxed_rules" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"segment_id" uuid,
+	"conflict_kind" text,
+	"conflict_ms" integer,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "log_item_id_day_station_key" UNIQUE("id","log_day_id","station_id"),
 	CONSTRAINT "log_item_day_position_key" UNIQUE("log_day_id","position"),
 	CONSTRAINT "log_item_kind_check" CHECK ("log_item"."kind" in ('song', 'vt', 'jingle', 'bed', 'episode', 'live_slot', 'marker', 'fill', 'segment')),
 	CONSTRAINT "log_item_duration_check" CHECK ("log_item"."planned_duration_ms" >= 0),
@@ -53,13 +56,15 @@ CREATE TABLE "log_item" (
         and ("log_item"."timing" = 'flow') = ("log_item"."anchor_at" is null)
         and ("log_item"."cap_ms" is null or ("log_item"."timing" = 'soft' and "log_item"."cap_ms" >= 0))),
 	CONSTRAINT "log_item_origin_check" CHECK ("log_item"."origin_type" in ('clock', 'show', 'manual')),
+	CONSTRAINT "log_item_conflict_check" CHECK (("log_item"."conflict_kind" is null) = ("log_item"."conflict_ms" is null)
+        and ("log_item"."conflict_kind" is null or ("log_item"."conflict_kind" in ('overrun', 'gap') and "log_item"."conflict_ms" > 0))),
 	CONSTRAINT "log_item_segment_part_check" CHECK ("log_item"."segment_id" is null or "log_item"."kind" <> 'segment')
 );
 --> statement-breakpoint
 ALTER TABLE "log_day" ADD CONSTRAINT "log_day_station_org_fk" FOREIGN KEY ("station_id","org_id") REFERENCES "public"."station"("id","org_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "log_item" ADD CONSTRAINT "log_item_asset_id_asset_id_fk" FOREIGN KEY ("asset_id") REFERENCES "public"."asset"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "log_item" ADD CONSTRAINT "log_item_segment_id_log_item_id_fk" FOREIGN KEY ("segment_id") REFERENCES "public"."log_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "log_item" ADD CONSTRAINT "log_item_day_fk" FOREIGN KEY ("log_day_id","org_id","station_id") REFERENCES "public"."log_day"("id","org_id","station_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "log_item" ADD CONSTRAINT "log_item_segment_fk" FOREIGN KEY ("segment_id","log_day_id","station_id") REFERENCES "public"."log_item"("id","log_day_id","station_id") ON DELETE cascade ON UPDATE cascade;--> statement-breakpoint
 CREATE INDEX "log_day_station_range_idx" ON "log_day" USING btree ("station_id","starts_at");--> statement-breakpoint
 CREATE INDEX "log_item_station_start_idx" ON "log_item" USING btree ("station_id","planned_start");--> statement-breakpoint
 CREATE INDEX "log_item_segment_idx" ON "log_item" USING btree ("segment_id");--> statement-breakpoint

@@ -1,6 +1,12 @@
-import { type AssetType, type LocalDate, PLAYOUT_SAMPLE_RATE } from '@ondes/shared';
+import {
+  type AssetType,
+  LOG_TRANSITION_MS,
+  type LocalDate,
+  PLAYOUT_SAMPLE_RATE,
+} from '@ondes/shared';
 import type { LogDayItemInput } from './repo.ts';
 import { localDayBounds, zonedParts } from './time.ts';
+import { segmentDurationMs } from './timing.ts';
 
 // A hand-made log day for development (#100), before the generator (#50) exists. Pure: given
 // the station's fixture assets it returns the items of one local day, back-timed by hand so
@@ -70,12 +76,11 @@ export const FIXTURE_LIBRARY: readonly {
 
 /** Crossfade into the next song, and the +20 ms per transition of ADR 0003. */
 const SONG_OVERLAP_MS = 2_000;
-const TRANSITION_MS = 20;
 const HOUR_MS = 3_600_000;
 
 /** Slot length of an asset in the log: what it plays, minus its overlap, plus a frame. */
 function slot(a: FixtureAsset, overlapMs = 0) {
-  return a.durationMs - overlapMs + TRANSITION_MS;
+  return a.durationMs - overlapMs + LOG_TRANSITION_MS;
 }
 
 export function buildFixtureDay(
@@ -190,8 +195,9 @@ export function buildFixtureDay(
           { kind: 'vt' as const, assetId: vt.id, plannedDurationMs: vt.durationMs },
           { kind: 'song' as const, assetId: b.id, plannedDurationMs: b.durationMs },
         ];
-        const total = parts.reduce((n, p) => n + p.plannedDurationMs, 0);
-        if (used + total + TRANSITION_MS > budget) continue;
+        // Raw part lengths, one transition out of the segment (contracts/log.ts).
+        const total = segmentDurationMs(parts.map((p) => p.plannedDurationMs));
+        if (used + total > budget) continue;
         items.push({
           kind: 'segment',
           title: `Island: ${a.title} → ${vt.title} → ${b.title}`,

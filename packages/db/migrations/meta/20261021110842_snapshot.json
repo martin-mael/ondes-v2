@@ -1,5 +1,5 @@
 {
-  "id": "2cf16851-7e09-401d-9001-8495dd67fb79",
+  "id": "4cba898d-5bd6-44bf-b786-8d4ae8208df9",
   "prevId": "e281989a-a356-4950-aa88-2bbd0d39d84a",
   "version": "7",
   "dialect": "postgresql",
@@ -1632,6 +1632,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "conflict_kind": {
+          "name": "conflict_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "conflict_ms": {
+          "name": "conflict_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1714,19 +1726,6 @@
           "onDelete": "set null",
           "onUpdate": "no action"
         },
-        "log_item_segment_id_log_item_id_fk": {
-          "name": "log_item_segment_id_log_item_id_fk",
-          "tableFrom": "log_item",
-          "tableTo": "log_item",
-          "columnsFrom": [
-            "segment_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
         "log_item_day_fk": {
           "name": "log_item_day_fk",
           "tableFrom": "log_item",
@@ -1743,10 +1742,36 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "log_item_segment_fk": {
+          "name": "log_item_segment_fk",
+          "tableFrom": "log_item",
+          "tableTo": "log_item",
+          "columnsFrom": [
+            "segment_id",
+            "log_day_id",
+            "station_id"
+          ],
+          "columnsTo": [
+            "id",
+            "log_day_id",
+            "station_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "cascade"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
+        "log_item_id_day_station_key": {
+          "name": "log_item_id_day_station_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "log_day_id",
+            "station_id"
+          ]
+        },
         "log_item_day_position_key": {
           "name": "log_item_day_position_key",
           "nullsNotDistinct": false,
@@ -1777,6 +1802,10 @@
         "log_item_origin_check": {
           "name": "log_item_origin_check",
           "value": "\"log_item\".\"origin_type\" in ('clock', 'show', 'manual')"
+        },
+        "log_item_conflict_check": {
+          "name": "log_item_conflict_check",
+          "value": "(\"log_item\".\"conflict_kind\" is null) = (\"log_item\".\"conflict_ms\" is null)\n        and (\"log_item\".\"conflict_kind\" is null or (\"log_item\".\"conflict_kind\" in ('overrun', 'gap') and \"log_item\".\"conflict_ms\" > 0))"
         },
         "log_item_segment_part_check": {
           "name": "log_item_segment_part_check",

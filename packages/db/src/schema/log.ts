@@ -7,7 +7,6 @@ import type {
 } from '@ondes/shared';
 import { sql } from 'drizzle-orm';
 import {
-  type AnyPgColumn,
   boolean,
   check,
   date,
@@ -31,7 +30,8 @@ import { station } from './tenancy.ts';
 // (ADR 0003). Cue overrides keep sample positions (jsonb, at their own sample rate).
 //
 // `log_item` points at its day with a composite foreign key on (log_day_id, org_id,
-// station_id), so an item can't land in another tenant's day. Asset, episode and live slot
+// station_id), so an item can't land in another tenant's day, and a segment part points at its
+// segment with (segment_id, log_day_id, station_id), so it can't leave the segment's day. Asset, episode and live slot
 // references are checked against the scope by the repository: the asset foreign key is
 // `on delete set null` (a deleted asset leaves a "missing" item, not a hole in the day), and
 // episodes and live slots have no table yet.
@@ -108,9 +108,10 @@ export const logItem = pgTable(
     originShowSlotId: uuid('origin_show_slot_id'),
     locked: boolean('locked').notNull().default(false),
     relaxedRules: jsonb('relaxed_rules').$type<RelaxedRule[]>().notNull().default([]),
-    segmentId: uuid('segment_id').references((): AnyPgColumn => logItem.id, {
-      onDelete: 'cascade',
-    }),
+    segmentId: uuid('segment_id'),
+    /** Set by retiming (contracts/log.ts `logTimingConflictSchema`). */
+    conflictKind: text('conflict_kind').$type<'overrun' | 'gap'>(),
+    conflictMs: integer('conflict_ms'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -120,6 +121,16 @@ export const logItem = pgTable(
       columns: [t.logDayId, t.orgId, t.stationId],
       foreignColumns: [logDay.id, logDay.orgId, logDay.stationId],
     }).onDelete('cascade'),
+    // A part lives in its segment's day and station. `on update cascade`: moving a segment to
+    // another day carries its parts along.
+    unique('log_item_id_day_station_key').on(t.id, t.logDayId, t.stationId),
+    foreignKey({
+      name: 'log_item_segment_fk',
+      columns: [t.segmentId, t.logDayId, t.stationId],
+      foreignColumns: [t.id, t.logDayId, t.stationId],
+    })
+      .onDelete('cascade')
+      .onUpdate('cascade'),
     // Not deferrable: the repository renumbers through negative positions.
     unique('log_item_day_position_key').on(t.logDayId, t.position),
     index('log_item_station_start_idx').on(t.stationId, t.plannedStart),
@@ -141,6 +152,11 @@ export const logItem = pgTable(
         and (${t.capMs} is null or (${t.timing} = 'soft' and ${t.capMs} >= 0))`,
     ),
     check('log_item_origin_check', sql`${t.originType} in ('clock', 'show', 'manual')`),
+    check(
+      'log_item_conflict_check',
+      sql`(${t.conflictKind} is null) = (${t.conflictMs} is null)
+        and (${t.conflictKind} is null or (${t.conflictKind} in ('overrun', 'gap') and ${t.conflictMs} > 0))`,
+    ),
     check('log_item_segment_part_check', sql`${t.segmentId} is null or ${t.kind} <> 'segment'`),
   ],
 );

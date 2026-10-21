@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import {
   insertLogItemSchema,
+  localDateSchema,
   lockLogItemSchema,
+  logDayResponseSchema,
   logEditResultSchema,
   logNowQuerySchema,
   logNowResponseSchema,
@@ -11,6 +13,7 @@ import {
   type RealtimeEvent,
   realtimeEventSchema,
   replaceLogItemSchema,
+  setLogDayStatusSchema,
   uuidSchema,
 } from '@ondes/shared';
 import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from 'fastify';
@@ -21,10 +24,12 @@ import * as repo from './repo.ts';
 
 // Log read and manual-edit API (#100), under /api/v1/stations/:stationId/log. No generation
 // logic here: inserts, replacements, moves, deletes and locks, each audited, then published
-// as `log.item.changed` + `log.updated` on the events fanout (when RabbitMQ is configured).
+// as `log.item.changed` + `log.updated` on the events fanout (when RabbitMQ is configured);
+// publishing or unpublishing a day publishes `log.updated` (cause `status`).
 
 const stationParams = z.object({ stationId: z.string() });
 const itemParams = stationParams.extend({ itemId: uuidSchema });
+const dayParams = stationParams.extend({ localDate: localDateSchema });
 
 /** Where log events go. `app.rabbit.events` in the api; a test double elsewhere. */
 export interface LogEventSink {
@@ -76,6 +81,39 @@ export async function publishEdit(
     } catch (error) {
       log.error({ err: error, type: event.type }, 'log event publish failed');
     }
+  }
+}
+
+/** Publishes `log.updated` for a day status change. Same failure policy as `publishEdit`. */
+async function publishStatus(
+  sink: LogEventSink | undefined,
+  log: FastifyBaseLogger,
+  stationId: string,
+  outcome: repo.DayStatusOutcome,
+): Promise<void> {
+  if (!sink) return;
+  const event: RealtimeEvent = {
+    id: randomUUID(),
+    stationId,
+    at: new Date().toISOString(),
+    type: 'log.updated',
+    data: {
+      from: outcome.range.from.toISOString(),
+      to: outcome.range.to.toISOString(),
+      days: [
+        {
+          logDayId: outcome.day.id,
+          localDate: outcome.day.localDate,
+          version: outcome.day.version,
+        },
+      ],
+      cause: 'status',
+    },
+  };
+  try {
+    await sink.publish(realtimeEventSchema.parse(event));
+  } catch (error) {
+    log.error({ err: error, type: event.type }, 'log event publish failed');
   }
 }
 
@@ -196,5 +234,27 @@ export async function logRoutes(app: FastifyInstance) {
     },
     async (request) =>
       published(request, await repo.deleteLogItem(app.db, ctx(request), request.params.itemId)),
+  );
+
+  r.put(
+    '/stations/:stationId/log/days/:localDate/status',
+    {
+      preHandler: write,
+      schema: {
+        params: dayParams,
+        body: setLogDayStatusSchema,
+        response: { 200: logDayResponseSchema },
+      },
+    },
+    async (request) => {
+      const outcome = await repo.setLogDayStatus(
+        app.db,
+        ctx(request),
+        request.params.localDate,
+        request.body.status,
+      );
+      await publishStatus(sink(), request.log, stationScopeOf(request).stationId, outcome);
+      return { day: outcome.day };
+    },
   );
 }

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   addMembership,
+  assetFile,
   auditLog,
   createAsset,
   createOrganization,
@@ -21,6 +22,7 @@ import {
 } from '@ondes/queue';
 import {
   type Actor,
+  LOG_TRANSITION_MS,
   type LogItem,
   type LogRangeResponse,
   type RealtimeEvent,
@@ -237,7 +239,9 @@ describe('log reads', () => {
     const seg = day.items.find((i) => i.kind === 'segment') as LogItem;
     expect(seg.parts).toHaveLength(3);
     expect(seg.parts[1]?.asset?.type).toBe('vt');
-    expect(seg.plannedDurationMs).toBe(seg.parts.reduce((n, p) => n + p.plannedDurationMs, 0));
+    expect(seg.plannedDurationMs).toBe(
+      seg.parts.reduce((n, p) => n + p.plannedDurationMs, 0) + LOG_TRANSITION_MS,
+    );
     expect(day.items.some((i) => i.segmentId !== null)).toBe(false);
 
     // The hour around the switch, starting mid-item: the item on air at `from` is included.
@@ -424,7 +428,8 @@ describe('log edits', () => {
     });
     expect(res.statusCode, res.body).toBe(201);
     const seg = res.json().item as LogItem;
-    expect(seg).toMatchObject({ kind: 'segment', plannedDurationMs: 60_000 });
+    // Raw part lengths plus one 20 ms transition out of the segment.
+    expect(seg).toMatchObject({ kind: 'segment', plannedDurationMs: 60_020 });
     expect(seg.parts.map((p) => p.segmentId)).toEqual([seg.id, seg.id]);
     expect(Date.parse(seg.parts[1]?.plannedStart ?? '')).toBe(
       Date.parse(seg.plannedStart) + 40_000,
@@ -462,6 +467,225 @@ describe('log edits', () => {
       endsAt: '2026-03-29T22:00:00.000Z',
     });
     expect(res.json().item.plannedStart).toBe('2026-03-28T23:00:00.000Z');
+  });
+});
+
+describe('log timing, concurrency and status', () => {
+  const bounds = (d: string) => localDayBounds(d, 'Europe/Paris');
+  const write = (
+    localDate: string,
+    items: LogDayItemInput[],
+    status: 'draft' | 'published' = 'published',
+  ) =>
+    writeLogDay(t.tdb.db, { actor: system, scope }, { localDate, status, items, cause: 'fixture' });
+  const dayItems = async (localDate: string) => {
+    const { startsAt, endsAt } = bounds(localDate);
+    return (await range(startsAt.toISOString(), endsAt.toISOString())).items.filter(
+      (i) => Date.parse(i.plannedStart) >= startsAt.getTime(),
+    );
+  };
+
+  it("refuses anchors outside the item's day", async () => {
+    const localDate = '2026-12-01';
+    await write(localDate, [song(songs[0] as string)]);
+    const { endsAt } = bounds(localDate);
+    const res = await call('programmer', 'POST', '/log/items', {
+      placement: { localDate },
+      item: { kind: 'marker', timing: 'hard', anchorAt: endsAt.toISOString() },
+    });
+    expect(res.statusCode, res.body).toBe(422);
+    expect(res.json().error).toBe('anchor_outside_day');
+    // Moving an anchored item to another day is refused the same way.
+    const ok = await call('programmer', 'POST', '/log/items', {
+      placement: { localDate },
+      item: {
+        kind: 'marker',
+        timing: 'hard',
+        anchorAt: new Date(endsAt.getTime() - 60_000).toISOString(),
+      },
+    });
+    expect(ok.statusCode, ok.body).toBe(201);
+    const moved = await call('programmer', 'POST', `/log/items/${ok.json().item.id}/move`, {
+      placement: { localDate: '2026-12-02' },
+    });
+    expect(moved.statusCode).toBe(422);
+    expect(moved.json().error).toBe('anchor_outside_day');
+  });
+
+  it('reports conflicts, and serves /now in play order', async () => {
+    const localDate = '2026-12-03';
+    const { startsAt } = bounds(localDate);
+    const at = (s: number) => new Date(startsAt.getTime() + s * 1000).toISOString();
+    await write(localDate, [
+      song(songs[0] as string, 90_000),
+      // The song ends at 90 s: a 30 s overrun into this hard start.
+      {
+        kind: 'marker',
+        title: 'hard',
+        timing: 'hard',
+        anchorAt: at(60),
+        origin: { type: 'manual' },
+      },
+      song(songs[1] as string, 60_000),
+      {
+        kind: 'marker',
+        title: 'later',
+        timing: 'hard',
+        anchorAt: at(300),
+        origin: { type: 'manual' },
+      },
+      song(songs[2] as string, 60_000),
+    ]);
+    const items = await dayItems(localDate);
+    expect(items.map((i) => i.conflict)).toEqual([
+      null,
+      { kind: 'overrun', ms: 30_000 },
+      null,
+      { kind: 'gap', ms: 180_000 },
+      null,
+    ]);
+    // At 70 s the first song (0–90 s) and the second (60–120 s) both cover `at`: the later one
+    // in play order is current.
+    const now = (await call('viewer', 'GET', `/log/now?at=${at(70)}&next=2`)).json();
+    expect(now.current.id).toBe(items[2]?.id);
+    expect(now.next.map((i: LogItem) => i.id)).toEqual([items[3]?.id, items[4]?.id]);
+    // In the gap, a marker exactly at `at` is the first next item.
+    const gap = (await call('viewer', 'GET', `/log/now?at=${at(300)}&next=2`)).json();
+    expect(gap.current?.id).toBe(items[4]?.id);
+    const before = (await call('viewer', 'GET', `/log/now?at=${at(200)}&next=2`)).json();
+    expect(before.current).toBeNull();
+    expect(before.next.map((i: LogItem) => i.id)).toEqual([items[3]?.id, items[4]?.id]);
+  });
+
+  it('chains days at midnight', async () => {
+    const [d1, d2] = ['2026-12-10', '2026-12-11'];
+    const { endsAt } = bounds(d1);
+    const late = new Date(endsAt.getTime() - 30_000).toISOString();
+    await write(d2, [song(songs[0] as string)]);
+    // Day 1 ends 30 s after midnight: day 2's first item reports the overrun.
+    await write(d1, [
+      { kind: 'marker', timing: 'hard', anchorAt: late, origin: { type: 'manual' } },
+      song(songs[1] as string, 60_000),
+    ]);
+    expect((await dayItems(d2))[0]?.conflict).toEqual({ kind: 'overrun', ms: 30_000 });
+    // Shortening day 1's last item through an edit turns it into a gap, and bumps day 2.
+    const last = (await dayItems(d1)).at(-1) as LogItem;
+    const res = await call('programmer', 'PUT', `/log/items/${last.id}`, {
+      kind: 'song',
+      assetId: songs[1],
+      plannedDurationMs: 10_000,
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().days.map((d: { localDate: string }) => d.localDate)).toEqual([d1, d2]);
+    expect((await dayItems(d2))[0]?.conflict).toEqual({ kind: 'gap', ms: 20_000 });
+  });
+
+  it('serializes concurrent move and delete of the same item', async () => {
+    const [d1, d2] = ['2026-12-20', '2026-12-21'];
+    for (let round = 0; round < 5; round++) {
+      await write(
+        d1,
+        songs.map((a) => song(a)),
+        'published',
+      );
+      await write(d2, [song(songs[0] as string), song(songs[1] as string)]);
+      const before1 = await dayItems(d1);
+      const before2 = await dayItems(d2);
+      const victim = before1[1] as LogItem;
+      const [moved, deleted] = await Promise.all([
+        call('programmer', 'POST', `/log/items/${victim.id}/move`, {
+          placement: { localDate: d2 },
+        }),
+        call('programmer', 'DELETE', `/log/items/${victim.id}`),
+      ]);
+      // Whatever the order, the victim is gone or moved, and nothing else was touched.
+      expect([200, 404, 409]).toContain(moved.statusCode);
+      expect([200, 404, 409]).toContain(deleted.statusCode);
+      const after = [...(await dayItems(d1)), ...(await dayItems(d2))].map((i) => i.id);
+      const others = [...before1, ...before2].filter((i) => i.id !== victim.id).map((i) => i.id);
+      expect(after.filter((id) => id !== victim.id).sort()).toEqual(others.sort());
+      if (deleted.statusCode === 200) expect(after).not.toContain(victim.id);
+    }
+  });
+
+  it('never lets a replace overwrite a concurrent lock', async () => {
+    const localDate = '2026-12-24';
+    for (let round = 0; round < 5; round++) {
+      await write(localDate, [song(songs[0] as string), song(songs[1] as string)]);
+      const target = (await dayItems(localDate))[1] as LogItem;
+      const [locked, replaced] = await Promise.all([
+        call('programmer', 'PUT', `/log/items/${target.id}/lock`, { locked: true }),
+        call('programmer', 'PUT', `/log/items/${target.id}`, {
+          kind: 'song',
+          assetId: songs[2],
+          plannedDurationMs: 5_000,
+        }),
+      ]);
+      expect(locked.statusCode, locked.body).toBe(200);
+      expect([200, 409]).toContain(replaced.statusCode);
+      if (replaced.statusCode === 409) expect(replaced.json().error).toBe('log_item_locked');
+      const item = (await dayItems(localDate))[1] as LogItem;
+      expect(item.locked).toBe(true);
+    }
+  });
+
+  it('publishes and unpublishes a day', async () => {
+    const localDate = '2026-12-28';
+    const { day } = await write(localDate, [song(songs[0] as string)], 'draft');
+    const before = events.length;
+    const res = await call('programmer', 'PUT', `/log/days/${localDate}/status`, {
+      status: 'published',
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().day).toMatchObject({ status: 'published', version: day.version + 1 });
+    const [event] = (await waitForEvents(() => true, before + 1)).slice(before);
+    expect(event).toMatchObject({ type: 'log.updated', data: { cause: 'status' } });
+    const [audit] = await t.tdb.db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.entityId, day.id), eq(auditLog.action, 'log_day.status')));
+    expect(audit?.diff).toEqual({ status: { from: 'draft', to: 'published' } });
+    expect(
+      (await call('programmer', 'PUT', '/log/days/2027-05-01/status', { status: 'draft' }))
+        .statusCode,
+    ).toBe(404);
+    expect(
+      (await call('viewer', 'PUT', `/log/days/${localDate}/status`, { status: 'draft' }))
+        .statusCode,
+    ).toBe(403);
+  });
+
+  it('checks cue override sample rates against the playout copy', async () => {
+    const a = await createAsset(
+      t.tdb.db,
+      { actor: system, scope },
+      { type: 'song', title: 'Rated' },
+    );
+    await t.tdb.db.insert(assetFile).values({
+      assetId: a.id,
+      orgId: scope.orgId,
+      stationId: scope.stationId,
+      role: 'playout',
+      storageKey: `test/${a.id}.flac`,
+      sha256: '0'.repeat(64),
+      sizeBytes: 1,
+      codec: 'flac',
+      sampleRate: 44_100,
+      flacBlockSize: 1024,
+    });
+    const item = (sampleRate: number) => ({
+      placement: { localDate: '2026-12-29' },
+      item: {
+        kind: 'song',
+        assetId: a.id,
+        plannedDurationMs: 1_000,
+        cueOverrides: { sampleRate, cueIn: 10 },
+      },
+    });
+    const bad = await call('programmer', 'POST', '/log/items', item(48_000));
+    expect(bad.statusCode).toBe(422);
+    expect(bad.json().error).toBe('sample_rate_mismatch');
+    expect((await call('programmer', 'POST', '/log/items', item(44_100))).statusCode).toBe(201);
   });
 });
 
