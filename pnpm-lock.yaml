@@ -178,6 +178,10 @@ importers:
       zod:
         specifier: 4.6.7
         version: 4.6.7
+    devDependencies:
+      waveform-data:
+        specifier: 4.5.2
+        version: 4.5.2
 
   packages/db:
     dependencies:
@@ -3408,6 +3412,9 @@ packages:
       jsdom:
         optional: true
 
+  waveform-data@4.5.2:
+    resolution: {integrity: sha512-1wDQ2LmaCM76xXXkOamWui1dp7uS2UHVeNccuHDS/qnoOrczrXR6g7Q9m/UjlibHfukxBrceoRIVTKKY1tDLdA==}
+
   whatwg-mimetype@3.0.0:
     resolution: {integrity: sha512-nt+N2dzIutVRxARx1nghPKGv1xHikU7HKdfafKkLNLindmPU/ch3U31NOCGGA/dmPcmb1VlofO0vnKAcsm0o/Q==}
     engines: {node: '>=12'}
@@ -6260,6 +6267,8 @@ snapshots:
       happy-dom: 21.0.3
     transitivePeerDependencies:
       - msw
+
+  waveform-data@4.5.2: {}
 
   whatwg-mimetype@3.0.0: {}
 

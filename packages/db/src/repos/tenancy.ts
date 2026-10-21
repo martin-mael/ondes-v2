@@ -134,6 +134,18 @@ export async function listStations(db: Executor, scope: OrgScope): Promise<Stati
   return db.select().from(station).where(whereOrg(station, scope)).orderBy(asc(station.name));
 }
 
+/**
+ * Every station's scope, by id. System-only, cross-tenant: for worker backfills that walk all
+ * stations. Never call it from an api route or anything a user request reaches.
+ */
+export async function listAllStationScopes(db: Executor): Promise<StationScope[]> {
+  const rows = await db
+    .select({ id: station.id, orgId: station.orgId })
+    .from(station)
+    .orderBy(asc(station.id));
+  return rows.map((row) => ({ orgId: row.orgId, stationId: row.id }) as StationScope);
+}
+
 export async function updateStation(
   db: Writer,
   ctx: StationContext,
