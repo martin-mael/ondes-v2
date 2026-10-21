@@ -64,11 +64,11 @@ export type RaiseOutcome = repo.RaiseResult | { kind: 'duplicate' };
 
 /**
  * Runs an automatic action. `available` says whether this process can run it now for the
- * station (e.g. it holds the station's engine adapter): the action waits, recorded as
+ * station (e.g. it can reach the station's engine): the action waits, recorded as
  * pending, for a replica that can. `run` throws on failure.
  */
 export type AlertActionRunner = {
-  available(stationId: string): boolean;
+  available(stationId: string): boolean | Promise<boolean>;
   run(scope: StationScope, alert: Alert): Promise<void>;
 };
 
@@ -142,7 +142,7 @@ export function createAlertService(options: AlertServiceOptions): AlertService {
 
   async function runAction(alertId: string, stationId: string, name: string) {
     const runner = runners.get(name);
-    if (!runner?.available(stationId)) return;
+    if (!runner || !(await runner.available(stationId))) return;
     const claimed = await repo.claimAction(db, alertId, now());
     if (!claimed) return;
     try {

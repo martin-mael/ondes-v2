@@ -141,13 +141,13 @@ ranges and defaults (`settings.test.ts`). After a change:
   output is still silent.
 - `engine.down` / `engine.up`: raise a critical `engine.down` / resolve it (`engine_up`).
 
-**Actions**, through the engine adapter (`alertsPlugin({ engineFor })`):
+**Actions**, through the engine adapter (`alertsPlugin({ engineFor })`, sync or async; with #35, `(id) => app.engineLifecycle.adapterFor(id)`, which reaches the engine from any replica):
 - `skip` (`engine.skip`): `skip()`, which ends the silent item on air.
 - `safety` (`engine.safety`): `clear()`, then `skip()`. With an empty queue, the template's
   fallback plays the safety playlist. It holds until the feeder (#29) pushes again.
 - `none`: alert only.
 
-If no replica holds the engine, the action stays `pending`. The alert still escalates and
+If no replica can reach the engine, the action stays `pending`. The alert still escalates and
 emails.
 
 ## Tests

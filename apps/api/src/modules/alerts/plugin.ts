@@ -9,7 +9,7 @@ import { type RealtimeEvent, realtimeEventSchema, type SilenceSettings } from '@
 import type { FastifyInstance } from 'fastify';
 import fp from 'fastify-plugin';
 import { alertEmailJob, alertEmailJobType } from './email-job.ts';
-import { type AlertEngine, createEngineAlerts } from './engine-alerts.ts';
+import { createEngineAlerts, type EngineLookup } from './engine-alerts.ts';
 import { pruneSeenEvents } from './repo.ts';
 import { alertRoutes } from './routes.ts';
 import { type AlertService, createAlertService } from './service.ts';
@@ -25,8 +25,11 @@ declare module 'fastify' {
 export const ALERTS_EVENT_QUEUE = 'alerts';
 
 export type AlertsPluginOptions = {
-  /** The station's engine adapter, if this replica holds it (#35's `app.stationEngines`). */
-  engineFor?: (stationId: string) => AlertEngine | undefined;
+  /**
+   * The station's engine adapter, sync or async (#35: `app.engineLifecycle.adapterFor(id)`,
+   * which works from any replica).
+   */
+  engineFor?: EngineLookup;
   /** After a silence settings change: reconcile the station's engine (#35). */
   onSilenceSettingsUpdated?: (scope: StationScope, settings: SilenceSettings) => Promise<void>;
   /**

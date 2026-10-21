@@ -56,7 +56,8 @@ async function startApp(r: Awaited<ReturnType<typeof createTestRabbit>>, withEng
     mail: { mailer },
     auth: TEST_AUTH_CONFIG,
     alerts: {
-      engineFor: withEngine ? () => adapter : undefined,
+      // Async, like #35's `engineLifecycle.adapterFor`.
+      engineFor: withEngine ? async () => adapter : undefined,
       sweepIntervalMs: 100,
       // The fake engine is never blank: keep the reconcile out of the way (tested on its own).
       reconcileQuietMs: 3_600_000,

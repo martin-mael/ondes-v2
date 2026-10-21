@@ -27,11 +27,18 @@ export const silenceActions = {
   safety: 'engine.safety',
 } as const satisfies Record<Exclude<SilenceAction, 'none'>, string>;
 
+export type EngineLookup = (
+  stationId: string,
+) => AlertEngine | undefined | Promise<AlertEngine | undefined>;
+
 export type EngineAlertsOptions = {
   db: Db;
   alerts: AlertService;
-  /** The station's engine adapter, if this process holds it (#35's `app.stationEngines`). */
-  engineFor?: (stationId: string) => AlertEngine | undefined;
+  /**
+   * The station's engine adapter, if this process can reach it: #35's
+   * `app.engineLifecycle.adapterFor(stationId)` (any replica on the engine network).
+   */
+  engineFor?: EngineLookup;
   logger: Logger;
 };
 
@@ -54,26 +61,26 @@ export type EngineAlertsOptions = {
  */
 export function createEngineAlerts(options: EngineAlertsOptions) {
   const { db, alerts, logger } = options;
-  const engineFor = options.engineFor ?? (() => undefined);
+  const engineFor: EngineLookup = options.engineFor ?? (() => undefined);
 
-  function requireEngine(stationId: string): AlertEngine {
-    const engine = engineFor(stationId);
+  async function requireEngine(stationId: string): Promise<AlertEngine> {
+    const engine = await engineFor(stationId);
     if (!engine) throw new Error('engine not available on this replica');
     return engine;
   }
 
   alerts.registerAction(silenceActions.skip, {
-    available: (stationId) => engineFor(stationId) !== undefined,
+    available: async (stationId) => (await engineFor(stationId)) !== undefined,
     async run(scope) {
-      await requireEngine(scope.stationId).skip();
+      await (await requireEngine(scope.stationId)).skip();
     },
   });
   alerts.registerAction(silenceActions.safety, {
-    available: (stationId) => engineFor(stationId) !== undefined,
+    available: async (stationId) => (await engineFor(stationId)) !== undefined,
     async run(scope) {
       // An empty queue makes the engine's fallback pick the safety playlist; the skip ends the
       // silent item now instead of at its end.
-      const engine = requireEngine(scope.stationId);
+      const engine = await requireEngine(scope.stationId);
       await engine.clear();
       await engine.skip();
     },
@@ -144,7 +151,7 @@ export function createEngineAlerts(options: EngineAlertsOptions) {
 
   /**
    * Closes engine alerts whose recovery event was lost (a message dropped while no api ran):
-   * asks the station's engine, if this process holds it, about alerts not seen for
+   * asks the station's engine, if this process can reach it, about alerts not seen for
    * `quietMs`. Answering at all resolves `engine.down`; not being blank resolves
    * `engine.silence`.
    */
@@ -156,7 +163,7 @@ export function createEngineAlerts(options: EngineAlertsOptions) {
     );
     let resolved = 0;
     for (const { scope, alert } of quiet) {
-      const engine = engineFor(scope.stationId);
+      const engine = await engineFor(scope.stationId);
       if (!engine) continue;
       let blank: boolean;
       try {
