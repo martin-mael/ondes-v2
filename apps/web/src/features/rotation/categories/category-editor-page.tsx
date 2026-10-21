@@ -13,7 +13,7 @@ import {
 } from '@ondes/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router';
-import { ArrowLeftIcon, CircleAlertIcon, Trash2Icon } from 'lucide-react';
+import { ArrowLeftIcon, CircleAlertIcon, Trash2Icon, XIcon } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { z } from 'zod';
@@ -41,7 +41,8 @@ const newRoute = getRouteApi('/_app/stations/$stationId/categories/new');
 interface Draft {
   name: string;
   description: string;
-  color: string;
+  /** `null`: no colour. */
+  color: string | null;
   assetType: AssetType;
   rule: CategoryRule | null;
   rotationOrder: RotationOrder;
@@ -58,9 +59,10 @@ function draftOf(category: CategoryDetail | null): Draft {
   return {
     name: category?.name ?? '',
     description: category?.description ?? '',
-    color: category?.color ?? DEFAULT_COLOR,
+    color: category?.color ?? null,
     assetType: category?.assetType ?? CATEGORY_DEFAULTS.assetType,
-    rule: category ? category.rule : newRule(),
+    // New categories start manual-only, so the preview works before a rule is complete.
+    rule: category?.rule ?? null,
     rotationOrder: category?.rotationOrder ?? CATEGORY_DEFAULTS.rotationOrder,
     searchDepthPercent: String(
       category?.searchDepthPercent ?? CATEGORY_DEFAULTS.searchDepthPercent,
@@ -73,6 +75,9 @@ function draftOf(category: CategoryDetail | null): Draft {
 }
 
 const numberOrNull = (value: string) => (value.trim() === '' ? null : Number(value));
+
+/** Settings that can't be left empty (they have no "unset" value). */
+const REQUIRED_NUMBERS = ['searchDepthPercent', 'restMinutes'] as const;
 
 /** The draft as the api's body, validated by the contract. */
 function toBody(draft: Draft) {
@@ -144,30 +149,33 @@ function CategoryEditor({
   const [pending, setPending] = useState(false);
   const update = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
 
-  // Preview the last valid rule while the user is mid-edit; nothing before the first one.
+  // While the rule is incomplete, the preview keeps the last valid one (and says so).
   const ruleValid = draft.rule === null || categoryRuleSchema.safeParse(draft.rule).success;
-  const [lastValidRule, setLastValidRule] = useState<CategoryRule | null | undefined>(
-    ruleValid ? draft.rule : undefined,
+  const [lastValidRule, setLastValidRule] = useState<CategoryRule | null>(
+    ruleValid ? draft.rule : null,
   );
   if (ruleValid && lastValidRule !== draft.rule) setLastValidRule(draft.rule);
   const plays = Number(playsPerDay);
-  const preview = useDraftPreview(
-    stationId,
-    {
-      assetType: draft.assetType,
-      rule: lastValidRule ?? null,
-      members: draft.members,
-      limit: 100,
-      ...(playsPerDay && plays > 0 ? { playsPerDay: plays } : {}),
-    },
-    { enabled: lastValidRule !== undefined },
-  );
+  const preview = useDraftPreview(stationId, {
+    assetType: draft.assetType,
+    rule: lastValidRule,
+    members: draft.members,
+    limit: 100,
+    manualLimit: 1000,
+    ...(playsPerDay && plays > 0 ? { playsPerDay: plays } : {}),
+  });
 
   const save = async () => {
     const parsed = toBody(draft);
     setFormError(null);
-    if (!parsed.success) {
-      setErrors(fieldErrors(parsed.error));
+    const missing: FieldErrors = Object.fromEntries(
+      REQUIRED_NUMBERS.filter((name) => draft[name].trim() === '').map((name) => [
+        name,
+        [{ message: t('field.required') }],
+      ]),
+    );
+    if (!parsed.success || Object.keys(missing).length > 0) {
+      setErrors({ ...(parsed.success ? {} : fieldErrors(parsed.error)), ...missing });
       return;
     }
     setErrors({});
@@ -271,15 +279,35 @@ function CategoryEditor({
                     />
                     <FieldError errors={errors.name} />
                   </Field>
-                  <Field className="w-20">
+                  <Field className="w-auto shrink-0">
                     <FieldLabel htmlFor="category-color">{t('field.color')}</FieldLabel>
-                    <Input
-                      {...field('color')}
-                      type="color"
-                      className="p-0.5"
-                      value={draft.color}
-                      onChange={(e) => update({ color: e.target.value })}
-                    />
+                    {draft.color === null ? (
+                      <Button
+                        id="category-color"
+                        variant="outline"
+                        onClick={() => update({ color: DEFAULT_COLOR })}
+                      >
+                        {t('field.colorNone')}
+                      </Button>
+                    ) : (
+                      <div className="flex items-center gap-1">
+                        <Input
+                          {...field('color')}
+                          type="color"
+                          className="w-12 p-0.5"
+                          value={draft.color}
+                          onChange={(e) => update({ color: e.target.value })}
+                        />
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={t('field.colorClear')}
+                          onClick={() => update({ color: null })}
+                        >
+                          <XIcon />
+                        </Button>
+                      </div>
+                    )}
                   </Field>
                 </div>
                 <Field>
@@ -420,6 +448,7 @@ function CategoryEditor({
           <PreviewPanel
             preview={preview.data}
             loading={preview.isFetching}
+            stale={!ruleValid}
             playsPerDay={playsPerDay}
             onPlaysPerDay={setPlaysPerDay}
             onExclude={(assetId) =>

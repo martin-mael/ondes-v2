@@ -32,12 +32,15 @@ const artistTitle = (artists: string[], title: string) =>
 export function PreviewPanel({
   preview,
   loading,
+  stale,
   playsPerDay,
   onPlaysPerDay,
   onExclude,
 }: {
   preview: CategoryPreview | undefined;
   loading: boolean;
+  /** The rule being edited is incomplete: the preview shows the last valid one. */
+  stale: boolean;
   playsPerDay: string;
   onPlaysPerDay(value: string): void;
   onExclude(assetId: string): void;
@@ -77,6 +80,11 @@ export function PreviewPanel({
         )}
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        {stale && (
+          <p className="text-sm text-muted-foreground" data-testid="preview-stale">
+            {t('preview.stale')}
+          </p>
+        )}
         <div className="flex flex-wrap items-end gap-3">
           <Field className="w-36">
             <FieldLabel htmlFor="plays-per-day">{t('preview.playsPerDay')}</FieldLabel>

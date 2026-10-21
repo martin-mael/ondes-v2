@@ -15,12 +15,20 @@ import { uuidSchema } from './tenancy.ts';
  * - `tag`: `any` = carries at least one of `values` for `key`; `all` = carries every one;
  *   `none` = carries none of them.
  * - `tag_number`: some value of `key`, read as a number, compares to `value`
- *   (`energy >= 3`). Non-numeric values never match.
+ *   (`energy >= 3`). Only plain decimals count (`TAG_NUMBER_PATTERN`); other values never
+ *   match.
  * - `year`: the asset's release year compares to `value`. Assets without a year never match.
  * - `explicit`: the asset's explicit flag equals `value`.
  *
  * New kinds are added to this union; a stored rule stays valid.
  */
+/**
+ * Tag values `tag_number` reads as numbers: plain decimals, at most 15 digits each side of the
+ * point. Shared by the resolver and the api's SQL, which must agree. Valid as a JS RegExp and
+ * as a Postgres regular expression.
+ */
+export const TAG_NUMBER_PATTERN = '^[+-]?[0-9]{1,15}([.][0-9]{1,15})?$';
+
 export const comparisonOpSchema = z.enum(['eq', 'gte', 'gt', 'lte', 'lt']);
 export type ComparisonOp = z.infer<typeof comparisonOpSchema>;
 
@@ -268,8 +276,10 @@ export const categoryPreviewSchema = z.object({
   turnoverDays: z.number().nullable(),
   /** Members, by artist then title, from `offset`. */
   items: z.array(previewMemberSchema),
-  /** Every manual entry, by artist then title, with its effect (not paged). */
+  /** Manual entries with their effect, by artist then title, from `manualOffset`. */
   manual: z.array(previewManualSchema),
+  /** Manual entries naming an existing asset of the station. */
+  manualTotal: z.int(),
 });
 export type CategoryPreview = z.infer<typeof categoryPreviewSchema>;
 
@@ -278,6 +288,8 @@ const previewPaging = {
   playsPerDay: z.coerce.number().positive().max(10_000).optional(),
   limit: z.coerce.number().int().min(0).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0),
+  manualLimit: z.coerce.number().int().min(0).max(1000).default(100),
+  manualOffset: z.coerce.number().int().min(0).default(0),
 };
 
 /** `GET …/categories/:id/preview` query string. */

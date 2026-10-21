@@ -258,7 +258,7 @@ describe('categories API', () => {
   });
 
   it('agrees with the resolver used by schedulers', async () => {
-    const membership = await resolveCategoryMembers(t.tdb.db, scope, categoryId);
+    const membership = await resolveCategoryMembers(t.tdb.db, scope, categoryId, new Date());
     const preview = (
       await call('programmer', 'GET', `/categories/${categoryId}/preview?limit=500`)
     ).json<CategoryPreview>();

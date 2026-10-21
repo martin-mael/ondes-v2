@@ -1,6 +1,6 @@
 import type { CategoryDetail, CategoryPreview, MyOrg } from '@ondes/shared';
 import { waitFor, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   type ApiCall,
   type ApiRoute,
@@ -91,6 +91,7 @@ const preview = (overrides: Partial<CategoryPreview> = {}): CategoryPreview => (
     },
   ],
   manual: [],
+  manualTotal: overrides.manual?.length ?? 0,
   ...overrides,
 });
 
@@ -147,11 +148,16 @@ describe('categories', () => {
       }),
     );
 
-    // The starting rule has no values yet: nothing is previewed until it's valid.
+    // A new category starts manual-only, previewed at once.
     await user.type(await screen.findByLabelText('Name'), 'House power');
-    expect(previewCalls(calls)).toHaveLength(0);
+    await waitFor(() => expect(previewCalls(calls)[0]?.body).toMatchObject({ rule: null }));
+    expect(screen.getByTestId('preview-members')).toHaveTextContent('0 songs');
 
+    // An incomplete rule keeps the last complete one, and says so.
+    await user.click(screen.getByRole('button', { name: 'Add a smart rule' }));
+    expect(screen.getByTestId('preview-stale')).toBeVisible();
     await user.type(screen.getByLabelText('Values, comma separated'), 'house');
+    await waitFor(() => expect(screen.queryByTestId('preview-stale')).toBeNull());
     await waitFor(() => expect(screen.getByTestId('preview-members')).toHaveTextContent('2 songs'));
     expect(previewCalls(calls).at(-1)?.body).toMatchObject({
       assetType: 'song',
@@ -183,8 +189,129 @@ describe('categories', () => {
       searchDepthPercent: 100,
       restMinutes: 180,
       maxPlaysPerDay: null,
+      color: null,
       members: [],
     });
+  });
+
+  it('adds a song by hand to a new category, with its preview label', async () => {
+    const asset = {
+      id: alpha,
+      orgId: orgs[0]?.id,
+      stationId,
+      type: 'song',
+      title: 'Alpha',
+      artists: ['A'],
+      album: null,
+      year: 1994,
+      isrc: null,
+      version: null,
+      durationMs: 180_000,
+      explicit: false,
+      startAt: null,
+      killAt: null,
+      notes: null,
+      metadata: {},
+      sourceFilename: null,
+      normalizeLoudness: true,
+      gainOverrideDb: null,
+      createdAt: at,
+      updatedAt: at,
+    };
+    const { screen, user, calls } = renderApp(
+      `${base}/new`,
+      asProgrammer({
+        [`GET /stations/${stationId}/assets`]: [200, { items: [asset], nextCursor: null }],
+        [`POST ${base}/preview`]: (body) => {
+          const members = (body as { members: unknown[] }).members;
+          return [
+            200,
+            members.length === 0
+              ? preview({ counts: { ...counts, members: 0, ruleMatches: 0 }, items: [] })
+              : preview({
+                  counts: { ...counts, members: 1, ruleMatches: 0, manualOnly: 1 },
+                  items: [
+                    { ...(preview().items[0] as CategoryPreview['items'][0]), source: 'manual' },
+                  ],
+                  manual: [
+                    {
+                      assetId: alpha,
+                      title: 'Alpha',
+                      artists: ['A'],
+                      mode: 'include',
+                      effect: 'added',
+                    },
+                  ],
+                }),
+          ];
+        },
+      }),
+    );
+    await user.type(await screen.findByLabelText('Search the library'), 'alp');
+    await user.click(await screen.findByRole('button', { name: 'Add Alpha' }));
+    await waitFor(() => expect(screen.getByTestId('preview-members')).toHaveTextContent('1 songs'));
+    const manual = within(screen.getByTestId('manual-members'));
+    expect(manual.getByText('A – Alpha')).toBeVisible();
+    expect(manual.getByText('Added')).toBeVisible();
+    expect(previewCalls(calls).at(-1)?.body).toMatchObject({
+      rule: null,
+      members: [{ assetId: alpha, mode: 'include' }],
+    });
+  });
+
+  it('saves the rotation settings, keeping an unset color', async () => {
+    const { screen, user, calls } = renderApp(
+      `${base}/${categoryId}`,
+      asProgrammer({
+        [`GET ${base}/${categoryId}`]: [200, { ...detail, color: null }],
+        [`POST ${base}/preview`]: [200, preview()],
+        [`PATCH ${base}/${categoryId}`]: (body) => [200, { ...detail, ...(body as object) }],
+      }),
+    );
+    expect(await screen.findByRole('button', { name: 'Color' })).toHaveTextContent('No color');
+    await user.selectOptions(screen.getByLabelText('Order'), 'sequential');
+    const rest = screen.getByLabelText('Rest (minutes)');
+    await user.clear(rest);
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    // An empty rest is an error, not 0.
+    expect(await screen.findByText('Required.')).toBeVisible();
+    expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
+
+    await user.type(rest, '240');
+    await user.type(screen.getByLabelText('Max plays per day'), '3');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === 'PATCH')?.body).toMatchObject({
+        rotationOrder: 'sequential',
+        restMinutes: 240,
+        searchDepthPercent: 100,
+        maxPlaysPerDay: 3,
+        maxPlaysPerWeek: null,
+        color: null,
+      }),
+    );
+  });
+
+  it('deletes a category after confirmation', async () => {
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true),
+    );
+    const { screen, user, calls, history } = renderApp(
+      `${base}/${categoryId}`,
+      asProgrammer({
+        [`GET ${base}/${categoryId}`]: [200, detail],
+        [`POST ${base}/preview`]: [200, preview()],
+        [`DELETE ${base}/${categoryId}`]: [204],
+        [`GET ${base}`]: [200, { items: [] }],
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(history.location.pathname).toBe(base));
+    expect(calls.some((c) => c.method === 'DELETE' && c.path === `${base}/${categoryId}`)).toBe(
+      true,
+    );
+    expect(await screen.findByText(/No category yet/)).toBeVisible();
   });
 
   it('refuses an empty name before calling the api', async () => {
@@ -255,7 +382,6 @@ describe('categories', () => {
       }),
     );
     await user.type(await screen.findByLabelText('Name'), 'House power');
-    await user.click(screen.getByRole('button', { name: 'Remove the rule' }));
     await user.click(screen.getByRole('button', { name: 'Create' }));
     expect(await screen.findByText('Another category already has this name.')).toBeVisible();
   });

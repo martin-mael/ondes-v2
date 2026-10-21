@@ -11,6 +11,7 @@ import type {
   RuleGroup,
   TagKey,
 } from '@ondes/shared';
+import { TAG_NUMBER_PATTERN } from '@ondes/shared';
 
 // Category membership (#37): which assets of a library snapshot belong to a category. Pure:
 // the caller loads the candidates (the api, the log generator) and gets members back, so
@@ -27,6 +28,8 @@ export interface CategoryCandidate {
   startAt: Date | null;
   /** Not schedulable from this instant on. */
   killAt: Date | null;
+  /** When the asset entered the library (new-music lifecycle, #41). */
+  addedAt: Date;
   tags: readonly { key: TagKey; value: string }[];
 }
 
@@ -73,6 +76,18 @@ function indexTags(tags: CategoryCandidate['tags']): TagIndex {
   return index;
 }
 
+const tagNumber = new RegExp(TAG_NUMBER_PATTERN);
+
+/** A tag value as `tag_number` reads it, or `null`. */
+export function parseTagNumber(value: string): number | null {
+  const trimmed = value.trim();
+  return tagNumber.test(trimmed) ? Number(trimmed) : null;
+}
+
+function unreachable(value: never): never {
+  throw new Error(`unknown rule node ${JSON.stringify(value)}`);
+}
+
 function compare(left: number, op: ComparisonOp, right: number): boolean {
   switch (op) {
     case 'eq':
@@ -85,6 +100,8 @@ function compare(left: number, op: ComparisonOp, right: number): boolean {
       return left <= right;
     case 'lt':
       return left < right;
+    default:
+      return unreachable(op);
   }
 }
 
@@ -107,9 +124,8 @@ function matchesCondition(
       const held = tags.get(condition.key);
       if (!held) return false;
       for (const value of held) {
-        if (value === '') continue;
-        const n = Number(value);
-        if (Number.isFinite(n) && compare(n, condition.op, condition.value)) return true;
+        const n = parseTagNumber(value);
+        if (n !== null && compare(n, condition.op, condition.value)) return true;
       }
       return false;
     }
@@ -117,6 +133,8 @@ function matchesCondition(
       return asset.year !== null && compare(asset.year, condition.op, condition.value);
     case 'explicit':
       return asset.explicit === condition.value;
+    default:
+      return unreachable(condition);
   }
 }
 
@@ -125,7 +143,14 @@ function matchesGroup(group: RuleGroup, asset: CategoryCandidate, tags: TagIndex
     child.kind === 'group'
       ? matchesGroup(child, asset, tags)
       : matchesCondition(child, asset, tags);
-  return group.match === 'all' ? group.children.every(test) : group.children.some(test);
+  switch (group.match) {
+    case 'all':
+      return group.children.every(test);
+    case 'any':
+      return group.children.some(test);
+    default:
+      return unreachable(group.match);
+  }
 }
 
 /** Whether `asset` satisfies `rule` (type is not checked here: see `resolveCategory`). */
@@ -141,16 +166,16 @@ export function isSchedulable(asset: CategoryCandidate, at: Date): boolean {
 }
 
 /**
- * Members of a category among `candidates`: assets of the category's type that the rule
- * matches or that are included by hand, minus the manual excludes. Manual entries for assets
- * missing from `candidates` (deleted since) are ignored silently.
+ * Members of a category among `candidates` at instant `at`: assets of the category's type that
+ * the rule matches or that are included by hand, minus the manual excludes. Manual entries for
+ * assets missing from `candidates` (deleted since) are ignored silently. `at` only decides
+ * which members are schedulable.
  */
 export function resolveCategory<C extends CategoryCandidate>(
   category: CategoryMembershipInput,
   candidates: readonly C[],
-  options: { at?: Date } = {},
+  at: Date,
 ): CategoryMembership<C> {
-  const at = options.at ?? new Date();
   const manual = new Map(category.members.map((m) => [m.assetId, m.mode]));
   const members: ResolvedMember<C>[] = [];
   const entries: ManualEntry<C>[] = [];

@@ -23,6 +23,7 @@ import {
 import {
   CATEGORY_DEFAULTS,
   type Category,
+  type CategoryCounts,
   type CategoryDetail,
   type CategoryList,
   type CategoryMember,
@@ -30,20 +31,24 @@ import {
   type CategoryPreviewQuery,
   type CreateCategory,
   categoryPreviewQuerySchema,
+  categoryRuleSchema,
   createCategorySchema,
   type DraftPreview,
   draftPreviewSchema,
+  type ManualEffect,
   type TagKey,
   type UpdateCategory,
   updateCategorySchema,
 } from '@ondes/shared';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { HttpError } from '../../plugins/errors.ts';
+import { countCategories, membershipSql } from './sql.ts';
 
 // Categories (#37): storage and membership. Every function takes the station scope and
-// filters on it; mutations run in `withAudit`. Members are resolved on read with
-// @ondes/scheduling's `resolveCategory` against the station's library, so a tag edit changes
-// membership at once and the preview, the list counts and (later) the log generator agree.
+// filters on it; mutations run in `withAudit`. Membership is never stored: the api's reads
+// compile it to SQL (sql.ts), so counts and pages come from the database, and schedulers get
+// members from @ondes/scheduling's `resolveCategory` (`resolveCategoryMembers`). Both follow
+// tag edits at once; rotation.int.test.ts checks that they agree.
 
 export interface StationContext extends MutationContext {
   scope: StationScope;
@@ -57,6 +62,8 @@ export interface LibraryCandidate extends CategoryCandidate {
   artists: string[];
 }
 
+const storedRule = categoryRuleSchema.nullable();
+
 function toCategory(row: CategoryRow): Category {
   return {
     id: row.id,
@@ -66,7 +73,8 @@ function toCategory(row: CategoryRow): Category {
     description: row.description,
     color: row.color,
     assetType: row.assetType,
-    rule: row.rule ?? null,
+    // jsonb: checked against the contract on the way out too.
+    rule: storedRule.parse(row.rule ?? null),
     rotationOrder: row.rotationOrder,
     searchDepthPercent: row.searchDepthPercent,
     restMinutes: row.restMinutes,
@@ -77,15 +85,22 @@ function toCategory(row: CategoryRow): Category {
   };
 }
 
+/** Library order: first artist, then title. */
+const libraryOrder = () => [
+  sql`lower(coalesce(${asset.artists}[1], ''))`,
+  sql`lower(${asset.title})`,
+  asc(asset.id),
+];
+
 /**
- * The station's assets with their tags, by first artist then title: the candidates of every
- * category of the station. One query, whatever the number of categories.
+ * The station's assets with their tags, in library order: the candidates `resolveCategory`
+ * needs. Loads the whole library; the api's own reads use the SQL in sql.ts instead.
  */
 export async function loadCandidates(
   db: Db | Tx,
   scope: StationScope,
 ): Promise<LibraryCandidate[]> {
-  const rows = await db
+  return db
     .select({
       id: asset.id,
       type: asset.type,
@@ -96,6 +111,7 @@ export async function loadCandidates(
       durationMs: asset.durationMs,
       startAt: asset.startAt,
       killAt: asset.killAt,
+      addedAt: asset.createdAt,
       tags: sql<{ key: TagKey; value: string }[]>`coalesce(
         json_agg(json_build_object('key', ${tag.key}, 'value', ${tag.value}))
           filter (where ${tag.id} is not null),
@@ -106,12 +122,7 @@ export async function loadCandidates(
     .leftJoin(tag, eq(tag.id, assetTag.tagId))
     .where(whereStation(asset, scope))
     .groupBy(asset.id)
-    .orderBy(
-      sql`lower(coalesce(${asset.artists}[1], ''))`,
-      sql`lower(${asset.title})`,
-      asc(asset.id),
-    );
-  return rows;
+    .orderBy(...libraryOrder());
 }
 
 async function membersOf(db: Db | Tx, scope: StationScope, categoryIds: string[]) {
@@ -145,88 +156,160 @@ async function loadRow(db: Db | Tx, scope: StationScope, id: string): Promise<Ca
   return row;
 }
 
-export async function listCategories(db: Db, scope: StationScope): Promise<CategoryList> {
+export async function listCategories(
+  db: Db,
+  scope: StationScope,
+  at = new Date(),
+): Promise<CategoryList> {
   const rows = await db
     .select()
     .from(category)
     .where(whereStation(category, scope))
     .orderBy(sql`lower(${category.name})`, asc(category.id));
-  const [members, candidates] = await Promise.all([
-    membersOf(
-      db,
-      scope,
-      rows.map((r) => r.id),
-    ),
-    loadCandidates(db, scope),
-  ]);
+  const members = await membersOf(
+    db,
+    scope,
+    rows.map((r) => r.id),
+  );
+  const categories = rows.map((row) => ({
+    ...toCategory(row),
+    members: members.get(row.id) ?? [],
+  }));
+  const counts = await countCategories(db, scope, categories, at);
   return {
-    items: rows.map((row) => {
-      const input = { ...toCategory(row), members: members.get(row.id) ?? [] };
-      return { ...toCategory(row), counts: resolveCategory(input, candidates).counts };
-    }),
+    items: categories.map(({ members: _, ...c }, i) => ({
+      ...c,
+      counts: counts[i] as CategoryCounts,
+    })),
   };
 }
 
 export async function getCategory(
-  db: Db,
+  db: Db | Tx,
   scope: StationScope,
   id: string,
+  at = new Date(),
 ): Promise<CategoryDetail> {
   const row = await loadRow(db, scope, id);
-  const [members, candidates] = await Promise.all([
-    membersOf(db, scope, [id]),
-    loadCandidates(db, scope),
-  ]);
-  const list = members.get(id) ?? [];
-  const resolved = resolveCategory({ ...toCategory(row), members: list }, candidates);
-  return { ...toCategory(row), members: list, counts: resolved.counts };
+  const members = (await membersOf(db, scope, [id])).get(id) ?? [];
+  const category = { ...toCategory(row), members };
+  const [counts] = await countCategories(db, scope, [category], at);
+  return { ...category, counts: counts as CategoryCounts };
 }
 
 /**
- * Members of a saved category, resolved now (or at `at`). For consumers that schedule from a
- * category (clocks, the log generator).
+ * Members of a saved category at `at`, with the pure resolver: what schedulers (the log
+ * generator, #50) pick from. Loads the station's candidates.
  */
 export async function resolveCategoryMembers(
   db: Db,
   scope: StationScope,
   id: string,
-  at?: Date,
+  at: Date,
 ): Promise<CategoryMembership<LibraryCandidate>> {
   const row = await loadRow(db, scope, id);
   const [members, candidates] = await Promise.all([
     membersOf(db, scope, [id]),
     loadCandidates(db, scope),
   ]);
-  return resolveCategory(
-    { ...toCategory(row), members: members.get(id) ?? [] },
-    candidates,
-    at ? { at } : {},
-  );
+  return resolveCategory({ ...toCategory(row), members: members.get(id) ?? [] }, candidates, at);
 }
 
-function toPreview(
-  membership: CategoryMembership<LibraryCandidate>,
-  query: { playsPerDay?: number | undefined; limit: number; offset: number },
-): CategoryPreview {
+function manualEffect(
+  mode: CategoryMember['mode'],
+  typeOk: boolean,
+  byRule: boolean,
+): ManualEffect {
+  if (!typeOk) return 'wrong_type';
+  if (mode === 'exclude') return byRule ? 'excluded' : 'redundant';
+  return byRule ? 'redundant' : 'added';
+}
+
+type Paging = {
+  playsPerDay?: number | undefined;
+  limit: number;
+  offset: number;
+  manualLimit: number;
+  manualOffset: number;
+};
+
+/** Counts, a page of members and a page of manual entries, from the database. */
+async function preview(
+  db: Db,
+  scope: StationScope,
+  input: CategoryMembershipInput,
+  paging: Paging,
+  at: Date,
+): Promise<CategoryPreview> {
+  const m = membershipSql(scope, input, at);
+  const manualIds = input.members.map((x) => x.assetId);
+  const modes = new Map(input.members.map((x) => [x.assetId, x.mode]));
+  const [[counts], items, manual, [manualTotal]] = await Promise.all([
+    countCategories(db, scope, [input], at),
+    paging.limit === 0
+      ? []
+      : db
+          .select({
+            assetId: asset.id,
+            title: asset.title,
+            artists: asset.artists,
+            year: asset.year,
+            durationMs: asset.durationMs,
+            byRule: sql<boolean>`${m.byRule}`,
+            included: sql<boolean>`${m.included}`,
+            schedulable: sql<boolean>`${m.schedulable}`,
+          })
+          .from(asset)
+          .where(and(whereStation(asset, scope), m.member))
+          .orderBy(...libraryOrder())
+          .limit(paging.limit)
+          .offset(paging.offset),
+    manualIds.length === 0 || paging.manualLimit === 0
+      ? []
+      : db
+          .select({
+            assetId: asset.id,
+            title: asset.title,
+            artists: asset.artists,
+            typeOk: sql<boolean>`${m.typeOk}`,
+            byRule: sql<boolean>`${m.byRule}`,
+          })
+          .from(asset)
+          .where(and(whereStation(asset, scope), inArray(asset.id, manualIds)))
+          .orderBy(...libraryOrder())
+          .limit(paging.manualLimit)
+          .offset(paging.manualOffset),
+    manualIds.length === 0
+      ? [{ n: 0 }]
+      : db
+          .select({ n: sql<number>`count(*)`.mapWith(Number) })
+          .from(asset)
+          .where(and(whereStation(asset, scope), inArray(asset.id, manualIds))),
+  ]);
+  const total = counts as CategoryCounts;
   return {
-    counts: membership.counts,
-    turnoverDays: projectTurnoverDays(membership.counts.schedulable, query.playsPerDay),
-    items: membership.members.slice(query.offset, query.offset + query.limit).map((m) => ({
-      assetId: m.asset.id,
-      title: m.asset.title,
-      artists: m.asset.artists,
-      year: m.asset.year,
-      durationMs: m.asset.durationMs,
-      source: m.source,
-      schedulable: m.schedulable,
+    counts: total,
+    turnoverDays: projectTurnoverDays(total.schedulable, paging.playsPerDay),
+    items: items.map((i) => ({
+      assetId: i.assetId,
+      title: i.title,
+      artists: i.artists,
+      year: i.year,
+      durationMs: i.durationMs,
+      source: i.byRule && i.included ? 'both' : i.byRule ? 'rule' : 'manual',
+      schedulable: i.schedulable,
     })),
-    manual: membership.manual.map((m) => ({
-      assetId: m.asset.id,
-      title: m.asset.title,
-      artists: m.asset.artists,
-      mode: m.mode,
-      effect: m.effect,
-    })),
+    manual: manual.map((e) => {
+      const mode = modes.get(e.assetId) ?? 'include';
+      return {
+        assetId: e.assetId,
+        title: e.title,
+        artists: e.artists,
+        mode,
+        effect: manualEffect(mode, e.typeOk, e.byRule),
+      };
+    }),
+    manualTotal: manualTotal?.n ?? 0,
   };
 }
 
@@ -235,9 +318,12 @@ export async function previewCategory(
   scope: StationScope,
   id: string,
   query: CategoryPreviewQuery,
+  at = new Date(),
 ): Promise<CategoryPreview> {
   const parsed = categoryPreviewQuerySchema.parse(query);
-  return toPreview(await resolveCategoryMembers(db, scope, id), parsed);
+  const row = await loadRow(db, scope, id);
+  const members = (await membersOf(db, scope, [id])).get(id) ?? [];
+  return preview(db, scope, { ...toCategory(row), members }, parsed, at);
 }
 
 /** Preview of an unsaved category: the editor's live preview. */
@@ -245,10 +331,10 @@ export async function previewDraft(
   db: Db,
   scope: StationScope,
   draft: DraftPreview,
+  at = new Date(),
 ): Promise<CategoryPreview> {
   const parsed = draftPreviewSchema.parse(draft);
-  const input: CategoryMembershipInput = parsed;
-  return toPreview(resolveCategory(input, await loadCandidates(db, scope)), parsed);
+  return preview(db, scope, parsed, parsed, at);
 }
 
 // --- Mutations ---------------------------------------------------------------------------

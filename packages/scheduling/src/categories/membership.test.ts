@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   type CategoryCandidate,
   matchesRule,
+  parseTagNumber,
   projectTurnoverDays,
   resolveCategory,
 } from './membership.ts';
@@ -18,6 +19,7 @@ function song(overrides: Partial<CategoryCandidate> = {}): CategoryCandidate {
     durationMs: 200_000,
     startAt: null,
     killAt: null,
+    addedAt: new Date('2026-01-01T00:00:00Z'),
     tags: [],
     ...overrides,
   };
@@ -163,9 +165,7 @@ describe('resolveCategory', () => {
     const result = resolveCategory(
       { assetType: 'song', rule: houseRule, members: [] },
       candidates,
-      {
-        at,
-      },
+      at,
     );
     expect(result.members.map((m) => m.asset.id)).toEqual([house.id, future.id, killed.id]);
     expect(result.members.every((m) => m.source === 'rule')).toBe(true);
@@ -194,7 +194,7 @@ describe('resolveCategory', () => {
         ],
       },
       candidates,
-      { at },
+      at,
     );
     expect(result.members.map((m) => [m.asset.id, m.source])).toEqual([
       [house.id, 'both'],
@@ -221,7 +221,7 @@ describe('resolveCategory', () => {
     const result = resolveCategory(
       { assetType: 'jingle', rule: null, members: [{ assetId: jingle.id, mode: 'include' }] },
       candidates,
-      { at },
+      at,
     );
     expect(result.members.map((m) => [m.asset.id, m.source])).toEqual([[jingle.id, 'manual']]);
     expect(result.counts.ruleMatches).toBe(0);
@@ -230,9 +230,18 @@ describe('resolveCategory', () => {
   it('follows tag edits: membership is computed, never stored', () => {
     const asset = song();
     const category = { assetType: 'song' as const, rule: houseRule, members: [] };
-    expect(resolveCategory(category, [asset], { at }).counts.members).toBe(0);
+    expect(resolveCategory(category, [asset], at).counts.members).toBe(0);
     const tagged = { ...asset, tags: [{ key: 'style' as const, value: 'house' }] };
-    expect(resolveCategory(category, [tagged], { at }).counts.members).toBe(1);
+    expect(resolveCategory(category, [tagged], at).counts.members).toBe(1);
+  });
+});
+
+describe('parseTagNumber', () => {
+  it('reads plain decimals only', () => {
+    expect(['3', ' 4 ', '-2', '+1.5', '0.25'].map(parseTagNumber)).toEqual([3, 4, -2, 1.5, 0.25]);
+    expect(
+      ['', 'low', '1e3', '0x10', 'Infinity', '.5', '3.', '1234567890123456'].map(parseTagNumber),
+    ).toEqual([null, null, null, null, null, null, null, null]);
   });
 });
 
