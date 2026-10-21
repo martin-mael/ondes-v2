@@ -13,6 +13,7 @@ import {
   type EngineLifecyclePluginOptions,
   engineLifecyclePlugin,
 } from './modules/engine/lifecycle/plugin.ts';
+import { type InvitationsOptions, invitationsRoutes } from './modules/invitations/routes.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
@@ -36,6 +37,8 @@ export interface AppOptions {
   storage?: Storage;
   /** Upload route settings beyond `storage` (tests). */
   uploads?: Omit<UploadPluginOptions, 'storage'>;
+  /** Team onboarding (#113): DNS resolver and sending limits. */
+  invitations?: InvitationsOptions;
   fastify?: FastifyServerOptions;
 }
 
@@ -58,6 +61,7 @@ export async function buildApp(options: AppOptions) {
     .withTypeProvider<ZodTypeProvider>()
     .get('/api/v1/health', { schema: { response: { 200: healthResponseSchema } } }, () => health());
   await app.register(authRoutes, { prefix: '/api/v1' });
+  await app.register(invitationsRoutes, { prefix: '/api/v1', ...options.invitations });
   // Library routes carry their full /api/v1/stations/:stationId path.
   await app.register(libraryPlugin);
   await app.register(logRoutes, { prefix: '/api/v1' });

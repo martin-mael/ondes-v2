@@ -2,6 +2,7 @@
 
 export * from './alerts.ts';
 export * from './engine.ts';
+export * from './invitations.ts';
 export * from './jobs.ts';
 export * from './library.ts';
 export * from './log.ts';
