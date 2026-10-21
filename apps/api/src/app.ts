@@ -6,6 +6,7 @@ import {
   type ZodTypeProvider,
 } from 'fastify-type-provider-zod';
 import { health } from './health.ts';
+import { type AlertsPluginOptions, alertsPlugin } from './modules/alerts/plugin.ts';
 import { authRoutes } from './modules/auth/routes.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { type AuthConfig, authPlugin } from './plugins/auth.ts';
@@ -20,6 +21,8 @@ export interface AppOptions {
   auth: AuthConfig;
   /** Optional so tests that don't touch the queue can skip RabbitMQ. */
   rabbit?: RabbitPluginOptions;
+  /** Alerts (#33): the engine lookup for the silence action, the escalation sweep. */
+  alerts?: AlertsPluginOptions;
   fastify?: FastifyServerOptions;
 }
 
@@ -44,6 +47,8 @@ export async function buildApp(options: AppOptions) {
   await app.register(authRoutes, { prefix: '/api/v1' });
   // Library routes carry their full /api/v1/stations/:stationId path.
   await app.register(libraryPlugin);
+  // Alerts (#33): `app.alerts`, its routes under /api/v1, engine events -> alerts.
+  await app.register(alertsPlugin, options.alerts ?? {});
 
   return app;
 }
