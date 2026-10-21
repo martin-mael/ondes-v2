@@ -1,4 +1,5 @@
 export * from './contracts/alerts.ts';
+export * from './contracts/asrun.ts';
 export * from './contracts/auth.ts';
 export * from './contracts/autocue.ts';
 export * from './contracts/cache.ts';

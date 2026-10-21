@@ -1,6 +1,7 @@
 // One file per domain (see CLAUDE.md). Add your domain's file here.
 
 export * from './alerts.ts';
+export * from './asrun.ts';
 export * from './cache.ts';
 export * from './engine.ts';
 export * from './invitations.ts';
