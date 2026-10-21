@@ -209,16 +209,27 @@ function separationMs(rules: readonly RotationRule[]): number {
   return max;
 }
 
+export interface PickOptions {
+  now?: Date;
+  /**
+   * Items placed by the caller and not stored yet (a clock preview's earlier slots, a log being
+   * generated), added to the loaded history.
+   */
+  history?: readonly PlayedItem[];
+}
+
 /**
  * `POST …/rotation/pick`: fill the slots in order with the station's rules (or draft ones),
- * against what aired and what is planned around them.
+ * against what aired and what is planned around them. In-process callers (clock preview, log
+ * generator) pass their unsaved picks as `options.history`.
  */
 export async function pickSlots(
   db: Db,
   scope: StationContext['scope'],
   input: PickRequest,
-  now = new Date(),
+  options: PickOptions = {},
 ): Promise<PickResponse> {
+  const now = options.now ?? new Date();
   const request = pickRequestSchema.parse(input);
   const rules = request.rules ?? (await getRules(db, scope)).rules;
   const categoryIds = [...new Set(request.slots.map((s) => s.categoryId))];
@@ -244,11 +255,12 @@ export async function pickSlots(
   const from = new Date(Math.min(...times) - span);
   const to = new Date(Math.max(...times) + span);
   const memberIds = [...new Set([...membersOf.values()].flat().map((m) => m.id))];
-  const [history, lastPlayedAt] = await Promise.all([
+  const [loaded, lastPlayedAt] = await Promise.all([
     loadHistory(db, scope, libraryById, from, to, now),
     lastAiredBefore(db, scope, memberIds, from),
   ]);
 
+  const history = [...loaded, ...(options.history ?? [])];
   const slots: PickSlot<RulesCandidate>[] = request.slots.map((s) => ({
     at: new Date(s.at),
     category: categories.get(s.categoryId) as CategoryDetail,

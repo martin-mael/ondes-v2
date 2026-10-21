@@ -22,6 +22,7 @@ import {
 import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestApp, signUpAndLogin, type TestApp } from '../../auth/testing.ts';
+import { pickSlots } from './repo.ts';
 
 // The rotation rules API on the real app: rule settings (permissions, audit, validation) and
 // picks against as-run history and planned log items, with tenant isolation.
@@ -274,6 +275,29 @@ describe('pick', () => {
     expect(a.picks[0]?.relaxed).toEqual([]);
     // No rules: least recently played, never-played first.
     expect([ids.Bravo, ids.Charlie]).toContain(a.picks[0]?.asset?.id);
+  });
+
+  it('counts unsaved picks passed in process (clock preview, log generator)', async () => {
+    const result = await pickSlots(
+      t.tdb.db,
+      scope,
+      { slots: [{ categoryId, at: at(10) }] },
+      {
+        history: [
+          {
+            assetId: ids.Charlie as string,
+            type: 'song',
+            title: 'Charlie',
+            artists: ['C'],
+            album: null,
+            tags: [],
+            at: new Date(now + 6 * MINUTE),
+          },
+        ],
+      },
+    );
+    // Charlie, the only clean candidate otherwise, now rested too little: the ladder relaxes.
+    expect(result.picks[0]?.relaxed.length).toBeGreaterThan(0);
   });
 
   it('never reaches another station', async () => {
