@@ -259,7 +259,8 @@ describe('clocks', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(saves).toBe(3));
     expect(
-      (lastCall(calls, 'PATCH', `${base}/${clockId}`)?.body as { version: number }).version,
+      (lastCall(calls, 'PATCH', `${base}/${clockId}`)?.body as { version: number } | undefined)
+        ?.version,
     ).toBe(7);
   });
 
@@ -303,7 +304,8 @@ describe('clocks', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(lastCall(calls, 'PATCH', `${base}/${clockId}`)).toBeDefined());
     expect(
-      (lastCall(calls, 'PATCH', `${base}/${clockId}`)?.body as { slots: unknown[] }).slots,
+      (lastCall(calls, 'PATCH', `${base}/${clockId}`)?.body as { slots: unknown[] } | undefined)
+        ?.slots,
     ).toEqual([
       { kind: 'vt', mode: 'placeholder', categoryId: null, label: null, durationMs: null },
     ]);
