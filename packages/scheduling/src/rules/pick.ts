@@ -1,4 +1,10 @@
-import type { Category, RelaxedRule, RotationRule, RuleViolation } from '@ondes/shared';
+import type {
+  Category,
+  PickUnfilled,
+  RelaxedRule,
+  RotationRule,
+  RuleViolation,
+} from '@ondes/shared';
 import {
   addDays,
   localDayBounds,
@@ -68,6 +74,9 @@ export interface PickSlot<C extends PickCandidate = PickCandidate> {
   candidates: readonly C[];
 }
 
+/** Why a slot stays empty: no schedulable member, or every one breaks an unbreakable rule. */
+export type UnfilledSlot = PickUnfilled;
+
 export interface CandidateVerdict<C extends PickCandidate = PickCandidate> {
   asset: C;
   /** Position in the rotation order (0 first). */
@@ -79,10 +88,15 @@ export interface CandidateVerdict<C extends PickCandidate = PickCandidate> {
 }
 
 export interface PickResult<C extends PickCandidate = PickCandidate> {
-  /** `null`: no schedulable member, or none passes the unbreakable rules. */
+  /** `null`: the slot stays empty, and `unfilled` says why. */
   asset: C | null;
-  /** The rules the ladder dropped, in order, ready for `log_item.relaxed_rules`. */
+  /**
+   * The rules the ladder dropped that the pick breaks, in ladder order, ready for
+   * `log_item.relaxed_rules`. Empty when nothing was picked.
+   */
   relaxed: RelaxedRule[];
+  /** Set when `asset` is null. */
+  unfilled: UnfilledSlot | null;
   /** Every schedulable member in rotation order, with its verdict. */
   ranked: CandidateVerdict<C>[];
 }
@@ -129,8 +143,15 @@ function sameHourYesterday(at: Date, timeZone: string, windowMinutes: number) {
   const yesterday = addDays(date, -1);
   const hhmm = (min: number) =>
     `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+  const startsAt = zonedInstant(yesterday, hhmm(startMin), timeZone);
+  // A window that starts in yesterday's spring-forward gap never happened: it is empty.
+  // (Windows are aligned on 15 min, so one that starts in the gap lies inside it.)
+  const real = zonedParts(startsAt, timeZone);
+  if (real.date !== yesterday || real.time !== hhmm(startMin)) {
+    return { startsAt, endsAt: startsAt };
+  }
   return {
-    startsAt: zonedInstant(yesterday, hhmm(startMin), timeZone),
+    startsAt,
     endsAt:
       endMin >= 24 * 60
         ? zonedInstant(date, '00:00', timeZone)
@@ -480,10 +501,25 @@ export function pickForSlot<C extends PickCandidate>(
     return {
       asset: pick.asset,
       relaxed: relaxed.filter((_, i) => broken.has((ladder[i] as RotationRule).id)),
+      unfilled: null,
       ranked,
     };
   }
-  return { asset: null, relaxed, ranked };
+  // Nothing relaxed counts: no item carries it. Say which unbreakable rules held.
+  const blockedBy = enabled
+    .filter((r) => !r.breakable && r.kind !== 'flow')
+    .map((r) => ({
+      ruleId: r.id,
+      kind: r.kind,
+      candidates: ranked.filter((v) => v.violations.some((x) => x.ruleId === r.id)).length,
+    }))
+    .filter((b) => b.candidates > 0);
+  return {
+    asset: null,
+    relaxed: [],
+    unfilled: { reason: ranked.length === 0 ? 'no_candidates' : 'unbreakable_rules', blockedBy },
+    ranked,
+  };
 }
 
 /**

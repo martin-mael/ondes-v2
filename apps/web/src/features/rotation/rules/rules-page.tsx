@@ -6,6 +6,8 @@ import {
   rotationRulesSchema,
   type TagMatch,
   tagKeySchema,
+  zonedInstant,
+  zonedParts,
 } from '@ondes/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi } from '@tanstack/react-router';
@@ -22,6 +24,7 @@ import { Input } from '@/ui/input';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { Spinner } from '@/ui/spinner';
 import { isApiError } from '../../../app/api/client.ts';
+import { findStation, useOrgs } from '../../../app/auth/session.ts';
 import { FormAlert } from '../../../app/forms.tsx';
 import { categoriesQuery } from '../categories/api.ts';
 import { rulesApi, rulesKeys, rulesQuery } from './api.ts';
@@ -70,6 +73,9 @@ export function newRule(kind: RotationRuleKind): RotationRule {
       return { ...base(kind), kind, maxBpmStep: 10, maxEnergyStep: 0.2 };
   }
 }
+
+/** Rules that apply a category setting (rest, caps, depth). */
+const CATEGORY_RULES = ['song_rest', 'max_plays', 'search_depth'] as const;
 
 /** Priorities follow the list order. */
 const ranked = (rules: RotationRule[]) => rules.map((r, i) => ({ ...r, priority: i + 1 }));
@@ -164,6 +170,8 @@ function RulesEditor({
   };
 
   const ladder = relaxationLadder(rules);
+  // These rules carry the categories' own settings: without them, those settings do nothing.
+  const ignored = CATEGORY_RULES.filter((kind) => !rules.some((r) => r.kind === kind && r.enabled));
 
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,30rem)]">
@@ -187,6 +195,18 @@ function RulesEditor({
           </Alert>
         )}
         {error ? <FormAlert error={error} /> : null}
+        {ignored.length > 0 && (
+          <Alert data-testid="ignored-settings">
+            <CircleAlertIcon />
+            <AlertDescription>
+              <ul>
+                {ignored.map((kind) => (
+                  <li key={kind}>{t(`ignored.${kind}`)}</li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
         <p className="text-sm text-muted-foreground">{t('ladder')}</p>
         <p className="text-sm" data-testid="ladder">
           <span className="font-medium">{t('ladder.order')}: </span>
@@ -563,17 +583,24 @@ function RuleFields({
   }
 }
 
-/** `datetime-local` value for an instant, in the browser's timezone. */
-function localInput(date: Date): string {
-  const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
-  return shifted.toISOString().slice(0, 16);
+/** `datetime-local` value for an instant, on the station's wall clock. */
+function stationInput(date: Date, timeZone: string): string {
+  const { date: day, time } = zonedParts(date, timeZone);
+  return `${day}T${time}`;
+}
+
+/** The instant a `datetime-local` value means on the station's wall clock (not the browser's). */
+function fromStationInput(value: string, timeZone: string): Date {
+  const [day = '', time = ''] = value.split('T');
+  return zonedInstant(day, time.slice(0, 5), timeZone);
 }
 
 function TryPanel({ stationId, rules }: { stationId: string; rules: RotationRule[] | null }) {
   const t = useRulesT();
+  const timeZone = findStation(useOrgs(), stationId)?.station.timezone ?? 'UTC';
   const categories = useQuery(categoriesQuery(stationId));
   const [categoryId, setCategoryId] = useState('');
-  const [at, setAt] = useState(() => localInput(new Date()));
+  const [at, setAt] = useState(() => stationInput(new Date(), timeZone));
   const [result, setResult] = useState<PickOutcome | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
@@ -586,7 +613,7 @@ function TryPanel({ stationId, rules }: { stationId: string; rules: RotationRule
     setError(null);
     try {
       const response = await rulesApi.pick(stationId, {
-        slots: [{ categoryId: chosen, at: new Date(at).toISOString() }],
+        slots: [{ categoryId: chosen, at: fromStationInput(at, timeZone).toISOString() }],
         rules,
         explain: true,
       });
@@ -624,7 +651,7 @@ function TryPanel({ stationId, rules }: { stationId: string; rules: RotationRule
               </NativeSelect>
             </Field>
             <Field className="w-52">
-              <FieldLabel htmlFor="try-at">{t('try.at')}</FieldLabel>
+              <FieldLabel htmlFor="try-at">{t('try.at', { timeZone })}</FieldLabel>
               <Input
                 id="try-at"
                 type="datetime-local"
@@ -656,9 +683,18 @@ function PickExplanation({ t, result }: { t: RulesT; result: PickOutcome }) {
           })}
         </p>
       ) : (
-        <p className="font-medium">
-          {result.candidates === 0 ? t('try.noCandidates') : t('try.nothing')}
-        </p>
+        <div data-testid="unfilled">
+          <p className="font-medium">
+            {result.unfilled?.reason === 'no_candidates' ? t('try.noCandidates') : t('try.nothing')}
+          </p>
+          <ul className="list-disc pl-4">
+            {result.unfilled?.blockedBy.map((b) => (
+              <li key={b.ruleId}>
+                {t('try.blockedBy', { rule: kindLabel(t, b.kind), count: b.candidates })}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {result.asset && result.relaxed.length === 0 && (
         <p className="text-muted-foreground">{t('try.clean')}</p>

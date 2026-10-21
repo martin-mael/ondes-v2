@@ -4,7 +4,7 @@ import {
   type PickResponse,
   type RotationRule,
 } from '@ondes/shared';
-import { waitFor, within } from '@testing-library/react';
+import { fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import {
   type ApiRoute,
@@ -23,9 +23,12 @@ const alpha = '01a15ddf-0000-7000-8000-0000000000d1';
 const bravo = '01a15ddf-0000-7000-8000-0000000000d2';
 const base = `/stations/${stationId}/rotation`;
 
+// Tokyo: never the browser's timezone here (Paris locally, UTC in CI).
 const programmerOrgs: MyOrg[] = orgs.map((org) => ({
   ...org,
-  stations: org.stations.map((s) => (s.id === stationId ? { ...s, role: 'programmer' } : s)),
+  stations: org.stations.map((s) =>
+    s.id === stationId ? { ...s, role: 'programmer', timezone: 'Asia/Tokyo' } : s,
+  ),
 }));
 
 const asProgrammer = (routes: Record<string, ApiRoute> = {}): Record<string, ApiRoute> => ({
@@ -147,6 +150,7 @@ describe('rotation rules', () => {
           at,
           asset: { id: bravo, title: 'Bravo', artists: ['B'], album: null, durationMs: 180_000 },
           relaxed: [{ rule: 'artist_separation', reason: 'artist: blocked 2 of 2 candidates' }],
+          unfilled: null,
           candidates: 2,
           ranked: [
             {
@@ -214,5 +218,53 @@ describe('rotation rules', () => {
     expect(body.slots[0]?.categoryId).toBe(categoryId);
     expect(body.rules).toHaveLength(DEFAULT_ROTATION_RULES.length);
     expect(body.explain).toBe(true);
+  });
+
+  it('reads the pick time on the station clock, not the browser one', async () => {
+    const empty: PickResponse = {
+      picks: [
+        {
+          categoryId,
+          at,
+          asset: null,
+          relaxed: [],
+          unfilled: {
+            reason: 'unbreakable_rules',
+            blockedBy: [{ ruleId: 'artist', kind: 'artist_separation', candidates: 2 }],
+          },
+          candidates: 2,
+          ranked: [],
+        },
+      ],
+    };
+    const { screen, user, calls } = renderApp(
+      `${base}/rules`,
+      asProgrammer({ [`POST ${base}/pick`]: [200, empty] }),
+    );
+    const time = await screen.findByLabelText('Station time (Asia/Tokyo)');
+    fireEvent.change(time, { target: { value: '2026-10-21T10:00' } });
+    await user.click(screen.getByRole('button', { name: 'Pick' }));
+    const unfilled = await screen.findByTestId('unfilled');
+    expect(unfilled).toHaveTextContent(
+      'No song can fill this slot: every candidate breaks a rule that may not be relaxed.',
+    );
+    expect(unfilled).toHaveTextContent('Artist separation blocks 2 of the candidates.');
+    const body = calls.find((c) => c.method === 'POST' && c.path === `${base}/pick`)?.body as {
+      slots: { at: string }[];
+    };
+    // 10:00 in Tokyo (UTC+9).
+    expect(body.slots[0]?.at).toBe('2026-10-21T01:00:00.000Z');
+  });
+
+  it('warns when a rule carrying category settings is off', async () => {
+    const { screen, user } = renderApp(`${base}/rules`, asProgrammer());
+    const rest = await screen.findByRole('group', { name: 'Song rest' });
+    expect(screen.queryByTestId('ignored-settings')).toBeNull();
+    await user.click(within(rest).getByRole('checkbox', { name: 'Enabled' }));
+    expect(screen.getByTestId('ignored-settings')).toHaveTextContent(
+      'Song rest is off: the categories’ rest times are ignored.',
+    );
+    await user.click(screen.getByRole('button', { name: 'Remove: Max plays per day and week' }));
+    expect(screen.getByTestId('ignored-settings')).toHaveTextContent('Max plays is off');
   });
 });

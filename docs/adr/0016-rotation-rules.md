@@ -33,8 +33,14 @@ parameters. Kinds:
 | `max_tag_per_hour` | `max` songs with the tag already sit in the station-local clock hour |
 | `flow` (soft) | never: a BPM or energy step above the goal only moves it behind the songs that meet it |
 
+**Artists** are compared after splitting each credit on the usual joiners (feat., ft.,
+featuring, &, x, vs, comma, slash, with, avec; word-bounded, any case) and normalizing (no
+accents, no punctuation, no leading "the"). The primary artist is the first name of the first
+credit; `includeFeatured: false` compares primaries only.
+
 Category-level values (rest, caps, depth, rotation order) stay on the category; the rule only
-enables them and gives them a priority, so one ladder covers everything. Gender rules are left
+enables them and gives them a priority, so one ladder covers everything. Disabling one of these
+rules ignores that setting in every category; the settings page warns about it. Gender rules are left
 out: the library has no gender data. Rule groups by daypart are a later addition (a `when`
 field on the rule).
 
@@ -56,7 +62,9 @@ the log generator (#50) can call the picker with its own in-memory history.
 3. **Relaxation ladder.** Eligible = candidates that break no active rule. If none, drop the
    enabled, breakable, non-soft rule with the highest priority number (ties by id) and try again.
    An unbreakable rule is never dropped: if it blocks everyone, the slot stays empty and the
-   caller fills it otherwise (fill, safety). Once every breakable rule is dropped, the pick falls
+   caller fills it otherwise (fill, safety). An empty slot reports no relaxed rule (no item
+   carries them); `unfilled` says why: no schedulable member, or the unbreakable rules that
+   block, with how many candidates each blocks. Once every breakable rule is dropped, the pick falls
    back to plain rotation order.
 4. Among the eligible, prefer those that meet the soft `flow` goal, then take the first in
    rotation order (or the weighted draw).
@@ -77,6 +85,8 @@ and names the rule id and how many candidates it blocked. The UI words violation
   follow DST: a 23- or 25-hour day is one day. "Same hour yesterday" compares wall-clock hours
   (`zonedInstant`), and a window in the spring-forward gap is empty.
 - `max_tag_per_hour` uses the clock hour around the slot, not a rolling hour.
+- The api bounds the older-airings lookup to the longest rest or separation plus 30 days: a
+  song idle longer than that orders like one never played.
 - Picks rebuild the history index per slot: about 2 ms per slot for 400 candidates and a week
   of history, fine for a day of the log. The api loads 8 days of history around the slots
   (longer when a separation is longer), plus each member's last airing before that for long

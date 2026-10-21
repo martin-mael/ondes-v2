@@ -12,6 +12,9 @@ const en = {
     'When no song satisfies every rule, the lowest enabled rule that may be relaxed is dropped first, then the next one up. Each relaxation is recorded on the log item.',
   'ladder.order': 'Relaxation order',
   'ladder.none': 'No rule can be relaxed.',
+  'ignored.song_rest': 'Song rest is off: the categories’ rest times are ignored.',
+  'ignored.max_plays': 'Max plays is off: the categories’ daily and weekly caps are ignored.',
+  'ignored.search_depth': 'Search depth is off: the categories’ search depths are ignored.',
   forbidden: "You don't have access to this station's rotation rules.",
   defaults: 'This station uses the default rules.',
   save: 'Save',
@@ -68,7 +71,7 @@ const en = {
   'try.description':
     'Runs the rules above (saved or not) on a category, against what aired and what is planned.',
   'try.category': 'Category',
-  'try.at': 'Time',
+  'try.at': 'Station time ({timeZone})',
   'try.run': 'Pick',
   'try.noCategory': 'Create a category first.',
   'try.picked': 'Picked: {title}',
@@ -76,6 +79,7 @@ const en = {
     'No song can fill this slot: every candidate breaks a rule that may not be relaxed.',
   'try.noCandidates': 'This category has no song to schedule at that time.',
   'try.clean': 'Every rule is satisfied.',
+  'try.blockedBy': '{rule} blocks {count} of the candidates.',
   'try.relaxed': 'Relaxed: {rule}',
   'try.relaxedWhy':
     'No song satisfied every rule, so this lower-priority rule was relaxed. The pick breaks it:',
@@ -110,6 +114,12 @@ const fr: Record<RulesMessageKey, string> = {
     'Quand aucun titre ne respecte toutes les règles, la règle active la plus basse qui peut être assouplie est levée en premier, puis la suivante. Chaque assouplissement est noté sur l’élément du conducteur.',
   'ladder.order': 'Ordre d’assouplissement',
   'ladder.none': 'Aucune règle ne peut être assouplie.',
+  'ignored.song_rest':
+    'Le repos du titre est désactivé : les temps de repos des catégories sont ignorés.',
+  'ignored.max_plays':
+    'Les passages max sont désactivés : les plafonds quotidiens et hebdomadaires des catégories sont ignorés.',
+  'ignored.search_depth':
+    'La profondeur de recherche est désactivée : celle des catégories est ignorée.',
   forbidden: 'Vous n’avez pas accès aux règles de rotation de cette station.',
   defaults: 'Cette station utilise les règles par défaut.',
   save: 'Enregistrer',
@@ -166,7 +176,7 @@ const fr: Record<RulesMessageKey, string> = {
   'try.description':
     'Applique les règles ci-dessus (enregistrées ou non) à une catégorie, selon ce qui est passé et ce qui est prévu.',
   'try.category': 'Catégorie',
-  'try.at': 'Heure',
+  'try.at': 'Heure de la station ({timeZone})',
   'try.run': 'Choisir',
   'try.noCategory': 'Créez d’abord une catégorie.',
   'try.picked': 'Choisi : {title}',
@@ -174,6 +184,7 @@ const fr: Record<RulesMessageKey, string> = {
     'Aucun titre ne peut remplir ce créneau : chaque candidat enfreint une règle qui ne peut pas être assouplie.',
   'try.noCandidates': 'Cette catégorie n’a aucun titre programmable à cette heure.',
   'try.clean': 'Toutes les règles sont respectées.',
+  'try.blockedBy': '{rule} bloque {count} des candidats.',
   'try.relaxed': 'Assouplie : {rule}',
   'try.relaxedWhy':
     'Aucun titre ne respectait toutes les règles : cette règle moins prioritaire a été assouplie. Le titre choisi l’enfreint :',

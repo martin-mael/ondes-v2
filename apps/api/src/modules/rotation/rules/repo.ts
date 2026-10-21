@@ -191,14 +191,25 @@ export async function loadHistory(
   return [...aired.map((r) => item(r, r.artists)), ...planned.map((r) => item(r, null))];
 }
 
-/** Older airings of these assets, for song rest beyond the history window. */
+/**
+ * Margin past the longest rest or separation for the older airings: they also order
+ * `least_recently_played`, where a song idle for a month and one never played tie anyway.
+ */
+const LAST_AIRED_MARGIN_MS = 30 * DAY;
+
+/**
+ * Older airings of these assets, before the history window: song rest longer than the window,
+ * and rotation order. Bounded by the longest rest or separation plus a margin.
+ */
 async function lastAiredBefore(
   db: Db,
   scope: StationContext['scope'],
   assetIds: string[],
   before: Date,
+  lookbackMs: number,
 ): Promise<Map<string, Date>> {
-  return lastAiredByAsset(db, scope, assetIds, before);
+  const since = new Date(before.getTime() - lookbackMs - LAST_AIRED_MARGIN_MS);
+  return lastAiredByAsset(db, scope, assetIds, before, since);
 }
 
 function separationMs(rules: readonly RotationRule[]): number {
@@ -257,7 +268,13 @@ export async function pickSlots(
   const memberIds = [...new Set([...membersOf.values()].flat().map((m) => m.id))];
   const [loaded, lastPlayedAt] = await Promise.all([
     loadHistory(db, scope, libraryById, from, to, now),
-    lastAiredBefore(db, scope, memberIds, from),
+    lastAiredBefore(
+      db,
+      scope,
+      memberIds,
+      from,
+      Math.max(span, ...[...categories.values()].map((c) => c.restMinutes * MINUTE)),
+    ),
   ]);
 
   const history = [...loaded, ...(options.history ?? [])];
@@ -294,6 +311,7 @@ export async function pickSlots(
             }
           : null,
         relaxed: result.relaxed,
+        unfilled: result.unfilled,
         candidates: result.ranked.length,
         ...(request.explain
           ? {

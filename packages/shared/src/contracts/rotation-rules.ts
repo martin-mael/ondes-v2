@@ -191,6 +191,16 @@ export const rankedCandidateSchema = z.object({
 });
 export type RankedCandidate = z.infer<typeof rankedCandidateSchema>;
 
+/**
+ * Why a slot stays empty: the category has no schedulable member at that time, or every one
+ * breaks a rule that may not be relaxed (`blockedBy`: those rules, with how many they block).
+ */
+export const pickUnfilledSchema = z.object({
+  reason: z.enum(['no_candidates', 'unbreakable_rules']),
+  blockedBy: z.array(z.object({ ruleId: z.string(), kind: z.string(), candidates: z.int() })),
+});
+export type PickUnfilled = z.infer<typeof pickUnfilledSchema>;
+
 export const pickOutcomeSchema = z.object({
   categoryId: uuidSchema,
   at: z.iso.datetime({ offset: true }),
@@ -203,8 +213,10 @@ export const pickOutcomeSchema = z.object({
       durationMs: z.int().nullable(),
     })
     .nullable(),
-  /** Rules dropped to fill the slot, in the order the ladder dropped them. */
+  /** Rules dropped to fill the slot that the pick breaks, in ladder order. Empty if unfilled. */
   relaxed: z.array(relaxedRuleSchema),
+  /** Set when `asset` is null. */
+  unfilled: pickUnfilledSchema.nullable(),
   /** Schedulable members of the category at `at`. */
   candidates: z.int(),
   /** With `explain`: candidates in rotation order. */

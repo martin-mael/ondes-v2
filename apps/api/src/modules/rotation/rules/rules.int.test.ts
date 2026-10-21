@@ -241,6 +241,7 @@ describe('pick', () => {
     const [pick] = res.json<PickResponse>().picks;
     expect(pick?.asset?.id).toBe(ids.Charlie);
     expect(pick?.relaxed).toEqual([]);
+    expect(pick?.unfilled).toBeNull();
     expect(pick?.candidates).toBe(3);
     const verdicts = Object.fromEntries(
       (pick?.ranked ?? []).map((r) => [r.title, r.violations.map((v) => v.kind).sort()]),

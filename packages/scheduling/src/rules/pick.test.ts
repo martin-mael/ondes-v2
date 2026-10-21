@@ -1,6 +1,12 @@
 import type { RotationRule } from '@ondes/shared';
 import { describe, expect, it } from 'vitest';
-import { normalizeTitle, type PlayedItem } from './history.ts';
+import {
+  artistKeys,
+  normalizeArtist,
+  normalizeTitle,
+  type PlayedItem,
+  splitArtists,
+} from './history.ts';
 import {
   type PickCandidate,
   type PickCategory,
@@ -123,6 +129,62 @@ describe('separation', () => {
       candidates: [other],
     });
     expect(later.ranked[0]?.violations).toHaveLength(1);
+  });
+
+  it('splits credits on the usual joiners and normalizes names', () => {
+    expect(splitArtists(['Daft Punk feat. Pharrell Williams'])).toEqual([
+      'daft punk',
+      'pharrell williams',
+    ]);
+    const cases: [string, string[]][] = [
+      ['A ft B', ['a', 'b']],
+      ['A Ft. B', ['a', 'b']],
+      ['A featuring B', ['a', 'b']],
+      ['A & B', ['a', 'b']],
+      ['Disclosure x Sam Smith', ['disclosure', 'sam smith']],
+      ['A vs. B', ['a', 'b']],
+      ['A, B / C', ['a', 'b', 'c']],
+      ['Beyoncé with Jay-Z', ['beyonce', 'jay z']],
+      ['Stromae avec Orelsan', ['stromae', 'orelsan']],
+      ['Röyksopp (feat. Robyn)', ['royksopp', 'robyn']],
+      ['The Beatles', ['beatles']],
+      // Words that merely contain a joiner stay whole.
+      ['Without You', ['without you']],
+      ['The xx', ['xx']],
+      ['Wither', ['wither']],
+    ];
+    for (const [credit, keys] of cases) expect(splitArtists([credit])).toEqual(keys);
+    expect(normalizeArtist('  BEYONCÉ! ')).toBe('beyonce');
+    // Several credits: the first name of the first credit is the primary artist.
+    expect(artistKeys(['Daft Punk feat. Pharrell', 'Nile Rodgers'], true)).toEqual([
+      'daft punk',
+      'pharrell',
+      'nile rodgers',
+    ]);
+    expect(artistKeys(['Daft Punk feat. Pharrell', 'Nile Rodgers'], false)).toEqual(['daft punk']);
+  });
+
+  it('separates featured artists inside one credit string', () => {
+    const lucky = song({ artists: ['Daft Punk feat. Pharrell Williams'] });
+    const happy = song({ artists: ['Pharrell Williams'] });
+    const getLucky = song({ artists: ['The Daft Punk'] });
+    const history = [played(lucky, '2026-06-10T11:30:00Z')];
+    const all = pickForSlot(snapshot([artistRule(60)], history), {
+      at,
+      category: category(),
+      candidates: [happy, getLucky],
+    });
+    expect(all.ranked.map((r) => r.violations.length)).toEqual([1, 1]);
+    // Primary only: Pharrell is featured on the aired song, so he may play; Daft Punk may not.
+    const primary = pickForSlot(snapshot([artistRule(60, { includeFeatured: false })], history), {
+      at,
+      category: category(),
+      candidates: [happy, getLucky],
+    });
+    const verdicts = Object.fromEntries(
+      primary.ranked.map((r) => [r.asset.artists[0], r.violations.length]),
+    );
+    expect(verdicts).toEqual({ 'Pharrell Williams': 0, 'The Daft Punk': 1 });
   });
 
   it('primary artist only without includeFeatured', () => {
@@ -347,13 +409,38 @@ describe('relaxation ladder', () => {
     ]);
   });
 
-  it('never relaxes an unbreakable rule: the slot stays empty', () => {
-    const daft = song({ artists: ['Daft Punk'] });
+  it('never relaxes an unbreakable rule: the slot stays empty, nothing counts as relaxed', () => {
+    const daft = song({ artists: ['Daft Punk'], album: 'Discovery' });
+    const twin = song({ artists: ['Daft Punk'], album: 'Discovery' });
     const result = pickForSlot(
-      snapshot([artistRule(60, { breakable: false })], [played(daft, '2026-06-10T11:30:00Z')]),
-      { at, category: category(), candidates: [song({ artists: ['Daft Punk'] })] },
+      snapshot(
+        [
+          artistRule(60, { breakable: false }),
+          { ...base('album', 6), kind: 'album_separation', unit: 'minutes', value: 120 },
+        ],
+        [played(daft, '2026-06-10T11:30:00Z')],
+      ),
+      { at, category: category(), candidates: [twin] },
     );
     expect(result.asset).toBeNull();
+    expect(result.relaxed).toEqual([]);
+    expect(result.unfilled).toEqual({
+      reason: 'unbreakable_rules',
+      blockedBy: [{ ruleId: 'artist', kind: 'artist_separation', candidates: 1 }],
+    });
+  });
+
+  it('reports an empty category as unfilled', () => {
+    const result = pickForSlot(snapshot([artistRule(60)]), {
+      at,
+      category: category(),
+      candidates: [],
+    });
+    expect(result).toMatchObject({
+      asset: null,
+      relaxed: [],
+      unfilled: { reason: 'no_candidates', blockedBy: [] },
+    });
   });
 
   it('search depth is a rule like the others', () => {
@@ -513,30 +600,174 @@ describe('DST windows (Europe/Paris)', () => {
     const rule: RotationRule = {
       ...base('kick', 7),
       kind: 'same_hour_yesterday',
-      windowMinutes: 60,
+      windowMinutes: 15,
     };
-    // Monday 30 March 02:30 CEST = 00:30Z. Yesterday's 02:00–03:00 never happened; 01:59 CET
-    // (00:59Z) and 03:00 CEST (01:00Z) are outside it.
-    const result = pickForSlot(
-      snapshot([rule], [played(a, '2026-03-29T00:59:00Z'), played(a, '2026-03-29T01:00:00Z')]),
-      { at: new Date('2026-03-30T00:30:00Z'), category: category(), candidates: [a] },
-    );
+    // Monday 30 March 02:20 CEST = 00:20Z: its window is 02:15–02:30. On Sunday 29 March that
+    // quarter hour never happened (02:00 CET jumped to 03:00 CEST). Read naively it would be
+    // 03:15–03:30 CEST (01:15Z–01:30Z), where this play sits.
+    const result = pickForSlot(snapshot([rule], [played(a, '2026-03-29T01:20:00Z')]), {
+      at: new Date('2026-03-30T00:20:00Z'),
+      category: category(),
+      candidates: [a],
+    });
     expect(result.ranked[0]?.violations).toEqual([]);
   });
 });
 
-describe('a generated week (property)', () => {
-  /** Small seeded PRNG for the generator. */
-  function rng(seed: number) {
-    let s = seed >>> 0;
-    return () => {
-      s = (s + 0x6d2b79f5) >>> 0;
-      let t = Math.imul(s ^ (s >>> 15), s | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
+/** Small seeded PRNG for the generators. */
+function rng(seed: number) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), s | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+describe('random scenarios (property, 200 seeds)', () => {
+  const BASE_SEED = 0x5eed;
+  const styles = ['pop', 'rock', 'soul'];
+
+  /** A random rule set: every kind maybe, shuffled priorities, some unbreakable. */
+  function randomRules(r: () => number): RotationRule[] {
+    const pickOne = <T>(list: readonly T[]) => list[Math.floor(r() * list.length)] as T;
+    const unit = () => pickOne(['minutes', 'items'] as const);
+    const candidates: Omit<RotationRule, 'priority' | 'enabled' | 'breakable' | 'id'>[] = [
+      { kind: 'song_rest' },
+      { kind: 'max_plays' },
+      { kind: 'search_depth' },
+      {
+        kind: 'artist_separation',
+        unit: unit(),
+        value: 1 + Math.floor(r() * 40),
+        includeFeatured: r() < 0.5,
+      },
+      { kind: 'title_separation', unit: unit(), value: 1 + Math.floor(r() * 60) },
+      { kind: 'album_separation', unit: unit(), value: 1 + Math.floor(r() * 60) },
+      { kind: 'same_hour_yesterday', windowMinutes: pickOne([15, 30, 60] as const) },
+      {
+        kind: 'tag_run',
+        tag: { key: 'style', value: pickOne(styles) },
+        maxRun: 1 + Math.floor(r() * 2),
+      },
+      {
+        kind: 'segue_ban',
+        from: { key: 'style', value: pickOne(styles) },
+        to: { key: 'style', value: pickOne(styles) },
+      },
+      {
+        kind: 'max_tag_per_hour',
+        tag: { key: 'style', value: pickOne(styles) },
+        max: 1 + Math.floor(r() * 6),
+      },
+      { kind: 'flow', maxBpmStep: 10, maxEnergyStep: null },
+    ] as Omit<RotationRule, 'priority' | 'enabled' | 'breakable' | 'id'>[];
+    const chosen = candidates.filter(() => r() < 0.7);
+    const priorities = chosen.map((_, i) => i + 1).sort(() => r() - 0.5);
+    return chosen.map(
+      (rule, i) =>
+        ({
+          ...rule,
+          id: `${rule.kind}-${i}`,
+          enabled: r() < 0.9,
+          breakable: r() < 0.85,
+          priority: priorities[i] as number,
+        }) as RotationRule,
+    );
   }
 
+  it('fills, relaxes and reports consistently', () => {
+    let filled = 0;
+    let relaxedSlots = 0;
+    for (let i = 0; i < 200; i++) {
+      const r = rng(BASE_SEED + i);
+      const artists = Array.from({ length: 6 + Math.floor(r() * 20) }, (_, k) => `Band ${k}`);
+      const library = Array.from({ length: 5 + Math.floor(r() * 50) }, (_, k) =>
+        song({
+          artists: [
+            r() < 0.2
+              ? `${artists[Math.floor(r() * artists.length)]} feat. ${artists[Math.floor(r() * artists.length)]}`
+              : (artists[Math.floor(r() * artists.length)] as string),
+          ],
+          album: r() < 0.6 ? `Album ${Math.floor(r() * 10)}` : null,
+          title: `Title ${k % 30}`,
+          bpm: 80 + Math.floor(r() * 80),
+          tags: [{ key: 'style', value: styles[Math.floor(r() * 3)] as string }],
+        }),
+      );
+      const rules = randomRules(r);
+      const cat = category({
+        restMinutes: Math.floor(r() * 240),
+        searchDepthPercent: 1 + Math.floor(r() * 100),
+        maxPlaysPerDay: r() < 0.5 ? null : 1 + Math.floor(r() * 4),
+        maxPlaysPerWeek: r() < 0.5 ? null : 2 + Math.floor(r() * 10),
+        rotationOrder: (['least_recently_played', 'weighted_random', 'sequential'] as const)[
+          Math.floor(r() * 3)
+        ],
+      });
+      // 40 slots of 4 min from a random day of 2026, the DST Sundays included.
+      const day = [
+        '2026-03-29T00:30:00Z',
+        '2026-10-25T00:30:00Z',
+        '2026-06-10T08:00:00Z',
+        '2026-01-05T22:00:00Z',
+      ][Math.floor(r() * 4)] as string;
+      const start = new Date(day).getTime();
+      const slots = Array.from({ length: 40 }, (_, k) => ({
+        at: new Date(start + k * 4 * 60_000),
+        category: cat,
+        candidates: library,
+      }));
+      const results = pickSequence(snapshot(rules, [], `seed-${i}`), slots);
+      const ladder = relaxationOrder(rules);
+      const ladderIndex = new Map(ladder.map((rule, k) => [rule.id, k]));
+      const unbreakable = new Set(
+        rules.filter((rule) => !rule.breakable || rule.kind === 'flow').map((rule) => rule.id),
+      );
+
+      results.forEach((result, k) => {
+        const where = `seed ${i}, slot ${k}`;
+        if (!result.asset) {
+          expect(result.relaxed, where).toEqual([]);
+          expect(result.unfilled, where).not.toBeNull();
+          // Empty only when nobody escapes the unbreakable rules.
+          for (const v of result.ranked) {
+            expect(
+              v.violations.some((x) => unbreakable.has(x.ruleId)),
+              where,
+            ).toBe(true);
+          }
+          return;
+        }
+        filled++;
+        expect(result.unfilled, where).toBeNull();
+        const verdict = result.ranked.find((v) => v.picked);
+        const broken = verdict?.violations.map((v) => v.ruleId) ?? [];
+        // Never breaks an unbreakable rule; reports exactly the rules it breaks.
+        for (const id of broken) expect(unbreakable.has(id), where).toBe(false);
+        expect(result.relaxed.map((x) => x.rule).sort(), where).toEqual(
+          (verdict?.violations.map((v) => v.kind) ?? []).sort(),
+        );
+        if (broken.length === 0) return;
+        relaxedSlots++;
+        // Minimal: no candidate needed fewer steps of the ladder than the pick.
+        const step = Math.max(...broken.map((id) => ladderIndex.get(id) as number));
+        for (const v of result.ranked) {
+          const steps = v.violations.map(
+            (x) => ladderIndex.get(x.ruleId) ?? Number.POSITIVE_INFINITY,
+          );
+          expect(Math.max(-1, ...steps) >= step, where).toBe(true);
+        }
+      });
+    }
+    // The scenarios exercise both paths.
+    expect(filled).toBeGreaterThan(1000);
+    expect(relaxedSlots).toBeGreaterThan(100);
+  }, 60_000);
+});
+
+describe('a generated week (property)', () => {
   it('never breaks a rule it did not relax', () => {
     for (const seed of [1, 2]) {
       const r = rng(seed);

@@ -33,10 +33,46 @@ export function normalizeTitle(value: string): string {
   }
 }
 
-/** The artists a separation rule compares: all of them, or only the primary (first) one. */
+/**
+ * An artist as separation compares it: no accents, no punctuation, no leading "the", lower
+ * case. "Beyoncé", "BEYONCE" and "The Beyoncé" are one artist.
+ */
+export function normalizeArtist(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/^the /, '');
+}
+
+/**
+ * Joiners inside one credit: "A feat. B", "A ft B", "A featuring B", "A & B", "A x B",
+ * "A vs. B", "A, B", "A / B", "A with B", "A avec B" (word-bounded, any case).
+ */
+const ARTIST_JOINERS =
+  /\s+(?:feat\.?|ft\.?|featuring|with|avec|vs\.?|x)\s+|\s*[([]\s*(?:feat\.?|ft\.?|featuring)\s+|\s*[&,/;+]\s*/iu;
+
+/** Every artist named by the credits, split on the joiners, normalized, first one first. */
+export function splitArtists(artists: readonly string[]): string[] {
+  const keys: string[] = [];
+  for (const credit of artists) {
+    for (const part of credit.split(ARTIST_JOINERS)) {
+      const key = normalizeArtist(part);
+      if (key !== '' && !keys.includes(key)) keys.push(key);
+    }
+  }
+  return keys;
+}
+
+/**
+ * The artists a separation rule compares: every credited one (primary and featured), or only
+ * the primary one, the first name of the first credit.
+ */
 export function artistKeys(artists: readonly string[], includeFeatured: boolean): string[] {
-  const list = includeFeatured ? artists : artists.slice(0, 1);
-  return [...new Set(list.map(normalizeName).filter((a) => a !== ''))];
+  const keys = splitArtists(artists);
+  return includeFeatured ? keys : keys.slice(0, 1);
 }
 
 export function tagKey(tag: { key: string; value: string }): string {
