@@ -113,7 +113,9 @@ Every new container is a new boot with an empty queue; the feeder re-pushes on
 ## Interfaces for other modules
 
 - `reconcile(scope)`: after changing `station.engine_settings` (#32 outputs, #33 blank).
-- `secretsFor(scope)`: decrypted secrets (Icecast mount passwords, #32).
+- `secretsFor(scope)` (async): decrypted secrets (Icecast mount passwords, #32). Generates
+  them on first use; the engine row it creates stays `stopped` until `start`. Throws
+  `NotFoundError` only for a station outside the scope.
 - `onBeforeCreate(hook)`: runs before every container create with the secrets it will get
   (#32 syncs the station's Icecast mounts there). A failure aborts the create.
 - `adapterFor(stationId)`: a command adapter on any replica: the attached one, or one built

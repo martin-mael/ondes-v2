@@ -203,6 +203,9 @@ describe('engine lifecycle decisions', () => {
   it('boots every station whose engine should run', async () => {
     const running = await newStation();
     const stopped = await newStation();
+    // Secrets read (Icecast sync, #32) but never started: no engine at boot.
+    const untouched = await newStation();
+    await t.app.engineLifecycle.secretsFor(untouched);
     await t.app.engineLifecycle.start(running);
     await t.app.engineLifecycle.stop(stopped);
     docker.containers.clear();
@@ -211,6 +214,7 @@ describe('engine lifecycle decisions', () => {
     const byStation = new Map(results.map((r) => [r.stationId, r.result?.action]));
     expect(byStation.get(running.stationId)).toBe('created');
     expect(byStation.has(stopped.stationId)).toBe(false);
+    expect(byStation.has(untouched.stationId)).toBe(false);
     expect(docker.byName(containerName(config, stopped.stationId))).toBeUndefined();
     expect(t.app.stationEngines.get(running.stationId)).toBeDefined();
   });
@@ -252,6 +256,9 @@ describe('engine lifecycle resilience', () => {
     docker.failStart = 'driver failed programming external connectivity';
     await expect(t.app.engineLifecycle.start(scope)).rejects.toThrow(/connectivity/);
     expect(docker.byName(name)).toBeUndefined();
+    // The intent survives the failure: still wanted, and queued for a retry.
+    expect((await t.app.engineLifecycle.status(scope)).desiredState).toBe('running');
+    expect(t.app.engineLifecycle.pendingRetries().has(scope.stationId)).toBe(true);
 
     // A container created but never started (the api died between create and start).
     await docker.create(name, {

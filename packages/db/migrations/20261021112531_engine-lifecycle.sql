@@ -10,7 +10,7 @@ CREATE TABLE "engine_port" (
 CREATE TABLE "station_engine" (
 	"station_id" uuid PRIMARY KEY NOT NULL,
 	"org_id" uuid NOT NULL,
-	"desired_state" text DEFAULT 'running' NOT NULL,
+	"desired_state" text DEFAULT 'stopped' NOT NULL,
 	"control_token_enc" text NOT NULL,
 	"live_password_enc" text NOT NULL,
 	"icecast_source_password_enc" text NOT NULL,

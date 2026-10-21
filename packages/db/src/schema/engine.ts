@@ -35,9 +35,13 @@ export const stationEngine = pgTable(
   {
     stationId: uuid('station_id').primaryKey(),
     orgId: uuid('org_id').notNull(),
+    /**
+     * `stopped` until someone starts the engine: the row also exists for stations whose
+     * secrets were only read (e.g. by the Icecast config sync, #32).
+     */
     desiredState: text('desired_state', { enum: ENGINE_DESIRED_STATES })
       .notNull()
-      .default('running'),
+      .default('stopped'),
     /** Bearer token of the control API and of the engine's event posts. Encrypted. */
     controlTokenEnc: text('control_token_enc').notNull(),
     /** Shared live password (when no live auth webhook is set). Encrypted. */

@@ -492,6 +492,30 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
     });
   }
 
+  /**
+   * Commits what the caller wants (desired state, storm reset, new secrets) on its own, so a
+   * failing reconcile afterwards doesn't roll the intent back with it.
+   */
+  function setIntent(scope: StationScope, fn: (ex: Executor) => Promise<void>): Promise<void> {
+    return exclusive(scope.stationId, async (ex) => {
+      await load(ex, scope);
+      await fn(ex);
+    });
+  }
+
+  /** Runs a reconcile; on failure the station joins the retry set, and the error is rethrown. */
+  async function reconcileOrRetry(
+    scope: StationScope,
+    fn: (ex: Executor) => Promise<ReconcileResult>,
+  ): Promise<ReconcileResult> {
+    try {
+      return await exclusive(scope.stationId, fn);
+    } catch (error) {
+      if (!(error instanceof NotFoundError)) scheduleRetry(scope, error);
+      throw error;
+    }
+  }
+
   return {
     guard,
 
@@ -501,25 +525,19 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
      * changed container spec. Call it after changing `station.engine_settings`.
      */
     reconcile(scope: StationScope): Promise<ReconcileResult> {
-      return exclusive(scope.stationId, (ex) => doReconcile(ex, scope));
+      return reconcileOrRetry(scope, (ex) => doReconcile(ex, scope));
     },
 
-    /** Marks the engine as wanted and brings it up. */
-    start(scope: StationScope): Promise<ReconcileResult> {
-      return exclusive(scope.stationId, async (ex) => {
-        await load(ex, scope);
-        await setDesiredState(ex, scope, 'running');
-        return doReconcile(ex, scope);
-      });
+    /** Marks the engine as wanted (committed even if the start fails) and brings it up. */
+    async start(scope: StationScope): Promise<ReconcileResult> {
+      await setIntent(scope, async (ex) => setDesiredState(ex, scope, 'running'));
+      return reconcileOrRetry(scope, (ex) => doReconcile(ex, scope));
     },
 
     /** Marks the engine as not wanted and stops its container (kept, for its logs). */
-    stop(scope: StationScope): Promise<ReconcileResult> {
-      return exclusive(scope.stationId, async (ex) => {
-        await load(ex, scope);
-        await setDesiredState(ex, scope, 'stopped');
-        return doReconcile(ex, scope);
-      });
+    async stop(scope: StationScope): Promise<ReconcileResult> {
+      await setIntent(scope, async (ex) => setDesiredState(ex, scope, 'stopped'));
+      return exclusive(scope.stationId, (ex) => doReconcile(ex, scope));
     },
 
     /**
@@ -527,13 +545,17 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
      * changed (a fresh boot, an empty queue: the feeder re-pushes on `boot`).
      * `rotateSecrets` also generates new secrets for the station first.
      */
-    restart(scope: StationScope, opts: { rotateSecrets?: boolean } = {}): Promise<ReconcileResult> {
-      return exclusive(scope.stationId, async (ex) => {
+    async restart(
+      scope: StationScope,
+      opts: { rotateSecrets?: boolean } = {},
+    ): Promise<ReconcileResult> {
+      await setIntent(scope, async (ex) => {
         guard.reset(scope.stationId);
-        await load(ex, scope);
         await setStorm(ex, scope, null);
         await setDesiredState(ex, scope, 'running');
         if (opts.rotateSecrets) await rotateSecrets(ex, secretBox, scope);
+      });
+      return reconcileOrRetry(scope, async (ex) => {
         const info = await docker.inspect(containerName(config, scope.stationId));
         if (info) {
           await removeContainer(info);

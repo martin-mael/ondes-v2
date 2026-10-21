@@ -1,5 +1,5 @@
 {
-  "id": "7bd4b200-1a77-46f0-892c-c87b5b310eb1",
+  "id": "07d6bdd5-afd2-462d-a935-fa366da6fbc8",
   "prevId": "e281989a-a356-4950-aa88-2bbd0d39d84a",
   "version": "7",
   "dialect": "postgresql",
@@ -91,7 +91,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'running'"
+          "default": "'stopped'"
         },
         "control_token_enc": {
           "name": "control_token_enc",
