@@ -64,6 +64,11 @@ export type PlanInput = {
   budgetBytes: number;
   /** Files another process is downloading right now: never planned twice, counted as used. */
   inFlight?: ReadonlySet<string>;
+  /**
+   * Bytes of the pinned fallback files (#34) that no file of `cached` shares: they count
+   * against the budget, and nothing evicts them.
+   */
+  pinnedBytes?: number;
 };
 
 /**
@@ -104,7 +109,7 @@ export function plan(input: PlanInput): Plan {
   }
 
   const byHash = new Map(cached.map((c) => [c.sha256, c]));
-  let usedBytes = cached.reduce((s, c) => s + c.sizeBytes, 0);
+  let usedBytes = cached.reduce((s, c) => s + c.sizeBytes, 0) + (input.pinnedBytes ?? 0);
   const keep: Plan['keep'] = [];
   const missing: Need[] = [];
   let horizonBytes = 0;
@@ -120,8 +125,9 @@ export function plan(input: PlanInput): Plan {
   }
   missing.sort((a, b) => a.firstAirAt - b.firstAirAt || a.sha256.localeCompare(b.sha256));
 
+  // A file hard-linked as a fallback stays: evicting it frees nothing.
   const candidates = cached
-    .filter((c) => !needs.has(c.sha256))
+    .filter((c) => !needs.has(c.sha256) && !c.linked)
     .sort((a, b) => a.lastNeededAt - b.lastNeededAt || a.sha256.localeCompare(b.sha256));
   const evictList: CachedFile[] = [];
   const fetch: Need[] = [];

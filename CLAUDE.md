@@ -46,7 +46,8 @@ packages/
     time/                  # timezone/DST helpers (station-local ↔ UTC)
   db/
     src/schema/<domain>.ts # one file per domain: tenancy, library, engine, asrun,
-                           # rotation, clocks, shows, log, segues, live, alerts
+                           # rotation, clocks, shows, log, segues, live, alerts,
+                           # cache, safety
     migrations/            # generated, timestamp-prefixed
   storage/                 # S3-compatible abstraction
   queue/                   # RabbitMQ job framework

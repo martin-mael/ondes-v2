@@ -112,10 +112,10 @@ live (input.harbor, gated) ─┐
                             ├─ fallback(track_sensitive=false, 1 s fades) → as-run → mksafe → blank.detect → outputs
 queue ─ amplify ┐           │
 safety ─ amplify ├─ fallback(track_sensitive=false) → crossfade ┘
-emergency single()┘
+emergency loop ───┘
 ```
 - **Queue dry → safety playlist** (local files, randomised, reloaded on change). Validated.
-- **No safety files → emergency `single()`.** Validated. Surprise: `single()` on a local file is typed **fallible** in 2.4.6, so the chain needs `mksafe` to type-check at all.
+- **No safety files → emergency loop.** Validated. Surprise: `single()` on a local file is typed **fallible** in 2.4.6, so the chain needs `mksafe` to type-check at all. Since #34 the loop is a `request.dynamic` that asks for the file again at every loop: `single()` never picks up a file that appears after boot, which the playout cache can't guarantee (measured on 2.4.6, see ADR 0007).
 - **Nothing at all → `mksafe`** streams silence, `blank.detect` fires and the adapter alerts. Validated with a missing emergency file: the script still starts. `blank.detect` must sit **after** `mksafe`: before it, a chain with nothing ready produces no frames, so no silence is ever detected.
 - **Boot:** for about 1 s the emergency file is on air before the safety playlist resolves (track-insensitive fallback switches as soon as it's ready). Harmless, but the station "starts" on the emergency file. #27 can delay the output's start if that matters.
 

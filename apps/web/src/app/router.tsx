@@ -15,6 +15,7 @@ import {
   EditCategoryPage,
   NewCategoryPage,
 } from '../features/rotation/categories/category-editor-page.tsx';
+import { SafetyPage } from '../features/settings/safety/safety-page.tsx';
 import { AcceptInvitationPage } from './auth/accept-invitation-page.tsx';
 import { AccountPage } from './auth/account-page.tsx';
 import { AuthLayout } from './auth/auth-layout.tsx';
@@ -186,6 +187,12 @@ const categoryRoute = createRoute({
   component: EditCategoryPage,
 });
 
+const safetySettingsRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: '/settings/safety',
+  component: SafetyPage,
+});
+
 const routeTree = rootRoute.addChildren([
   authLayout.addChildren([
     loginRoute,
@@ -198,7 +205,13 @@ const routeTree = rootRoute.addChildren([
   appLayout.addChildren([
     homeRoute,
     accountRoute,
-    stationRoute.addChildren([dashboardRoute, categoriesRoute, newCategoryRoute, categoryRoute]),
+    stationRoute.addChildren([
+      dashboardRoute,
+      categoriesRoute,
+      newCategoryRoute,
+      categoryRoute,
+      safetySettingsRoute,
+    ]),
   ]),
 ]);
 

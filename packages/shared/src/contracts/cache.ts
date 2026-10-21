@@ -9,7 +9,7 @@ import { uuidSchema } from './tenancy.ts';
 //   <cache root>/<stationId>/            mounted read-only in the station's engine at /cache
 //     media/<aa>/<sha256>.<ext>          final files, 0444, only ever created by rename(2)
 //     .partial/<sha256>.<ext>.part       downloads in progress
-//     safety/, emergency.flac            the template's fallbacks (#27): never evicted
+//     safety/, emergency.flac            the template's fallbacks (#34, safety.ts): never evicted
 
 /** Where the station's cache directory is mounted inside its engine (ADR 0008). */
 export const ENGINE_CACHE_ROOT = '/cache';

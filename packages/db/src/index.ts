@@ -6,6 +6,7 @@ export * from './repos/autocue.ts';
 export * from './repos/cache.ts';
 export * from './repos/jobs.ts';
 export * from './repos/library.ts';
+export * from './repos/safety.ts';
 export * from './repos/storage.ts';
 export * from './repos/streams.ts';
 export * from './repos/tenancy.ts';

@@ -63,6 +63,12 @@ export const alertTypes = {
   cacheDiskLow: 'cache.disk_low',
   /** The station's last cache-sync pass failed (`details.error`): nothing is being fetched (#31). */
   cacheSyncFailing: 'cache.sync_failing',
+  /** The engine has played its safety playlist or emergency file for a while (#34). */
+  engineSafetyMode: 'engine.safety_mode',
+  /** The station's safety playlist has nothing in the engine's cache (#34). */
+  engineSafetyEmpty: 'engine.safety_empty',
+  /** The station has no emergency file in the engine's cache (#34). */
+  engineEmergencyMissing: 'engine.emergency_missing',
 } as const;
 
 /**

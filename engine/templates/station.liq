@@ -13,7 +13,7 @@
 #
 # Source chain, highest priority first:
 #   live (input.harbor, gated by Node) > queue (segments pushed by Node)
-#   > safety playlist > emergency single() > mksafe (silence)
+#   > safety playlist > emergency loop > mksafe (silence)
 # then: processing (compressor, limiter) > as-run > mksafe > blank.detect > outputs.
 #
 # Ports (inside the station's Docker network):
@@ -261,8 +261,15 @@ safety =
     safety_dir
   )
 
+# The emergency loop: a fresh request for the file at every loop, so the engine picks up a file
+# that appears after boot (single() never does) or is replaced by the playout cache (#34). While
+# the file is missing the source isn't ready (retried every second) and mksafe plays silence.
 emergency =
-  single(id="emergency", "annotate:ondes_source=\"emergency\":#{emergency_file}")
+  request.dynamic(
+    id="emergency",
+    retry_delay=1.,
+    fun () -> request.create("annotate:ondes_source=\"emergency\":#{emergency_file}")
+  )
 
 # liq_amplify must be applied per track before the crossfade mixes two tracks together
 # (the queue applies it per request, inside each segment).
