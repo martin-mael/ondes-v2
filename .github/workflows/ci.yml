@@ -2,11 +2,12 @@ name: CI
 
 # On PRs, the `changes` job decides which jobs a change needs (path filters below); the
 # others are skipped. Pushes to main and manual runs (workflow_dispatch) run everything, and so
-# does a PR with the `ci:full` label. Branch protection should require only `CI ok`: skipped
-# jobs report as skipped, and `CI ok` fails if any job it needs failed or was cancelled.
+# does a PR with the `ci:full` label, which is how to force a full run that gates a PR (a
+# dispatch run isn't the PR's pull_request run). Branch protection should require only `CI ok`:
+# skipped jobs report as skipped, and `CI ok` fails if any job it needs failed or was cancelled.
 on:
   pull_request:
-    # `labeled` so that adding `ci:full` starts a full run.
+    # `labeled` so that adding `ci:full` starts a full run (see the concurrency rule for others).
     types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
@@ -17,8 +18,11 @@ permissions:
 
 concurrency:
   # One run per PR/branch; superseded PR runs are cancelled, main runs always finish.
+  # Adding a label other than `ci:full` doesn't cancel the run in flight: its run queues behind
+  # it. It isn't skipped instead, because skipped jobs (`CI ok` included) would report as
+  # passed on the same commit and could hide the real run's failure.
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'labeled' || github.event.label.name == 'ci:full') }}
 
 jobs:
   changes:
@@ -51,15 +55,19 @@ jobs:
               - pnpm-lock.yaml
               - pnpm-workspace.yaml
               - .nvmrc
+              - tsconfig.base.json
               - .github/workflows/ci.yml
             web:
               - *tooling
               - apps/web/**
               - packages/shared/**
+            # The template is rendered by the api's engine config module, which (like
+            # engine/tests) imports @ondes/shared; no other package feeds it.
             engine:
               - *tooling
               - engine/**
               - apps/api/src/modules/engine/config/**
+              - packages/shared/**
               - deploy/compose.dev.yml
             integration:
               - *tooling
@@ -200,13 +208,16 @@ jobs:
       # The worker's job tests (ingest #18, …) run the worker image's own ffmpeg (7.1 with
       # libsoxr), through the docker wrappers in apps/worker/test/bin. The stage only depends
       # on the base image and apt, so it's cached as a `docker save` tarball keyed on the
-      # Dockerfile: `docker load` takes seconds, where a buildx GHA layer cache still pays
-      # for the export and load into Docker.
+      # Dockerfile and the ISO week: `docker load` takes seconds, where a buildx GHA layer
+      # cache still pays for the export and load into Docker. The week makes it pick up new
+      # ffmpeg 7.1.x security builds from apt at least weekly.
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       - id: ffmpeg-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ondes-ffmpeg.tar
-          key: ondes-ffmpeg-${{ hashFiles('deploy/docker/worker.Dockerfile') }}
+          key: ondes-ffmpeg-${{ hashFiles('deploy/docker/worker.Dockerfile') }}-${{ steps.week.outputs.week }}
       - name: Build the worker image's ffmpeg stage
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         env:
