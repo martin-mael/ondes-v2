@@ -20,6 +20,9 @@ describe('tenancy contracts', () => {
 
   it('validates slugs', () => {
     expect(slugSchema.safeParse('vandale-radio').success).toBe(true);
+    expect(slugSchema.safeParse('admin').success).toBe(false);
+    expect(slugSchema.safeParse('assets').success).toBe(false);
+    expect(slugSchema.safeParse('admin-fm').success).toBe(true);
     for (const bad of ['Vandale', 'a', '-x', 'x--y', 'radio_1']) {
       expect(slugSchema.safeParse(bad).success).toBe(false);
     }

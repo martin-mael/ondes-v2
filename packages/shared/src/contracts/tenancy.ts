@@ -15,12 +15,20 @@ function patchOf<S extends z.ZodObject>(schema: S) {
 
 export const uuidSchema = z.uuid();
 
+/**
+ * Slugs that would collide with a path of the shared stream server: station mounts are
+ * `/<slug>/<format>` on Icecast, which also serves `/admin/*` (its admin API) and `/assets/*`
+ * (its status page).
+ */
+export const RESERVED_SLUGS = ['admin', 'assets'] as const;
+
 /** URL-safe identifier: lowercase letters, digits and single dashes, 2–63 chars. */
 export const slugSchema = z
   .string()
   .min(2)
   .max(63)
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'lowercase letters, digits and dashes only');
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'lowercase letters, digits and dashes only')
+  .refine((slug) => !(RESERVED_SLUGS as readonly string[]).includes(slug), 'reserved slug');
 
 /** IANA timezone name (`Europe/Paris`). Validated against the runtime's tz database. */
 export const ianaTimezoneSchema = z.string().refine(isIanaTimezone, 'unknown IANA timezone');
