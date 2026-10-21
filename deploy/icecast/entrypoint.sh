@@ -2,8 +2,9 @@
 # Icecast on the config the api generates (apps/api/src/modules/engine/icecast).
 #
 # The api writes icecast.xml for every station into a volume shared with this container
-# (ICECAST_CONFIG_SOURCE, default /config/icecast.xml), without secrets: the passwords are
-# placeholders (`env:ICECAST_SOURCE_PASSWORD`, ...). This script
+# (ICECAST_CONFIG_SOURCE, default /config/icecast.xml). Its global secrets are placeholders
+# (`env:ICECAST_SOURCE_PASSWORD`, `env:ICECAST_ADMIN_USER`, ...); each mount carries its
+# station's own source password, derived by the api. This script
 #   1. waits for that file, fills in the passwords from this container's environment and
 #      starts Icecast on the result (/etc/icecast.xml, readable by Icecast's user only);
 #   2. checks the source file every ICECAST_CONFIG_POLL_SECONDS (default 2) and, when it
@@ -35,13 +36,15 @@ for var in ICECAST_SOURCE_PASSWORD ICECAST_ADMIN_PASSWORD; do
     exit 1
   fi
 done
-export ICECAST_ADMIN_USERNAME="${ICECAST_ADMIN_USERNAME:-admin}"
+# Same variable name as the api's (apps/api/src/modules/engine/icecast/service.ts).
+export ICECAST_ADMIN_USER="${ICECAST_ADMIN_USER:-admin}"
 # Relays are not used; a random password keeps the relay login closed.
 export ICECAST_RELAY_PASSWORD="${ICECAST_RELAY_PASSWORD:-$(head -c 24 /dev/urandom | md5sum | cut -c1-32)}"
 export ICECAST_SOURCE_PASSWORD ICECAST_ADMIN_PASSWORD
 
-# Replaces each `env:NAME` placeholder with the XML-escaped value of $NAME. Plain string
-# operations: a password can hold any character (`|`, `&`, `\`, quotes) without being
+# Replaces each `env:NAME` placeholder (NAME among the four below) with the XML-escaped value
+# of $NAME, in one pass over each line: a substituted value is never scanned again, and a
+# password can hold any character (`|`, `&`, `\`, quotes, even `env:...`) without being
 # interpreted as sed or awk syntax.
 render() {
   tmp="${TMPDIR:-/tmp}/icecast.xml.new"
@@ -52,21 +55,18 @@ render() {
       return s
     }
     BEGIN {
-      n = split("ICECAST_SOURCE_PASSWORD ICECAST_RELAY_PASSWORD ICECAST_ADMIN_USERNAME ICECAST_ADMIN_PASSWORD", names, " ")
+      split("ICECAST_SOURCE_PASSWORD ICECAST_RELAY_PASSWORD ICECAST_ADMIN_USER ICECAST_ADMIN_PASSWORD", list, " ")
+      for (i in list) allowed[list[i]] = 1
     }
     {
       line = $0
-      for (i = 1; i <= n; i++) {
-        key = "env:" names[i]
-        value = esc(ENVIRON[names[i]])
-        out = ""
-        while ((at = index(line, key)) > 0) {
-          out = out substr(line, 1, at - 1) value
-          line = substr(line, at + length(key))
-        }
-        line = out line
+      out = ""
+      while (match(line, /env:[A-Z_]+/)) {
+        name = substr(line, RSTART + 4, RLENGTH - 4)
+        out = out substr(line, 1, RSTART - 1) (name in allowed ? esc(ENVIRON[name]) : substr(line, RSTART, RLENGTH))
+        line = substr(line, RSTART + RLENGTH)
       }
-      print line
+      print out line
     }
   ' "$SRC" >"$tmp"
   chmod 600 "$tmp"

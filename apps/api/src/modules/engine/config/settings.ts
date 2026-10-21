@@ -84,7 +84,8 @@ export const icecastOutputSchema = z
       .default(512 * 1024),
     /**
      * Listeners fall back to the station's emergency loop, pre-encoded in this mount's format,
-     * when the engine is not connected (stopped, restarting) or the mount is full.
+     * when the engine is not connected (stopped, restarting) or the mount is full. Only
+     * applied once that file exists (deploy/icecast/README.md, "Fallback and intro files").
      */
     fallback: z.boolean().default(true),
     /** Play the station's intro file (same format) to each new listener before the stream. */
@@ -99,6 +100,37 @@ export const icecastOutputSchema = z
     path: ['burstSize'],
   });
 export type IcecastOutput = z.output<typeof icecastOutputSchema>;
+export type IcecastOutputInput = z.input<typeof icecastOutputSchema>;
+
+/**
+ * A station's outputs when its settings don't set any: MP3 128k (universal) and AAC-LC 128k,
+ * in its namespace. The one definition, for the engine script and Icecast alike. Opus is
+ * opt-in (`opusOutput`).
+ */
+export function defaultStationOutputs(slug: string): IcecastOutputInput[] {
+  return [
+    { mount: `${slug}/mp3`, format: 'mp3', bitrate: 128 },
+    { mount: `${slug}/aac`, format: 'aac', bitrate: 128 },
+  ];
+}
+
+/** The recommended optional Opus mount (Xiph: 96k for music). */
+export function opusOutput(slug: string): IcecastOutputInput {
+  return { mount: `${slug}/opus`, format: 'opus', bitrate: 96 };
+}
+
+/**
+ * Mounts outside the station's namespace `<slug>/…`. Icecast refuses them anyway (each
+ * station's mounts have their own source password), but settings that contain one are a bug
+ * or an attempt to take another station's stream: reject them where settings are saved or
+ * rendered.
+ */
+export function mountsOutsideNamespace(slug: string, outputs: { mount: string }[]): string[] {
+  const prefix = `${slug}/`;
+  return outputs
+    .map((o) => o.mount)
+    .filter((m) => !m.startsWith(prefix) || m.length === prefix.length);
+}
 
 export const stationEngineSettingsSchema = z
   .object({

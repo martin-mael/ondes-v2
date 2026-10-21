@@ -89,7 +89,8 @@ The api sends email over SMTP (`SMTP_URL`, `MAIL_FROM`). In development `SMTP_UR
 | `ICECAST_SOURCE_PASSWORD` | `ondes-dev-source` | compose (`icecast`, `liquidsoap`) |
 | `ICECAST_RELAY_PASSWORD` | `ondes-dev-relay` | compose |
 | `ICECAST_ADMIN_USER` / `ICECAST_ADMIN_PASSWORD` | `admin` / `ondes-dev-admin` | compose, api (Icecast admin API) |
-| `ICECAST_CONFIG_PATH` | unset | api: write the generated Icecast config there (production; see `icecast/README.md`) |
+| `ICECAST_CONFIG_PATH` | unset | api: write the generated Icecast config there (production; see `icecast/README.md`). `ICECAST_SOURCE_PASSWORD` is then the master of the per-station source passwords |
+| `ICECAST_ASSETS_DIR` | unset | api: the fallback/intro files volume; a mount's fallback and intro are configured once their file is there |
 | `ICECAST_PUBLIC_HOSTNAME` | `localhost` | api: Icecast `<hostname>` in the generated config |
 | `ICECAST_STATS_INTERVAL_MS` / `ICECAST_SYNC_INTERVAL_MS` | `15000` / `30000` | api: listener stats poll, config re-check |
 | `SMTP_URL` | `smtp://127.0.0.1:1025` | api (outgoing email; Mailpit in dev) |

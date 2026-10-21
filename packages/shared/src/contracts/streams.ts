@@ -22,29 +22,33 @@ export const listenerSampleSchema = z.object({
 });
 export type ListenerSample = z.infer<typeof listenerSampleSchema>;
 
-/** One minute of one mount. */
-export const listenerMinuteSchema = z.object({
+/** Bucket sizes: minutes for recent data, hours once downsampled. */
+export const listenerBucketSecondsSchema = z.union([z.literal(60), z.literal(3600)]);
+
+/** One bucket (a minute, or an hour for older data) of one mount. */
+export const listenerStatSchema = z.object({
   mount: streamMountSchema,
-  /** Start of the minute, UTC. */
-  minute: z.date(),
+  /** Start of the bucket, UTC. */
+  bucketStart: z.date(),
+  bucketSeconds: listenerBucketSecondsSchema,
   samples: z.int().min(1),
   listenersAvg: z.number().min(0),
   listenersMax: z.int().min(0),
   listenersMin: z.int().min(0),
-  /** Share of the minute's samples where the engine fed the mount, 0–1. */
+  /** Share of the bucket's samples where the engine fed the mount, 0–1. */
   sourceUptime: z.number().min(0).max(1),
 });
-export type ListenerMinute = z.infer<typeof listenerMinuteSchema>;
+export type ListenerStat = z.infer<typeof listenerStatSchema>;
 
-export const listListenerMinutesQuerySchema = z
+export const listListenerStatsQuerySchema = z
   .object({
     mount: streamMountSchema.optional(),
     from: dateInputSchema,
     to: dateInputSchema,
   })
   .refine((q) => q.to > q.from, { message: 'must be after from', path: ['to'] })
-  .refine((q) => q.to.getTime() - q.from.getTime() <= 31 * 86_400_000, {
-    message: 'at most 31 days',
+  .refine((q) => q.to.getTime() - q.from.getTime() <= 366 * 86_400_000, {
+    message: 'at most 366 days',
     path: ['to'],
   });
-export type ListListenerMinutesQuery = z.input<typeof listListenerMinutesQuerySchema>;
+export type ListListenerStatsQuery = z.input<typeof listListenerStatsQuerySchema>;

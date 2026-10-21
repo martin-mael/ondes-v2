@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { renderIcecastConfig, SECRET_PLACEHOLDER, xmlEscape } from './config.ts';
 import { stationMounts } from './mounts.ts';
 
+const secrets = { sourcePasswordFor: (stationId: string) => `pw-${stationId}` };
+
 const mounts = [
   ...stationMounts({ id: 'a', orgId: 'o', slug: 'vandale', engineSettings: {} }),
   ...stationMounts({
@@ -33,7 +35,7 @@ const parse = (xml: string) =>
 
 describe('renderIcecastConfig', () => {
   it('declares every mount with its limits, charset and fallback', () => {
-    const cfg = parse(renderIcecastConfig(mounts, { hostname: 'stream.vandale.fr' }));
+    const cfg = parse(renderIcecastConfig(mounts, { hostname: 'stream.vandale.fr' }, secrets));
     expect(cfg.hostname).toBe('stream.vandale.fr');
     const normal = cfg.mount.filter((m: Record<string, string>) => m['@_type'] === 'normal');
     expect(normal.map((m: Record<string, string>) => m['mount-name'])).toEqual([
@@ -42,6 +44,7 @@ describe('renderIcecastConfig', () => {
       '/other/opus',
     ]);
     expect(normal[0]).toMatchObject({
+      password: 'pw-a',
       charset: 'UTF-8',
       'max-listeners': 500,
       'burst-size': 65536,
@@ -51,7 +54,12 @@ describe('renderIcecastConfig', () => {
       'fallback-override': 'all',
       'fallback-when-full': 1,
     });
-    expect(normal[2]).toMatchObject({ 'max-listeners': 10, intro: '/_ondes/other/opus.intro.ogg' });
+    expect(normal[1].password).toBe('pw-a');
+    expect(normal[2]).toMatchObject({
+      password: 'pw-b',
+      'max-listeners': 10,
+      intro: '/_ondes/other/opus.intro.ogg',
+    });
     expect(normal[2]).not.toHaveProperty('fallback-mount');
     const fallbackDefault = cfg.mount.find(
       (m: Record<string, string>) => m['@_type'] === 'default',
@@ -60,15 +68,15 @@ describe('renderIcecastConfig', () => {
   });
 
   it('sizes the global limits from the mounts', () => {
-    const cfg = parse(renderIcecastConfig(mounts, { hostname: 'h', extraClients: 50 }));
+    const cfg = parse(renderIcecastConfig(mounts, { hostname: 'h', extraClients: 50 }, secrets));
     expect(cfg.limits.clients).toBe(500 + 500 + 10 + 50);
     // 3 mounts + 2 fallback files + headroom.
     expect(cfg.limits.sources).toBe(7);
     expect(cfg.limits['burst-size']).toBeLessThan(cfg.limits['queue-size']);
   });
 
-  it('renders placeholders, never secrets', () => {
-    const cfg = parse(renderIcecastConfig(mounts, { hostname: 'h' }));
+  it('renders the global secrets as placeholders', () => {
+    const cfg = parse(renderIcecastConfig(mounts, { hostname: 'h' }, secrets));
     expect(cfg.authentication).toEqual({
       'source-password': SECRET_PLACEHOLDER.sourcePassword,
       'relay-password': SECRET_PLACEHOLDER.relayPassword,
@@ -79,13 +87,13 @@ describe('renderIcecastConfig', () => {
 
   it('is deterministic and escapes text', () => {
     const opts = { hostname: 'h', location: 'Lyon <&> "Croix-Rousse"' };
-    const xml = renderIcecastConfig(mounts, opts);
-    expect(renderIcecastConfig(mounts, opts)).toBe(xml);
+    const xml = renderIcecastConfig(mounts, opts, secrets);
+    expect(renderIcecastConfig(mounts, opts, secrets)).toBe(xml);
     expect(parse(xml).location).toBe('Lyon <&> "Croix-Rousse"');
   });
 
   it('renders a config with no station at all', () => {
-    const cfg = parse(renderIcecastConfig([], { hostname: 'h' }));
+    const cfg = parse(renderIcecastConfig([], { hostname: 'h' }, secrets));
     expect(cfg.mount).toHaveLength(1);
   });
 });

@@ -1,31 +1,21 @@
 import { z } from 'zod';
 import {
+  defaultStationOutputs,
   type IcecastOutput,
   icecastOutputSchema,
+  mountsOutsideNamespace,
   type OutputFormat,
-  type StationEngineSettingsInput,
 } from '../config/settings.ts';
 
 // Mount plan: what Icecast serves for each station, derived from the station's engine settings
-// (`outputs`). Every mount lives in the station's namespace `/<station-slug>/…`, so stations
-// can't take each other's mounts. The same plan drives the Icecast config (config.ts) and the
-// listener stats poller (poller.ts).
+// (`outputs`). Every mount lives in the station's namespace `/<station-slug>/…` and has the
+// station's own source password (passwords.ts), so stations can't take each other's mounts.
+// The same plan drives the Icecast config (config.ts) and the listener stats poller (poller.ts).
 
 /** Webroot folder of the per-mount files (fallback loop, intro): `/_ondes/<mount>.<kind>.<ext>`. */
 export const STREAM_ASSETS_DIR = '_ondes';
 
-/** What the engine streams by default: MP3 128k (universal) and AAC-LC 128k. Opus is opt-in. */
-export function defaultStationOutputs(slug: string): StationEngineSettingsInput['outputs'] {
-  return [
-    { mount: `${slug}/mp3`, format: 'mp3', bitrate: 128 },
-    { mount: `${slug}/aac`, format: 'aac', bitrate: 128 },
-  ];
-}
-
-/** The recommended optional Opus mount (Xiph: 96k for music). */
-export function opusOutput(slug: string): StationEngineSettingsInput['outputs'][number] {
-  return { mount: `${slug}/opus`, format: 'opus', bitrate: 96 };
-}
+export { defaultStationOutputs, opusOutput } from '../config/settings.ts';
 
 const FORMAT_FILES: Record<OutputFormat, { contentType: string; extension: string }> = {
   mp3: { contentType: 'audio/mpeg', extension: 'mp3' },
@@ -73,10 +63,15 @@ export type StreamStation = {
 
 export class StationOutputsError extends Error {
   readonly stationId: string;
-  constructor(stationId: string, message: string) {
-    super(`station ${stationId}: ${message}`);
+  readonly orgId: string;
+  /** Without the station prefix, for alerts. */
+  readonly reason: string;
+  constructor(station: { id: string; orgId: string }, reason: string) {
+    super(`station ${station.id}: ${reason}`);
     this.name = 'StationOutputsError';
-    this.stationId = stationId;
+    this.stationId = station.id;
+    this.orgId = station.orgId;
+    this.reason = reason;
   }
 }
 
@@ -90,18 +85,15 @@ export function stationOutputs(station: StreamStation): IcecastOutput[] {
   const settings = (station.engineSettings ?? {}) as { outputs?: unknown };
   const parsed = outputsSchema.safeParse(settings.outputs ?? defaultStationOutputs(station.slug));
   if (!parsed.success) {
-    throw new StationOutputsError(station.id, `invalid outputs: ${z.prettifyError(parsed.error)}`);
+    throw new StationOutputsError(station, `invalid outputs: ${z.prettifyError(parsed.error)}`);
   }
-  const prefix = `${station.slug}/`;
-  const seen = new Set<string>();
-  for (const o of parsed.data) {
-    if (!o.mount.startsWith(prefix) || o.mount.length === prefix.length) {
-      throw new StationOutputsError(station.id, `mount "${o.mount}" is not under "${prefix}"`);
-    }
-    if (seen.has(o.mount))
-      throw new StationOutputsError(station.id, `duplicate mount "${o.mount}"`);
-    seen.add(o.mount);
+  const outside = mountsOutsideNamespace(station.slug, parsed.data);
+  if (outside.length > 0) {
+    throw new StationOutputsError(station, `mount "${outside[0]}" is not under "${station.slug}/"`);
   }
+  const mounts = parsed.data.map((o) => o.mount);
+  const dup = mounts.find((m, i) => mounts.indexOf(m) !== i);
+  if (dup) throw new StationOutputsError(station, `duplicate mount "${dup}"`);
   return parsed.data;
 }
 

@@ -1,5 +1,5 @@
 {
-  "id": "2ccff257-2fbe-4cd1-9ab5-90f197cd8a88",
+  "id": "9fabb875-74a6-4a21-9996-168b75774714",
   "prevId": "e281989a-a356-4950-aa88-2bbd0d39d84a",
   "version": "7",
   "dialect": "postgresql",
@@ -1537,8 +1537,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.stream_listener_minute": {
-      "name": "stream_listener_minute",
+    "public.stream_listener_stat": {
+      "name": "stream_listener_stat",
       "schema": "",
       "columns": {
         "id": {
@@ -1560,9 +1560,15 @@
           "primaryKey": false,
           "notNull": true
         },
-        "minute": {
-          "name": "minute",
+        "bucket_start": {
+          "name": "bucket_start",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bucket_seconds": {
+          "name": "bucket_seconds",
+          "type": "integer",
           "primaryKey": false,
           "notNull": true
         },
@@ -1598,8 +1604,8 @@
         }
       },
       "indexes": {
-        "stream_listener_minute_key": {
-          "name": "stream_listener_minute_key",
+        "stream_listener_stat_key": {
+          "name": "stream_listener_stat_key",
           "columns": [
             {
               "expression": "station_id",
@@ -1614,7 +1620,13 @@
               "nulls": "last"
             },
             {
-              "expression": "minute",
+              "expression": "bucket_seconds",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "bucket_start",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1627,9 +1639,9 @@
         }
       },
       "foreignKeys": {
-        "stream_listener_minute_station_id_station_id_fk": {
-          "name": "stream_listener_minute_station_id_station_id_fk",
-          "tableFrom": "stream_listener_minute",
+        "stream_listener_stat_station_id_station_id_fk": {
+          "name": "stream_listener_stat_station_id_station_id_fk",
+          "tableFrom": "stream_listener_stat",
           "tableTo": "station",
           "columnsFrom": [
             "station_id"
@@ -1645,9 +1657,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "stream_listener_minute_counts_check": {
-          "name": "stream_listener_minute_counts_check",
-          "value": "\"stream_listener_minute\".\"samples\" > 0 and \"stream_listener_minute\".\"source_samples\" between 0 and \"stream_listener_minute\".\"samples\"\n        and \"stream_listener_minute\".\"listeners_min\" between 0 and \"stream_listener_minute\".\"listeners_max\""
+        "stream_listener_stat_counts_check": {
+          "name": "stream_listener_stat_counts_check",
+          "value": "\"stream_listener_stat\".\"bucket_seconds\" in (60, 3600) and \"stream_listener_stat\".\"samples\" > 0\n        and \"stream_listener_stat\".\"source_samples\" between 0 and \"stream_listener_stat\".\"samples\"\n        and \"stream_listener_stat\".\"listeners_min\" between 0 and \"stream_listener_stat\".\"listeners_max\""
         }
       },
       "isRLSEnabled": false

@@ -96,4 +96,48 @@ describe('createListenerStatsPoller', () => {
     expect(await poller.pollOnce()).toEqual([]);
     expect(warn).toHaveBeenCalledWith(expect.anything(), 'listener stats not recorded');
   });
+
+  it('reports Icecast down after several failed polls, and back', async () => {
+    const reach: boolean[] = [];
+    const answers: Array<IcecastStats | Error> = [
+      ...Array.from({ length: 5 }, () => new Error('down')),
+      stats([]),
+    ];
+    const poller = createListenerStatsPoller({
+      admin: {
+        stats: async () => {
+          const next = answers.shift();
+          if (!next || next instanceof Error) throw next ?? new Error('none');
+          return next;
+        },
+      },
+      mounts: () => mounts,
+      record: async () => undefined,
+      failuresBeforeDown: 4,
+      onIcecastReachable: (r) => reach.push(r),
+    });
+    for (let i = 0; i < 3; i++) await poller.pollOnce();
+    expect(reach).toEqual([]);
+    await poller.pollOnce();
+    await poller.pollOnce();
+    expect(reach).toEqual([false]);
+    await poller.pollOnce();
+    expect(reach).toEqual([false, true]);
+  });
+
+  it('reports mounts that left the plan', async () => {
+    const removed: string[] = [];
+    let plan = mounts;
+    const poller = createListenerStatsPoller({
+      admin: { stats: async () => stats([]) },
+      mounts: () => plan,
+      record: async () => undefined,
+      onMountRemoved: (m) => removed.push(m.mount),
+    });
+    await poller.pollOnce();
+    plan = mounts.slice(0, 1);
+    await poller.pollOnce();
+    await poller.pollOnce();
+    expect(removed).toEqual(['/vandale/aac']);
+  });
 });

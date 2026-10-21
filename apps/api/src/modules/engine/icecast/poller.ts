@@ -29,6 +29,15 @@ export type ListenerStatsPollerOptions = {
    * fallback meanwhile; this is the hook for a "stream source missing" alert (#33).
    */
   onSourceChange?: (mount: StreamMount, connected: boolean) => void;
+  /** A mount seen by an earlier poll is no longer planned. */
+  onMountRemoved?: (mount: StreamMount) => void;
+  /**
+   * Icecast stopped answering (`failuresBeforeDown` polls in a row) or answers again; with
+   * the planned mounts, i.e. the stations it serves.
+   */
+  onIcecastReachable?: (reachable: boolean, mounts: StreamMount[]) => void;
+  /** Default 4: one minute at the default interval. */
+  failuresBeforeDown?: number;
 };
 
 export type ListenerStatsPoller = {
@@ -62,36 +71,60 @@ export function createListenerStatsPoller(
 ): ListenerStatsPoller {
   const intervalMs = options.intervalMs ?? 15_000;
   const now = options.now ?? (() => new Date());
+  const failuresBeforeDown = options.failuresBeforeDown ?? 4;
   const connected = new Map<string, boolean>();
+  /** Every mount the poller has reported on, to tell when one leaves the plan. */
+  const seen = new Map<string, StreamMount>();
   let timer: NodeJS.Timeout | undefined;
   let running: Promise<unknown> | undefined;
-  let failing = false;
+  let failures = 0;
+  let down = false;
 
   async function pollOnce(): Promise<ListenerSample[]> {
     const at = now();
-    let stats: IcecastStats;
     let mounts: StreamMount[];
     try {
-      [stats, mounts] = await Promise.all([options.admin.stats(), options.mounts()]);
+      mounts = await options.mounts();
     } catch (err) {
-      // Logged once per outage, not every 15 s.
-      if (!failing) options.logger?.warn({ err }, 'icecast stats unavailable');
-      failing = true;
+      options.logger?.warn({ err }, 'stream mounts unavailable');
       return [];
     }
-    if (failing) options.logger?.info?.({}, 'icecast stats available again');
-    failing = false;
+    let stats: IcecastStats;
+    try {
+      stats = await options.admin.stats();
+    } catch (err) {
+      failures++;
+      // Logged once per outage, not every 15 s.
+      if (failures === 1) options.logger?.warn({ err }, 'icecast stats unavailable');
+      if (failures >= failuresBeforeDown && !down) {
+        down = true;
+        options.onIcecastReachable?.(false, mounts);
+      }
+      return [];
+    }
+    if (failures > 0) options.logger?.info?.({ failures }, 'icecast stats available again');
+    failures = 0;
+    if (down) {
+      down = false;
+      options.onIcecastReachable?.(true, mounts);
+    }
 
     const samples = samplesFromStats(stats, mounts, at);
     samples.forEach((s, i) => {
       const mount = mounts[i] as StreamMount;
+      seen.set(mount.mount, mount);
       if (connected.get(s.mount) !== s.sourceConnected) {
         connected.set(s.mount, s.sourceConnected);
         options.onSourceChange?.(mount, s.sourceConnected);
       }
     });
     const planned = new Set(mounts.map((m) => m.mount));
-    for (const m of connected.keys()) if (!planned.has(m)) connected.delete(m);
+    for (const [name, mount] of seen) {
+      if (planned.has(name)) continue;
+      seen.delete(name);
+      connected.delete(name);
+      options.onMountRemoved?.(mount);
+    }
 
     try {
       await options.record(samples);

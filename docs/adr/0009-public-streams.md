@@ -11,21 +11,29 @@ intro come from each station's settings, which change while listeners are connec
 
 ## Decision
 - **One Icecast 2.5 for all stations**, mounts namespaced `/<station-slug>/<format>`
-  (`mp3` 128k and `aac` 128k by default, `opus` 96k opt-in). The namespace is enforced when the
-  plan is built, so a station can't claim another's mount.
+  (`mp3` 128k and `aac` 128k by default, `opus` 96k opt-in). The namespace is checked when the
+  plan is built; the slugs `admin` and `assets` are reserved.
+- **One source password per station**, on each of its mounts (`<password>`), derived as an HMAC
+  of the station id under a master that only the api and Icecast know. Icecast 2.5 then refuses
+  any other password on those mounts, so no engine can source another station's mount whatever
+  its settings say (tested). Derived rather than stored: nothing to keep in sync.
 - **The api generates `icecast.xml`** for every station from the database and writes it to a
-  volume shared with the Icecast container, atomically and only when it changed. No secrets in
-  it: password placeholders, filled in by the container from its environment.
+  volume shared with the Icecast container, atomically and only when it changed, under an
+  advisory lock. The global secrets are placeholders filled in by the container; the
+  per-station passwords are in the file, written mode 0600. A station whose settings break
+  keeps its last good mounts and raises an alert.
 - **Reload with SIGHUP, not a restart.** The container's entrypoint watches the file and sends
   SIGHUP. Measured on the pinned image: listeners and engines stay connected (longest listener
   gap ~130 ms), changes apply within ~3 s, an unparsable file is ignored. A restart cuts every
   listener.
 - **Fallback = a file in Icecast's webroot** per mount (the emergency loop in the mount's
   format), not a mount fed by Liquidsoap: it has to keep playing when the engine itself is
-  down. `fallback-override all` brings listeners back when the engine reconnects.
+  down. `fallback-override all` brings listeners back when the engine reconnects. The config
+  only refers to files that exist; `deploy/icecast/encode-assets.sh` encodes them with the
+  pinned Liquidsoap image.
 - **Mount charset UTF-8**, fixing the garbled non-ASCII names #27 found.
-- **Stats from `/admin/stats` only**, every 15 s, rolled up per mount and minute; counts only,
-  no listener address (GDPR). Not `/admin/listclients`: on 2.5.0 it makes the next reload
+- **Stats from `/admin/stats` only**, every 15 s, rolled up per mount and minute, folded into
+  hours after 30 days and deleted after two years; counts only, no listener address (GDPR). Not `/admin/listclients`: on 2.5.0 it makes the next reload
   deadlock Icecast. The entrypoint's watchdog kills a stuck Icecast so its restart policy
   brings it back.
 - **TLS at Caddy on 443**, proxying only mount paths and the status JSON; `/admin` stays internal.
@@ -33,10 +41,11 @@ intro come from each station's settings, which change while listeners are connec
   an engine.
 
 ## Consequences
-- The fallback and intro files must be encoded per mount format: a worker job (follow-up).
-  Until then a missing file means listeners are disconnected while the engine is down.
-- All engines share one source password (agreed with #35). Per-station passwords would need
-  per-mount `<password>` blocks in the generated config.
+- Re-encoding the fallback and intro files when a station's emergency file or outputs change is
+  a worker job (follow-up). Until a file exists, its mount has no fallback: listeners are
+  disconnected while the engine is down.
+- Engines must get their derived password (`engineIcecastSourcePassword`), never the master
+  (#35's lifecycle).
 - The listclients deadlock and the reload numbers must be re-checked when the image is bumped
   (`icecast.int.test.ts` covers both).
 - Details, compose snippet and Caddyfile: `deploy/icecast/README.md`.
