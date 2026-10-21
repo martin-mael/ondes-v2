@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isPermission, type Permission } from './auth.ts';
 import { engineSourceSchema } from './engine.ts';
 
 /**
@@ -25,6 +26,16 @@ const engineOrigin = {
 };
 
 const isoTime = z.iso.datetime({ offset: true });
+
+/**
+ * The base envelope alone, loose: what the SSE plugin (#9) needs to route any fanout event
+ * (station + type + id for `Last-Event-ID`) without knowing every domain's payload.
+ */
+export const realtimeEnvelopeSchema = z.looseObject({
+  ...envelope,
+  type: z.string().regex(/^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/, 'expected `domain.event`'),
+});
+export type RealtimeEnvelope = z.infer<typeof realtimeEnvelopeSchema>;
 
 // ---------------------------------------------------------------------------------------
 // Engine (#28). Mapped one to one from the engine wire events, plus the adapter's own
@@ -144,3 +155,40 @@ export const realtimeEventSchema = z.discriminatedUnion('type', [
 ]);
 export type RealtimeEvent = z.infer<typeof realtimeEventSchema>;
 export type RealtimeEventType = RealtimeEvent['type'];
+
+// ---------------------------------------------------------------------------------------
+// Who may see what. The SSE plugin forwards a station event to a subscriber of that station
+// only if they hold this permission. By default it's `<domain>:read`, the domain being the
+// type's first segment (`engine.track.started` → `engine:read`); a domain whose name isn't a
+// permission resource maps it here. Events with no permission are never forwarded.
+
+const eventDomainPermissions: Record<string, Permission> = {
+  asrun: 'log:read',
+};
+
+export function eventReadPermission(type: string): Permission | null {
+  const domain = type.split('.', 1)[0] ?? '';
+  const mapped = eventDomainPermissions[domain];
+  if (mapped) return mapped;
+  const permission = `${domain}:read`;
+  return isPermission(permission) ? permission : null;
+}
+
+// ---------------------------------------------------------------------------------------
+// Stream-only events (#9). The api emits these itself on each SSE connection; they never go
+// through the fanout, have no station and no `id` (so they don't move `Last-Event-ID`).
+
+/** The api's current time, sent on connect and periodically. Clients derive their clock skew. */
+export const serverClockEventSchema = z.object({
+  type: z.literal('server.clock'),
+  at: isoTime,
+});
+export type ServerClockEvent = z.infer<typeof serverClockEventSchema>;
+
+/** Everything a browser can receive on `GET /api/v1/stations/:stationId/events`. */
+export const streamEventSchema = z.discriminatedUnion('type', [
+  ...realtimeEventSchema.options,
+  serverClockEventSchema,
+]);
+export type StreamEvent = z.infer<typeof streamEventSchema>;
+export type StreamEventType = StreamEvent['type'];

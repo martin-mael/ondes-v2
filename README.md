@@ -16,10 +16,20 @@ pnpm install
 pnpm test        # unit tests
 pnpm typecheck   # TypeScript, all packages
 pnpm lint        # Biome lint + format check (pnpm format to fix)
-pnpm dev         # runs api and worker in watch mode
+pnpm dev         # api, worker and web app in watch mode
 ```
 
-Backing services (Postgres, RabbitMQ, S3, Icecast, Liquidsoap) come with `deploy/compose.dev.yml` (#4).
+Backing services (Postgres, RabbitMQ, S3, Icecast, Liquidsoap, Mailpit) come with `deploy/compose.dev.yml` (#4): `cp .env.example .env`, `pnpm dev:up`, `pnpm dev:seed` ([`deploy/README.md`](deploy/README.md)).
+
+### Web app
+`pnpm dev` serves the web app on <http://localhost:5173>. Vite proxies `/api` (REST and the SSE stream) to the api on `API_PORT` from `.env`, so the session cookie stays same-origin; set `VITE_API_PROXY` to point it elsewhere. Emails (verification, reset, invitations) land in Mailpit at <http://127.0.0.1:8025> and link back to `APP_URL`.
+
+```sh
+pnpm --filter @ondes/web dev     # web app only (the api must be running)
+pnpm --filter @ondes/web build   # static build in apps/web/dist
+```
+
+UI components come from shadcn/ui on Base UI and live in `apps/web/src/ui/` ([ADR 0008](docs/adr/0008-ui.md)). Add one with `pnpm dlx shadcn@4.22.1 add <name>` from `apps/web`, then `pnpm format`. Production serving (Caddy) comes with the installer (#84).
 
 ## Layout
 
