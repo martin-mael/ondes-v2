@@ -1,5 +1,11 @@
-import { asRunOutcome, listAsRunQuerySchema } from '@ondes/shared';
+import {
+  asRunOutcome,
+  ENGINE_CONTRACT_VERSION,
+  engineEventSchema,
+  listAsRunQuerySchema,
+} from '@ondes/shared';
 import { describe, expect, it } from 'vitest';
+import { toRealtimeEvent } from '../engine/adapter/index.ts';
 import { localDayBounds } from '../log/time.ts';
 import { asRunSourceOf, shaFromFilename } from './repo.ts';
 
@@ -81,5 +87,32 @@ describe('station-local day (Europe/Paris)', () => {
     expect(localDayBounds('2026-10-25', 'Europe/Paris').endsAt.toISOString()).toBe(
       '2026-10-25T23:00:00.000Z',
     );
+  });
+});
+
+describe('engine track.started -> realtime', () => {
+  it('carries the live session id when the engine sends one', () => {
+    const wire = {
+      v: ENGINE_CONTRACT_VERSION,
+      seq: 3,
+      boot_id: 'b',
+      station_id: 's',
+      at: 1_790_000_000,
+      type: 'track.started' as const,
+      data: {
+        item_id: null,
+        source: 'live' as const,
+        title: null,
+        artist: null,
+        filename: null,
+        rid: null,
+        live_session_id: 'session-1',
+      },
+    };
+    const event = toRealtimeEvent(engineEventSchema.parse(wire));
+    expect(event.type === 'engine.track.started' && event.data.liveSessionId).toBe('session-1');
+    const { live_session_id: _, ...older } = wire.data;
+    const without = toRealtimeEvent(engineEventSchema.parse({ ...wire, data: older }));
+    expect(without.type === 'engine.track.started' && without.data.liveSessionId).toBeNull();
   });
 });

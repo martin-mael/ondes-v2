@@ -81,6 +81,8 @@ export const engineTrackStartedEventSchema = z.object({
     artist: z.string().nullable(),
     filename: z.string().nullable(),
     rid: z.string().nullable(),
+    /** The live session on air, for `source: live`; absent until the engine sends it. */
+    liveSessionId: z.string().nullable().optional(),
   }),
 });
 

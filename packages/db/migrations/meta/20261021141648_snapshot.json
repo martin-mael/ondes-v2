@@ -1,5 +1,5 @@
 {
-  "id": "82a43a55-b746-417d-a260-e951339d68cc",
+  "id": "ca904ffa-e905-4df2-8456-fe7ac3c0c3db",
   "prevId": "4dae03ae-6ea2-4383-b55b-5aa3c0ae9b92",
   "version": "7",
   "dialect": "postgresql",
@@ -669,6 +669,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "engine_item_id": {
+          "name": "engine_item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "log_item_id": {
           "name": "log_item_id",

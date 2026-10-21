@@ -7,6 +7,7 @@ CREATE TABLE "asrun_entry" (
 	"seq" integer NOT NULL,
 	"rid" text,
 	"source" text NOT NULL,
+	"engine_item_id" text,
 	"log_item_id" uuid,
 	"segment_id" uuid,
 	"kind" text,

@@ -31,8 +31,8 @@ function derivedId(sourceEventId: string, type: string, entryId: string): string
 
 /**
  * Engine events (#28) -> as-run entries. Runs from the durable `asrun` consumer (one api
- * replica at a time, in order per station). Every write is idempotent, so a redelivery
- * changes nothing and publishes nothing:
+ * replica at a time, in order per station, a failing event blocking its station). Every
+ * write is idempotent, so a redelivery changes nothing (it republishes the same event):
  *
  * - `engine.track.started`: inserts the entry (unique on the event id), after closing the
  *   entries of earlier boots that never ended (`interrupted`);
@@ -41,26 +41,35 @@ function derivedId(sourceEventId: string, type: string, entryId: string): string
  * - `engine.booted`: closes the entries of earlier boots.
  *
  * Each write publishes `asrun.started` / `asrun.ended` (best effort: the row is committed).
+ * A redelivered start or end publishes its event again with the same id; entries closed by a
+ * restart publish once.
  */
 export function createAsRunRecorder(options: AsRunRecorderOptions) {
   const { db, logger } = options;
 
+  /**
+   * Publishes an entry's event. Best effort: the row is committed, so a failure is only
+   * logged. The id is derived from the engine event and the entry, so a redelivery that
+   * publishes again sends the same event (clients dedupe on the id).
+   */
   async function publish(
     source: RealtimeEvent,
     type: AsRunRealtimeEvent['type'],
     entry: AsRunEntry,
   ) {
     if (!options.publish) return;
-    const event = realtimeEventSchema.parse({
-      id: derivedId(source.id, type, entry.id),
-      stationId: entry.stationId,
-      at: type === 'asrun.started' ? entry.startedAt : (entry.endedAt ?? source.at),
-      type,
-      data: entry,
-    });
-    await options.publish(event).catch((err: unknown) => {
+    try {
+      const event = realtimeEventSchema.parse({
+        id: derivedId(source.id, type, entry.id),
+        stationId: entry.stationId,
+        at: type === 'asrun.started' ? entry.startedAt : (entry.endedAt ?? source.at),
+        type,
+        data: entry,
+      });
+      await options.publish(event);
+    } catch (err) {
       logger.error({ err, type, stationId: entry.stationId }, 'As-run event publish failed');
-    });
+    }
   }
 
   async function closeInterrupted(
@@ -93,7 +102,7 @@ export function createAsRunRecorder(options: AsRunRecorderOptions) {
       case 'engine.track.started': {
         // A lost `engine.booted` still closes the previous boot's entry here.
         await closeInterrupted(event, scope, event.data.bootId, at);
-        const entry = await repo.recordStart(db, scope, {
+        const recorded = await repo.recordStart(db, scope, {
           eventId: event.id,
           bootId: event.data.bootId,
           seq: event.data.seq,
@@ -105,23 +114,23 @@ export function createAsRunRecorder(options: AsRunRecorderOptions) {
           artist: event.data.artist,
           filename: event.data.filename,
           rid: event.data.rid,
+          liveSessionId: event.data.liveSessionId ?? null,
         });
-        if (entry) await publish(event, 'asrun.started', entry);
+        // A redelivery publishes again: the first publish may have been lost after the commit.
+        if (recorded) await publish(event, 'asrun.started', recorded.entry);
         return;
       }
       case 'engine.track.ended': {
-        const entry = await repo.recordEnd(db, scope, {
+        const recorded = await repo.recordEnd(db, scope, {
           eventId: event.id,
           bootId: event.data.bootId,
           seq: event.data.seq,
-          at,
           itemId: event.data.itemId,
-          segmentId: event.data.segmentId,
           source: event.data.source,
           startedAt: new Date(event.data.startedAt),
           playedMs: event.data.played * 1000,
         });
-        if (entry) await publish(event, 'asrun.ended', entry);
+        if (recorded) await publish(event, 'asrun.ended', recorded.entry);
         return;
       }
     }

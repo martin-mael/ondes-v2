@@ -263,7 +263,7 @@ describe('recording', () => {
     );
   });
 
-  it('ignores redelivered events: no duplicate row, no second end, no event', async () => {
+  it('ignores redelivered events: no duplicate row, no second end, no new event id', async () => {
     const st = await newStation();
     const at = new Date('2026-06-10T12:00:00.000Z');
     const started = await st.engine(
@@ -291,7 +291,10 @@ describe('recording', () => {
       { at: new Date(at.getTime() + 60_000) },
     );
     const [first] = await waitRows(st.scope, 'ended', (r) => r[0]?.endedAt != null);
-    const eventsBefore = asRunEvents.filter((e) => e.stationId === st.scope.stationId).length;
+    const ids = () =>
+      new Set(asRunEvents.filter((e) => e.stationId === st.scope.stationId).map((e) => e.id));
+    await waitFor('both events', () => ids().size === 2);
+    const before = ids();
 
     // Redeliveries (same ids), then a later event to know the queue got past them.
     await rabbit.events.publish(started);
@@ -315,10 +318,10 @@ describe('recording', () => {
     await waitFor('sentinel event', () =>
       asRunEvents.find((e) => e.stationId === st.scope.stationId && e.data.title === 'Next'),
     );
-    // Only the sentinel's asrun.started was added.
-    expect(asRunEvents.filter((e) => e.stationId === st.scope.stationId).length).toBe(
-      eventsBefore + 1,
-    );
+    // Redeliveries republish the same events (same ids); only the sentinel's is new.
+    const now = ids();
+    expect(now.size).toBe(before.size + 1);
+    for (const id of before) expect(now.has(id)).toBe(true);
   });
 
   it('finds the asset of a file from its cache path', async () => {
@@ -381,6 +384,137 @@ describe('recording', () => {
       outcome: 'interrupted',
       durationMs: 30_000,
       endedAt: new Date(at.getTime() + 30_000),
+      endSeq: null,
+    });
+    const ended = await waitFor('asrun.ended', () =>
+      asRunEvents.find((e) => e.type === 'asrun.ended' && e.data.id === entry?.id),
+    );
+    expect(ended.data.outcome).toBe('interrupted');
+  });
+
+  it('closes entries of earlier boots even if the engine clock stepped back', async () => {
+    const st = await newStation();
+    const at = new Date('2026-06-10T14:30:00.000Z');
+    await st.engine(
+      'engine.track.started',
+      {
+        itemId: null,
+        segmentId: null,
+        source: 'safety',
+        title: 'Before',
+        artist: null,
+        filename: null,
+        rid: '1',
+      },
+      { at },
+    );
+    await waitRows(st.scope, 'start', (r) => r.length === 1);
+    // The new boot's clock is 10 s behind the previous start.
+    await st.engine(
+      'engine.booted',
+      { version: '2.4.6' },
+      { at: new Date(at.getTime() - 10_000), bootId: randomUUID() },
+    );
+    const [entry] = await waitRows(st.scope, 'interrupted', (r) => r[0]?.endedAt != null);
+    expect(entry).toMatchObject({ outcome: 'interrupted', durationMs: 0, endedAt: at });
+  });
+
+  it('marks an early end as cut and a near-immediate one as skipped', async () => {
+    const st = await newStation();
+    const s = await song(st.scope, 'Planned', ['P']);
+    const t = new Date('2026-06-10T16:00:00.000Z');
+    const cutItem = await logItemFor(st.scope, s.assetId, t);
+    const [day] = await tdb.db.select().from(logItem).where(eq(logItem.id, cutItem));
+    const [skipRow] = await tdb.db
+      .insert(logItem)
+      .values({
+        orgId: st.scope.orgId,
+        stationId: st.scope.stationId,
+        logDayId: day?.logDayId as string,
+        position: 1,
+        kind: 'song',
+        plannedStart: new Date(t.getTime() + 180_000),
+        plannedDurationMs: 180_000,
+        assetId: s.assetId,
+        originType: 'manual',
+      })
+      .returning({ id: logItem.id });
+    const skipItem = skipRow?.id as string;
+    const play = async (itemId: string, startedAt: Date, played: number, rid: string) => {
+      await st.engine(
+        'engine.track.started',
+        {
+          itemId,
+          segmentId: null,
+          source: 'queue',
+          title: null,
+          artist: null,
+          filename: null,
+          rid,
+        },
+        { at: startedAt },
+      );
+      await st.engine(
+        'engine.track.ended',
+        { itemId, segmentId: null, source: 'queue', startedAt: startedAt.toISOString(), played },
+        { at: new Date(startedAt.getTime() + played * 1000) },
+      );
+    };
+    await play(cutItem, t, 90, '1');
+    await play(skipItem, new Date(t.getTime() + 90_000), 2, '2');
+    const done = await waitRows(
+      st.scope,
+      'two ended',
+      (r) => r.filter((e) => e.endedAt).length === 2,
+    );
+    expect(done.find((e) => e.logItemId === cutItem)?.outcome).toBe('cut');
+    expect(done.find((e) => e.logItemId === skipItem)?.outcome).toBe('skipped');
+  });
+
+  it("records the live session on air, and drops ids that are not this station's", async () => {
+    const st = await newStation();
+    const other = await newStation();
+    const s = await song(other.scope, 'Elsewhere', ['O']);
+    const foreignItem = await logItemFor(other.scope, s.assetId, new Date('2026-06-10T17:00:00Z'));
+    const sessionId = randomUUID();
+    const at = new Date('2026-06-10T17:00:00.000Z');
+    await st.engine(
+      'engine.track.started',
+      {
+        itemId: null,
+        segmentId: null,
+        source: 'live',
+        title: 'Live show',
+        artist: 'DJ',
+        filename: null,
+        rid: null,
+        liveSessionId: sessionId,
+      },
+      { at },
+    );
+    await st.engine(
+      'engine.track.started',
+      {
+        itemId: foreignItem,
+        segmentId: randomUUID(),
+        source: 'queue',
+        title: 'Foreign',
+        artist: null,
+        filename: null,
+        rid: '9',
+        liveSessionId: randomUUID(),
+      },
+      { at: new Date(at.getTime() + 60_000) },
+    );
+    const entries = await waitRows(st.scope, 'both', (r) => r.length === 2);
+    expect(entries.find((e) => e.source === 'live')).toMatchObject({ liveSessionId: sessionId });
+    expect(entries.find((e) => e.title === 'Foreign')).toMatchObject({
+      engineItemId: foreignItem,
+      logItemId: null,
+      segmentId: null,
+      assetId: null,
+      plannedStart: null,
+      liveSessionId: null,
     });
   });
 
@@ -406,6 +540,10 @@ describe('recording', () => {
       durationMs: 1_800_000,
       outcome: 'complete',
     });
+    const ended = await waitFor('asrun.ended', () =>
+      asRunEvents.find((e) => e.type === 'asrun.ended' && e.data.id === entry?.id),
+    );
+    expect(ended.data.endedAt).toBe(new Date(startedAt.getTime() + 1_800_000).toISOString());
   });
 });
 
@@ -415,7 +553,7 @@ describe('queries', () => {
     startedAt: Date,
     opts: { artists?: string[]; assetId?: string } = {},
   ) {
-    const entry = await repo.recordStart(tdb.db, scope, {
+    const recorded = await repo.recordStart(tdb.db, scope, {
       eventId: randomUUID(),
       bootId: 'boot',
       seq: Math.floor(Math.random() * 1e9) + 1,
@@ -428,7 +566,8 @@ describe('queries', () => {
       filename: null,
       rid: null,
     });
-    if (!entry) throw new Error('not recorded');
+    if (!recorded) throw new Error('not recorded');
+    const { entry } = recorded;
     if (opts.assetId || opts.artists) {
       await tdb.db
         .update(asRunEntry)
@@ -485,10 +624,22 @@ describe('queries', () => {
       '2026-10-25T01:30:00.000Z',
       '2026-10-25T22:59:59.999Z',
     ]);
-    // Spring forward: a 23 h day.
+    // Spring forward: 2026-03-29 local runs from 2026-03-28T23:00Z to 2026-03-29T22:00Z (23 h).
+    await seed(st.scope, new Date('2026-03-28T22:59:59.999Z')); // 23:59:59 on the 28th
+    await seed(st.scope, new Date('2026-03-28T23:00:00.000Z')); // 00:00 on the 29th
+    await seed(st.scope, new Date('2026-03-29T00:59:59.000Z')); // 01:59:59 CET
+    await seed(st.scope, new Date('2026-03-29T01:00:00.000Z')); // 03:00 CEST (02:xx skipped)
+    await seed(st.scope, new Date('2026-03-29T21:59:59.999Z')); // 23:59:59 on the 29th
+    await seed(st.scope, new Date('2026-03-29T22:00:00.000Z')); // 00:00 on the 30th
     const spring = (await st.api('date=2026-03-29')).json() as AsRunList;
     expect(spring.from).toBe('2026-03-28T23:00:00.000Z');
     expect(spring.to).toBe('2026-03-29T22:00:00.000Z');
+    expect(spring.items.map((e) => e.startedAt)).toEqual([
+      '2026-03-28T23:00:00.000Z',
+      '2026-03-29T00:59:59.000Z',
+      '2026-03-29T01:00:00.000Z',
+      '2026-03-29T21:59:59.999Z',
+    ]);
   });
 
   it("is tenant-scoped: another station's history never shows, outsiders get a 404", async () => {

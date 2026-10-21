@@ -105,12 +105,27 @@ export type StartInput = {
   artist: string | null;
   filename: string | null;
   rid: string | null;
+  liveSessionId?: string | null;
 };
 
-/** What the log, the library and the file name say about an item that just started. */
-async function resolveItem(db: Executor, scope: StationScope, input: StartInput) {
-  const logItemId = asUuid(input.itemId);
-  const [item] = logItemId
+/**
+ * A write and whether it changed anything: `fresh` is false for a redelivered event, whose
+ * entry is returned as it was recorded (so its event can be published again).
+ */
+export type Recorded = { entry: AsRunEntry; fresh: boolean };
+
+/**
+ * What the log, the library and the file name say about an item that just started. Ids that
+ * aren't this station's (another tenant's log item, a deleted one) are dropped: the raw
+ * engine id stays in `engine_item_id`.
+ */
+async function resolveItem(
+  db: Executor,
+  scope: StationScope,
+  input: Pick<StartInput, 'itemId' | 'title' | 'artist' | 'filename'>,
+) {
+  const itemId = asUuid(input.itemId);
+  const [item] = itemId
     ? await db
         .select({
           kind: logItem.kind,
@@ -121,7 +136,7 @@ async function resolveItem(db: Executor, scope: StationScope, input: StartInput)
           title: logItem.title,
         })
         .from(logItem)
-        .where(and(whereStation(logItem, scope), eq(logItem.id, logItemId)))
+        .where(and(whereStation(logItem, scope), eq(logItem.id, itemId)))
     : [];
   let fileSha256 = shaFromFilename(input.filename);
   let assetId = item?.assetId ?? null;
@@ -150,9 +165,10 @@ async function resolveItem(db: Executor, scope: StationScope, input: StartInput)
   fileSha256 ??= a?.sha256 ?? null;
   const artists = a?.artists ?? (input.artist ? [input.artist] : []);
   return {
-    // A log item of another station, or deleted since it was pushed: keep the engine's id.
-    logItemId,
-    segmentId: asUuid(input.segmentId) ?? item?.segmentId ?? null,
+    engineItemId: input.itemId,
+    logItemId: item ? itemId : null,
+    // The log item's own segment: the engine's `segment_id` is never trusted on its own.
+    segmentId: item?.segmentId ?? null,
     kind: item?.kind ?? null,
     plannedStart: item?.plannedStart ?? null,
     plannedDurationMs: item?.plannedDurationMs ?? null,
@@ -164,13 +180,22 @@ async function resolveItem(db: Executor, scope: StationScope, input: StartInput)
   };
 }
 
-/** Records an item going on air. Null when this event was recorded already (a redelivery). */
+async function byEventId(db: Executor, scope: StationScope, eventId: string) {
+  const [row] = await db
+    .select()
+    .from(asRunEntry)
+    .where(and(whereStation(asRunEntry, scope), eq(asRunEntry.eventId, eventId)));
+  return row;
+}
+
+/** Records an item going on air (a redelivery returns the entry recorded the first time). */
 export async function recordStart(
   db: Executor,
   scope: StationScope,
   input: StartInput,
-): Promise<AsRunEntry | null> {
+): Promise<Recorded | null> {
   const resolved = await resolveItem(db, scope, input);
+  const source = asRunSourceOf(input.source);
   const [row] = await db
     .insert(asRunEntry)
     .values({
@@ -180,24 +205,25 @@ export async function recordStart(
       bootId: input.bootId,
       seq: input.seq,
       rid: input.rid,
-      source: asRunSourceOf(input.source),
+      source,
       ...resolved,
+      liveSessionId: source === 'live' ? asUuid(input.liveSessionId ?? null) : null,
       startedAt: input.at,
     })
     .onConflictDoNothing()
     .returning();
-  return row ? toEntry(row) : null;
+  if (row) return { entry: toEntry(row), fresh: true };
+  const existing = await byEventId(db, scope, input.eventId);
+  return existing ? { entry: toEntry(existing), fresh: false } : null;
 }
 
 export type EndInput = {
   eventId: string;
   bootId: string;
   seq: number;
-  /** When it left the air (the event's time). */
-  at: Date;
   itemId: string | null;
-  segmentId: string | null;
   source: EngineSource | string;
+  /** When it went on air, on the engine's clock (`track.ended.started_at`). */
   startedAt: Date;
   playedMs: number;
 };
@@ -206,18 +232,18 @@ export type EndInput = {
 const START_MATCH_MS = 2000;
 
 /**
- * Sets the end of the item that left the air. If its start was never recorded (lost before it
- * reached the queue), records the whole entry from the end event. Null when there was nothing
- * to do (a redelivery).
+ * Sets the end of the item that left the air: `ended_at` = the engine's `started_at` +
+ * `played`, both from the end event (the engine's clock). If its start was never recorded
+ * (lost before it reached the queue), records the whole entry from the end event.
  */
 export async function recordEnd(
   db: Executor,
   scope: StationScope,
   input: EndInput,
-): Promise<AsRunEntry | null> {
+): Promise<Recorded | null> {
   const source = asRunSourceOf(input.source);
-  const logItemId = asUuid(input.itemId);
   const playedMs = Math.round(input.playedMs);
+  const endedAt = new Date(input.startedAt.getTime() + playedMs);
   const near = (d: Date, delta: number) => new Date(d.getTime() + delta);
   const [open] = await db
     .select({ id: asRunEntry.id, plannedDurationMs: asRunEntry.plannedDurationMs })
@@ -228,7 +254,9 @@ export async function recordEnd(
         eq(asRunEntry.bootId, input.bootId),
         isNull(asRunEntry.endedAt),
         eq(asRunEntry.source, source),
-        logItemId ? eq(asRunEntry.logItemId, logItemId) : isNull(asRunEntry.logItemId),
+        input.itemId === null
+          ? isNull(asRunEntry.engineItemId)
+          : eq(asRunEntry.engineItemId, input.itemId),
         gte(asRunEntry.startedAt, near(input.startedAt, -START_MATCH_MS)),
         lt(asRunEntry.startedAt, near(input.startedAt, START_MATCH_MS)),
         lt(asRunEntry.seq, input.seq),
@@ -240,19 +268,18 @@ export async function recordEnd(
     const [row] = await db
       .update(asRunEntry)
       .set({
-        // The end is the start plus what the engine says it played: both on its clock.
-        endedAt: sql`greatest(${asRunEntry.startedAt}, ${asRunEntry.startedAt} + ${playedMs} * interval '1 millisecond')`,
+        endedAt: sql`greatest(${asRunEntry.startedAt}, ${endedAt.toISOString()}::timestamptz)`,
         endSeq: input.seq,
         durationMs: playedMs,
         outcome: asRunOutcome(playedMs, open.plannedDurationMs),
       })
       .where(and(eq(asRunEntry.id, open.id), isNull(asRunEntry.endedAt)))
       .returning();
-    return row ? toEntry(row) : null;
+    if (row) return { entry: toEntry(row), fresh: true };
   }
-  // An end already applied leaves nothing open; only record a start we never saw.
+  // Already applied (a redelivery): the entry this end closed.
   const [closed] = await db
-    .select({ id: asRunEntry.id })
+    .select()
     .from(asRunEntry)
     .where(
       and(
@@ -262,16 +289,14 @@ export async function recordEnd(
       ),
     )
     .limit(1);
-  if (closed) return null;
+  if (closed) return { entry: toEntry(closed), fresh: false };
+  // A start we never saw: the whole entry, from the end event.
   const resolved = await resolveItem(db, scope, {
-    ...input,
-    at: input.startedAt,
+    itemId: input.itemId,
     title: null,
     artist: null,
     filename: null,
-    rid: null,
   });
-  const startedAt = input.startedAt;
   const [row] = await db
     .insert(asRunEntry)
     .values({
@@ -282,20 +307,23 @@ export async function recordEnd(
       seq: input.seq,
       source,
       ...resolved,
-      startedAt,
-      endedAt: new Date(startedAt.getTime() + playedMs),
+      startedAt: input.startedAt,
+      endedAt,
       endSeq: input.seq,
       durationMs: playedMs,
       outcome: asRunOutcome(playedMs, resolved.plannedDurationMs),
     })
     .onConflictDoNothing()
     .returning();
-  return row ? toEntry(row) : null;
+  if (row) return { entry: toEntry(row), fresh: true };
+  const existing = await byEventId(db, scope, input.eventId);
+  return existing ? { entry: toEntry(existing), fresh: false } : null;
 }
 
 /**
- * The engine restarted (boot `bootId` at `at`): entries of earlier boots still on air never
- * got their `track.ended`. They end at `at` (an upper bound), `interrupted`.
+ * The engine restarted (boot `bootId` at `at`): entries of other boots still on air never got
+ * their `track.ended`. They end at `at` (an upper bound; never before their start, even if the
+ * engine clock stepped back), `interrupted`.
  */
 export async function closeInterrupted(
   db: Executor,
@@ -316,7 +344,6 @@ export async function closeInterrupted(
         whereStation(asRunEntry, scope),
         isNull(asRunEntry.endedAt),
         ne(asRunEntry.bootId, bootId),
-        lt(asRunEntry.startedAt, at),
       ),
     )
     .returning();

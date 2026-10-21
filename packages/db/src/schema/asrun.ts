@@ -13,12 +13,13 @@ import {
 } from 'drizzle-orm/pg-core';
 import { station } from './tenancy.ts';
 
-// As-run (#30). Contracts: packages/shared/src/contracts/asrun.ts.
+// As-run (#30, ADR 0015). Contracts: packages/shared/src/contracts/asrun.ts.
 //
-// Append-only: a row is inserted when an item takes the air and only its end fields
-// (`ended_at`, `end_seq`, `duration_ms`, `outcome`) are set afterwards, once. The log item,
-// asset and file are snapshots, with no foreign keys: history must outlive a regenerated log
-// day or a deleted asset. Only the station cascades (deleting a station deletes its history).
+// Append-only: a row is inserted when an item takes the air; afterwards its end is set once,
+// in one update: `ended_at`, `duration_ms`, `outcome`, and `end_seq` (the `track.ended` that
+// closed it; null when a restart closed it). The log item, asset and file are snapshots, with
+// no foreign keys: history must outlive a regenerated log day or a deleted asset. Only the
+// station cascades (deleting a station deletes its history).
 //
 // Idempotent on the engine event: `event_id` is the deterministic id of the `track.started`
 // event (station, boot, seq), so a redelivery inserts nothing.
@@ -38,6 +39,9 @@ export const asRunEntry = pgTable(
     /** Liquidsoap request id; null for live. */
     rid: text('rid'),
     source: text('source').$type<AsRunSource>().notNull(),
+    /** The engine's `item_id` as received (matches `track.ended`; may be no log item of ours). */
+    engineItemId: text('engine_item_id'),
+    /** Set only when it is a log item of this station. */
     logItemId: uuid('log_item_id'),
     segmentId: uuid('segment_id'),
     kind: text('kind').$type<LogItemKind>(),
