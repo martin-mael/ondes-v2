@@ -131,3 +131,14 @@ All clear on their own once a later pass fixes the cause.
 - **#29** builds engine URIs with `playoutPath`, checks `isCached` before each push, and handles a miss or a 422 as described above.
 - **#27 / deploy:** the station engine mounts `<cache root>/<stationId>` at `/cache` read-only; the worker mounts `<cache root>` read-write. The engine needs no route to object storage. On a single VPS, the cache root is a host directory; a multi-host setup would run the sync job on each engine host.
 - **Open:** a weekly full re-hash of the cache (disk-bound, a few minutes for 26 GB) to catch bit rot, and per-org deduplication across stations, are deferred until needed.
+
+## Implementation notes (#31)
+Where #31 departs from or fills in the above (details: `apps/worker/src/jobs/cache-sync/README.md`):
+- **Budget and settings** live in a new `station_cache` table (budget, horizon, download cap, and the last pass's usage, deferred files and disk-low flag), not a `station.cache_budget_bytes` column: the tenancy schema stays untouched.
+- **One lane.** `cache-sync` and `cache-fetch` both run on `high` with the default `in_flight` key (payload hash); an explicit key would make them run once ever.
+- **Log changes** reach the worker through a durable event queue (`ondes.events.cache-sync`, ADR 0006), so a change published while no worker runs isn't lost.
+- **Alerts are evaluated by the api**, every 30 s by one replica, from the tables the worker keeps (`apps/api/src/modules/cache`), and go through `app.alerts`. A pass doesn't raise them itself: the T−1h rule depends on the clock, not only on passes, and the alert framework lives in the api. A file recorded `ready` resolves its alerts within 30 s.
+- **Eviction is lazier than the spike's:** files are evicted only when that makes enough room for the next file; a file that can't fit anyway is deferred without evicting anything.
+- **Per-file locks** (`.partial/<file>.lock`, created with `O_EXCL`, stale after 2 min without progress) keep two worker processes, or a pass and an urgent fetch, from appending to one partial file.
+- **A corrupt resume** starts over once from byte 0 before the file is marked `checksum_mismatch`.
+- **Island renders** aren't modelled yet (#57); the horizon query takes the segment parts' files, and renders join it when they exist.
