@@ -21,6 +21,7 @@
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:engine": "sh engine/tests/run.sh",
+    "test:engine:template": "pnpm exec tsc -p engine/tests/template && node engine/tests/template/run.ts",
     "test:engine:splice": "sh engine/tests/splice/run.sh"
   },
   "devDependencies": {

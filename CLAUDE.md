@@ -82,7 +82,7 @@ Created by #3. Packages are named `@ondes/<folder>` (e.g. `@ondes/shared`) and a
 Every PR must pass, locally and in CI:
 - `pnpm lint` (Biome; `pnpm format` auto-fixes formatting and import order), `pnpm typecheck` and `pnpm test` (unit tests next to the code, `*.test.ts`).
 - `pnpm test:integration` when you touch db, queue, storage or engine: `*.int.test.ts` files, using the `deploy/compose.dev.yml` services.
-- Engine template changes: `pnpm test:engine` (`engine/tests/run.sh`: `liquidsoap --check` on every template, in the Liquidsoap image pinned in `deploy/compose.dev.yml`). Needs Docker.
+- Engine template changes: `pnpm test:engine` (`engine/tests/run.sh`: renders the station template for every settings combination in `engine/tests/template/combos.ts` and runs `liquidsoap --check` on each, in the Liquidsoap image pinned in `deploy/compose.dev.yml`). Needs Docker and `pnpm install`. Then `pnpm test:engine:template` (`engine/tests/template/README.md`): runs the rendered template and checks its control API and a seamless island segment. Needs Docker and `ffmpeg`.
 - Island splice regression test (`engine/tests/splice/README.md`): `pnpm test:engine:splice` (full matrix) or `pnpm test:engine:splice --quick` (FLAC cases, what CI runs). Needs Docker and `ffmpeg`. Run it when you touch islands, cue handling or the Liquidsoap version.
 - Run one package's tests with `pnpm vitest run apps/api`, or typecheck one package with `pnpm --filter @ondes/api typecheck`.
 - **The dev stack is shared.** Every worktree talks to the same `ondes-dev` compose project on fixed localhost ports, so parallel sessions use the same Postgres, RabbitMQ, Garage, Icecast and Liquidsoap.
