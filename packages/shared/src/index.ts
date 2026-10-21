@@ -5,5 +5,6 @@ export * from './contracts/events.ts';
 export * from './contracts/health.ts';
 export * from './contracts/jobs.ts';
 export * from './contracts/library.ts';
+export * from './contracts/library-jobs.ts';
 export * from './contracts/tenancy.ts';
 export * from './json.ts';

@@ -1,3 +1,4 @@
+import { createS3Storage, loadStorageConfig } from '@ondes/storage';
 import { buildApp } from './app.ts';
 import { authConfigFromEnv } from './plugins/auth.ts';
 import { dbConfigFromEnv } from './plugins/db.ts';
@@ -12,6 +13,7 @@ if (!rabbitUrl) throw new Error('RABBITMQ_URL is not set');
 const app = await buildApp({
   db: { config: dbConfigFromEnv(env) },
   rabbit: { url: rabbitUrl },
+  storage: createS3Storage(loadStorageConfig(env)),
   mail: { config: mailConfigFromEnv(env) },
   auth: authConfigFromEnv(env),
   fastify: {

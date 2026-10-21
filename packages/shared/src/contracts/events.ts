@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { engineSourceSchema } from './engine.ts';
+import { assetIngestedDataSchema, uploadUpdatedDataSchema } from './library-jobs.ts';
 
 /**
  * Real-time events: what the api publishes on the RabbitMQ events fanout (`@ondes/queue`
@@ -137,10 +138,35 @@ export const engineRealtimeEventSchema = z.discriminatedUnion('type', [
 export type EngineRealtimeEvent = z.infer<typeof engineRealtimeEventSchema>;
 
 // ---------------------------------------------------------------------------------------
+// Library (#18). Data schemas live in `library-jobs.ts`.
+
+/** Ingest finished: the asset has its master and playout files. Analysis jobs start here. */
+export const assetIngestedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('asset.ingested'),
+  data: assetIngestedDataSchema,
+});
+
+/** An upload changed status (queued, processing, ingested, duplicate, quarantined, …). */
+export const uploadUpdatedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('upload.updated'),
+  data: uploadUpdatedDataSchema,
+});
+
+export const libraryRealtimeEventSchema = z.discriminatedUnion('type', [
+  assetIngestedEventSchema,
+  uploadUpdatedEventSchema,
+]);
+export type LibraryRealtimeEvent = z.infer<typeof libraryRealtimeEventSchema>;
+export type AssetIngestedEvent = z.infer<typeof assetIngestedEventSchema>;
+
+// ---------------------------------------------------------------------------------------
 // Every real-time event. Add other domains' schemas to this union.
 
 export const realtimeEventSchema = z.discriminatedUnion('type', [
   ...engineRealtimeEventSchema.options,
+  ...libraryRealtimeEventSchema.options,
 ]);
 export type RealtimeEvent = z.infer<typeof realtimeEventSchema>;
 export type RealtimeEventType = RealtimeEvent['type'];

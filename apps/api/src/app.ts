@@ -1,4 +1,5 @@
 import { healthResponseSchema } from '@ondes/shared';
+import type { Storage } from '@ondes/storage';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 import {
   serializerCompiler,
@@ -8,6 +9,7 @@ import {
 import { health } from './health.ts';
 import { authRoutes } from './modules/auth/routes.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
+import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { type AuthConfig, authPlugin } from './plugins/auth.ts';
 import { type DbPluginOptions, dbPlugin } from './plugins/db.ts';
 import { errorsPlugin } from './plugins/errors.ts';
@@ -20,6 +22,10 @@ export interface AppOptions {
   auth: AuthConfig;
   /** Optional so tests that don't touch the queue can skip RabbitMQ. */
   rabbit?: RabbitPluginOptions;
+  /** Media storage. Optional so tests that don't upload can skip S3; without it, no upload routes. */
+  storage?: Storage;
+  /** Upload route settings beyond `storage` (tests). */
+  uploads?: Omit<UploadPluginOptions, 'storage'>;
   fastify?: FastifyServerOptions;
 }
 
@@ -44,6 +50,9 @@ export async function buildApp(options: AppOptions) {
   await app.register(authRoutes, { prefix: '/api/v1' });
   // Library routes carry their full /api/v1/stations/:stationId path.
   await app.register(libraryPlugin);
+  if (options.storage) {
+    await app.register(uploadPlugin, { ...options.uploads, storage: options.storage });
+  }
 
   return app;
 }

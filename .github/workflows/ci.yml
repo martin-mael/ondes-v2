@@ -85,6 +85,9 @@ jobs:
         run: |
           docker compose -f deploy/compose.dev.yml up -d --wait garage
           docker compose -f deploy/compose.dev.yml run --rm garage-init
+      # The ingest tests (#18) generate test audio and transcode it.
+      - name: Install ffmpeg
+        run: sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends ffmpeg
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:integration
 

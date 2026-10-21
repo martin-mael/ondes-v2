@@ -4,3 +4,4 @@ export * from './jobs.ts';
 export * from './library.ts';
 export * from './storage.ts';
 export * from './tenancy.ts';
+export * from './upload.ts';
