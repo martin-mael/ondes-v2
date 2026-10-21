@@ -983,3 +983,4 @@ emit(
 # Outputs: one output.icecast per mount in the station settings. `radio` is the final mix.
 
 # @ondes:outputs
+# ci-probe engine
