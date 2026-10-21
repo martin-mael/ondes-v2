@@ -35,7 +35,7 @@ In the api, use `createRabbit()` from `apps/api/src/plugins/rabbit.ts`.
 ## Real-time events
 `createEventPublisher(rabbit, topology, schema)` and `subscribeEvents(rabbit, topology, schema, onEvent)`. Every subscriber receives every event, best effort: for the UI.
 
-For side effects (alerts, actions, emails), use `consumeEventsDurable(rabbit, topology, name, schema, onEvent, { keyOf })`: one durable queue per `name`, one active consumer at a time across processes, in order per key, acked once handled, kept while nobody consumes. Handlers must be idempotent (deduplicate on the event id). See "Event transport" in ADR 0006.
+For side effects (alerts, actions, emails), use `consumeEventsDurable(rabbit, topology, name, schema, onEvent, { keyOf })`: one durable queue per `name`, one active consumer at a time across processes, in order per key (a failing event is retried in place and blocks its key until it succeeds or is given up), acked once handled, kept while nobody consumes. Handlers must be idempotent (deduplicate on the event id). See "Event transport" in ADR 0006.
 
 The `notify` lane is for jobs the api consumes itself (alert emails): the worker only consumes the lanes of its own jobs.
 

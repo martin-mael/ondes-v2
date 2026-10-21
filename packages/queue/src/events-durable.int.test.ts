@@ -6,6 +6,7 @@ import {
   consumeEventsDurable,
   createEventPublisher,
   deleteEventQueue,
+  EventDroppedError,
   type EventPublisher,
 } from './events.ts';
 import { deleteTopology } from './topology.ts';
@@ -33,10 +34,14 @@ afterAll(async () => {
   await queue.close();
 });
 
-const consume = (onEvent: (e: Event) => Promise<void>) =>
+const consume = (
+  onEvent: (e: Event) => Promise<void>,
+  options: { retryDelaysMs?: readonly number[]; onError?: (error: unknown) => void } = {},
+) =>
   consumeEventsDurable(queue.rabbit, queue.topology, name, eventSchema, onEvent, {
     keyOf: (e) => e.key,
     retryDelaysMs: [20, 20],
+    ...options,
   });
 
 async function until(check: () => boolean, timeoutMs = 10_000) {
@@ -87,5 +92,53 @@ describe('consumeEventsDurable', () => {
     expect(late).toEqual([{ key: 'a', n: 10 }]);
     expect(failures).toBe(3);
     await third.close();
+  });
+
+  it('a failing event blocks its key, not the others, until it succeeds', async () => {
+    const seen: string[] = [];
+    let failures = 0;
+    const sub = consume(
+      async (event) => {
+        if (event.key === 'x' && event.n === 1 && failures < 3) {
+          failures++;
+          throw new Error('flaky');
+        }
+        seen.push(`${event.key}${event.n}`);
+      },
+      { retryDelaysMs: [150, 150, 150, 150] },
+    );
+    await sub.ready;
+    await publisher.publish({ key: 'x', n: 1 });
+    await publisher.publish({ key: 'x', n: 2 });
+    await publisher.publish({ key: 'y', n: 1 });
+    // y1 doesn't wait for x1's retries.
+    await until(() => seen.includes('y1'));
+    expect(seen).toEqual(['y1']);
+    await until(() => seen.length === 3);
+    expect(failures).toBe(3);
+    // x2 only ran after x1 succeeded.
+    expect(seen).toEqual(['y1', 'x1', 'x2']);
+    await sub.close();
+  });
+
+  it('gives a failing event up after its retries, then moves its key on', async () => {
+    const seen: string[] = [];
+    const errors: unknown[] = [];
+    const sub = consume(
+      async (event) => {
+        if (event.n === 1) throw new Error('poison');
+        seen.push(`${event.key}${event.n}`);
+      },
+      { retryDelaysMs: [20, 20], onError: (error) => errors.push(error) },
+    );
+    await sub.ready;
+    await publisher.publish({ key: 'z', n: 1 });
+    await publisher.publish({ key: 'z', n: 2 });
+    await until(() => seen.length === 1);
+    expect(seen).toEqual(['z2']);
+    const dropped = errors.filter((e) => e instanceof EventDroppedError);
+    expect(dropped).toHaveLength(1);
+    expect((dropped[0] as EventDroppedError).attempts).toBe(3);
+    await sub.close();
   });
 });
