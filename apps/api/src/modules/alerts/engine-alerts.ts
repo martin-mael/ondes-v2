@@ -1,8 +1,22 @@
 import type { Db } from '@ondes/db';
-import { alertTypes, type RealtimeEvent, type SilenceAction, uuidSchema } from '@ondes/shared';
+import {
+  alertTypes,
+  type RealtimeEvent,
+  type SilenceAction,
+  type SilenceSettings,
+  uuidSchema,
+} from '@ondes/shared';
 import type { EngineAdapter, Logger } from '../engine/adapter/index.ts';
 import * as repo from './repo.ts';
 import type { AlertService } from './service.ts';
+
+/**
+ * The station template's `blank` settings (#27, `stationEngineSettingsSchema.blank`) from the
+ * station's silence settings. The engine lifecycle (#35) renders with these.
+ */
+export function engineBlankSettings(settings: SilenceSettings) {
+  return { maxSeconds: settings.maxSeconds, thresholdDb: settings.thresholdDb };
+}
 
 /** The engine commands the silence action needs. */
 export type SilenceActionEngine = Pick<EngineAdapter, 'skip' | 'clear'>;
