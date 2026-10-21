@@ -162,6 +162,13 @@
       "when": 1792592796665,
       "tag": "20261021142636_feeder",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792594621565,
+      "tag": "20261021145701_rotation-rules",
+      "breakpoints": true
     }
   ]
 }

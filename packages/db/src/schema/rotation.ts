@@ -1,4 +1,10 @@
-import type { AssetType, CategoryRule, MemberMode, RotationOrder } from '@ondes/shared';
+import type {
+  AssetType,
+  CategoryRule,
+  MemberMode,
+  RotationOrder,
+  RotationRule,
+} from '@ondes/shared';
 import { sql } from 'drizzle-orm';
 import {
   check,
@@ -99,5 +105,29 @@ export const categoryMember = pgTable(
     }).onDelete('cascade'),
     index('category_member_asset_id_idx').on(t.assetId),
     check('category_member_mode_check', sql`${t.mode} in ('include', 'exclude')`),
+  ],
+);
+
+/**
+ * A station's separation and rotation rules (#38, ADR 0016): one ordered rule set, validated
+ * by the contract (`rotationRulesSchema`). No row: the station uses `DEFAULT_ROTATION_RULES`.
+ */
+export const rotationRules = pgTable(
+  'rotation_rules',
+  {
+    stationId: uuid('station_id').primaryKey(),
+    orgId: uuid('org_id').notNull(),
+    rules: jsonb('rules').$type<RotationRule[]>().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    foreignKey({
+      name: 'rotation_rules_station_org_fk',
+      columns: [t.stationId, t.orgId],
+      foreignColumns: [station.id, station.orgId],
+    }).onDelete('cascade'),
   ],
 );

@@ -15,6 +15,7 @@ import {
   EditCategoryPage,
   NewCategoryPage,
 } from '../features/rotation/categories/category-editor-page.tsx';
+import { RulesPage } from '../features/rotation/rules/rules-page.tsx';
 import { SafetyPage } from '../features/settings/safety/safety-page.tsx';
 import { AcceptInvitationPage } from './auth/accept-invitation-page.tsx';
 import { AccountPage } from './auth/account-page.tsx';
@@ -187,6 +188,13 @@ const categoryRoute = createRoute({
   component: EditCategoryPage,
 });
 
+// Music rotation: separation and rotation rules (#38).
+const rotationRulesRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'rotation/rules',
+  component: RulesPage,
+});
+
 const safetySettingsRoute = createRoute({
   getParentRoute: () => stationRoute,
   path: '/settings/safety',
@@ -210,6 +218,7 @@ const routeTree = rootRoute.addChildren([
       categoriesRoute,
       newCategoryRoute,
       categoryRoute,
+      rotationRulesRoute,
       safetySettingsRoute,
     ]),
   ]),

@@ -24,6 +24,7 @@ import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload
 import { logRoutes } from './modules/log/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
 import { rotationRoutes } from './modules/rotation/routes.ts';
+import { rotationRulesRoutes } from './modules/rotation/rules/routes.ts';
 import { showsRoutes } from './modules/shows/routes.ts';
 import { type AuthConfig, authPlugin } from './plugins/auth.ts';
 import { type DbPluginOptions, dbPlugin } from './plugins/db.ts';
@@ -93,6 +94,7 @@ export async function buildApp(options: AppOptions) {
   await app.register(asRunPlugin, options.asrun ?? {});
   await app.register(showsRoutes, { prefix: '/api/v1' });
   await app.register(rotationRoutes, { prefix: '/api/v1' });
+  await app.register(rotationRulesRoutes, { prefix: '/api/v1' });
   // Engine lifecycle (#35): engine routes, the internal engine events route, engines at boot.
   if (options.engine) await app.register(engineLifecyclePlugin, options.engine);
   // Alerts (#33): `app.alerts`, its routes under /api/v1, engine events -> alerts. Registered
