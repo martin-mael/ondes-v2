@@ -305,9 +305,32 @@ export const uploadUpdatedEventSchema = z.object({
   data: uploadUpdatedDataSchema,
 });
 
+/**
+ * Something that changes how an asset plays was stored: its cue points (`cues`: autocue or a
+ * manual edit), its loudness measurement (`loudness`), or its playout settings (`settings`:
+ * normalisation, gain override, …). Rendered islands that use it are re-derived (#55).
+ */
+export const assetUpdatedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('asset.updated'),
+  data: z.object({
+    assetId: z.uuid(),
+    changes: z.array(z.enum(['cues', 'loudness', 'settings'])).min(1),
+  }),
+});
+
+/** An asset was deleted. */
+export const assetDeletedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('asset.deleted'),
+  data: z.object({ assetId: z.uuid() }),
+});
+
 export const libraryRealtimeEventSchema = z.discriminatedUnion('type', [
   assetIngestedEventSchema,
   uploadUpdatedEventSchema,
+  assetUpdatedEventSchema,
+  assetDeletedEventSchema,
 ]);
 export type LibraryRealtimeEvent = z.infer<typeof libraryRealtimeEventSchema>;
 export type AssetIngestedEvent = z.infer<typeof assetIngestedEventSchema>;
@@ -412,6 +435,18 @@ export const islandRemovedEventSchema = z.object({
   data: z.object({ islandId: z.uuid(), hash: z.string() }),
 });
 
+// ---------------------------------------------------------------------------------------
+// Stations. Published by whatever updates a station's settings.
+
+/** A station's settings changed; `fields` names them (e.g. `loudnessTargetLufs`). */
+export const stationUpdatedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('station.updated'),
+  data: z.object({ fields: z.array(z.string()).min(1) }),
+});
+
+export const stationRealtimeEventSchema = z.discriminatedUnion('type', [stationUpdatedEventSchema]);
+
 export const segueRealtimeEventSchema = z.discriminatedUnion('type', [
   segueChangedEventSchema,
   islandUpdatedEventSchema,
@@ -427,6 +462,7 @@ export const realtimeEventSchema = z.discriminatedUnion('type', [
   ...asRunRealtimeEventSchema.options,
   ...feederRealtimeEventSchema.options,
   ...segueRealtimeEventSchema.options,
+  ...stationRealtimeEventSchema.options,
 ]);
 export type RealtimeEvent = z.infer<typeof realtimeEventSchema>;
 export type RealtimeEventType = RealtimeEvent['type'];
@@ -463,6 +499,8 @@ export const realtimeEventPermissions = {
   // Library (#18): new assets for every reader; upload progress only for those who upload.
   'asset.ingested': 'library:read',
   'upload.updated': 'library:write',
+  'asset.updated': 'library:read',
+  'asset.deleted': 'library:read',
   // As-run (#30): history and now playing, for everyone who reads the log.
   'asrun.started': 'log:read',
   'asrun.ended': 'log:read',
@@ -472,6 +510,8 @@ export const realtimeEventPermissions = {
   'segue.changed': 'voice_track:read',
   'island.updated': 'voice_track:read',
   'island.removed': 'voice_track:read',
+  // Stations: settings screens refetch.
+  'station.updated': 'station:read',
 } as const satisfies Record<RealtimeEventType, Permission>;
 
 /** Permission needed to receive `type` over SSE; `null` for types the contract doesn't declare. */

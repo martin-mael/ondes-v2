@@ -4,6 +4,7 @@ import {
   assetFile,
   assetLoudness,
   type Executor,
+  type IslandRow,
   island,
   logItem,
   type StationScope,
@@ -49,8 +50,12 @@ export type SyncSeeds = {
   logDayIds?: readonly string[];
   /** Segues playing these assets: A, B or a voice. */
   assetIds?: readonly string[];
-  /** Segues that lost an item but aren't `detached` yet. */
+  /** Segues that lost an item or an asset but aren't `detached` yet. */
   orphans?: boolean;
+  /** Every segue of the station (a station setting that changes every gain changed). */
+  all?: boolean;
+  /** Islands to drop if no segue points at them any more (a deleted segue's). */
+  islandIds?: readonly string[];
 };
 
 export type SegueSyncChange = {
@@ -62,7 +67,6 @@ export type SegueSyncChange = {
   toItemId: string | null;
 };
 
-export type IslandRow = typeof island.$inferSelect;
 type SegueRow = typeof segue.$inferSelect;
 
 export type SyncResult = {
@@ -74,8 +78,12 @@ export type SyncResult = {
   removed: { id: string; hash: string }[];
 };
 
-/** Serialises syncs of one station (the CRUD routes and the event consumer may race). */
-async function lockStation(tx: Tx, scope: StationScope) {
+/**
+ * Serialises syncs of one station (the CRUD routes and the event consumer may race). Take it
+ * **before any segue row lock**: the routes call it first thing in their transaction, so every
+ * path locks in the same order (station, then rows) and can't deadlock.
+ */
+export async function lockStation(tx: Tx, scope: StationScope) {
   await tx.execute(
     sql`select pg_advisory_xact_lock(hashtextextended(${`segues:${scope.stationId}`}, 0))`,
   );
@@ -89,20 +97,31 @@ export async function syncSegues(
   await lockStation(tx, scope);
   const segues = await expandChains(tx, scope, await seedSegues(tx, scope, seeds));
   const result: SyncResult = { segues: [], islands: [], removed: [] };
+  // Only islands these segues used (or the caller names) can have lost their last segue.
+  const candidates = new Set(seeds.islandIds ?? []);
+  for (const s of segues) if (s.islandId) candidates.add(s.islandId);
   if (segues.length) await syncChains(tx, scope, segues, result);
-  result.removed = await tx
-    .delete(island)
-    .where(
-      and(
-        whereStation(island, scope),
-        sql`not exists (select 1 from ${segue} where ${segue.islandId} = ${island.id})`,
-      ),
-    )
-    .returning({ id: island.id, hash: island.hash });
+  if (candidates.size) {
+    result.removed = await tx
+      .delete(island)
+      .where(
+        and(
+          whereStation(island, scope),
+          inArray(island.id, [...candidates]),
+          sql`not exists (select 1 from ${segue} where ${segue.islandId} = ${island.id})`,
+        ),
+      )
+      .returning({ id: island.id, hash: island.hash });
+  }
   return result;
 }
 
-async function seedSegues(tx: Tx, scope: StationScope, seeds: SyncSeeds): Promise<SegueRow[]> {
+async function seedSegues(
+  tx: Executor,
+  scope: StationScope,
+  seeds: SyncSeeds,
+): Promise<SegueRow[]> {
+  if (seeds.all) return tx.select().from(segue).where(whereStation(segue, scope));
   const conditions = [];
   if (seeds.segueIds?.length) conditions.push(inArray(segue.id, [...seeds.segueIds]));
   if (seeds.itemIds?.length) {
@@ -127,7 +146,15 @@ async function seedSegues(tx: Tx, scope: StationScope, seeds: SyncSeeds): Promis
   }
   if (seeds.orphans) {
     conditions.push(
-      and(or(isNull(segue.fromItemId), isNull(segue.toItemId)), ne(segue.status, 'detached')),
+      and(
+        or(
+          isNull(segue.fromItemId),
+          isNull(segue.toItemId),
+          isNull(segue.fromAssetId),
+          isNull(segue.toAssetId),
+        ),
+        ne(segue.status, 'detached'),
+      ),
     );
   }
   if (!conditions.length) return [];
@@ -138,7 +165,11 @@ async function seedSegues(tx: Tx, scope: StationScope, seeds: SyncSeeds): Promis
 }
 
 /** Adds every segue linked to the found ones through a shared item, until none is new. */
-async function expandChains(tx: Tx, scope: StationScope, found: SegueRow[]): Promise<SegueRow[]> {
+async function expandChains(
+  tx: Executor,
+  scope: StationScope,
+  found: SegueRow[],
+): Promise<SegueRow[]> {
   const byId = new Map(found.map((s) => [s.id, s]));
   let frontier = found;
   while (frontier.length) {
@@ -325,27 +356,32 @@ type Checked =
   | { status: 'ready'; input: IslandSegueInput }
   | { status: Exclude<SegueStatus, 'ready'>; problem: SegueProblem };
 
+/** What a segue needs from the database to be checked: its items, media, station gain. */
+type Context = {
+  items: Map<string, ItemRow>;
+  media: Map<string, AssetMedia>;
+  /** Assets that exist in the station (with or without a playout copy). */
+  assets: Set<string>;
+  stationGain: PlayoutGainStation;
+};
+
 /** A segue against the log and media as they are now. */
-function checkOne(
-  s: SegueRow,
-  items: Map<string, ItemRow>,
-  media: Map<string, AssetMedia>,
-  stationGain: PlayoutGainStation,
-): Checked {
+function checkOne(s: SegueRow, c: Context): Checked {
   const detached = (code: SegueProblem['code'], message: string): Checked => ({
     status: 'detached',
     problem: { code, message },
   });
-  const a = s.fromItemId ? items.get(s.fromItemId) : undefined;
-  const b = s.toItemId ? items.get(s.toItemId) : undefined;
+  const a = s.fromItemId ? c.items.get(s.fromItemId) : undefined;
+  const b = s.toItemId ? c.items.get(s.toItemId) : undefined;
   if (!a || !b) return detached('item_deleted', `${a ? 'B' : 'A'} was deleted from the log`);
   for (const [name, item] of [
     ['A', a],
     ['B', b],
   ] as const) {
-    if (item.segmentId !== null || !partKinds.has(item.kind) || !item.assetId) {
+    if (item.segmentId !== null || !partKinds.has(item.kind)) {
       return detached('unsupported_item', `${name} is a ${item.kind} item: it can't be spliced`);
     }
+    if (!item.assetId) return detached('asset_changed', `${name}'s asset was deleted`);
   }
   if (a.logDayId !== b.logDayId || a.nextId !== b.id) {
     return detached('not_consecutive', 'B no longer follows A in the log');
@@ -356,11 +392,18 @@ function checkOne(
       `${a.assetId !== s.fromAssetId ? 'A' : 'B'} now plays another asset`,
     );
   }
-  const from = resolveMedia(media.get(a.assetId as string), stationGain, a.cueOverrides);
-  const to = resolveMedia(media.get(b.assetId as string), stationGain, b.cueOverrides);
+  const deleted = s.voices.findIndex((v) => !c.assets.has(v.assetId));
+  if (deleted >= 0) {
+    return {
+      status: 'invalid',
+      problem: { code: 'missing_media', message: `voice ${deleted + 1}'s asset was deleted` },
+    };
+  }
+  const from = resolveMedia(c.media.get(a.assetId as string), c.stationGain, a.cueOverrides);
+  const to = resolveMedia(c.media.get(b.assetId as string), c.stationGain, b.cueOverrides);
   const voices = s.voices.map((v) => ({
     ...v,
-    media: resolveMedia(media.get(v.assetId), stationGain),
+    media: resolveMedia(c.media.get(v.assetId), c.stationGain),
   }));
   const missing = !from ? 'A' : !to ? 'B' : voices.findIndex((v) => !v.media) + 1 || null;
   if (missing !== null) {
@@ -405,7 +448,17 @@ function runsOf(inputs: IslandSegueInput[]): IslandSegueInput[][] {
   return runs;
 }
 
-async function syncChains(tx: Tx, scope: StationScope, segues: SegueRow[], result: SyncResult) {
+type Evaluation = {
+  checked: Map<string, Checked>;
+  plans: (IslandPlan & { hash: string })[];
+};
+
+/** Checks whole chains of segues and derives their islands. Reads only. */
+async function evaluate(
+  db: Executor,
+  scope: StationScope,
+  segues: SegueRow[],
+): Promise<Evaluation> {
   const itemIds = new Set<string>();
   const assetIds = new Set<string>();
   for (const s of segues) {
@@ -413,21 +466,40 @@ async function syncChains(tx: Tx, scope: StationScope, segues: SegueRow[], resul
     if (s.toItemId) itemIds.add(s.toItemId);
     for (const v of s.voices) assetIds.add(v.assetId);
   }
-  const items = await loadItems(tx, scope, [...itemIds]);
+  const items = await loadItems(db, scope, [...itemIds]);
   for (const item of items.values()) if (item.assetId) assetIds.add(item.assetId);
-  const media = await loadAssetMedia(tx, scope, [...assetIds]);
-  const [stationGain] = await tx
+  const media = await loadAssetMedia(db, scope, [...assetIds]);
+  const existing = assetIds.size
+    ? await db
+        .select({ id: asset.id })
+        .from(asset)
+        .where(and(whereStation(asset, scope), inArray(asset.id, [...assetIds])))
+    : [];
+  const [stationGain] = await db
     .select({
       loudnessTargetLufs: station.loudnessTargetLufs,
       truePeakLimitDbtp: station.truePeakLimitDbtp,
     })
     .from(station)
-    .where(eq(station.id, scope.stationId));
+    .where(and(eq(station.id, scope.stationId), eq(station.orgId, scope.orgId)));
   if (!stationGain) throw new Error(`station ${scope.stationId} not found`);
+  const context: Context = {
+    items,
+    media,
+    assets: new Set(existing.map((r) => r.id)),
+    stationGain,
+  };
 
-  const checked = new Map(segues.map((s) => [s.id, checkOne(s, items, media, stationGain)]));
+  const checked = new Map(segues.map((s) => [s.id, checkOne(s, context)]));
   const ready = [...checked.values()].flatMap((c) => (c.status === 'ready' ? [c.input] : []));
-  const plans = runsOf(ready).flatMap((run) => deriveIslands(run));
+  const plans = runsOf(ready)
+    .flatMap((run) => deriveIslands(run))
+    .map((plan) => ({ ...plan, hash: islandHash(plan.spec) }));
+  return { checked, plans };
+}
+
+async function syncChains(tx: Tx, scope: StationScope, segues: SegueRow[], result: SyncResult) {
+  const { checked, plans } = await evaluate(tx, scope, segues);
 
   const islandOf = new Map<string, string>();
   for (const plan of plans) {
@@ -473,9 +545,9 @@ async function syncChains(tx: Tx, scope: StationScope, segues: SegueRow[], resul
 async function saveIsland(
   tx: Tx,
   scope: StationScope,
-  plan: IslandPlan,
+  plan: IslandPlan & { hash: string },
 ): Promise<{ island: IslandRow; changed: boolean }> {
-  const hash = islandHash(plan.spec);
+  const { hash } = plan;
   const placement = {
     headItemId: plan.head.itemId,
     headAssetId: plan.head.assetId,
@@ -487,6 +559,7 @@ async function saveIsland(
     tailHasBody: plan.tail.hasBody,
     itemIds: plan.itemIds,
     segueIds: plan.segueIds,
+    files: plan.files,
   };
   const [existing] = await tx
     .select()
@@ -496,7 +569,7 @@ async function saveIsland(
     const [row] = await tx
       .update(island)
       .set(placement)
-      .where(eq(island.id, existing.id))
+      .where(and(eq(island.id, existing.id), whereStation(island, scope)))
       .returning();
     return { island: row as IslandRow, changed: false };
   }
@@ -517,10 +590,72 @@ async function saveIsland(
     error: null,
   };
   const [row] = existing
-    ? await tx.update(island).set(content).where(eq(island.id, existing.id)).returning()
+    ? await tx
+        .update(island)
+        .set(content)
+        .where(and(eq(island.id, existing.id), whereStation(island, scope)))
+        .returning()
     : await tx
         .insert(island)
         .values({ ...content, orgId: scope.orgId, stationId: scope.stationId })
         .returning();
   return { island: row as IslandRow, changed: true };
+}
+
+// --- Read-only derivation (the feeder, #57) ------------------------------------------------
+
+export type DerivedIsland = IslandPlan & {
+  hash: string;
+  /** A `ready` island of the station with this exact hash: what may air. Null otherwise. */
+  rendered: { islandId: string; storageKey: string } | null;
+};
+
+export type Derivation = {
+  segues: { segueId: string; status: SegueStatus; problem: SegueProblem | null }[];
+  islands: DerivedIsland[];
+};
+
+/**
+ * The islands the segues touching `itemIds` (and their whole chains) call for **right now**,
+ * from the log and media as they are, without writing or locking anything. The feeder (#57)
+ * calls it at push time: it plays an island only when `rendered` is set (the stored render has
+ * the hash the current inputs give), and falls back to a crossfade otherwise, so a change the
+ * sync hasn't seen yet (a library edit in flight) can never air a stale render.
+ */
+export async function deriveIslandsFor(
+  db: Executor,
+  scope: StationScope,
+  itemIds: readonly string[],
+): Promise<Derivation> {
+  if (!itemIds.length) return { segues: [], islands: [] };
+  const segues = await expandChains(db, scope, await seedSegues(db, scope, { itemIds }));
+  if (!segues.length) return { segues: [], islands: [] };
+  const { checked, plans } = await evaluate(db, scope, segues);
+  const hashes = [...new Set(plans.map((p) => p.hash))];
+  const ready = hashes.length
+    ? await db
+        .select({ id: island.id, hash: island.hash, storageKey: island.storageKey })
+        .from(island)
+        .where(
+          and(
+            whereStation(island, scope),
+            inArray(island.hash, hashes),
+            eq(island.status, 'ready'),
+          ),
+        )
+    : [];
+  const byHash = new Map(ready.map((r) => [r.hash, r]));
+  return {
+    segues: segues.map((s) => {
+      const c = checked.get(s.id) as Checked;
+      return { segueId: s.id, status: c.status, problem: c.status === 'ready' ? null : c.problem };
+    }),
+    islands: plans.map((plan) => {
+      const r = byHash.get(plan.hash);
+      return {
+        ...plan,
+        rendered: r?.storageKey ? { islandId: r.id, storageKey: r.storageKey } : null,
+      };
+    }),
+  };
 }

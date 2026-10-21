@@ -1,4 +1,5 @@
 import type {
+  IslandFiles,
   IslandSpec,
   IslandStatus,
   SegueInLane,
@@ -36,7 +37,9 @@ import { station, user } from './tenancy.ts';
 //
 // An `island` is derived from a run of segues (`deriveIslands`), one row per head item: its
 // spec, its hash (which keys the rendered file) and its render status. Islands are rewritten
-// by the sync, never edited; deleting their head or tail item deletes them.
+// by the sync, never edited. Their item ids carry no foreign key on purpose: when an item is
+// deleted, the sync (on `log.updated`) drops the island and publishes `island.removed`, which a
+// cascade would skip.
 
 const id = () => uuid('id').primaryKey().default(sql`uuidv7()`);
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
@@ -98,15 +101,11 @@ export const island = pgTable(
     id: id(),
     orgId: uuid('org_id').notNull(),
     stationId: uuid('station_id').notNull(),
-    headItemId: uuid('head_item_id')
-      .notNull()
-      .references(() => logItem.id, { onDelete: 'cascade' }),
+    headItemId: uuid('head_item_id').notNull(),
     headAssetId: uuid('head_asset_id').notNull(),
     headJoinSample: integer('head_join_sample').notNull(),
     headHasBody: boolean('head_has_body').notNull(),
-    tailItemId: uuid('tail_item_id')
-      .notNull()
-      .references(() => logItem.id, { onDelete: 'cascade' }),
+    tailItemId: uuid('tail_item_id').notNull(),
     tailAssetId: uuid('tail_asset_id').notNull(),
     tailJoinSample: integer('tail_join_sample').notNull(),
     tailHasBody: boolean('tail_has_body').notNull(),
@@ -116,6 +115,8 @@ export const island = pgTable(
     segueIds: uuid('segue_ids').array().notNull(),
     specVersion: integer('spec_version').notNull(),
     spec: jsonb('spec').$type<IslandSpec>().notNull(),
+    /** Playout copy hash → storage key and asset: where the renderer reads. Not hashed. */
+    files: jsonb('files').$type<IslandFiles>().notNull(),
     /** SHA-256 of the spec (`islandHash`): keys the rendered file. */
     hash: text('hash').notNull(),
     lengthSamples: integer('length_samples').notNull(),

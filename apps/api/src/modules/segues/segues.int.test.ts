@@ -2,16 +2,23 @@ import { createHash } from 'node:crypto';
 import {
   addMembership,
   auditLog,
+  claimIslandRender,
   createAsset,
   createOrganization,
   createStation,
   island,
   logItem,
+  markIslandFailed,
+  markIslandRendered,
   putAssetFile,
   resolveOrgScope,
   resolveStationScope,
   type StationScope,
+  setLoudness,
+  updateCues,
+  updateStation,
 } from '@ondes/db';
+import { createTestDatabase } from '@ondes/db/testing';
 import type {
   Actor,
   CreateSegue,
@@ -25,11 +32,16 @@ import type {
   ShowSlot,
   StationRole,
 } from '@ondes/shared';
+import { islandStorageKey, realtimeEventSchema } from '@ondes/shared';
 import { contentKey } from '@ondes/storage';
 import { asc, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createTestApp, signUpAndLogin, type TestApp } from '../auth/testing.ts';
+import { buildApp } from '../../app.ts';
+import { createMemoryMailer } from '../../plugins/mail.ts';
+import { signUpAndLogin, TEST_AUTH_CONFIG, type TestApp } from '../auth/testing.ts';
+import { libraryRoutes, runRoute } from '../library/routes.ts';
 import { createSegueSync, type SegueSync } from './plugin.ts';
+import { deriveIslandsFor } from './sync.ts';
 
 // The segues API on the real app: derivation into islands, merge and split of chains,
 // permissions (write vs write_own for show hosts), tenant isolation, audit rows, and
@@ -82,7 +94,7 @@ async function addPlayout(s: StationScope, assetId: string, name: string, second
 
 function call(
   who: Who,
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   url: string,
   payload?: object,
   station = stationId,
@@ -111,6 +123,42 @@ async function addItem(assetId: string, placement: object = { localDate: DATE })
   if (!res.item) throw new Error('no item');
   logDayId = res.item.logDayId;
   return res.item.id;
+}
+
+/**
+ * Every event the module publishes, round-tripped through JSON and the contract's schema, as a
+ * subscriber would read it.
+ */
+const published: RealtimeEvent[] = [];
+const sink = {
+  publish: async (event: RealtimeEvent) => {
+    published.push(realtimeEventSchema.parse(JSON.parse(JSON.stringify(event))));
+  },
+};
+const take = <T extends RealtimeEvent['type']>(type: T) =>
+  published.filter((e): e is Extract<RealtimeEvent, { type: T }> => e.type === type);
+
+/** `createTestApp`, with the segues module publishing to `sink`. */
+async function createSegueTestApp(): Promise<TestApp> {
+  const tdb = await createTestDatabase();
+  const mailer = createMemoryMailer();
+  const app = await buildApp({
+    db: { client: tdb },
+    mail: { mailer },
+    auth: TEST_AUTH_CONFIG,
+    fastify: { logger: false },
+    segues: { events: sink },
+  });
+  await app.ready();
+  return {
+    app,
+    tdb,
+    outbox: mailer.outbox,
+    close: async () => {
+      await app.close();
+      await tdb.drop();
+    },
+  };
 }
 
 /** What the consumer does after a log edit. */
@@ -156,9 +204,9 @@ async function audits(entityId: string) {
 }
 
 beforeAll(async () => {
-  t = await createTestApp();
+  t = await createSegueTestApp();
   const db = t.tdb.db;
-  segueSync = createSegueSync({ db, logger: t.app.log });
+  segueSync = createSegueSync({ db, events: sink, logger: t.app.log });
   const org = await createOrganization(db, system, { slug: 'segues-org', name: 'Org' });
   const orgScope = await resolveOrgScope(db, org.id);
   const st = await createStation(
@@ -256,7 +304,11 @@ describe('segue CRUD and islands', () => {
     expect(segue.island?.hash).toMatch(/^[0-9a-f]{64}$/);
 
     const full = await ok<Island>(await call('programmer', 'GET', `/islands/${segue.island?.id}`));
-    expect(full.spec.sources.map((s) => s.assetId)).toEqual([assets.C, assets.VT1, assets.D]);
+    expect(full.spec.sources.map((s) => full.files[s.sha256]?.assetId)).toEqual([
+      assets.C,
+      assets.VT1,
+      assets.D,
+    ]);
     expect(full.spec.format).toMatchObject({ codec: 'flac', sampleRate: SR, blockSize: 1024 });
     const pending = await ok<IslandList>(
       await call('programmer', 'GET', '/islands?status=pending'),
@@ -528,6 +580,7 @@ describe('invalidation', () => {
 describe('permissions and tenancy', () => {
   let hostItemA: string;
   let hostItemB: string;
+  let showId: string;
 
   beforeAll(async () => {
     const show = await ok<Show>(
@@ -538,6 +591,7 @@ describe('permissions and tenancy', () => {
       }),
       201,
     );
+    showId = show.id;
     const slot = await ok<ShowSlot>(
       await call('programmer', 'POST', `/shows/${show.id}/slots`, {
         rule: { freq: 'once', date: DATE, time: '10:00' },
@@ -586,6 +640,34 @@ describe('permissions and tenancy', () => {
       ).statusCode,
     ).toBe(403);
     expect((await call('host', 'DELETE', `/segues/${own.id}`)).statusCode).toBe(204);
+  });
+
+  it('lets a creator keep editing their segue once they no longer host the show', async () => {
+    const own = await ok<Segue>(
+      await call('host', 'POST', '/segues', createBody(hostItemA, hostItemB, assets.VT1 as string)),
+      201,
+    );
+    await ok<Show>(await call('programmer', 'PATCH', `/shows/${showId}`, { hostUserIds: [] }));
+    // Not a host any more, but the creator: write_own still covers this segue…
+    const saved = await ok<Segue>(
+      await call('host', 'PUT', `/segues/${own.id}`, lanes(assets.VT2 as string)),
+    );
+    expect(saved.version).toBe(2);
+    // …not someone else's, and not a new one on the show.
+    expect(
+      (await call('presenter', 'PUT', `/segues/${own.id}`, lanes(assets.VT1 as string))).statusCode,
+    ).toBe(403);
+    expect((await call('host', 'DELETE', `/segues/${own.id}`)).statusCode).toBe(204);
+    expect(
+      (
+        await call(
+          'host',
+          'POST',
+          '/segues',
+          createBody(hostItemA, hostItemB, assets.VT1 as string),
+        )
+      ).statusCode,
+    ).toBe(403);
   });
 
   it('refuses readers without voice_track:read and every other tenant', async () => {
@@ -647,3 +729,340 @@ describe('permissions and tenancy', () => {
     ).toBe(404);
   });
 });
+
+describe('events', () => {
+  it('publishes segue.changed and island.updated on create, island.removed on delete', async () => {
+    const a = await addItem(assets.C as string);
+    const b = await addItem(assets.A as string);
+    published.length = 0;
+    const segue = await ok<Segue>(
+      await call('programmer', 'POST', '/segues', createBody(a, b, assets.VT1 as string)),
+      201,
+    );
+    expect(take('segue.changed')).toEqual([
+      expect.objectContaining({
+        stationId,
+        data: {
+          segueId: segue.id,
+          change: 'created',
+          status: 'ready',
+          problem: null,
+          islandId: segue.island?.id,
+          fromItemId: a,
+          toItemId: b,
+        },
+      }),
+    ]);
+    expect(take('island.updated')).toEqual([
+      expect.objectContaining({
+        data: {
+          islandId: segue.island?.id,
+          hash: segue.island?.hash,
+          status: 'pending',
+          segueIds: [segue.id],
+          headItemId: a,
+          tailItemId: b,
+        },
+      }),
+    ]);
+
+    published.length = 0;
+    expect((await call('programmer', 'DELETE', `/segues/${segue.id}`)).statusCode).toBe(204);
+    expect(take('segue.changed').map((e) => e.data)).toEqual([
+      {
+        segueId: segue.id,
+        change: 'deleted',
+        status: null,
+        problem: null,
+        islandId: null,
+        fromItemId: a,
+        toItemId: b,
+      },
+    ]);
+    expect(take('island.removed').map((e) => e.data)).toEqual([
+      { islandId: segue.island?.id, hash: segue.island?.hash },
+    ]);
+  });
+
+  it('publishes synced segues when the log moves under them', async () => {
+    const a = await addItem(assets.C as string);
+    const b = await addItem(assets.A as string);
+    const segue = await ok<Segue>(
+      await call('programmer', 'POST', '/segues', createBody(a, b, assets.VT1 as string)),
+      201,
+    );
+    published.length = 0;
+    expect((await call('programmer', 'DELETE', `/log/items/${a}`)).statusCode).toBe(200);
+    await logUpdated();
+    expect(take('segue.changed').map((e) => e.data)).toEqual([
+      expect.objectContaining({
+        segueId: segue.id,
+        change: 'synced',
+        status: 'detached',
+        problem: 'item_deleted',
+      }),
+    ]);
+    expect(take('island.removed').map((e) => e.data.islandId)).toEqual([segue.island?.id]);
+  });
+});
+
+describe('invalidation triggers', () => {
+  let a: string;
+  let b: string;
+  let segue: Segue;
+  const library = (method: string, url: string, assetId: string, body?: unknown) => {
+    const route = libraryRoutes.find((r) => r.method === method && r.url.endsWith(url));
+    if (!route) throw new Error(`no route ${method} ${url}`);
+    const user: Actor = { type: 'user', userId: users.programmer?.userId as string };
+    return runRoute(
+      route,
+      { db: t.tdb.db, publish: sink.publish },
+      async () => ({ actor: user, scope }),
+      { params: { stationId, assetId }, query: {}, body },
+    );
+  };
+  /** Library event → consumer, as the durable queue would deliver it. */
+  const deliver = async (type: RealtimeEvent['type']) => {
+    const events = take(type);
+    expect(events).toHaveLength(1);
+    published.length = 0;
+    return segueSync.handleEvent(events[0] as RealtimeEvent);
+  };
+
+  beforeAll(async () => {
+    assets.F = await newAsset(scope, 'F', 100);
+    assets.G = await newAsset(scope, 'G', 100);
+    assets.VT4 = await newAsset(scope, 'VT4', 5, 'vt');
+    a = await addItem(assets.F as string);
+    b = await addItem(assets.G as string);
+    segue = await ok<Segue>(
+      await call('programmer', 'POST', '/segues', createBody(a, b, assets.VT4 as string)),
+      201,
+    );
+    expect(segue.status).toBe('ready');
+  });
+
+  async function expectRederived() {
+    const after = await ok<Segue>(await call('programmer', 'GET', `/segues/${segue.id}`));
+    expect(after.status).toBe('ready');
+    expect(after.island?.hash).not.toBe(segue.island?.hash);
+    expect(after.island?.status).toBe('pending');
+    segue = after;
+  }
+
+  it('re-derives on a cue edit in the library', async () => {
+    published.length = 0;
+    const res = await library('PUT', '/assets/:assetId/cues', assets.F as string, {
+      sampleRate: SR,
+      cueOut: { samples: sec(90) },
+    });
+    expect(res.status).toBe(200);
+    expect(take('asset.updated').map((e) => e.data)).toEqual([
+      { assetId: assets.F, changes: ['cues'] },
+    ]);
+    const result = await deliver('asset.updated');
+    expect(result?.islands.map((i) => i.id)).toEqual([segue.island?.id]);
+    await expectRederived();
+  });
+
+  it('re-derives on a loudness measurement (the analysis jobs publish asset.updated)', async () => {
+    await setLoudness(t.tdb.db, { actor: system, scope }, assets.G as string, {
+      integratedLufs: -20,
+      loudnessRangeLu: null,
+      truePeakDbtp: -6,
+      playoutSha256: null,
+      analyzer: 'test',
+      analyzerVersion: '1',
+      confidence: null,
+    });
+    await segueSync.handleEvent({
+      id: crypto.randomUUID(),
+      stationId,
+      at: new Date().toISOString(),
+      type: 'asset.updated',
+      data: { assetId: assets.G as string, changes: ['loudness'] },
+    });
+    await expectRederived();
+  });
+
+  it('re-derives on an asset setting (gain override)', async () => {
+    published.length = 0;
+    const res = await library('PATCH', '/assets/:assetId', assets.VT4 as string, {
+      gainOverrideDb: -4,
+    });
+    expect(res.status).toBe(200);
+    expect(take('asset.updated').map((e) => e.data.changes)).toEqual([['settings']]);
+    await deliver('asset.updated');
+    await expectRederived();
+  });
+
+  it('re-derives every island on a station loudness change, and only then', async () => {
+    await updateStation(t.tdb.db, { actor: system, scope }, { loudnessTargetLufs: -18 });
+    const event = (fields: string[]): RealtimeEvent => ({
+      id: crypto.randomUUID(),
+      stationId,
+      at: new Date().toISOString(),
+      type: 'station.updated',
+      data: { fields },
+    });
+    expect(await segueSync.handleEvent(event(['name']))).toBeNull();
+    const result = await segueSync.handleEvent(event(['loudnessTargetLufs']));
+    expect(result?.islands.map((i) => i.id)).toContain(segue.island?.id);
+    await expectRederived();
+  });
+
+  it('invalidates a segue whose voice asset is deleted', async () => {
+    const vt5 = await newAsset(scope, 'VT5', 4, 'vt');
+    segue = await ok<Segue>(await call('programmer', 'PUT', `/segues/${segue.id}`, lanes(vt5)));
+    expect(segue.status).toBe('ready');
+    published.length = 0;
+    expect((await library('DELETE', '/assets/:assetId', vt5)).status).toBe(204);
+    expect(take('asset.deleted').map((e) => e.data)).toEqual([{ assetId: vt5 }]);
+    const result = await deliver('asset.deleted');
+    expect(result?.removed.map((r) => r.id)).toEqual([segue.island?.id]);
+    const after = await ok<Segue>(await call('programmer', 'GET', `/segues/${segue.id}`));
+    expect(after).toMatchObject({
+      status: 'invalid',
+      island: null,
+      problem: { code: 'missing_media', message: "voice 1's asset was deleted" },
+    });
+    segue = await ok<Segue>(
+      await call('programmer', 'PUT', `/segues/${segue.id}`, lanes(assets.VT4 as string)),
+    );
+    expect(segue.status).toBe('ready');
+  });
+
+  it('detaches a segue whose B asset is deleted', async () => {
+    published.length = 0;
+    expect((await library('DELETE', '/assets/:assetId', assets.G as string)).status).toBe(204);
+    await deliver('asset.deleted');
+    const after = await ok<Segue>(await call('programmer', 'GET', `/segues/${segue.id}`));
+    expect(after).toMatchObject({
+      status: 'detached',
+      toAssetId: null,
+      island: null,
+      problem: { code: 'asset_changed', message: "B's asset was deleted" },
+    });
+  });
+});
+
+describe('feeder and renderer helpers', () => {
+  it('derives islands read-only: what may air is a ready render of the current hash', async () => {
+    const [cd] = (await ok<SegueList>(await call('programmer', 'GET', `/segues?itemId=${items.D}`)))
+      .items;
+    const island = cd?.island;
+    if (!cd || !island) throw new Error('no C → D island');
+    const before = await derive([items.C as string]);
+    expect(before.islands.map((i) => i.hash)).toContain(island.hash);
+    expect(before.segues).toContainEqual({ segueId: cd.id, status: 'ready', problem: null });
+    const mine = before.islands.find((i) => i.hash === island.hash);
+    expect(mine).toMatchObject({ head: { itemId: items.C }, rendered: null });
+
+    // The renderer stores it: now it may air.
+    published.length = 0;
+    const key = islandStorageKey(scope.orgId, island.hash);
+    const rows = await markIslandRendered(
+      t.tdb.db,
+      scope,
+      { hash: island.hash, storageKey: key },
+      sink.publish,
+    );
+    expect(rows.map((r) => r.id)).toContain(island.id);
+    expect(take('island.updated').map((e) => e.data)).toContainEqual(
+      expect.objectContaining({ islandId: island.id, status: 'ready', hash: island.hash }),
+    );
+    const rendered = await derive([items.C as string]);
+    expect(rendered.islands.find((i) => i.hash === island.hash)?.rendered).toEqual({
+      islandId: island.id,
+      storageKey: key,
+    });
+
+    // A library edit the sync hasn't seen yet: the inputs no longer match the render.
+    await updateCues(t.tdb.db, { actor: system, scope }, island.tail.assetId, {
+      sampleRate: SR,
+      cueIn: { samples: 2048 },
+    });
+    const stale = await derive([items.C as string]);
+    expect(stale.islands.map((i) => i.hash)).not.toContain(island.hash);
+    expect(stale.islands.find((i) => i.head.itemId === items.C)?.rendered).toBeNull();
+    // Nothing was written.
+    const row = await ok<Island>(await call('programmer', 'GET', `/islands/${island.id}`));
+    expect(row).toMatchObject({ hash: island.hash, status: 'ready', storageKey: key });
+  });
+
+  it('only marks a render ready while the island still has the rendered hash', async () => {
+    const a = await addItem(assets.C as string);
+    const b = await addItem(assets.A as string);
+    const segue = await ok<Segue>(
+      await call('programmer', 'POST', '/segues', createBody(a, b, assets.VT1 as string)),
+      201,
+    );
+    const first = segue.island?.hash as string;
+    const claimed = await claimIslandRender(t.tdb.db, scope, first);
+    expect(claimed.map((r) => r.status)).toEqual(['rendering']);
+    expect(await claimIslandRender(t.tdb.db, scope, first)).toEqual([]);
+
+    // The presenter moves the voice while the render runs.
+    const moved = await ok<Segue>(
+      await call('programmer', 'PUT', `/segues/${segue.id}`, lanes(assets.VT1 as string, sec(-2))),
+    );
+    const second = moved.island?.hash as string;
+    expect(second).not.toBe(first);
+    expect(moved.island?.status).toBe('pending');
+
+    const key = (h: string) => islandStorageKey(scope.orgId, h);
+    expect(
+      await markIslandRendered(t.tdb.db, scope, { hash: first, storageKey: key(first) }),
+    ).toEqual([]);
+    expect(await markIslandFailed(t.tdb.db, scope, { hash: first, error: 'late' })).toEqual([]);
+    const still = await ok<Island>(await call('programmer', 'GET', `/islands/${moved.island?.id}`));
+    expect(still).toMatchObject({ hash: second, status: 'pending', storageKey: null });
+
+    // Another station's island with the same hash is out of reach.
+    expect(
+      await markIslandRendered(t.tdb.db, otherScope, { hash: second, storageKey: key(second) }),
+    ).toEqual([]);
+    const failed = await markIslandFailed(t.tdb.db, scope, { hash: second, error: 'decoder' });
+    expect(failed.map((r) => [r.status, r.error])).toEqual([['failed', 'decoder']]);
+    const done = await markIslandRendered(t.tdb.db, scope, {
+      hash: second,
+      storageKey: key(second),
+    });
+    expect(done.map((r) => r.status)).toEqual(['ready']);
+  });
+});
+
+describe('concurrency', () => {
+  it('serialises saves with the event consumer: no deadlock, no 500', async () => {
+    const a = await addItem(assets.C as string);
+    const b = await addItem(assets.A as string);
+    const segue = await ok<Segue>(
+      await call('programmer', 'POST', '/segues', createBody(a, b, assets.VT1 as string)),
+      201,
+    );
+    for (let round = 0; round < 8; round++) {
+      const [put, del] = await Promise.all([
+        call(
+          'programmer',
+          'PUT',
+          `/segues/${segue.id}`,
+          lanes(assets.VT1 as string, sec(-3) + round),
+        ),
+        segueSync.sync(scope, { segueIds: [segue.id], logDayIds: [logDayId], orphans: true }),
+        logUpdated(),
+        call(
+          'programmer',
+          'PUT',
+          `/segues/${segue.id}`,
+          lanes(assets.VT1 as string, sec(-2) - round),
+        ),
+      ]).then(([p1, , , p2]) => [p1, p2] as const);
+      for (const res of [put, del]) expect([200, 409], res.body).toContain(res.statusCode);
+    }
+    const final = await ok<Segue>(await call('programmer', 'GET', `/segues/${segue.id}`));
+    expect(final.status).toBe('ready');
+    expect(final.island?.segueIds).toEqual([segue.id]);
+  });
+});
+
+const derive = (itemIds: string[]) => deriveIslandsFor(t.tdb.db, scope, itemIds);

@@ -1,5 +1,5 @@
 {
-  "id": "fbe4dae8-46f3-49b9-b6dd-b452c3c9b3bf",
+  "id": "cd611255-07a1-4209-9ca5-ccaafe54ccc9",
   "prevId": "551847da-bdf2-44a3-93b4-dbd02122b7b7",
   "version": "7",
   "dialect": "postgresql",
@@ -4756,6 +4756,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "files": {
+          "name": "files",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
         "hash": {
           "name": "hash",
           "type": "text",
@@ -4853,32 +4859,6 @@
         }
       },
       "foreignKeys": {
-        "island_head_item_id_log_item_id_fk": {
-          "name": "island_head_item_id_log_item_id_fk",
-          "tableFrom": "island",
-          "tableTo": "log_item",
-          "columnsFrom": [
-            "head_item_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "island_tail_item_id_log_item_id_fk": {
-          "name": "island_tail_item_id_log_item_id_fk",
-          "tableFrom": "island",
-          "tableTo": "log_item",
-          "columnsFrom": [
-            "tail_item_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
         "island_station_org_fk": {
           "name": "island_station_org_fk",
           "tableFrom": "island",

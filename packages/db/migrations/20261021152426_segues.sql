@@ -14,6 +14,7 @@ CREATE TABLE "island" (
 	"segue_ids" uuid[] NOT NULL,
 	"spec_version" integer NOT NULL,
 	"spec" jsonb NOT NULL,
+	"files" jsonb NOT NULL,
 	"hash" text NOT NULL,
 	"length_samples" integer NOT NULL,
 	"status" text DEFAULT 'pending' NOT NULL,
@@ -57,8 +58,6 @@ CREATE TABLE "segue" (
 	CONSTRAINT "segue_version_check" CHECK ("segue"."version" >= 1)
 );
 --> statement-breakpoint
-ALTER TABLE "island" ADD CONSTRAINT "island_head_item_id_log_item_id_fk" FOREIGN KEY ("head_item_id") REFERENCES "public"."log_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "island" ADD CONSTRAINT "island_tail_item_id_log_item_id_fk" FOREIGN KEY ("tail_item_id") REFERENCES "public"."log_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "island" ADD CONSTRAINT "island_station_org_fk" FOREIGN KEY ("station_id","org_id") REFERENCES "public"."station"("id","org_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "segue" ADD CONSTRAINT "segue_from_item_id_log_item_id_fk" FOREIGN KEY ("from_item_id") REFERENCES "public"."log_item"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "segue" ADD CONSTRAINT "segue_to_item_id_log_item_id_fk" FOREIGN KEY ("to_item_id") REFERENCES "public"."log_item"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint

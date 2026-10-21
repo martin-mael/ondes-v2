@@ -166,16 +166,15 @@ export const ISLAND_FORMAT: IslandFormat = {
 };
 
 /**
- * One piece of audio in an island: samples `[from, to)` of a playout copy, placed at island
- * sample `at`, scaled by `gainDb` (as `liq_amplify` does: 10^(dB/20)) and by the product of its
- * `envelopes` (positions in island samples).
+ * One piece of audio in an island: samples `[from, to)` of the playout copy with hash `sha256`,
+ * placed at island sample `at`, scaled by `gainDb` (as `liq_amplify` does: 10^(dB/20)) and by
+ * the product of its `envelopes` (positions in island samples). Where to read the file is in the
+ * island's `files`, outside the hashed spec.
  */
 export const islandSourceSchema = z
   .object({
-    assetId: uuidSchema,
     /** The playout copy's hash: the file is content-addressed, so this pins the audio. */
     sha256: sha256HexSchema,
-    storageKey: z.string().min(1),
     from: samples,
     to: samples,
     at: samples,
@@ -186,9 +185,10 @@ export const islandSourceSchema = z
 export type IslandSource = z.infer<typeof islandSourceSchema>;
 
 /**
- * Everything the renderer (#56) needs, and nothing else: no ids of log items or segues, so
- * equal audio has an equal spec. Mix every source into `lengthSamples` of silence, write
- * `format`. Its {@link islandHash} keys the file ({@link islandStorageKey}).
+ * Everything that decides the rendered audio, and nothing else: no asset, item or segue ids
+ * and no storage keys, so equal audio has an equal spec (and one render), whichever assets or
+ * transitions it comes from. Mix every source into `lengthSamples` of silence, write `format`.
+ * Its {@link islandHash} keys the file ({@link islandStorageKey}).
  */
 export const islandSpecSchema = z.object({
   version: z.literal(ISLAND_SPEC_VERSION),
@@ -197,6 +197,13 @@ export const islandSpecSchema = z.object({
   sources: z.array(islandSourceSchema).min(1),
 });
 export type IslandSpec = z.infer<typeof islandSpecSchema>;
+
+/** Where the renderer reads each source: playout copy hash → its storage key and asset. Not hashed. */
+export const islandFilesSchema = z.record(
+  sha256HexSchema,
+  z.object({ storageKey: z.string().min(1), assetId: uuidSchema }),
+);
+export type IslandFiles = z.infer<typeof islandFilesSchema>;
 
 /**
  * Where an island joins the log. `head`: the island starts at `joinSample` of the first item's
@@ -242,7 +249,10 @@ export const islandSummarySchema = z.object({
 });
 export type IslandSummary = z.infer<typeof islandSummarySchema>;
 
-export const islandSchema = islandSummarySchema.extend({ spec: islandSpecSchema });
+export const islandSchema = islandSummarySchema.extend({
+  spec: islandSpecSchema,
+  files: islandFilesSchema,
+});
 export type Island = z.infer<typeof islandSchema>;
 
 /** Storage key of a rendered island: `org/<orgId>/islands/v<version>/<hash>.flac`. */

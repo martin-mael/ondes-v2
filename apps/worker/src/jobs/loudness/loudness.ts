@@ -14,6 +14,7 @@ import {
 } from '@ondes/db';
 import { LOUDNESS_ANALYZER, type LoudnessJobPayload } from '@ondes/shared';
 import type { Storage } from '@ondes/storage';
+import { announce, assetUpdatedEvent, type PublishEvent } from '../_events/asset-updated.ts';
 import { isFileError, type Tools } from '../ingest/ffmpeg.ts';
 import { Ebur128ParseError, ffmpegVersion, measureLoudness } from './ebur128.ts';
 
@@ -40,6 +41,8 @@ export interface LoudnessDeps {
   /** Scratch space for downloads. Default: the OS temp dir. */
   tmpDir?: string;
   log?: (entry: Record<string, unknown>) => void;
+  /** Publishes `asset.updated` once a measurement is stored (#55). */
+  publish?: PublishEvent;
 }
 
 export type LoudnessOutcome = 'measured' | 'stale' | 'unmeasurable';
@@ -101,6 +104,11 @@ export async function measureAssetLoudness(
         analyzer: LOUDNESS_ANALYZER,
         analyzerVersion: `${LOUDNESS_METHOD_VERSION}/ffmpeg ${await ffmpegVersion(deps.tools)}`,
       });
+      await announce(
+        deps.publish,
+        assetUpdatedEvent(payload.stationId, payload.assetId, ['loudness']),
+        deps.log,
+      );
       return 'measured';
     } finally {
       await rm(work, { recursive: true, force: true });

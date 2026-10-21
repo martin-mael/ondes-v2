@@ -11,6 +11,7 @@ import {
   deriveIslands,
   envelopeGainAt,
   type IslandMedia,
+  type IslandPlan,
   type IslandSegueInput,
   islandHash,
 } from './island.ts';
@@ -152,7 +153,7 @@ describe('deriveIslands: one segue', () => {
     const start = s(-3.5) - H;
     const [a, vt, b] = plan.spec.sources;
     expect(a).toMatchObject({
-      assetId: A.assetId,
+      sha256: A.sha256,
       from: plan.head.joinSample,
       to: A.cueOut,
       at: 0,
@@ -166,7 +167,7 @@ describe('deriveIslands: one segue', () => {
         { at: plan.spec.lengthSamples, gainDb: -12 },
       ],
     ]);
-    expect(vt).toMatchObject({ assetId: VT1.assetId, from: 0, to: VT1.cueOut, at: s(-3) - start });
+    expect(vt).toMatchObject({ sha256: VT1.sha256, from: 0, to: VT1.cueOut, at: s(-3) - start });
     expect(vt?.envelopes).toEqual([]);
     expect(b).toMatchObject({ from: 0, to: plan.tail.joinSample, at: s(-0.5) - start });
     // The tail of the island is pure B: its envelope is back at 0 dB.
@@ -200,6 +201,81 @@ describe('deriveIslands: one segue', () => {
     expect(louder && islandHash(louder.spec)).not.toBe(hash);
     expect(islandStorageKey('org-1', hash)).toBe(`org/org-1/islands/v1/${hash}.flac`);
   });
+
+  it('changes the hash with every envelope and every source file', () => {
+    const hash = islandHash(plan.spec);
+    const variants: IslandSegueInput[] = [
+      // A ducks deeper, B rises later, the voice gets a fade.
+      {
+        ...input,
+        out: { envelope: input.out.envelope.map((p, i) => (i ? { ...p, gainDb: -13 } : p)) },
+      },
+      {
+        ...input,
+        in: { ...input.in, envelope: input.in.envelope.map((p) => ({ ...p, at: p.at + 10 })) },
+      },
+      {
+        ...input,
+        voices: input.voices.map((v) => ({
+          ...v,
+          envelope: [
+            { at: s(0), gainDb: 0 },
+            { at: s(1), gainDb: -90 },
+          ],
+        })),
+      },
+      // Another playout copy of A, of B, of the voice (same lengths and gains).
+      { ...input, from: { ...A, sha256: sha256Hex('A, re-encoded') } },
+      { ...input, to: { ...B, sha256: sha256Hex('B, re-encoded') } },
+      {
+        ...input,
+        voices: input.voices.map((v) => ({
+          ...v,
+          media: { ...v.media, sha256: sha256Hex('VT1, re-recorded') },
+        })),
+      },
+    ];
+    const hashes = variants.map((v) => islandHash((deriveIslands([v])[0] as IslandPlan).spec));
+    for (const h of hashes) expect(h).not.toBe(hash);
+    expect(new Set(hashes).size).toBe(hashes.length);
+  });
+
+  it('keeps the hash for the same audio from other assets, keys or lane order', () => {
+    const hash = islandHash(plan.spec);
+    const otherAssets = deriveIslands([
+      {
+        ...input,
+        from: { ...A, assetId: ID.s2, storageKey: 'org/other/sha256/a.flac' },
+        voices: input.voices.map((v) => ({
+          ...v,
+          assetId: ID.c,
+          media: { ...v.media, assetId: ID.c },
+        })),
+      },
+    ])[0] as IslandPlan;
+    expect(islandHash(otherAssets.spec)).toBe(hash);
+    expect(otherAssets.files[A.sha256]).toEqual({
+      storageKey: 'org/other/sha256/a.flac',
+      assetId: ID.s2,
+    });
+    expect(plan.files[VT1.sha256]).toEqual({ storageKey: VT1.storageKey, assetId: VT1.assetId });
+
+    // Two voices at the same position: listing them the other way round changes nothing.
+    const two = (order: number[]) =>
+      deriveIslands([
+        {
+          ...input,
+          voices: order.map((gainDb) => ({
+            assetId: VT1.assetId,
+            start: s(-3),
+            gainDb,
+            envelope: [],
+            media: VT1,
+          })),
+        },
+      ])[0] as IslandPlan;
+    expect(islandHash(two([0, -6]).spec)).toBe(islandHash(two([-6, 0]).spec));
+  });
 });
 
 describe('deriveIslands: edges', () => {
@@ -207,7 +283,7 @@ describe('deriveIslands: edges', () => {
     const b = { ...B, cueIn: 30_001 };
     const [plan] = deriveIslands([segue(ID.s1, [ID.a, A], [ID.b, b], VT1)]);
     expect((plan?.tail.joinSample ?? 1) % 1024).toBe(0);
-    expect(plan?.spec.sources.find((x) => x.assetId === B.assetId)?.from).toBe(30_001);
+    expect(plan?.spec.sources.find((x) => x.sha256 === B.sha256)?.from).toBe(30_001);
   });
 
   it('starts at A when A is shaped from its first sample, and when A would keep a stub', () => {
@@ -245,7 +321,7 @@ describe('deriveIslands: edges', () => {
     // Nothing deviates before A's end: the island starts a handle before it.
     expect(plan?.head.joinSample).toBe(A.cueOut - H);
     // The voice (5 s) outlasts B's start: B is alone after it.
-    const vt = plan?.spec.sources.find((x) => x.assetId === VT1.assetId);
+    const vt = plan?.spec.sources.find((x) => x.sha256 === VT1.sha256);
     expect(vt?.at).toBe(H);
   });
 
@@ -265,7 +341,7 @@ describe('deriveIslands: edges', () => {
         ],
       }),
     ])[0];
-    expect(plan?.spec.sources.find((x) => x.assetId === VT1.assetId)).toMatchObject({
+    expect(plan?.spec.sources.find((x) => x.sha256 === VT1.sha256)).toMatchObject({
       from: 1000,
       to: s(4),
       gainDb: 3,
@@ -297,12 +373,12 @@ describe('deriveIslands: chains', () => {
     expect((plan?.tail.joinSample ?? 1) % 1024).toBe(0);
 
     const sources = plan?.spec.sources ?? [];
-    expect(sources.map((x) => x.assetId)).toEqual([
-      A.assetId,
-      VT1.assetId,
-      shortB.assetId,
-      VT2.assetId,
-      C.assetId,
+    expect(sources.map((x) => x.sha256)).toEqual([
+      A.sha256,
+      VT1.sha256,
+      shortB.sha256,
+      VT2.sha256,
+      C.sha256,
     ]);
     // B plays whole, under B's incoming envelope and its outgoing one.
     const b = sources[2];

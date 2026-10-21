@@ -25,7 +25,7 @@ import * as repo from './repo.ts';
 // segue. `voice_track:write_own` (presenters) writes a segue when A or B belongs to a show they
 // host (the item's origin show slot), checked on the items before and after the change.
 
-const stationParams = z.object({ stationId: z.string() });
+const stationParams = z.object({ stationId: uuidSchema });
 const segueParams = stationParams.extend({ segueId: uuidSchema });
 const islandParams = stationParams.extend({ islandId: uuidSchema });
 

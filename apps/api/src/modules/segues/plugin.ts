@@ -14,21 +14,32 @@ export const SEGUES_EVENT_QUEUE = 'segues';
 export type SeguesPluginOptions = {
   /** Durable queue name (tests use their own). Default `segues`. */
   eventQueue?: string;
+  /** Where events go. Default: the RabbitMQ fanout when configured (tests pass a sink). */
+  events?: EventSink;
 };
+
+/** Station fields that change every playout gain, hence every island. */
+const GAIN_FIELDS = new Set(['loudnessTargetLufs', 'truePeakLimitDbtp']);
 
 export type SegueSync = {
   /** Re-syncs the chains the seeds touch, commits, publishes what changed. */
   sync(scope: StationScope, seeds: SyncSeeds): Promise<SyncResult>;
-  /** What the consumer does with one event: `log.updated` and `asset.ingested` re-sync. */
+  /**
+   * What the consumer does with one event: re-syncs the segues a log, asset or station change
+   * can affect. Other events are ignored (null).
+   */
   handleEvent(event: RealtimeEvent): Promise<SyncResult | null>;
 };
 
 /**
- * Invalidation (#55): a log edit (`log.updated`, for the days it touched, plus segues that lost
- * an item) or a new playout copy (`asset.ingested`) re-derives the affected islands. Changed
- * specs go back to `pending` and the renderer (#56) picks them up from `island.updated`.
- * Library cue and loudness edits publish no event yet: the feeder (#57) re-derives an island's
- * spec at push time and falls back to a crossfade when its hash no longer matches.
+ * Invalidation (#55): re-derives the islands a change can affect.
+ * - `log.updated`: the segues of the days it touched, plus those that lost an item;
+ * - `asset.ingested` / `asset.updated` (cues, loudness, playout settings): the segues playing
+ *   the asset; `asset.deleted`: those, plus the ones whose A or B lost it;
+ * - `station.updated` with a loudness field: every segue of the station.
+ * Changed specs go back to `pending` and the renderer (#56) picks them up from
+ * `island.updated`. The feeder (#57) still re-derives at push time (`deriveIslandsFor`), so an
+ * event in flight never airs a stale render.
  */
 export function createSegueSync(deps: {
   db: Db;
@@ -59,12 +70,24 @@ export function createSegueSync(deps: {
     sync,
     async handleEvent(event) {
       let seeds: SyncSeeds;
-      if (event.type === 'log.updated') {
-        seeds = { logDayIds: event.data.days.map((d) => d.logDayId), orphans: true };
-      } else if (event.type === 'asset.ingested') {
-        seeds = { assetIds: [event.data.assetId] };
-      } else {
-        return null;
+      switch (event.type) {
+        case 'log.updated':
+          seeds = { logDayIds: event.data.days.map((d) => d.logDayId), orphans: true };
+          break;
+        case 'asset.ingested':
+        case 'asset.updated':
+          seeds = { assetIds: [event.data.assetId] };
+          break;
+        case 'asset.deleted':
+          // Its ids are gone from A/B (`set null`): those segues show up as orphans.
+          seeds = { assetIds: [event.data.assetId], orphans: true };
+          break;
+        case 'station.updated':
+          if (!event.data.fields.some((f) => GAIN_FIELDS.has(f))) return null;
+          seeds = { all: true };
+          break;
+        default:
+          return null;
       }
       const scope = await scopeOf(event.stationId);
       if (!scope) return null;
@@ -80,9 +103,8 @@ export function createSegueSync(deps: {
 export const seguesPlugin = fp(
   async (app: FastifyInstance, options: SeguesPluginOptions) => {
     const rabbit = app.hasDecorator('rabbit') ? app.rabbit : undefined;
-    const events: EventSink | undefined = rabbit
-      ? { publish: (event) => rabbit.events.publish(event) }
-      : undefined;
+    const events: EventSink | undefined =
+      options.events ?? (rabbit ? { publish: (event) => rabbit.events.publish(event) } : undefined);
     await app.register(seguesRoutes, { prefix: '/api/v1', events });
     if (!rabbit) return;
     const segueSync = createSegueSync({ db: app.db, events, logger: app.log });

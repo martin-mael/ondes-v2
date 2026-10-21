@@ -53,33 +53,53 @@ on what an island contains.
   between two islands is under 1 s, the shared item is rendered whole and the islands become
   one (`A > VT1 > B(short) > VT2 > C` is one island, `A … C`). A middle item gets both its
   envelopes (product).
-- The **spec** (`islandSpecSchema`, `ISLAND_SPEC_VERSION` = 1) holds only what the renderer
-  needs: the output format (FLAC, 44.1 kHz, stereo, 24-bit, 1024 blocks), the length, and the
-  sources (playout file sha256 and key, sample range, island position, static gain, envelopes in
-  island samples). No log or segue ids, so equal audio has an equal spec. Envelopes are clipped
-  to the island, so edits that change nothing audible don't change it.
-- Its **hash** is SHA-256 of its canonical JSON (`stableStringify`); the file lives at
-  `org/<orgId>/islands/v<version>/<hash>.flac` (`islandStorageKey`). Bumping the spec version
-  re-renders everything.
+- The **spec** (`islandSpecSchema`, `ISLAND_SPEC_VERSION` = 1) holds exactly what decides the
+  audio: the output format (FLAC, 44.1 kHz, stereo, 24-bit, 1024 blocks), the length, and the
+  sources (playout file sha256, sample range, island position, static gain, envelopes in island
+  samples). No asset, item or segue ids and no storage keys: equal audio has an equal spec, so
+  it is rendered once, whichever assets or transitions it comes from. Where to read each file
+  (sha256 → storage key and asset) is the island's `files`, stored next to the spec and not
+  hashed. Envelopes are clipped to the island, so edits that change nothing audible don't change
+  it. Sources are sorted by a total, code-point key (position, file, range, gain, envelopes), so
+  the order lanes are listed in never changes it.
+- Its **hash** is SHA-256 of its canonical JSON (`stableStringify`, a plain-ES SHA-256 so the
+  browser computes the same); the file lives at `org/<orgId>/islands/v<version>/<hash>.flac`
+  (`islandStorageKey`). Bumping the spec version re-renders everything.
 - `island` rows are one per head item: spec, hash, joins (`head`/`tail`: item, asset, join
   sample, whether a body remains), covered items and segues, and the render status
   `pending → rendering → ready | failed`. A new hash resets the row to `pending` (or straight
   to `ready` when another island of the station already rendered that hash); an unchanged hash
-  keeps its render. Islands are never written through the api.
+  keeps its render. Islands are never written through the api. Their item ids have no foreign
+  key: a deleted item's island is dropped by the sync, which publishes `island.removed` (a
+  cascade would drop it silently).
 
 ### Invalidation: re-derive, compare hashes
 - Every segue write re-syncs its chains in the same audited transaction. A durable consumer
-  (`segues` queue, ADR 0006) re-syncs on `log.updated` (the days it touched, plus segues that
-  lost an item) and `asset.ingested`. Syncs of a station are serialised by an advisory lock.
+  (`segues` queue, ADR 0006) re-syncs on:
+  - `log.updated`: the segues of the days it touched, plus those that lost an item or asset;
+  - `asset.ingested`, and the new `asset.updated` (`changes`: `cues`, `loudness`, `settings`):
+    the segues playing the asset. Published by the loudness and autocue jobs after they store,
+    and by the library's cue and asset (`PATCH`) routes;
+  - the new `asset.deleted` (library `DELETE`): those segues plus the ones whose A or B lost it;
+  - the new `station.updated` when `fields` has `loudnessTargetLufs` or `truePeakLimitDbtp`:
+    every segue of the station (they change every playout gain).
+- **Locking.** Syncs of a station are serialised by a transaction-level advisory lock, always
+  taken **first**: the routes take it before locking the segue row, the consumer before any
+  write, so the two orders can't deadlock. A deadlock or serialization failure that still
+  happens is retried (3 attempts), then answered 409. The orphan-island cleanup only looks at
+  the islands the synced segues used (and a deleted segue's).
 - Sync sets each segue's **status**: `ready` (has an island), `waiting` (a playout copy is
   missing), `detached` (A or B deleted, no longer consecutive, or playing another asset than
   when the segue was saved), `invalid` (the lanes don't fit the media: B or a voice before A, a
   voice outlasting B). Only `ready` segues have islands; islands no segue points at are
   deleted. Deleting A or B keeps the segue and its voice lanes (`detached`, listed by
   `?status=detached`); saving it again re-attaches it.
-- Library cue and loudness edits publish no event yet, so they don't trigger a sync. The
-  feeder (#57) must therefore re-derive the spec at push time and play the island only if its
-  hash matches a `ready` island; otherwise the transition airs as the degraded crossfade.
+- Sync only reacts to events, which are asynchronous. So the feeder (#57) re-derives at push
+  time with `deriveIslandsFor(db, scope, itemIds)` (`apps/api/src/modules/segues/sync.ts`):
+  read-only, no locks, the same checks and derivation as the sync, and for each island the
+  `ready` render with that exact hash, if any. It plays an island only when one is returned;
+  otherwise the transition airs as the degraded crossfade. An edit in flight can't air a stale
+  render.
 
 ### API and permissions
 `/api/v1/stations/:stationId/segues` (list by item, status or planned range; get; create; put;
@@ -90,12 +110,17 @@ A or B comes from a show they host, or one they created. Events: `segue.changed`
 
 ## Consequences
 - **Renderer (#56):** render `pending` islands from `island.updated` plus a sweep of
-  `GET …/islands?status=pending`; mix each source as specified (gain × product of envelopes,
-  `envelopeGainAt` is the reference), write `format`, store at `islandStorageKey`, then set
-  `ready`/`storage_key`/`rendered_at` **only where the row still has that hash** (the spec may
-  have changed meanwhile). Skip the work when the key already exists. Orphan files are
+  `GET …/islands?status=pending`. Use `@ondes/db`'s compare-and-set helpers, all keyed on the
+  hash so a spec that changed meanwhile is never overwritten, and each publishing
+  `island.updated` when given a publisher: `claimIslandRender(hash)` (`pending`/`failed` →
+  `rendering`; nothing claimed = nothing to do), `markIslandRendered({hash, storageKey})`,
+  `markIslandFailed({hash, error})`. Read files from the island's `files`, mix each source as
+  specified (gain × product of envelopes, `envelopeGainAt` is the reference), write `format`,
+  store at `islandStorageKey`. Skip the work when the key already exists. Orphan files are
   content-addressed, so a GC can drop keys no island references.
-- **Engine (#57):** push `A body (cue-out = head.joinSample) → island → B body (cue-in =
+- **Station settings:** no api route updates a station's loudness yet. The one that does must
+  publish `station.updated` with the fields it changed.
+- **Engine (#57):** call `deriveIslandsFor` at push time (above), then push `A body (cue-out = head.joinSample) → island → B body (cue-in =
   tail.joinSample)` as one segment with the ADR 0002 half-sample bias; no body when
   `hasBody` is false; a merged island spans several items.
 - **Log timing:** the log's retiming doesn't read segues yet. B's real start is `in.start`

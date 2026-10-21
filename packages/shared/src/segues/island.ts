@@ -7,6 +7,7 @@ import {
   ISLAND_HANDLE_SAMPLES,
   ISLAND_MIN_BODY_SAMPLES,
   ISLAND_SPEC_VERSION,
+  type IslandFiles,
   type IslandJoin,
   type IslandSource,
   type IslandSpec,
@@ -62,6 +63,8 @@ export type IslandSegueInput = {
 /** One island to render, and where it sits in the log. */
 export type IslandPlan = {
   spec: IslandSpec;
+  /** Where to read each source's file: not part of the spec or its hash. */
+  files: IslandFiles;
   head: IslandJoin;
   tail: IslandJoin;
   segueIds: string[];
@@ -297,6 +300,7 @@ function buildIsland(segues: IslandSegueInput[], extents: Extent[]): IslandPlan 
   const length = lastExt.end + (offsets[offsets.length - 1] as number);
 
   const sources: IslandSource[] = [];
+  const files: IslandFiles = {};
   const add = (
     m: IslandMedia,
     from: number,
@@ -306,10 +310,9 @@ function buildIsland(segues: IslandSegueInput[], extents: Extent[]): IslandPlan 
     envelopes: Envelope[],
   ) => {
     if (to <= from) return;
+    files[m.sha256] ??= { storageKey: m.storageKey, assetId: m.assetId };
     sources.push({
-      assetId: m.assetId,
       sha256: m.sha256,
-      storageKey: m.storageKey,
       from,
       to,
       at,
@@ -338,9 +341,10 @@ function buildIsland(segues: IslandSegueInput[], extents: Extent[]): IslandPlan 
     add(s.to, s.to.cueIn, to, s.in.start + off, 0, bEnvelopes);
   }
   // Stable order for hashing: by position, then file.
-  sources.sort((x, y) => x.at - y.at || x.sha256.localeCompare(y.sha256) || x.from - y.from);
+  sources.sort(compareSources);
 
   return {
+    files,
     spec: { version: ISLAND_SPEC_VERSION, format: ISLAND_FORMAT, lengthSamples: length, sources },
     head: {
       itemId: first.fromItemId,
@@ -357,6 +361,24 @@ function buildIsland(segues: IslandSegueInput[], extents: Extent[]): IslandPlan 
     segueIds: segues.map((s) => s.segueId),
     itemIds: [first.fromItemId, ...segues.map((s) => s.toItemId)],
   };
+}
+
+/** Code-point order, not locale order: the same on every platform. */
+const compareText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * A total order on sources, so the order lanes were listed in never changes the hash: position,
+ * file, range, gain, then envelopes.
+ */
+function compareSources(x: IslandSource, y: IslandSource): number {
+  return (
+    x.at - y.at ||
+    compareText(x.sha256, y.sha256) ||
+    x.from - y.from ||
+    x.to - y.to ||
+    x.gainDb - y.gainDb ||
+    compareText(stableStringify(x.envelopes), stableStringify(y.envelopes))
+  );
 }
 
 /** SHA-256 (lowercase hex) of the spec's canonical JSON: keys the rendered file. */

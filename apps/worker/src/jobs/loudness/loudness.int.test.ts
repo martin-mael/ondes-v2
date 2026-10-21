@@ -32,6 +32,7 @@ import {
   LOUDNESS_JOB,
   loudnessIdempotencyKey,
   loudnessJobPayloadSchema,
+  type RealtimeEvent,
 } from '@ondes/shared';
 import { contentKey, createS3Storage, loadStorageConfig, type Storage } from '@ondes/storage';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -246,7 +247,19 @@ describe.skipIf(!enabled)('loudness job (integration)', () => {
     const { asset, payload } = await ingested(scope, 'minus20');
     expect((await getAssetDetail(tdb.db, scope, asset.id)).playoutGain.source).toBe('unmeasured');
 
-    expect(await measureAssetLoudness(deps, payload)).toBe('measured');
+    const published: RealtimeEvent[] = [];
+    const publish = async (event: RealtimeEvent) => {
+      published.push(event);
+    };
+    expect(await measureAssetLoudness({ ...deps, publish }, payload)).toBe('measured');
+    // Islands that play it re-derive (#55).
+    expect(published).toEqual([
+      expect.objectContaining({
+        type: 'asset.updated',
+        stationId: scope.stationId,
+        data: { assetId: asset.id, changes: ['loudness'] },
+      }),
+    ]);
     const detail = await getAssetDetail(tdb.db, scope, asset.id);
     expect(detail.loudness).toMatchObject({
       analyzer: 'ffmpeg-ebur128',

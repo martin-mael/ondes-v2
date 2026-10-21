@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { StationScope } from '@ondes/db';
+import { islandUpdatedEvent, type StationScope } from '@ondes/db';
 import {
   type RealtimeEvent,
   realtimeEventSchema,
@@ -50,22 +50,7 @@ export function eventsOf(
   for (const s of sync.segues) {
     if (s.segueId !== written?.segue.segueId) events.push(segueEvent('synced', s));
   }
-  for (const i of sync.islands) {
-    events.push(
-      realtimeEventSchema.parse({
-        ...envelope(),
-        type: 'island.updated',
-        data: {
-          islandId: i.id,
-          hash: i.hash,
-          status: i.status,
-          segueIds: i.segueIds,
-          headItemId: i.headItemId,
-          tailItemId: i.tailItemId,
-        },
-      }),
-    );
-  }
+  for (const i of sync.islands) events.push(islandUpdatedEvent(i));
   for (const r of sync.removed) {
     events.push(
       realtimeEventSchema.parse({

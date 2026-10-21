@@ -3,6 +3,7 @@ import {
   auditDiff,
   type Db,
   type Executor,
+  type IslandRow,
   island,
   logItem,
   type MutationContext,
@@ -30,7 +31,7 @@ import {
 } from '@ondes/shared';
 import { and, asc, desc, eq, gte, inArray, lt, or } from 'drizzle-orm';
 import { HttpError } from '../../plugins/errors.ts';
-import { type IslandRow, type SyncResult, type SyncSeeds, syncSegues } from './sync.ts';
+import { lockStation, type SyncResult, type SyncSeeds, syncSegues } from './sync.ts';
 
 // Segues and islands (#55): reads, and the audited segue writes. Every write re-syncs the
 // chains it touches (`sync.ts`) in the same transaction, so a response always carries the
@@ -214,11 +215,21 @@ async function checkVoiceAssets(tx: Tx, scope: StationScope, ids: string[]) {
 }
 
 /** One segue per transition: the unique keys on A and B. */
+function pgCode(error: unknown): string | undefined {
+  const e = error as { cause?: { code?: string }; code?: string };
+  return e.cause?.code ?? e.code;
+}
+
+/** Deadlock or serialization failure: safe to run the whole transaction again. */
+const retryable = (error: unknown) => ['40P01', '40001'].includes(pgCode(error) ?? '');
+
 function conflictOf(error: unknown): never {
-  const e = error as { cause?: { code?: string; constraint_name?: string }; code?: string };
-  const code = e.cause?.code ?? e.code;
+  const code = pgCode(error);
   if (code === '23505') {
     throw new HttpError(409, 'segue_exists', 'this transition already has a segue');
+  }
+  if (code === '40P01' || code === '40001') {
+    throw new HttpError(409, 'edit_conflict', 'the segue changed concurrently; retry');
   }
   throw error;
 }
@@ -269,14 +280,20 @@ async function write(
     seeds: SyncSeeds;
   }>,
 ): Promise<SegueWrite> {
-  try {
-    return await withAudit(db, ctx, async (tx, audit) => {
-      const { segueId, seeds } = await fn(tx, audit);
-      const sync = await syncSegues(tx, ctx.scope, seeds);
-      return { segue: segueId ? await getSegue(tx, ctx.scope, segueId) : null, sync };
-    });
-  } catch (error) {
-    conflictOf(error);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await withAudit(db, ctx, async (tx, audit) => {
+        // Station lock first, before `fn` locks the segue row: the same order as the event
+        // consumer's sync (sync.ts `lockStation`), so the two never deadlock.
+        await lockStation(tx, ctx.scope);
+        const { segueId, seeds } = await fn(tx, audit);
+        const sync = await syncSegues(tx, ctx.scope, seeds);
+        return { segue: segueId ? await getSegue(tx, ctx.scope, segueId) : null, sync };
+      });
+    } catch (error) {
+      if (attempt < 3 && retryable(error)) continue;
+      conflictOf(error);
+    }
   }
 }
 
@@ -388,7 +405,8 @@ export async function deleteSegue(
     deleted = before;
     // The neighbours' chains may split; the island goes if nothing else renders it.
     const itemIds = [before.fromItemId, before.toItemId].filter((id): id is string => !!id);
-    return { segueId: null, seeds: { itemIds } };
+    const islandIds = before.islandId ? [before.islandId] : [];
+    return { segueId: null, seeds: { itemIds, islandIds } };
   });
   return { ...result, deleted: deleted as SegueRow };
 }
@@ -405,7 +423,7 @@ export async function getIsland(
     .from(island)
     .where(and(eq(island.id, islandId), whereStation(island, scope)));
   if (!row) throw new NotFoundError('island', islandId);
-  return { ...toIslandSummary(row), spec: row.spec };
+  return { ...toIslandSummary(row), spec: row.spec, files: row.files };
 }
 
 export async function listIslands(

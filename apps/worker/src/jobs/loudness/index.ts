@@ -2,6 +2,7 @@ import { createDb } from '@ondes/db';
 import { defineJob } from '@ondes/queue';
 import { LOUDNESS_JOB, loudnessIdempotencyKey, loudnessJobPayloadSchema } from '@ondes/shared';
 import { createS3Storage, loadStorageConfig } from '@ondes/storage';
+import { eventPublisherFromEnv } from '../_events/asset-updated.ts';
 import { defaultTools } from '../ingest/ffmpeg.ts';
 import { type LoudnessDeps, measureAssetLoudness } from './loudness.ts';
 import { loudnessTrigger } from './trigger.ts';
@@ -24,6 +25,7 @@ async function depsFromEnv(env = process.env): Promise<LoudnessDeps> {
     tools: defaultTools(env),
     tmpDir: env.INGEST_TMP_DIR || undefined,
     log: (entry) => console.log(JSON.stringify(entry)),
+    publish: await eventPublisherFromEnv('ondes-worker-loudness', env),
   };
 }
 
