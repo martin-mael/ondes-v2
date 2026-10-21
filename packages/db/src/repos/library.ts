@@ -65,6 +65,17 @@ export class LibraryConflictError extends Error {
 }
 
 /**
+ * A measurement of a file that is no longer the asset's playout file (replaced while it was
+ * being analysed): dropped, never stored over a newer one.
+ */
+export class StaleMeasurementError extends LibraryConflictError {
+  constructor(assetId: string) {
+    super(`asset ${assetId}: the measured playout file is no longer current`);
+    this.name = 'StaleMeasurementError';
+  }
+}
+
+/**
  * Stored objects an operation released for good (no reference left in the org). They're
  * queued in `storage_deletion` and removed from the bucket by `sweepStorageDeletions` after a
  * grace period; nothing is deleted inline.
@@ -175,13 +186,29 @@ export async function listAssets(
       ),
     );
   }
-  const rows = await db
-    .select()
-    .from(asset)
-    .where(and(...conditions))
-    .orderBy(desc(asset.id))
-    .limit(q.limit + 1);
-  const items = rows.slice(0, q.limit).map(toAsset);
+  const [rows, station] = await Promise.all([
+    db
+      .select({
+        asset,
+        loudness: {
+          integratedLufs: assetLoudness.integratedLufs,
+          truePeakDbtp: assetLoudness.truePeakDbtp,
+        },
+      })
+      .from(asset)
+      .leftJoin(
+        assetLoudness,
+        and(eq(assetLoudness.assetId, asset.id), whereStation(assetLoudness, scope)),
+      )
+      .where(and(...conditions))
+      .orderBy(desc(asset.id))
+      .limit(q.limit + 1),
+    getStation(db, scope, scope.stationId),
+  ]);
+  const items = rows.slice(0, q.limit).map((row) => {
+    const item = toAsset(row.asset);
+    return { ...item, playoutGain: getPlayoutGain({ ...item, loudness: row.loudness }, station) };
+  });
   const nextCursor = rows.length > q.limit ? (items.at(-1)?.id ?? null) : null;
   return { items, nextCursor };
 }
@@ -548,16 +575,34 @@ export async function getLoudness(
   return loudness;
 }
 
-/** Stores a loudness measurement, replacing the previous one. */
+/**
+ * Stores a loudness measurement, replacing the previous one. With `playoutSha256`, only if that
+ * is still the asset's playout file, checked under the asset's lock (which `putAssetFile`
+ * takes too); otherwise throws `StaleMeasurementError`.
+ */
 export async function setLoudness(
   db: Writer,
   ctx: StationContext,
   assetId: string,
   input: SetLoudness,
 ): Promise<AssetLoudness> {
-  const values = { ...setLoudnessSchema.parse(input), measuredAt: new Date() };
+  const parsed = setLoudnessSchema.parse(input);
+  const values = { ...parsed, playoutSha256: parsed.playoutSha256 ?? null, measuredAt: new Date() };
   return withAudit(db, ctx, async (tx, audit) => {
     await lockAsset(tx, ctx.scope, assetId);
+    if (values.playoutSha256) {
+      const [playout] = await tx
+        .select({ sha256: assetFile.sha256 })
+        .from(assetFile)
+        .where(
+          and(
+            eq(assetFile.assetId, assetId),
+            eq(assetFile.role, 'playout'),
+            whereStation(assetFile, ctx.scope),
+          ),
+        );
+      if (playout?.sha256 !== values.playoutSha256) throw new StaleMeasurementError(assetId);
+    }
     const before = await getLoudness(tx, ctx.scope, assetId);
     const [row] = await tx
       .insert(assetLoudness)
@@ -576,10 +621,11 @@ export async function setLoudness(
 }
 
 /**
- * Assets of the station that have a playout file but no loudness measurement, oldest first:
- * what the loudness backfill (#19) enqueues. Keyset-paginated on the asset id.
+ * Assets of the station whose playout file has no loudness measurement: none at all, or one of
+ * another file (replaced since, or measured before the file was recorded). What the loudness
+ * backfill (#19) enqueues. Keyset-paginated on the asset id.
  */
-export async function listAssetsWithoutLoudness(
+export async function listAssetsNeedingLoudness(
   db: Executor,
   scope: StationScope,
   options: { limit: number; after?: string },
@@ -592,7 +638,7 @@ export async function listAssetsWithoutLoudness(
       and(
         whereStation(assetFile, scope),
         eq(assetFile.role, 'playout'),
-        sql`${assetLoudness.assetId} is null`,
+        sql`${assetLoudness.playoutSha256} is distinct from ${assetFile.sha256}`,
         options.after ? sql`${assetFile.assetId} > ${options.after}` : undefined,
       ),
     )

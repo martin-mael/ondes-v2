@@ -219,6 +219,8 @@ export const assetLoudness = pgTable(
     integratedLufs: real('integrated_lufs').notNull(),
     loudnessRangeLu: real('loudness_range_lu'),
     truePeakDbtp: real('true_peak_dbtp'),
+    /** Playout file measured (#19): a measurement of a replaced file is never stored. */
+    playoutSha256: text('playout_sha256'),
     analyzer: text('analyzer').notNull(),
     analyzerVersion: text('analyzer_version').notNull(),
     confidence: real('confidence'),

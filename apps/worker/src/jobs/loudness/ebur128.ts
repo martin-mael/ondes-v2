@@ -1,4 +1,4 @@
-import { run, ToolError, type Tools, transcodeTimeoutMs } from '../ingest/ffmpeg.ts';
+import { run, type Tools, transcodeTimeoutMs } from '../ingest/ffmpeg.ts';
 
 // EBU R128 / ITU-R BS.1770-4 measurement with ffmpeg's `ebur128` filter (true peak on: 4×
 // oversampled). Only ever run on our own playout copies (FLAC), so the input whitelist is the
@@ -11,6 +11,18 @@ export interface Ebur128Result {
   truePeakDbtp: number | null;
 }
 
+/**
+ * ffmpeg ran and exited 0, but its output isn't the summary we expect: a different ffmpeg
+ * build or a changed log format, not a broken file. Retried, and loud: never stored as
+ * "unmeasurable", which would leave every asset at 0 dB after an upgrade.
+ */
+export class Ebur128ParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'Ebur128ParseError';
+  }
+}
+
 /** ffmpeg prints `-inf` (or `inf`) for silence. */
 const NUMBER = String.raw`(-?inf|-?\d+(?:\.\d+)?)`;
 
@@ -20,19 +32,23 @@ const NUMBER = String.raw`(-?inf|-?\d+(?:\.\d+)?)`;
  */
 export function parseEbur128Summary(log: string): Ebur128Result {
   const at = log.lastIndexOf('Summary:');
-  if (at < 0) throw new Error('no ebur128 summary in the ffmpeg output');
+  if (at < 0) throw new Ebur128ParseError('no ebur128 summary in the ffmpeg output');
   const summary = log.slice(at);
   const integrated = summary.match(
     new RegExp(String.raw`Integrated loudness:\s*I:\s*${NUMBER} LUFS`),
   );
   const lra = summary.match(new RegExp(String.raw`Loudness range:\s*LRA:\s*${NUMBER} LU\b`));
   const peak = summary.match(new RegExp(String.raw`True peak:\s*Peak:\s*${NUMBER} dBFS`));
-  if (!integrated?.[1]) throw new Error('no integrated loudness in the ebur128 summary');
+  if (!integrated?.[1]) {
+    throw new Ebur128ParseError('no integrated loudness in the ebur128 summary');
+  }
+  // Measured with peak=true: a summary without it would skip the ceiling clamp.
+  if (!peak?.[1]) throw new Ebur128ParseError('no true peak in the ebur128 summary');
   return {
     // Gated silence measures -70 (the absolute gate); older builds print -inf.
     integratedLufs: Math.max(-70, toNumber(integrated[1]) ?? -70),
     loudnessRangeLu: lra?.[1] ? toNumber(lra[1]) : null,
-    truePeakDbtp: peak?.[1] ? toNumber(peak[1]) : null,
+    truePeakDbtp: toNumber(peak[1]),
   };
 }
 
@@ -75,12 +91,7 @@ export async function measureLoudness(
     ],
     { signal: options.signal, timeoutMs: transcodeTimeoutMs(options.durationSeconds) },
   );
-  try {
-    return parseEbur128Summary(stderr);
-  } catch (error) {
-    // ffmpeg decoded the file but printed no usable summary: a file problem, not the machine's.
-    throw new ToolError(tools.ffmpeg, 0, error instanceof Error ? error.message : String(error));
-  }
+  return parseEbur128Summary(stderr);
 }
 
 const versions = new Map<string, Promise<string>>();

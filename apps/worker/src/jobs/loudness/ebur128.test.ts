@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseEbur128Summary } from './ebur128.ts';
+import { Ebur128ParseError, parseEbur128Summary } from './ebur128.ts';
 
 // ffmpeg 7.1's closing summary (worker image), with the lines that come before it.
 const summary = (integrated: string, lra: string, peak: string) => `
@@ -50,8 +50,18 @@ describe('parseEbur128Summary', () => {
     expect(parseEbur128Summary(log).integratedLufs).toBe(-14);
   });
 
-  it('rejects output without a summary', () => {
-    expect(() => parseEbur128Summary('Error while decoding stream')).toThrow(/no ebur128 summary/);
+  it('rejects output it cannot read as a parse error (retried, not a file error)', () => {
+    expect(() => parseEbur128Summary('Error while decoding stream')).toThrow(Ebur128ParseError);
     expect(() => parseEbur128Summary('Summary:\n nothing')).toThrow(/integrated/);
+    // A changed format (here: the labels renamed) is not read as "no value".
+    expect(() =>
+      parseEbur128Summary(summary('-20.0', '0.8', '-19.9').replace('Integrated', 'Programme')),
+    ).toThrow(Ebur128ParseError);
+  });
+
+  it('requires the true peak (measured with peak=true)', () => {
+    const withoutPeak = summary('-20.0', '0.8', '-19.9').replace(/ {2}True peak:\n.*\n/, '');
+    expect(withoutPeak).not.toContain('True peak');
+    expect(() => parseEbur128Summary(withoutPeak)).toThrow(/no true peak/);
   });
 });

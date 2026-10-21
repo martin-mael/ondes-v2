@@ -114,15 +114,28 @@ describe('getPlayoutGain', () => {
     });
   });
 
-  it('applies a per-asset override as given', () => {
-    const asset = { ...measured(-20, -3), gainOverrideDb: 5.04 };
+  it('applies a per-asset override, clamped to the ceiling', () => {
+    const asset = { ...measured(-20, -12), gainOverrideDb: 5.04 };
     expect(getPlayoutGain(asset, music)).toEqual({
       gainDb: 5,
       source: 'override',
       limitedByPeak: false,
     });
-    // Even without a measurement.
-    expect(getPlayoutGain({ ...asset, loudness: null }, music).gainDb).toBe(5);
+    // A cut is never limited.
+    expect(getPlayoutGain({ ...asset, gainOverrideDb: -9 }, music).gainDb).toBe(-9);
+    // Peaks at −3 dBTP leave 2 dB under −1: a +5 override is held to +2.
+    expect(getPlayoutGain({ ...asset, loudness: measured(-20, -3).loudness }, music)).toEqual({
+      gainDb: 2,
+      source: 'override',
+      limitedByPeak: true,
+    });
+    // Without a measurement (or a known peak) there is nothing to clamp against.
+    expect(getPlayoutGain({ ...asset, loudness: null }, music)).toEqual({
+      gainDb: 5,
+      source: 'override',
+      limitedByPeak: false,
+    });
+    expect(getPlayoutGain({ ...asset, gainOverrideDb: 30, loudness: null }, music).gainDb).toBe(24);
   });
 
   it('plays the file as it is when normalisation is disabled, override or not', () => {

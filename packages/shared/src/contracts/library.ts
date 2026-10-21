@@ -308,6 +308,8 @@ export const assetLoudnessSchema = z.object({
   /** EBU R128 loudness range. */
   loudnessRangeLu: z.number().nullable(),
   truePeakDbtp: z.number().nullable(),
+  /** SHA-256 of the playout file that was measured (#19); `null` for older rows. */
+  playoutSha256: sha256HexSchema.nullable(),
   /** Tool that measured it: `ffmpeg-ebur128`, `libebur128`. */
   analyzer: z.string(),
   analyzerVersion: z.string(),
@@ -321,6 +323,11 @@ export const setLoudnessSchema = assetLoudnessSchema
     integratedLufs: z.number().min(-70).max(10),
     loudnessRangeLu: z.number().min(0).max(100).nullable().optional(),
     truePeakDbtp: z.number().min(-100).max(30).nullable().optional(),
+    /**
+     * The playout file measured. When given, the measurement is stored only if this is still
+     * the asset's playout file (`StaleMeasurementError` otherwise).
+     */
+    playoutSha256: sha256HexSchema.nullable().optional(),
     analyzer: z.string().min(1).max(100),
     analyzerVersion: z.string().min(1).max(100),
     confidence: confidenceSchema.nullable().optional(),
@@ -417,7 +424,8 @@ export const listAssetsQuerySchema = z.object({
 export type ListAssetsQuery = z.input<typeof listAssetsQuerySchema>;
 
 export const assetPageSchema = z.object({
-  items: z.array(assetSchema),
+  /** With the playout gain, as on the asset detail (#19). */
+  items: z.array(assetSchema.extend({ playoutGain: playoutGainSchema.optional() })),
   /** Pass as `cursor` for the next page; `null` on the last page. */
   nextCursor: uuidSchema.nullable(),
 });

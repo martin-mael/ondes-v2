@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +10,7 @@ import {
   createStation,
   getAssetDetail,
   getLoudness,
+  PostgresJobRunStore,
   putAssetFile,
   resolveOrgScope,
   resolveStationScope,
@@ -18,14 +19,27 @@ import {
   updateStation,
 } from '@ondes/db';
 import { createTestDatabase, type TestDatabase } from '@ondes/db/testing';
-import type { JobPublisher } from '@ondes/queue';
-import type { Actor } from '@ondes/shared';
+import {
+  connectQueue,
+  createJobPublisher,
+  createJobWorker,
+  defineJob,
+  deleteTopology,
+  type JobPublisher,
+} from '@ondes/queue';
+import {
+  type Actor,
+  LOUDNESS_JOB,
+  loudnessIdempotencyKey,
+  loudnessJobPayloadSchema,
+} from '@ondes/shared';
 import { contentKey, createS3Storage, loadStorageConfig, type Storage } from '@ondes/storage';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { defaultTools } from '../ingest/ffmpeg.ts';
 import { backfillLoudness } from './backfill.ts';
 import { measureLoudness } from './ebur128.ts';
 import { type LoudnessDeps, measureAssetLoudness } from './loudness.ts';
+import { enqueueLoudness } from './trigger.ts';
 
 // Loudness against generated tones at known levels, measured by the ffmpeg on the PATH: use
 // the worker image's (apps/worker/test/bin), as CI does. The job tests also need the dev
@@ -37,6 +51,12 @@ import { type LoudnessDeps, measureAssetLoudness } from './loudness.ts';
 
 const exec = promisify(execFile);
 const enabled = Boolean(process.env.S3_ENDPOINT);
+const rabbitUrl = process.env.RABBITMQ_URL ?? 'amqp://ondes:ondes@127.0.0.1:5672/ondes';
+if (!enabled) {
+  // CI always provides Garage: missing there is a broken setup, not a reason to skip.
+  if (process.env.CI) throw new Error('loudness job tests need S3_ENDPOINT (Garage) in CI');
+  console.warn('loudness job tests skipped: S3_ENDPOINT is not set (pnpm dev:up, .env.example)');
+}
 const system: Actor = { type: 'system', name: 'test' };
 const tools = defaultTools();
 const TOLERANCE = 0.3;
@@ -71,6 +91,14 @@ async function tone(name: string, expr: string, seconds: number, channels: numbe
     path,
   ]);
   tones[name] = path;
+}
+
+async function until(check: () => Promise<boolean>, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error('timed out');
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 
 const sine = (amplitude: number) => `${amplitude}*sin(2*PI*997*t)`;
@@ -185,6 +213,34 @@ describe.skipIf(!enabled)('loudness job (integration)', () => {
     return { asset, payload };
   }
 
+  /** Replaces the asset's playout copy (a re-ingest); returns the new copy's hash. */
+  async function replacePlayout(scope: StationScope, assetId: string, toneName: string) {
+    const bytes = await readFile(tones[toneName] as string);
+    const sha256 = createHash('sha256').update(bytes).update(randomBytes(8)).digest('hex');
+    const storageKey = contentKey({ orgId: scope.orgId, sha256, ext: 'flac' });
+    await storage.put(storageKey, bytes);
+    await putAssetFile(tdb.db, { actor: system, scope }, assetId, {
+      role: 'playout',
+      storageKey,
+      sha256,
+      sizeBytes: bytes.length,
+      codec: 'flac',
+      mimeType: 'audio/flac',
+      sampleRate: 44100,
+      channels: 2,
+      bitDepth: 16,
+      durationSamples: 441000,
+      flacBlockSize: 1024,
+    });
+    return sha256;
+  }
+
+  async function loudnessRows(assetId: string): Promise<number> {
+    const [row] = await tdb.sql<{ n: number }[]>`
+      select count(*)::int as n from asset_loudness where asset_id = ${assetId}`;
+    return row?.n ?? 0;
+  }
+
   it('stores the measurement and the asset shows its playout gain', async () => {
     const scope = await tenant();
     const { asset, payload } = await ingested(scope, 'minus20');
@@ -271,7 +327,33 @@ describe.skipIf(!enabled)('loudness job (integration)', () => {
     expect(await getLoudness(tdb.db, scope, asset.id)).toBeNull();
   });
 
-  it('is idempotent: measuring again replaces the row', async () => {
+  it('drops a measurement of a playout copy replaced while it was measured', async () => {
+    const scope = await tenant();
+    const { asset, payload } = await ingested(scope, 'minus20');
+    let newSha = '';
+    // While the old copy downloads, a re-ingest replaces it and its own job finishes first.
+    const racing = new Proxy(storage, {
+      get(target, prop, receiver) {
+        if (prop === 'get') {
+          return async (key: string) => {
+            const object = await target.get(key);
+            newSha = await replacePlayout(scope, asset.id, 'loud');
+            await measureAssetLoudness(deps, { ...payload, playoutSha256: newSha });
+            return object;
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    expect(await measureAssetLoudness({ ...deps, storage: racing }, payload)).toBe('stale');
+    const stored = await getLoudness(tdb.db, scope, asset.id);
+    expect(stored?.playoutSha256).toBe(newSha);
+    // The new copy's level (−10 LUFS), not the old one's (−20).
+    expect(Math.abs((stored?.integratedLufs ?? 0) + 10)).toBeLessThanOrEqual(TOLERANCE);
+  });
+
+  it('is idempotent: measuring again replaces the one row', async () => {
     const scope = await tenant();
     const { asset, payload } = await ingested(scope, 'minus20');
     await measureAssetLoudness(deps, payload);
@@ -279,6 +361,56 @@ describe.skipIf(!enabled)('loudness job (integration)', () => {
     await measureAssetLoudness(deps, payload);
     const second = await getLoudness(tdb.db, scope, asset.id);
     expect(second?.integratedLufs).toBe(first?.integratedLufs);
+    expect(second?.playoutSha256).toBe(payload.playoutSha256);
+    expect(await loudnessRows(asset.id)).toBe(1);
+  });
+
+  it('runs a job enqueued twice once (explicit key, `once` mode)', async () => {
+    const scope = await tenant();
+    const { asset, payload } = await ingested(scope, 'minus20');
+    const queue = await connectQueue(rabbitUrl, { prefix: `test-${randomUUID().slice(0, 8)}` });
+    const store = new PostgresJobRunStore(tdb.db);
+    let runs = 0;
+    const job = defineJob(
+      LOUDNESS_JOB,
+      loudnessJobPayloadSchema,
+      async (p, ctx) => {
+        runs++;
+        await measureAssetLoudness(deps, p, ctx);
+      },
+      { lane: 'bulk', idempotencyKey: loudnessIdempotencyKey },
+    );
+    const worker = createJobWorker({
+      rabbit: queue.rabbit,
+      topology: queue.topology,
+      store,
+      jobs: [job],
+    });
+    const jobs = createJobPublisher(queue.rabbit, queue.topology);
+    try {
+      await worker.ready;
+      // The same asset.ingested delivered twice (at-least-once), then a backfill pass.
+      await enqueueLoudness(jobs, payload);
+      await enqueueLoudness(jobs, payload);
+      await until(
+        async () => (await store.list({ name: LOUDNESS_JOB, status: 'succeeded' })).length > 0,
+      );
+      await backfillLoudness({ db: tdb.db, jobs }, { stationIds: [scope.stationId] });
+      await enqueueLoudness(jobs, payload);
+      // Give the duplicates time to be delivered and refused.
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(runs).toBe(1);
+      expect(await loudnessRows(asset.id)).toBe(1);
+      const all = await store.list({ name: LOUDNESS_JOB });
+      expect(all.filter((r) => r.idempotencyKey === loudnessIdempotencyKey(payload))).toHaveLength(
+        1,
+      );
+    } finally {
+      await jobs.close();
+      await worker.close();
+      await deleteTopology(queue.rabbit, queue.topology);
+      await queue.close();
+    }
   });
 
   it('settles a file ffmpeg rejects without storing anything (no retry)', async () => {
@@ -309,6 +441,10 @@ describe.skipIf(!enabled)('loudness job (integration)', () => {
     await measureAssetLoudness(deps, measured.payload);
     const missing = await ingested(scope, 'loud');
     const elsewhere = await ingested(other, 'loud');
+    // Measured, then its playout copy replaced: the new copy needs measuring.
+    const replaced = await ingested(other, 'minus20');
+    await measureAssetLoudness(deps, replaced.payload);
+    const replacedSha = await replacePlayout(other, replaced.asset.id, 'loud');
 
     const enqueued: { payload: unknown; key: string | undefined }[] = [];
     const jobs: JobPublisher = {
@@ -329,11 +465,15 @@ describe.skipIf(!enabled)('loudness job (integration)', () => {
       { db: tdb.db, jobs },
       { stationIds: [scope.stationId, other.stationId], batchSize: 1 },
     );
-    expect(counts).toEqual({ [scope.stationId]: 1, [other.stationId]: 1 });
+    expect(counts).toEqual({ [scope.stationId]: 1, [other.stationId]: 2 });
     expect(enqueued.map((e) => e.payload)).toEqual(
-      expect.arrayContaining([missing.payload, elsewhere.payload]),
+      expect.arrayContaining([
+        missing.payload,
+        elsewhere.payload,
+        { ...replaced.payload, playoutSha256: replacedSha },
+      ]),
     );
-    expect(enqueued).toHaveLength(2);
+    expect(enqueued).toHaveLength(3);
     expect(enqueued[0]?.key).toMatch(/^loudness:/);
   });
 });

@@ -2,16 +2,16 @@ import { parseArgs } from 'node:util';
 import {
   createDb,
   type Db,
-  listAssetsWithoutLoudness,
+  listAssetsNeedingLoudness,
   resolveStationScope,
   station,
 } from '@ondes/db';
 import { connectQueue, createJobPublisher, type JobPublisher } from '@ondes/queue';
 import { enqueueLoudness } from './trigger.ts';
 
-// Loudness backfill (#19): enqueues a `loudness` job for every asset that has a playout copy
-// but no measurement (ingested before #19, or whose `asset.ingested` event was lost while no
-// worker ran). Safe to run any time, as often as wanted: the jobs carry the same explicit keys
+// Loudness backfill (#19): enqueues a `loudness` job for every asset whose playout copy has no
+// measurement (ingested before #19, or whose `asset.ingested` event was lost while no worker
+// ran). Safe to run any time, as often as wanted: the jobs carry the same explicit keys
 // as the trigger's, so an asset measured meanwhile, or already queued, runs once.
 //
 //   pnpm --filter @ondes/worker loudness:backfill [--station <id>]... [--dry-run]
@@ -40,7 +40,7 @@ export async function backfillLoudness(
     let count = 0;
     let after: string | undefined;
     for (;;) {
-      const page = await listAssetsWithoutLoudness(deps.db, scope, {
+      const page = await listAssetsNeedingLoudness(deps.db, scope, {
         limit: options.batchSize ?? 500,
         after,
       });

@@ -8,13 +8,14 @@ import {
   listAssetFiles,
   NotFoundError,
   resolveStationScope,
+  StaleMeasurementError,
   type StationContext,
   setLoudness,
 } from '@ondes/db';
 import { LOUDNESS_ANALYZER, type LoudnessJobPayload } from '@ondes/shared';
 import type { Storage } from '@ondes/storage';
 import { isFileError, type Tools } from '../ingest/ffmpeg.ts';
-import { ffmpegVersion, measureLoudness } from './ebur128.ts';
+import { Ebur128ParseError, ffmpegVersion, measureLoudness } from './ebur128.ts';
 
 // Loudness (#19): measures an asset's playout copy (the file the engine plays) with ffmpeg's
 // ebur128 and stores integrated loudness, loudness range and true peak in `asset_loudness`.
@@ -23,9 +24,9 @@ import { ffmpegVersion, measureLoudness } from './ebur128.ts';
 //
 // Idempotent: the job is keyed by asset and playout hash (`loudness:<assetId>:<sha256>`), and
 // storing a measurement replaces the previous one. A job whose asset is gone, or whose
-// playout copy was replaced since, does nothing. Like ingest, only a tool that ran and
-// rejected the file is final (logged, nothing stored); S3, Postgres, a killed or timed-out
-// ffmpeg and shutdowns throw and are retried by the queue.
+// playout copy was replaced (before or during the measurement), stores nothing. Like ingest,
+// only a tool that ran and rejected the file is final (logged, nothing stored); S3, Postgres,
+// a killed or timed-out ffmpeg, output we can't parse and shutdowns throw and are retried.
 
 export const LOUDNESS_ACTOR = { type: 'system', name: 'loudness' } as const;
 
@@ -74,6 +75,15 @@ export async function measureAssetLoudness(
           signal: run.signal,
         });
       } catch (error) {
+        if (error instanceof Ebur128ParseError) {
+          // Not the file: ffmpeg's output changed. Loud, and retried (then the DLQ).
+          deps.log?.({
+            level: 'error',
+            msg: 'loudness: unreadable ebur128 output',
+            assetId: payload.assetId,
+            err: error.message,
+          });
+        }
         if (!isFileError(error)) throw error;
         deps.log?.({
           level: 'warn',
@@ -83,8 +93,11 @@ export async function measureAssetLoudness(
         });
         return 'unmeasurable';
       }
+      // Stored only if this file is still the asset's playout copy (checked under its lock):
+      // a slow job measuring a replaced file never overwrites the newer measurement.
       await setLoudness(deps.db, ctx, payload.assetId, {
         ...result,
+        playoutSha256: payload.playoutSha256,
         analyzer: LOUDNESS_ANALYZER,
         analyzerVersion: `${LOUDNESS_METHOD_VERSION}/ffmpeg ${await ffmpegVersion(deps.tools)}`,
       });
@@ -93,8 +106,8 @@ export async function measureAssetLoudness(
       await rm(work, { recursive: true, force: true });
     }
   } catch (error) {
-    // The station or asset was deleted while we worked: nothing left to measure.
-    if (error instanceof NotFoundError) return 'stale';
+    // The station or asset was deleted, or the playout copy replaced, while we worked.
+    if (error instanceof NotFoundError || error instanceof StaleMeasurementError) return 'stale';
     throw error;
   }
 }

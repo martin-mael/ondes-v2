@@ -1,5 +1,7 @@
 import { z } from 'zod';
-import { uuidSchema } from './tenancy.ts';
+// Types only (erased): library.ts imports this file's schemas.
+import type { Asset, AssetLoudness } from './library.ts';
+import { type Station, uuidSchema } from './tenancy.ts';
 
 // Loudness (#19): measured once at ingest, applied at playout as a precomputed gain. The
 // engine never normalises at runtime (Liquidsoap's `normalize` pumps, docs/research/03).
@@ -53,10 +55,11 @@ export const SILENCE_LUFS = -70;
 
 /**
  * Where a playout gain comes from:
- * - `measured`: target − integrated, clamped to the true-peak ceiling;
- * - `override`: the asset's fixed gain (`gainOverrideDb`), applied as given;
+ * - `measured`: target − integrated;
+ * - `override`: the asset's fixed gain (`gainOverrideDb`);
  * - `disabled`: normalisation off for the asset (`normalizeLoudness: false`): 0 dB;
  * - `unmeasured`: no loudness yet (or silence): 0 dB.
+ * Measured and override gains are both clamped to the true-peak ceiling when the peak is known.
  */
 export const playoutGainSourceSchema = z.enum(['measured', 'override', 'disabled', 'unmeasured']);
 export type PlayoutGainSource = z.infer<typeof playoutGainSourceSchema>;
@@ -70,51 +73,52 @@ export const playoutGainSchema = z.object({
 });
 export type PlayoutGain = z.infer<typeof playoutGainSchema>;
 
-/** What {@link getPlayoutGain} reads from an asset (an `Asset` plus its loudness row). */
-export interface PlayoutGainAsset {
-  normalizeLoudness: boolean;
-  gainOverrideDb: number | null;
-  loudness: { integratedLufs: number; truePeakDbtp: number | null } | null;
-}
+/** What {@link getPlayoutGain} reads from an asset: an `Asset` plus its loudness row. */
+export type PlayoutGainAsset = Pick<Asset, 'normalizeLoudness' | 'gainOverrideDb'> & {
+  loudness: Pick<AssetLoudness, 'integratedLufs' | 'truePeakDbtp'> | null;
+};
 
-/** What {@link getPlayoutGain} reads from a station (a `Station`). */
-export interface PlayoutGainStation {
-  loudnessTargetLufs: number;
-  truePeakLimitDbtp: number;
-}
+/** What {@link getPlayoutGain} reads from a station. */
+export type PlayoutGainStation = Pick<Station, 'loudnessTargetLufs' | 'truePeakLimitDbtp'>;
 
 /**
  * The gain the engine applies to an asset, in dB. Pure: the feeder (#29) calls it for each
  * request and the library shows it on each asset.
  *
- * Precedence: normalisation disabled (0 dB) > override (as given) > measured. Measured gain is
- * `target − integrated`, clamped so `true peak + gain ≤ ceiling`; then bounded to
- * [{@link PLAYOUT_GAIN_MIN_DB}, {@link PLAYOUT_GAIN_MAX_DB}].
+ * Precedence: normalisation disabled (0 dB, the file as it is) > override > measured. The
+ * measured gain is `target − integrated`; an override is the operator's fixed gain. Either is
+ * then clamped so `true peak + gain ≤ ceiling` (when the true peak is known: an override on an
+ * unmeasured asset applies as given), and bounded to [{@link PLAYOUT_GAIN_MIN_DB},
+ * {@link PLAYOUT_GAIN_MAX_DB}]. Unmeasured assets and silence get 0 dB, never a boost.
  *
  * Rounding: to the nearest 0.1 dB (inaudible, and stable in logs and metadata), except that a
- * gain limited by the ceiling is rounded *down*, so the rounded gain still respects it. An
- * unknown true peak is not clamped.
+ * gain limited by the ceiling is rounded *down*, so the rounded gain still respects it.
  */
 export function getPlayoutGain(asset: PlayoutGainAsset, station: PlayoutGainStation): PlayoutGain {
   if (!asset.normalizeLoudness) return { gainDb: 0, source: 'disabled', limitedByPeak: false };
-  if (asset.gainOverrideDb !== null) {
-    return { gainDb: bound(round(asset.gainOverrideDb)), source: 'override', limitedByPeak: false };
-  }
   const loudness = asset.loudness;
-  if (!loudness || loudness.integratedLufs <= SILENCE_LUFS) {
+  const measured = loudness !== null && loudness.integratedLufs > SILENCE_LUFS;
+  let wanted: number;
+  let source: PlayoutGainSource;
+  if (asset.gainOverrideDb !== null) {
+    wanted = asset.gainOverrideDb;
+    source = 'override';
+  } else if (measured) {
+    wanted = station.loudnessTargetLufs - loudness.integratedLufs;
+    source = 'measured';
+  } else {
     return { gainDb: 0, source: 'unmeasured', limitedByPeak: false };
   }
-  const wanted = station.loudnessTargetLufs - loudness.integratedLufs;
   let gain = round(wanted);
   let limitedByPeak = false;
-  if (loudness.truePeakDbtp !== null) {
+  if (loudness && loudness.truePeakDbtp !== null) {
     const headroom = station.truePeakLimitDbtp - loudness.truePeakDbtp;
     if (wanted > headroom || gain > headroom) {
       gain = roundDown(headroom);
       limitedByPeak = true;
     }
   }
-  return { gainDb: bound(gain), source: 'measured', limitedByPeak };
+  return { gainDb: bound(gain), source, limitedByPeak };
 }
 
 // The epsilon absorbs float noise (−16 − −19.3 = 3.3000000000000007) without moving a real
