@@ -31,7 +31,7 @@ export type SeparationUnit = z.infer<typeof separationUnitSchema>;
 
 const separation = {
   unit: separationUnitSchema,
-  /** Minutes (up to 7 days) or items (up to 200). */
+  /** Minutes or items, up to 10 080 (a week in minutes). */
   value: z
     .int()
     .min(1)
