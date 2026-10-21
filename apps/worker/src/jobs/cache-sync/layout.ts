@@ -25,13 +25,23 @@ import type { Storage } from '@ondes/storage';
 //     media/<aa>/<sha256>.<ext>      final files, mode 0444, only ever created by rename(2)
 //     .partial/<sha256>.<ext>.part   downloads in progress (same filesystem: rename is atomic)
 //     .partial/<sha256>.<ext>.lock   held by the process downloading that file
-//     safety/, emergency.flac        the template's fallbacks: outside media/, never touched
+//     safety/, emergency.flac        the template's fallbacks (#34): outside media/, see fallbacks.ts
 //
 // The engine is only ever given paths under media/, so it can never open a partial file.
 
 const MEDIA_FILE = /^([0-9a-f]{64})\.([a-z0-9]{1,10})$/;
 
-export type CachedFile = CacheObject & { sizeBytes: number; lastNeededAt: number };
+export type CachedFile = CacheObject & {
+  sizeBytes: number;
+  lastNeededAt: number;
+  /** Inode, to tell which fallback links (#34) share its bytes. */
+  ino?: number;
+  /**
+   * Hard-linked elsewhere too (a pinned fallback file, #34): evicting it would free nothing,
+   * so it is never an eviction candidate.
+   */
+  linked?: boolean;
+};
 
 /** Every complete file under `media/`. `lastNeededAt` is the file's mtime (see {@link touch}). */
 export async function scanCache(root: string): Promise<CachedFile[]> {
@@ -55,7 +65,14 @@ export async function scanCache(root: string): Promise<CachedFile[]> {
       if (!m?.[1] || !m[2] || m[1].slice(0, 2) !== shard) continue;
       try {
         const st = await stat(join(media, shard, name));
-        out.push({ sha256: m[1], ext: m[2], sizeBytes: st.size, lastNeededAt: st.mtimeMs });
+        out.push({
+          sha256: m[1],
+          ext: m[2],
+          sizeBytes: st.size,
+          lastNeededAt: st.mtimeMs,
+          ino: st.ino,
+          linked: st.nlink > 1,
+        });
       } catch {
         // Evicted meanwhile.
       }

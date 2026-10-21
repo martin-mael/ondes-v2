@@ -8,17 +8,23 @@ import {
 } from 'fastify-type-provider-zod';
 import { health } from './health.ts';
 import { type AlertsPluginOptions, alertsPlugin } from './modules/alerts/plugin.ts';
+import { type AsRunPluginOptions, asRunPlugin } from './modules/asrun/plugin.ts';
 import { authRoutes } from './modules/auth/routes.ts';
 import { type CachePluginOptions, cachePlugin } from './modules/cache/plugin.ts';
+import { type FeederPluginOptions, feederPlugin } from './modules/engine/feeder/plugin.ts';
 import {
   type EngineLifecyclePluginOptions,
   engineLifecyclePlugin,
 } from './modules/engine/lifecycle/plugin.ts';
+import { type SafetyPluginOptions, safetyPlugin } from './modules/engine/safety/plugin.ts';
 import { type InvitationsOptions, invitationsRoutes } from './modules/invitations/routes.ts';
+import { type PeaksPluginOptions, peaksPlugin } from './modules/library/peaks-plugin.ts';
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
+import { rotationRoutes } from './modules/rotation/routes.ts';
+import { showsRoutes } from './modules/shows/routes.ts';
 import { type AuthConfig, authPlugin } from './plugins/auth.ts';
 import { type DbPluginOptions, dbPlugin } from './plugins/db.ts';
 import { errorsPlugin } from './plugins/errors.ts';
@@ -36,12 +42,20 @@ export interface AppOptions {
   engine?: EngineLifecyclePluginOptions;
   /** Alerts (#33): the engine lookup for the silence action, the escalation sweep. */
   alerts?: AlertsPluginOptions;
+  /** As-run (#30): the durable queue name (tests). */
+  asrun?: AsRunPluginOptions;
   /** Playout cache (#31): readiness API and cache alerts. */
   cache?: CachePluginOptions;
-  /** Media storage. Optional so tests that don't upload can skip S3; without it, no upload routes. */
+  /** Safety playlist and emergency file (#34): alert interval, event queue (tests). */
+  safety?: SafetyPluginOptions;
+  /** Log feeder (#29), on when the api manages engines and has RabbitMQ. `false` turns it off. */
+  feeder?: FeederPluginOptions | false;
+  /** Media storage. Optional so tests that don't upload can skip S3; without it, no upload or peaks routes. */
   storage?: Storage;
   /** Upload route settings beyond `storage` (tests). */
   uploads?: Omit<UploadPluginOptions, 'storage'>;
+  /** Peaks route settings beyond `storage` (tests). */
+  peaks?: Omit<PeaksPluginOptions, 'storage'>;
   /** Team onboarding (#113): DNS resolver and sending limits. */
   invitations?: InvitationsOptions;
   /** Real-time stream tuning (tests shorten the timers). */
@@ -75,6 +89,10 @@ export async function buildApp(options: AppOptions) {
   // Library routes carry their full /api/v1/stations/:stationId path.
   await app.register(libraryPlugin);
   await app.register(logRoutes, { prefix: '/api/v1' });
+  // As-run (#30): `GET …/asrun`, engine track events -> as-run entries (durable queue).
+  await app.register(asRunPlugin, options.asrun ?? {});
+  await app.register(showsRoutes, { prefix: '/api/v1' });
+  await app.register(rotationRoutes, { prefix: '/api/v1' });
   // Engine lifecycle (#35): engine routes, the internal engine events route, engines at boot.
   if (options.engine) await app.register(engineLifecyclePlugin, options.engine);
   // Alerts (#33): `app.alerts`, its routes under /api/v1, engine events -> alerts. Registered
@@ -96,8 +114,16 @@ export async function buildApp(options: AppOptions) {
   });
   // Playout cache (#31): `app.playoutCache` for the feeder, `GET …/cache`, cache alerts.
   await app.register(cachePlugin, options.cache ?? {});
+  // Safety playlist and emergency file (#34): routes, on-air source, fallback alerts.
+  await app.register(safetyPlugin, options.safety ?? {});
+  // Log feeder (#29): keeps each station's engine queue ahead of air, one replica per station.
+  if (lifecycle && options.rabbit && options.feeder !== false) {
+    await app.register(feederPlugin, options.feeder ?? {});
+  }
   if (options.storage) {
     await app.register(uploadPlugin, { ...options.uploads, storage: options.storage });
+    // Waveform peaks (#22): GET …/assets/:assetId/peaks.
+    await app.register(peaksPlugin, { ...options.peaks, storage: options.storage });
   }
 
   return app;

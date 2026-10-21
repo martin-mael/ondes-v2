@@ -4,6 +4,7 @@ import {
   type CachedFileInput,
   cacheLogFingerprint,
   type Db,
+  fallbackFingerprint,
   forgetCacheFiles,
   getStationCache,
   listCacheHorizon,
@@ -16,6 +17,7 @@ import {
 } from '@ondes/db';
 import { type CacheFileError, type CacheObject, playoutRelPath } from '@ondes/shared';
 import { ObjectNotFoundError, type Storage } from '@ondes/storage';
+import { type FallbackSyncReport, pinnedFallbackBytes, syncFallbacks } from './fallbacks.ts';
 import {
   ChecksumMismatchError,
   diskSpace,
@@ -77,6 +79,8 @@ export type CachePassReport = {
   busy: Need[];
   partialsRemoved: number;
   diskLow: boolean;
+  /** The safety playlist and emergency file (#34), synced first in every pass (the last one's). */
+  fallbacks?: FallbackSyncReport;
 };
 
 export function stationCacheDir(cacheRoot: string, stationId: string): string {
@@ -104,21 +108,33 @@ export async function runCacheSync(
   }
 }
 
-/** Syncs one station; repeats (up to 3 passes) while the log keeps changing under it. */
+/**
+ * Syncs one station: its fallback files first (the safety playlist and emergency file, the
+ * last thing between the station and silence), then the log horizon. Repeats (up to 3
+ * passes) while the log or the fallback selection keeps changing under it: the enqueue of a
+ * change that lands during a pass is collapsed into this job's in-flight key.
+ */
 export async function syncStation(
   deps: CacheSyncDeps,
   scope: StationScope,
   signal?: AbortSignal,
 ): Promise<CachePassReport> {
+  const root = stationCacheDir(deps.cacheRoot, scope.stationId);
   for (let passes = 1; ; passes++) {
     const now = (deps.now ?? Date.now)();
     const settings = await getStationCache(deps.db, scope, deps.defaults);
+    // One cap for every download of the station, fallbacks included.
+    const throttle = settings.bytesPerSec ? new Throttle(settings.bytesPerSec) : undefined;
+    const fallbacksBefore = await fallbackFingerprint(deps.db, scope);
+    const fallbacks = await syncFallbacks(deps, scope, root, { signal, throttle });
     const window = pinnedWindow(now, { horizonMs: settings.horizonHours * HOUR });
     const range = { from: new Date(window.from), to: new Date(window.to) };
     const before = await cacheLogFingerprint(deps.db, scope, range);
-    const report = await passOnce(deps, scope, { now, range, settings }, signal);
+    const report = await passOnce(deps, scope, { now, range, settings, throttle }, signal);
     const after = await cacheLogFingerprint(deps.db, scope, range);
-    if (after === before || passes >= 3 || signal?.aborted) return { ...report, passes };
+    const fallbacksAfter = await fallbackFingerprint(deps.db, scope);
+    const settled = after === before && fallbacksAfter === fallbacksBefore;
+    if (settled || passes >= 3 || signal?.aborted) return { ...report, passes, fallbacks };
   }
 }
 
@@ -129,6 +145,7 @@ async function passOnce(
     now: number;
     range: { from: Date; to: Date };
     settings: Awaited<ReturnType<typeof getStationCache>>;
+    throttle?: Throttle;
   },
   signal?: AbortSignal,
 ): Promise<Omit<CachePassReport, 'passes'>> {
@@ -152,6 +169,7 @@ async function passOnce(
   // Rows written after this (an urgent fetch landing mid-pass) are newer than the scan.
   const scannedAt = new Date();
   const cached = await scanCache(root);
+  const pinnedBytes = await pinnedFallbackBytes(root, cached);
   const locked = await listLocked(root);
   const p = plan({
     now: input.now,
@@ -161,6 +179,7 @@ async function passOnce(
     cached,
     budgetBytes: input.settings.budgetBytes,
     inFlight: locked,
+    pinnedBytes,
   });
 
   // Partial files of objects no longer planned are dropped; planned ones are resumed. Only
@@ -219,9 +238,7 @@ async function passOnce(
   };
   await roomFor(0);
 
-  const throttle = input.settings.bytesPerSec
-    ? new Throttle(input.settings.bytesPerSec)
-    : undefined;
+  const throttle = input.throttle;
   const fetched: Need[] = [];
   const failed: FetchFailure[] = [];
   const busy: Need[] = [];
@@ -242,8 +259,9 @@ async function passOnce(
   await Promise.all(Array.from({ length: Math.max(1, deps.concurrency ?? 4) }, worker));
 
   const finalDisk = await scanCache(root);
+  const finalPinned = await pinnedFallbackBytes(root, finalDisk);
   await recordCachePass(db, scope, {
-    usedBytes: finalDisk.reduce((s, f) => s + f.sizeBytes, 0),
+    usedBytes: finalDisk.reduce((s, f) => s + f.sizeBytes, 0) + finalPinned,
     horizonBytes: p.usage.horizonBytes,
     deferred: p.deferred.map((d) => d.sha256),
     diskLow,

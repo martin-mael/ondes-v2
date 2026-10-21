@@ -37,6 +37,11 @@ The draft's `request.queue` is replaced by a queue of **segments** played throug
 ### Processing
 Built-in `compress` and `limit` on the program (live included), each toggleable per station with its parameters in the settings, before `mksafe`. No licensed component (Stereo Tool stays an opt-in plugin, per the spec).
 
+### Fallback files (#34)
+The safety playlist (`paths.safetyDir`, `/cache/safety` in the engine) and the emergency file (`paths.emergencyFile`, `/cache/emergency.flac`) are written into the station's playout cache by the worker (`apps/worker/src/jobs/cache-sync/fallbacks.ts`): hard links to verified files, placed by `rename(2)`. The template picks up every change by itself, so changing them never restarts the engine. Measured on 2.4.6:
+- `playlist(reload_mode="watch")` reloads when files come and go, also from an empty directory, but **never sees a directory created after boot**. The worker creates `safety/` in every sync, so it exists before the engine is started.
+- `single()` on a missing file never becomes ready, even once the file appears. The emergency source is a `request.dynamic` (`retry_delay=1.`) that asks for the file at every loop: a file that appears after boot plays within a second, a replaced one from its next loop, and a removed one makes the source unavailable (then `mksafe`'s silence).
+
 ### Tests
 - `pnpm test:engine` renders every combination in `engine/tests/template/combos.ts` (live × compressor × limiter, every output format, escaping) and runs `liquidsoap --check` on each in the pinned image. Warnings fail the run.
 - `pnpm test:engine:template` runs the rendered template for real (its own container), drives the control API, and checks with the splice test's seam detector that an island segment airs sample-exact (shift 0, residual about −115 dB on FLAC noise).

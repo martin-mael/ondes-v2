@@ -117,6 +117,8 @@ const en = {
   'account.recovery.done': "I've saved them",
 
   'shell.nav.dashboard': 'Dashboard',
+  'shell.nav.categories': 'Categories',
+  'shell.nav.safety': 'Safety & emergency',
   'shell.nav.account': 'Account',
   'shell.station': 'Station',
   'shell.stations': 'Stations',
@@ -262,6 +264,8 @@ const fr: Messages = {
   'account.recovery.done': 'Je les ai enregistrés',
 
   'shell.nav.dashboard': 'Tableau de bord',
+  'shell.nav.categories': 'Catégories',
+  'shell.nav.safety': 'Secours et urgence',
   'shell.nav.account': 'Compte',
   'shell.station': 'Station',
   'shell.stations': 'Stations',

@@ -1,11 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { playoutRelPath } from '@ondes/shared';
 import { ObjectNotFoundError, type Storage } from '@ondes/storage';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { pinnedFallbackBytes } from './fallbacks.ts';
 import {
   ChecksumMismatchError,
   fetchToCache,
@@ -118,8 +119,30 @@ describe('scanCache', () => {
     await writeFile(join(root, 'media', 'zz', 'not-a-hash.flac'), 'x');
     await touch(root, obj, Date.parse('2026-01-01T00:00:00Z'));
     expect(await scanCache(root)).toEqual([
-      { ...obj, lastNeededAt: Date.parse('2026-01-01T00:00:00Z') },
+      {
+        ...obj,
+        lastNeededAt: Date.parse('2026-01-01T00:00:00Z'),
+        ino: expect.any(Number),
+        linked: false,
+      },
     ]);
+  });
+
+  it('flags a file hard-linked elsewhere (a pinned fallback, #34)', async () => {
+    const data = randomBytes(10);
+    const obj = { sha256: sha(data), ext: 'flac', sizeBytes: 10 };
+    const { path } = await fetchToCache(
+      memoryStorage(new Map([['k', data]])).storage,
+      root,
+      'k',
+      obj,
+    );
+    await mkdir(join(root, 'safety'), { recursive: true });
+    await link(path, join(root, 'safety', `${obj.sha256}.flac`));
+    expect((await scanCache(root))[0]?.linked).toBe(true);
+    expect(await pinnedFallbackBytes(root, await scanCache(root))).toBe(0);
+    await rm(path);
+    expect(await pinnedFallbackBytes(root, await scanCache(root))).toBe(10);
   });
 });
 

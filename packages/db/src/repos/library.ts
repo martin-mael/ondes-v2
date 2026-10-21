@@ -315,12 +315,17 @@ export async function listAssetFiles(
  * role. The new key is charged in the same transaction (once per org, however many assets
  * share it); the replaced key is released like on delete. Pass a transaction to tie it to other
  * writes (ingest creates the asset and both its files at once).
+ *
+ * With `ifPlayoutSha256` (files derived from the playout copy, e.g. peaks), only if that is
+ * still the asset's playout file, checked under the asset's lock; otherwise throws
+ * `StaleMeasurementError`.
  */
 export async function putAssetFile(
   db: Writer,
   ctx: StationContext,
   assetId: string,
   input: CreateAssetFile,
+  options: { ifPlayoutSha256?: string } = {},
 ): Promise<{ file: AssetFile; released: ReleasedObjects }> {
   const values = createAssetFileSchema.parse(input);
   if (!values.storageKey.startsWith(orgPrefix(ctx.scope.orgId))) {
@@ -328,6 +333,9 @@ export async function putAssetFile(
   }
   const { file, pending } = await withAudit(db, ctx, async (tx, audit) => {
     await lockAsset(tx, ctx.scope, assetId);
+    if (options.ifPlayoutSha256) {
+      await assertPlayoutSha(tx, ctx.scope, assetId, options.ifPlayoutSha256);
+    }
     const [previous] = await tx
       .delete(assetFile)
       .where(
@@ -357,6 +365,26 @@ export async function putAssetFile(
     return { file: toAssetFile(row), pending };
   });
   return { file, released: { scheduled: pending } };
+}
+
+/** Throws `StaleMeasurementError` unless the asset's playout file has this hash. */
+async function assertPlayoutSha(
+  tx: Tx,
+  scope: StationScope,
+  assetId: string,
+  sha256: string,
+): Promise<void> {
+  const [playout] = await tx
+    .select({ sha256: assetFile.sha256 })
+    .from(assetFile)
+    .where(
+      and(
+        eq(assetFile.assetId, assetId),
+        eq(assetFile.role, 'playout'),
+        whereStation(assetFile, scope),
+      ),
+    );
+  if (playout?.sha256 !== sha256) throw new StaleMeasurementError(assetId);
 }
 
 // --- Cues --------------------------------------------------------------------------------
@@ -640,17 +668,7 @@ export async function setLoudness(
   return withAudit(db, ctx, async (tx, audit) => {
     await lockAsset(tx, ctx.scope, assetId);
     if (values.playoutSha256) {
-      const [playout] = await tx
-        .select({ sha256: assetFile.sha256 })
-        .from(assetFile)
-        .where(
-          and(
-            eq(assetFile.assetId, assetId),
-            eq(assetFile.role, 'playout'),
-            whereStation(assetFile, ctx.scope),
-          ),
-        );
-      if (playout?.sha256 !== values.playoutSha256) throw new StaleMeasurementError(assetId);
+      await assertPlayoutSha(tx, ctx.scope, assetId, values.playoutSha256);
     }
     const before = await getLoudness(tx, ctx.scope, assetId);
     const [row] = await tx

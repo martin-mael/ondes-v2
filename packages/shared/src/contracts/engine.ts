@@ -240,6 +240,11 @@ export const engineEventSchema = z.discriminatedUnion('type', [
       artist: z.string().nullable(),
       filename: z.string().nullable(),
       rid: z.string().nullable(),
+      /**
+       * The live session on air, for `source: live` (#30, #62): the id Node gave the engine
+       * when it opened the gate. Absent or null otherwise, and until the template sends it.
+       */
+      live_session_id: z.string().nullable().optional(),
     }),
   }),
   /** The previous track left the air; `played` is how long it was the on-air track. */
