@@ -121,6 +121,22 @@ describe('envelopes', () => {
   });
 });
 
+describe('the api’s ±10 minutes', () => {
+  const max = 600 * SR;
+  it('clamps points and lane moves, envelope included', () => {
+    expect(addPoint([], { at: max + 5, gainDb: 0 })).toEqual([{ at: max, gainDb: 0 }]);
+    expect(movePoint([{ at: 0, gainDb: 0 }], 0, { at: -max - 9, gainDb: 0 })[0]?.at).toBe(-max);
+    const lanes: Lanes = {
+      ...emptyLanes(),
+      in: { start: 0, envelope: [{ at: s(5), gainDb: -8 }] },
+    };
+    const moved = moveLane(lanes, 'in', max);
+    // The envelope's last point stops at the limit, the start 5 s before it.
+    expect(moved.in).toEqual({ start: max - s(5), envelope: [{ at: max, gainDb: -8 }] });
+    expect(moveLane(withVoice(), voiceKey(0), -max - s(60)).voices[0]?.start).toBe(-max);
+  });
+});
+
 describe('checks and islands', () => {
   it('flags what the api would refuse', () => {
     expect(problemOf(withVoice(), MEDIA)).toBeNull();

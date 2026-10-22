@@ -3,6 +3,7 @@ import {
   dbToAmplitude,
   envelopeAutomation,
   type GainAutomationEvent,
+  SEGUE_MAX_VOICES,
   type SegueMedia,
 } from '@ondes/shared';
 import { assetAudioUrl } from '../log-timeline/api.ts';
@@ -58,8 +59,30 @@ export function previewPlan(
   return { voices, length };
 }
 
-/** Decoded playout copies, by sha256: the newest few, so going back and forth doesn't refetch. */
-const BUFFER_CACHE_SIZE = 8;
+/**
+ * Decoded playout copies kept, by sha256: at most one per lane (A, B and the voices). Decoded
+ * PCM is large (a 3-minute stereo song is about 60 MB of float32), so the page also drops the
+ * files no lane plays any more ({@link SeguePlayer.retain}) and everything on unmount.
+ */
+export const BUFFER_CACHE_SIZE = SEGUE_MAX_VOICES + 2;
+
+/** What the player needs from the platform; tests pass fakes. */
+export interface PlayerDeps {
+  createContext(): AudioContext;
+  fetchAudio(url: string): Promise<ArrayBuffer>;
+}
+
+const browserDeps: PlayerDeps = {
+  createContext: () => new AudioContext({ sampleRate: SR, latencyHint: 'interactive' }),
+  fetchAudio: async (url) => {
+    const res = await fetch(url, { credentials: 'same-origin' });
+    if (!res.ok) throw new Error(`audio ${res.status}`);
+    return res.arrayBuffer();
+  },
+};
+
+/** `play` resolved without playing: a `stop()` or a newer `play()` came first. */
+export type PlayResult = 'playing' | 'cancelled';
 
 export class SeguePlayer {
   private ctx: AudioContext | null = null;
@@ -68,14 +91,18 @@ export class SeguePlayer {
   private started: { at: number; from: number; length: number } | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private onEnd: (() => void) | null = null;
+  /** Bumped by every `play()` and `stop()`: a play still loading its audio checks it's current. */
+  private generation = 0;
   private readonly stationId: string;
+  private readonly deps: PlayerDeps;
 
-  constructor(stationId: string) {
+  constructor(stationId: string, deps: PlayerDeps = browserDeps) {
     this.stationId = stationId;
+    this.deps = deps;
   }
 
   private context(): AudioContext {
-    this.ctx ??= new AudioContext({ sampleRate: SR, latencyHint: 'interactive' });
+    this.ctx ??= this.deps.createContext();
     return this.ctx;
   }
 
@@ -88,15 +115,12 @@ export class SeguePlayer {
       return cached;
     }
     const ctx = this.context();
-    const loading = fetch(assetAudioUrl(this.stationId, media.assetId, media.sha256), {
-      credentials: 'same-origin',
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error(`audio ${res.status}`);
-        return res.arrayBuffer();
-      })
+    const loading = this.deps
+      .fetchAudio(assetAudioUrl(this.stationId, media.assetId, media.sha256))
       .then((bytes) => ctx.decodeAudioData(bytes));
-    loading.catch(() => this.buffers.delete(media.sha256));
+    loading.catch(() => {
+      if (this.buffers.get(media.sha256) === loading) this.buffers.delete(media.sha256);
+    });
     this.buffers.set(media.sha256, loading);
     while (this.buffers.size > BUFFER_CACHE_SIZE) {
       const oldest = this.buffers.keys().next().value;
@@ -106,13 +130,25 @@ export class SeguePlayer {
     return loading;
   }
 
-  /** Plays the clips from axis position `from`; `onEnd` when it ran out or was stopped. */
-  async play(clips: readonly Clip[], from: number, onEnd: () => void): Promise<void> {
+  /** Drops the decoded files not in `sha256s` (the lanes changed). */
+  retain(sha256s: Iterable<string>): void {
+    const keep = new Set(sha256s);
+    for (const key of [...this.buffers.keys()]) if (!keep.has(key)) this.buffers.delete(key);
+  }
+
+  /**
+   * Plays the clips from axis position `from`; `onEnd` once it ran out or was stopped. While
+   * the audio loads, a `stop()` or another `play()` cancels it: it resolves `cancelled` and
+   * schedules nothing, so two plays never overlap.
+   */
+  async play(clips: readonly Clip[], from: number, onEnd: () => void): Promise<PlayResult> {
     this.stop();
+    const generation = this.generation;
     const ctx = this.context();
     if (ctx.state === 'suspended') await ctx.resume();
     const plan = previewPlan(clips, from);
     const buffers = await Promise.all(plan.voices.map((v) => this.load(v.media)));
+    if (generation !== this.generation) return 'cancelled';
     // A little lead so every node starts on the same clock tick.
     const t0 = ctx.currentTime + 0.05;
     const time = (samples: number) => t0 + samples / SR;
@@ -134,6 +170,7 @@ export class SeguePlayer {
     this.started = { at: t0, from, length: plan.length };
     this.onEnd = onEnd;
     this.timer = setTimeout(() => this.stop(), (plan.length / SR + 0.1) * 1000);
+    return 'playing';
   }
 
   /** The axis position playing now, or null when stopped. */
@@ -143,7 +180,9 @@ export class SeguePlayer {
     return this.started.from + Math.min(elapsed, this.started.length);
   }
 
+  /** Stops what plays, and cancels a play still loading its audio. */
   stop(): void {
+    this.generation++;
     for (const node of this.nodes) {
       try {
         node.stop();
@@ -162,6 +201,7 @@ export class SeguePlayer {
     if (wasPlaying) onEnd?.();
   }
 
+  /** Stops and releases the audio context and every decoded file. */
   close(): void {
     this.stop();
     void this.ctx?.close();

@@ -60,7 +60,12 @@ const en = {
 
   'problem.title': 'This segue can’t be rendered',
   'saved.toast': 'Segue saved: its island will render now',
-  'conflict.toast': 'Someone saved this segue meanwhile. It was reloaded: redo your change.',
+  'conflict.title': 'Someone saved this segue meanwhile',
+  'conflict.body':
+    'Your changes are still here. Keep editing yours (saving replaces theirs), or load theirs: Undo brings yours back.',
+  'conflict.keep': 'Keep mine',
+  'conflict.load': 'Load theirs',
+  'save.error': 'The segue couldn’t be saved: {reason}',
   'audio.error': 'The audio couldn’t be loaded for the preview.',
   'voice.pick': 'Add a voice',
 };
@@ -124,8 +129,12 @@ const fr: Record<SegueMessageKey, string> = {
 
   'problem.title': 'Cet enchaînement ne peut pas être rendu',
   'saved.toast': 'Enchaînement enregistré : son îlot va être rendu',
-  'conflict.toast':
-    'Quelqu’un a enregistré cet enchaînement entre-temps. Il a été rechargé : refaites votre modification.',
+  'conflict.title': 'Quelqu’un a enregistré cet enchaînement entre-temps',
+  'conflict.body':
+    'Vos modifications sont toujours là. Continuez avec les vôtres (enregistrer remplace les siennes) ou chargez les siennes : Annuler ramène les vôtres.',
+  'conflict.keep': 'Garder les miennes',
+  'conflict.load': 'Charger les siennes',
+  'save.error': 'L’enchaînement n’a pas pu être enregistré : {reason}',
   'audio.error': 'L’audio n’a pas pu être chargé pour l’écoute.',
   'voice.pick': 'Ajouter une voix',
 };

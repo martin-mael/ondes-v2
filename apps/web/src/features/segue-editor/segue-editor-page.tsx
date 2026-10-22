@@ -22,6 +22,14 @@ import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/ui/dialog';
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -32,7 +40,7 @@ import { Input } from '@/ui/input';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
-import { FormAlert } from '../../app/forms.tsx';
+import { FormAlert, useErrorMessage } from '../../app/forms.tsx';
 import { DelayedSpinner, PageSkeleton } from '../../app/pending.tsx';
 import { useSseEvent } from '../../app/sse/sse.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
@@ -192,6 +200,9 @@ export function SegueEditorPage() {
   );
 }
 
+/** `loading`: the audio is fetched and decoded before anything plays. */
+type PlayPhase = 'idle' | 'loading' | 'playing';
+
 interface Selection {
   lane: LaneKey | null;
   point: number | null;
@@ -314,26 +325,34 @@ function Editor({
   // --- Preview ---------------------------------------------------------------------------
   const player = useMemo(() => new SeguePlayer(stationId), [stationId]);
   useEffect(() => () => player.close(), [player]);
-  const [playing, setPlaying] = useState(false);
-  const [loadingAudio, setLoadingAudio] = useState(false);
+  // Decoded audio is large: keep only the files the lanes play now.
+  useEffect(() => player.retain(clips.map((c) => c.media.sha256)), [clips, player]);
+  const [phase, setPhase] = useState<PlayPhase>('idle');
+  const playing = phase === 'playing';
   const [playhead, setPlayhead] = useState<number | null>(null);
   const [preroll, setPreroll] = useState<number>(5);
 
   const play = async (from: number) => {
-    setLoadingAudio(true);
+    // `player.play` stops what plays first (its `onEnd` sets idle), then loads: say so after.
+    const started = player.play(clips, from, () => {
+      setPhase('idle');
+      setPlayhead(null);
+    });
+    setPhase('loading');
     try {
-      await player.play(clips, from, () => {
-        setPlaying(false);
-        setPlayhead(null);
-      });
-      setPlaying(true);
+      // `cancelled`: a stop or a newer play came first and already set the phase.
+      if ((await started) === 'playing') setPhase('playing');
     } catch {
+      setPhase('idle');
       toast.error(t('audio.error'));
-    } finally {
-      setLoadingAudio(false);
     }
   };
-  const stop = () => player.stop();
+  /** Stops playback, or cancels a play still loading its audio. */
+  const stop = () => {
+    player.stop();
+    setPhase('idle');
+    setPlayhead(null);
+  };
   const playBefore = () => {
     const from = transitionStart(lanes) - preroll * SR;
     setCursor(from);
@@ -363,29 +382,38 @@ function Editor({
 
   // Edits stop the preview: what plays must be what is shown.
   const edit = (next: Lanes) => {
-    if (playing) stop();
+    if (!canWrite) return;
+    if (phase !== 'idle') stop();
     history.change(next);
   };
 
   // --- Save ------------------------------------------------------------------------------
-  const reload = async () => {
+  const errorMessage = useErrorMessage();
+  // Someone else saved meanwhile: their version, while the user decides what to keep.
+  const [conflict, setConflict] = useState<Lanes | null>(null);
+  /**
+   * On a 409: what the api has becomes the reference (its version is what the next save
+   * overwrites), the user's draft and undo history stay. They keep editing theirs, or load the
+   * other one as a new step (undo brings theirs back).
+   */
+  const takeTheirs = async () => {
     const fresh = await queryClient.fetchQuery({
       ...segueQuery(stationId, a.id, b.id),
       staleTime: 0,
     });
-    history.reset(lanesOf(fresh));
     setSaved({
       lanes: lanesOf(fresh),
       segueId: fresh?.id ?? null,
       version: fresh?.version ?? null,
     });
+    setConflict(lanesOf(fresh));
   };
   const save = useMutation({
     mutationFn: (body: Lanes) =>
       saved.segueId
         ? segueApi.update(stationId, saved.segueId, {
             ...body,
-            ...(saved.version ? { version: saved.version } : {}),
+            ...(saved.version !== null ? { version: saved.version } : {}),
           })
         : segueApi.create(stationId, { fromItemId: a.id, toItemId: b.id, ...body }),
     onSuccess: (result, body) => {
@@ -395,13 +423,15 @@ function Editor({
     },
     onError: async (error) => {
       if (isApiError(error) && error.status === 409) {
-        toast.error(t('conflict.toast'));
-        await reload();
+        await takeTheirs().catch((reloadError) => toast.error(errorMessage(reloadError)));
       } else if (isApiError(error) && error.status === 403) {
         toast.error(t('forbidden'));
+      } else {
+        toast.error(t('save.error', { reason: errorMessage(error) }));
       }
     },
   });
+  const canSave = canWrite && dirty && !save.isPending && !problem;
 
   // The api re-syncs segues when the log or media move, and the renderer (#56) moves islands
   // through their states: refetch the segue to show its status.
@@ -425,19 +455,20 @@ function Editor({
     const mod = e.metaKey || e.ctrlKey;
     if (mod && e.key.toLowerCase() === 'z') {
       e.preventDefault();
+      if (!canWrite) return;
       if (e.shiftKey) history.redo();
       else history.undo();
     } else if (mod && e.key.toLowerCase() === 'y') {
       e.preventDefault();
-      history.redo();
+      if (canWrite) history.redo();
     } else if (mod && e.key.toLowerCase() === 's') {
       e.preventDefault();
-      if (dirty && canWrite && !save.isPending) save.mutate(lanes);
+      if (canSave) save.mutate(lanes);
     } else if (e.key === ' ') {
       e.preventDefault();
-      if (playing) stop();
+      if (phase !== 'idle') stop();
       else void play(cursor);
-    } else if ((e.key === 'Delete' || e.key === 'Backspace') && selection.lane) {
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && selection.lane && canWrite) {
       if (selection.point === null) return;
       e.preventDefault();
       edit(
@@ -448,7 +479,7 @@ function Editor({
         ),
       );
       setSelection({ lane: selection.lane, point: null });
-    } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && selection.lane) {
+    } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && selection.lane && canWrite) {
       const start = laneStart(lanes, selection.lane);
       if (start === null) return;
       e.preventDefault();
@@ -506,22 +537,15 @@ function Editor({
         >
           {voice && vi !== null && canWrite && (
             <div className="flex items-center gap-1">
-              <Input
-                type="number"
-                step={0.5}
-                min={-60}
-                max={24}
-                aria-label={t('lane.gain')}
-                title={t('lane.gain')}
-                className="h-6 w-16 px-1 text-xs"
+              <GainInput
+                label={t('lane.gain')}
                 value={voice.gainDb}
-                onChange={(e) => {
-                  const gainDb = Math.max(-60, Math.min(24, Number(e.target.value) || 0));
+                onCommit={(gainDb) =>
                   edit({
                     ...lanes,
                     voices: lanes.voices.map((v, j) => (j === vi ? { ...v, gainDb } : v)),
-                  });
-                }}
+                  })
+                }
               />
               <Button
                 size="icon-xs"
@@ -547,16 +571,18 @@ function Editor({
           style={styleOf(clip.key)}
           t={t}
           movable={canWrite && clip.key !== 'out'}
+          editable={canWrite}
           selected={selected}
           selectedPoint={selected ? selection.point : null}
           onSelect={(point) => setSelection({ lane: clip.key, point })}
           onSeek={setCursor}
           onBegin={() => {
-            if (playing) stop();
+            if (!canWrite) return;
+            if (phase !== 'idle') stop();
             history.begin();
           }}
           onEnd={history.end}
-          onMove={(start) => history.change(moveLane(lanes, clip.key, start))}
+          onMove={(start) => canWrite && history.change(moveLane(lanes, clip.key, start))}
           onEnvelope={(envelope) =>
             canWrite && history.change(setLaneEnvelope(lanes, clip.key, envelope))
           }
@@ -589,10 +615,7 @@ function Editor({
             </Badge>
           )}
           {canWrite && (
-            <Button
-              onClick={() => save.mutate(lanes)}
-              disabled={!dirty || save.isPending || !!problem}
-            >
+            <Button onClick={() => save.mutate(lanes)} disabled={!canSave}>
               <DelayedSpinner when={save.isPending} data-icon="inline-start" />
               {t('toolbar.save')}
             </Button>
@@ -616,11 +639,10 @@ function Editor({
       <Toolbar
         t={t}
         canWrite={canWrite}
-        playing={playing}
-        loadingAudio={loadingAudio}
+        phase={phase}
         preroll={preroll}
         onPreroll={setPreroll}
-        onPlay={() => (playing ? stop() : void play(cursor))}
+        onPlay={() => (phase === 'idle' ? void play(cursor) : stop())}
         onPlayBefore={playBefore}
         canUndo={history.state.past.length > 0}
         canRedo={history.state.future.length > 0}
@@ -677,6 +699,27 @@ function Editor({
         </div>
       </div>
       <p className="text-xs text-muted-foreground">{t('hint')}</p>
+
+      <Dialog open={conflict !== null} onOpenChange={(open) => !open && setConflict(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('conflict.title')}</DialogTitle>
+            <DialogDescription>{t('conflict.body')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (conflict) edit(conflict);
+                setConflict(null);
+              }}
+            >
+              {t('conflict.load')}
+            </Button>
+            <Button onClick={() => setConflict(null)}>{t('conflict.keep')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AssetPickerDialog
         stationId={stationId}
@@ -764,8 +807,7 @@ function LaneHeader({
 function Toolbar(props: {
   t: SegueT;
   canWrite: boolean;
-  playing: boolean;
-  loadingAudio: boolean;
+  phase: PlayPhase;
   preroll: number;
   onPreroll(seconds: number): void;
   onPlay(): void;
@@ -785,18 +827,18 @@ function Toolbar(props: {
   const { t } = props;
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Button onClick={props.onPlay} variant={props.playing ? 'secondary' : 'default'}>
-        {props.loadingAudio ? (
-          <DelayedSpinner when data-icon="inline-start" />
-        ) : props.playing ? (
-          <SquareIcon data-icon="inline-start" />
-        ) : (
+      {/* While the audio loads the button is already Stop: a second press cancels, never overlaps. */}
+      <Button onClick={props.onPlay} variant={props.phase === 'idle' ? 'default' : 'secondary'}>
+        {props.phase === 'idle' ? (
           <PlayIcon data-icon="inline-start" />
+        ) : (
+          <SquareIcon data-icon="inline-start" />
         )}
-        {props.playing ? t('toolbar.stop') : t('toolbar.play')}
+        {props.phase === 'idle' ? t('toolbar.play') : t('toolbar.stop')}
+        <DelayedSpinner when={props.phase === 'loading'} data-icon="inline-end" />
       </Button>
       <div className="flex items-center gap-1">
-        <Button variant="outline" onClick={props.onPlayBefore} disabled={props.loadingAudio}>
+        <Button variant="outline" onClick={props.onPlayBefore} disabled={props.phase === 'loading'}>
           <RewindIcon data-icon="inline-start" />
           {t('toolbar.playBefore', { seconds: props.preroll })}
         </Button>
@@ -876,5 +918,44 @@ function Toolbar(props: {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * A voice's gain trim: typed as text (a lone "-" or "-1." is a draft, not 0), applied on blur
+ * or Enter, clamped to the api's −60…+24 dB; Escape puts the current value back.
+ */
+function GainInput({
+  label,
+  value,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  onCommit(gainDb: number): void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const parsed = Number(draft.replace(',', '.').replace('−', '-'));
+    setDraft(null);
+    if (draft.trim() === '' || !Number.isFinite(parsed)) return;
+    const gainDb = Math.round(Math.max(-60, Math.min(24, parsed)) * 10) / 10;
+    if (gainDb !== value) onCommit(gainDb);
+  };
+  return (
+    <Input
+      inputMode="decimal"
+      aria-label={label}
+      title={label}
+      className="h-6 w-16 px-1 text-xs"
+      value={draft ?? String(value)}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit();
+        if (e.key === 'Escape') setDraft(null);
+      }}
+    />
   );
 }

@@ -8,6 +8,7 @@ import {
   type EnvelopePoint,
   type IslandMedia,
   type IslandPlan,
+  SEGUE_MAX_OFFSET_SAMPLES,
   type SegueInLane,
   type SegueMedia,
   type SegueOutLane,
@@ -130,6 +131,13 @@ export function transitionStart(lanes: Lanes): number {
   return Math.min(0, lanes.in.start, ...lanes.voices.map((v) => v.start));
 }
 
+/**
+ * Positions the api accepts: within {@link SEGUE_MAX_OFFSET_SAMPLES} (10 min) of A's end.
+ * Every edit clamps to it, so a save never fails on a point or a lane dragged too far.
+ */
+export const clampOffset = (at: number) =>
+  Math.max(-SEGUE_MAX_OFFSET_SAMPLES, Math.min(SEGUE_MAX_OFFSET_SAMPLES, Math.round(at)));
+
 // --- Envelopes ---------------------------------------------------------------------------
 
 /** Gains shown and dragged in the editor: silence up to +6 dB. */
@@ -150,8 +158,9 @@ export function yToGain(y: number): number {
 /** Inserts a point, keeping `at` strictly increasing (a point at the same time is replaced). */
 export function addPoint(envelope: Envelope, point: EnvelopePoint): Envelope {
   if (envelope.length >= ENVELOPE_MAX_POINTS) return envelope;
-  const rest = envelope.filter((p) => p.at !== point.at);
-  return [...rest, point].sort((a, b) => a.at - b.at);
+  const at = clampOffset(point.at);
+  const rest = envelope.filter((p) => p.at !== at);
+  return [...rest, { at, gainDb: point.gainDb }].sort((a, b) => a.at - b.at);
 }
 
 /** Moves point `index`, kept strictly between its neighbours. */
@@ -159,8 +168,8 @@ export function movePoint(envelope: Envelope, index: number, point: EnvelopePoin
   const prev = envelope[index - 1];
   const next = envelope[index + 1];
   const at = Math.max(
-    prev ? prev.at + 1 : -Infinity,
-    Math.min(next ? next.at - 1 : Infinity, point.at),
+    prev ? prev.at + 1 : -SEGUE_MAX_OFFSET_SAMPLES,
+    Math.min(next ? next.at - 1 : SEGUE_MAX_OFFSET_SAMPLES, Math.round(point.at)),
   );
   return envelope.map((p, i) => (i === index ? { at, gainDb: point.gainDb } : p));
 }
@@ -237,10 +246,21 @@ export const clearEnvelopes = (lanes: Lanes): Lanes => ({
 
 // --- Moves -------------------------------------------------------------------------------
 
+/**
+ * Where a lane may start: its start and every point of its envelope, which moves with it,
+ * stay within the api's ±10 minutes.
+ */
+function clampStart(current: number, envelope: Envelope, start: number): number {
+  const ats = [current, ...envelope.map((p) => p.at)];
+  const lo = -SEGUE_MAX_OFFSET_SAMPLES - Math.min(...ats);
+  const hi = SEGUE_MAX_OFFSET_SAMPLES - Math.max(...ats);
+  return current + Math.max(lo, Math.min(hi, Math.round(start) - current));
+}
+
 /** Moves B or a voice (and its envelope with it) to start at `start`. A doesn't move. */
 export function moveLane(lanes: Lanes, key: LaneKey, start: number): Lanes {
-  const at = Math.round(start);
   if (key === 'in') {
+    const at = clampStart(lanes.in.start, lanes.in.envelope, start);
     const by = at - lanes.in.start;
     return { ...lanes, in: { start: at, envelope: shiftEnvelope(lanes.in.envelope, by) } };
   }
@@ -248,9 +268,11 @@ export function moveLane(lanes: Lanes, key: LaneKey, start: number): Lanes {
   if (i === null) return lanes;
   return {
     ...lanes,
-    voices: lanes.voices.map((v, j) =>
-      j === i ? { ...v, start: at, envelope: shiftEnvelope(v.envelope, at - v.start) } : v,
-    ),
+    voices: lanes.voices.map((v, j) => {
+      if (j !== i) return v;
+      const at = clampStart(v.start, v.envelope, start);
+      return { ...v, start: at, envelope: shiftEnvelope(v.envelope, at - v.start) };
+    }),
   };
 }
 

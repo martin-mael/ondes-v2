@@ -1,7 +1,7 @@
 import type { LogDay, Segue, SegueMedia } from '@ondes/shared';
 import { waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type ApiRoute, renderApp, signedIn, stationId } from '../../app/testing/render.tsx';
+import { type ApiRoute, orgs, renderApp, signedIn, stationId } from '../../app/testing/render.tsx';
 import { logItem } from '../log-timeline/testing.ts';
 
 // The segue editor on the whole app with a fake api: opened from the timeline, lanes for A,
@@ -189,15 +189,20 @@ describe('segue editor', () => {
     });
   });
 
-  it('reloads the segue when someone else saved it meanwhile', async () => {
+  it('keeps the draft on a conflict: keep mine saves over theirs, load theirs is undoable', async () => {
     let current = segue();
+    const puts: unknown[] = [];
     const { screen, user } = renderApp(
       url,
       routes(current, {
         [`GET ${base}/segues`]: () => [200, { items: [current] }],
-        [`PUT ${base}/segues/${current.id}`]: () => {
-          current = segue({ version: 9, out: { envelope: [{ at: -s(1), gainDb: -3 }] } });
-          return [409, { error: 'conflict', message: 'segue changed' }];
+        [`PUT ${base}/segues/${current.id}`]: (body) => {
+          puts.push(body);
+          if (puts.length === 1) {
+            current = segue({ version: 9, out: { envelope: [{ at: -s(1), gainDb: -3 }] } });
+            return [409, { error: 'conflict', message: 'segue changed' }];
+          }
+          return [200, segue({ ...(body as object), version: 10 })];
         },
       }),
     );
@@ -206,13 +211,88 @@ describe('segue editor', () => {
     await user.click(
       await screen.findByRole('menuitem', { name: 'Fade out the outgoing song (2 s)' }),
     );
-    await user.click(screen.getByRole('button', { name: 'Save' }));
+    const save = screen.getByRole('button', { name: 'Save' });
+    await user.click(save);
     expect(
-      await screen.findByText(
-        'Someone saved this segue meanwhile. It was reloaded: redo your change.',
-      ),
+      await screen.findByRole('dialog', { name: 'Someone saved this segue meanwhile' }),
     ).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled());
+
+    // Load theirs: a new step, so Undo brings the draft back.
+    await user.click(screen.getByRole('button', { name: 'Load theirs' }));
+    await waitFor(() => expect(save).toBeDisabled());
+    await user.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(save).toBeEnabled();
+
+    // Keep mine: the next save sends their version and replaces it.
+    await user.click(save);
+    await waitFor(() => expect(puts).toHaveLength(2));
+    expect(puts[1]).toMatchObject({
+      version: 9,
+      out: {
+        envelope: [
+          { at: -s(2), gainDb: 0 },
+          { at: 0, gainDb: -90 },
+        ],
+      },
+    });
+  });
+
+  it('says why a save failed', async () => {
+    const { screen, user } = renderApp(
+      url,
+      routes(segue(), {
+        [`PUT ${base}/segues/${segue().id}`]: [
+          400,
+          { error: 'validation_failed', message: 'envelope points must be in order' },
+        ],
+      }),
+    );
+    await screen.findByText('Voice 1');
+    await user.click(screen.getByRole('button', { name: 'Envelopes' }));
+    await user.click(
+      await screen.findByRole('menuitem', { name: 'Fade out the outgoing song (2 s)' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText(/The segue couldn’t be saved: /)).toBeInTheDocument();
+    // Still dirty: nothing was lost.
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+  });
+
+  it('applies a typed voice gain on Enter, negative values included', async () => {
+    const { screen, user } = renderApp(url, routes(segue()));
+    await screen.findByText('Voice 1');
+    const gain = screen.getByRole('textbox', { name: 'Gain (dB)' });
+    await user.clear(gain);
+    await user.type(gain, '-');
+    expect(gain).toHaveValue('-');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    await user.type(gain, '4.5{Enter}');
+    expect(gain).toHaveValue('-4.5');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+  });
+
+  it('lets a viewer listen but not edit', async () => {
+    const { screen, user } = renderApp(url, {
+      ...routes(segue()),
+      'GET /orgs': [
+        200,
+        {
+          orgs: orgs.map((org) => ({
+            ...org,
+            stations: org.stations.map((st) =>
+              st.id === stationId ? { ...st, role: 'viewer' } : st,
+            ),
+          })),
+        },
+      ],
+    });
+    await screen.findByText('Voice 1');
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Envelopes' })).not.toBeInTheDocument();
+    // Keys that edit do nothing: no unsaved state.
+    await user.click(screen.getByText('Voice 1'));
+    await user.keyboard('{ArrowRight}{Delete}');
+    expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument();
   });
 
   it('says when the transition is gone from the log', async () => {

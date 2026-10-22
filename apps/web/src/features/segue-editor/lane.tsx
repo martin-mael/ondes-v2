@@ -53,6 +53,8 @@ export interface LaneProps {
   t: SegueT;
   /** B and voices move; A doesn't. */
   movable: boolean;
+  /** Envelopes can be edited (`voice_track:write`); readers only seek and select. */
+  editable: boolean;
   selected: boolean;
   selectedPoint: number | null;
   onSelect(point: number | null): void;
@@ -95,7 +97,7 @@ export function Lane(props: LaneProps) {
     const target = e.target as Element;
     const index = target.getAttribute('data-point');
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
-    if (index !== null) {
+    if (index !== null && props.editable) {
       props.onSelect(Number(index));
       props.onBegin();
       drag.current = { kind: 'point', index: Number(index) };
@@ -139,7 +141,7 @@ export function Lane(props: LaneProps) {
   };
 
   const onDoubleClick = (e: React.MouseEvent) => {
-    if ((e.target as Element).getAttribute('data-point') !== null) return;
+    if (!props.editable || (e.target as Element).getAttribute('data-point') !== null) return;
     const { px, py } = local(e);
     const at = axisAt(px);
     const next = addPoint(clip.envelope, { at, gainDb: gainAt(py) });
@@ -181,9 +183,8 @@ export function Lane(props: LaneProps) {
           )}
           style={{ left, width: boxWidth }}
         >
-          {clip.at >= view.fromSample && (
-            <span className={cn('absolute inset-y-0 left-0 w-1', style.accent)} />
-          )}
+          {/* Pinned to the box's left edge, which is the clip's start or the view's edge. */}
+          <span className={cn('absolute inset-y-0 left-0 z-10 w-1', style.accent)} />
           {peaks.data ? (
             <Waveform
               peaks={peaks.data}
