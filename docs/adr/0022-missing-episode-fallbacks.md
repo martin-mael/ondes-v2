@@ -114,7 +114,7 @@ Two things shape the design:
   The defaults return null, so `clock_music` raises the critical alert today.
 - With a filler, the first item takes the empty item's place and timing, and the others are
   inserted after it.
-- Putting an episode back in place of clock music is left to #50 (several items).
+- Every item of the fill is marked. Putting an episode back in place of clock music is left to #50 (several items).
 
 ## What #50 (log generator) must do
 - Plan every pre-recorded occurrence as an `episode` item:

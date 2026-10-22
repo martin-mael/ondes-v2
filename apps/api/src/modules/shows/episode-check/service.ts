@@ -280,18 +280,18 @@ export function createEpisodeCheckService(options: EpisodeCheckServiceOptions) {
   ) {
     // The mark goes first: if the edit then fails, the retry finds it and still edits; the
     // as-run only reads it for an item that airs with it.
+    const mark = {
+      orgId: scope.orgId,
+      stationId: scope.stationId,
+      slotId: row.slotId,
+      occurrenceDate: row.occurrenceDate,
+      kind: fallback.kind,
+      episodeId: fallback.kind === 'clock_music' ? null : fallback.episodeId,
+      missingEpisodeId,
+    };
     await db
       .insert(logItemFallback)
-      .values({
-        logItemId: item.id,
-        orgId: scope.orgId,
-        stationId: scope.stationId,
-        slotId: row.slotId,
-        occurrenceDate: row.occurrenceDate,
-        kind: fallback.kind,
-        episodeId: fallback.kind === 'clock_music' ? null : fallback.episodeId,
-        missingEpisodeId,
-      })
+      .values({ ...mark, logItemId: item.id })
       .onConflictDoNothing();
     const ctx = { actor: ACTOR, scope };
     if (fallback.kind === 'clock_music') {
@@ -306,6 +306,11 @@ export function createEpisodeCheckService(options: EpisodeCheckServiceOptions) {
       await publishEdit(options.logEvents, logger, scope.stationId, outcome);
       for (const next of rest) {
         outcome = await log.insertLogItem(db, ctx, { after: outcome.itemId }, next);
+        // Every item of the fill airs as the fallback.
+        await db
+          .insert(logItemFallback)
+          .values({ ...mark, logItemId: outcome.itemId })
+          .onConflictDoNothing();
         await publishEdit(options.logEvents, logger, scope.stationId, outcome);
       }
       return;

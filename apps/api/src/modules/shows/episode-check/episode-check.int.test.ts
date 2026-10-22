@@ -28,6 +28,7 @@ import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as asrun from '../../asrun/repo.ts';
 import { createTestApp, signUpAndLogin, type TestApp } from '../../auth/testing.ts';
+import { createEpisodeCheckService } from './service.ts';
 
 // Missing-episode alerts and fallbacks (#47) on the real app: the steps the worker records in
 // `episode_check` are inserted here directly (the worker's own test covers recording them).
@@ -340,6 +341,49 @@ describe('fallbacks', () => {
       await t.tdb.db.select().from(logItemFallback).where(eq(logItemFallback.logItemId, itemId)),
     ).toHaveLength(0);
     expect((await openAlert(p))?.resolution).toBe('episode_ready');
+  });
+
+  it('fills the slot with clock music from #50’s interface, every item marked', async () => {
+    const p = await plan('Le Mix', 40, 'clock_music');
+    const itemId = await emptySlotItem(p);
+    const songs = await Promise.all(
+      ['One', 'Two'].map(
+        async (title) =>
+          (await createAsset(t.tdb.db, { actor: system, scope }, { type: 'song', title })).id,
+      ),
+    );
+    const clockId = randomUUID();
+    const asked: unknown[] = [];
+    const service = createEpisodeCheckService({
+      db: t.tdb.db,
+      alerts: t.app.alerts,
+      mailer: t.app.mailer,
+      appUrl: 'http://app.test',
+      logger: t.app.log,
+      fallback: {
+        resolveClock: async (_scope, at) =>
+          at.getTime() === p.startsAt.getTime() ? clockId : null,
+        clockMusic: {
+          fill: async (_scope, request) => {
+            asked.push(request);
+            return songs.map((assetId) => ({ kind: 'song', assetId, plannedDurationMs: 30 * MIN }));
+          },
+        },
+      },
+    });
+    await due(p, 'fallback');
+    await service.processPending();
+
+    expect(asked).toEqual([{ clockId, startsAt: p.startsAt, durationMs: 60 * MIN }]);
+    const [first] = await t.tdb.db.select().from(logItem).where(eq(logItem.id, itemId));
+    expect(first).toMatchObject({ kind: 'song', assetId: songs[0], timing: 'hard' });
+    const marks = await t.tdb.db
+      .select()
+      .from(logItemFallback)
+      .where(eq(logItemFallback.slotId, p.slot.id));
+    expect(marks).toHaveLength(2);
+    expect(marks.every((m) => m.kind === 'clock_music')).toBe(true);
+    expect((await openAlert(p))?.severity).toBe('warning');
   });
 
   it('raises a critical alert when nothing can stand in', async () => {
