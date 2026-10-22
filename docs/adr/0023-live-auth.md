@@ -105,9 +105,9 @@ make a new password for those.
   have been using it. The template still reads it, as the fallback when no auth URL is rendered
   (tests, a hand-run engine). The Live page tells managers that nobody can go live until they
   create streamers.
-- `engine/tests/live-auth/run.ts` checks the whole path on the real template and image: good
-  credentials connect, wrong, unknown, disabled, out-of-slot and shared-password logins are
-  refused, the Shoutcast form connects. It needs the dev Postgres, Docker and ffmpeg, so it's
-  not in CI yet.
+- `apps/api/src/modules/live/live-auth.engine.int.test.ts` (the `engine` integration project,
+  in CI) checks the whole path on the real template and image, a second Liquidsoap playing the
+  DJ: good credentials connect, wrong, unknown, disabled, out-of-slot and shared-password logins
+  are refused, the Shoutcast form connects, and a DJ disabled mid-set is taken off air.
 - #64 (harbor pool) keeps this callback: each harbor input posts to the same route; if it needs
   to know which streamer connected, the 200 body can carry the streamer id (additive).
