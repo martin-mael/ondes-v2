@@ -1,0 +1,522 @@
+{
+  "spec": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/1",
+    "number": 1,
+    "id": 5931978167
+  },
+  "foundations": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/2",
+    "number": 2,
+    "id": 5931980782
+  },
+  "repo-setup": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/3",
+    "number": 3,
+    "id": 5931983177
+  },
+  "dev-compose": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/4",
+    "number": 4,
+    "id": 5931985890
+  },
+  "db-model": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/5",
+    "number": 5,
+    "id": 5931988506
+  },
+  "auth-rbac": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/6",
+    "number": 6,
+    "id": 5931990841
+  },
+  "storage": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/7",
+    "number": 7,
+    "id": 5931993148
+  },
+  "queues": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/8",
+    "number": 8,
+    "id": 5931995476
+  },
+  "web-shell": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/9",
+    "number": 9,
+    "id": 5931997960
+  },
+  "ci": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/10",
+    "number": 10,
+    "id": 5932000410
+  },
+  "spikes": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/11",
+    "number": 11,
+    "id": 5932002678
+  },
+  "spike-splice": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/12",
+    "number": 12,
+    "id": 5932004797
+  },
+  "spike-control": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/13",
+    "number": 13,
+    "id": 5932007441
+  },
+  "spike-hardstart": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/14",
+    "number": 14,
+    "id": 5932009813
+  },
+  "spike-cache": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/15",
+    "number": 15,
+    "id": 5932012413
+  },
+  "library": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/16",
+    "number": 16,
+    "id": 5932015000
+  },
+  "lib-model": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/17",
+    "number": 17,
+    "id": 5932017491
+  },
+  "lib-ingest": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/18",
+    "number": 18,
+    "id": 5932019898
+  },
+  "lib-loudness": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/19",
+    "number": 19,
+    "id": 5932022573
+  },
+  "lib-autocue": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/20",
+    "number": 20,
+    "id": 5932024724
+  },
+  "lib-analysis": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/21",
+    "number": 21,
+    "id": 5932027258
+  },
+  "lib-peaks": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/22",
+    "number": 22,
+    "id": 5932029713
+  },
+  "lib-ui": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/23",
+    "number": 23,
+    "id": 5932032105
+  },
+  "lib-cue-editor": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/24",
+    "number": 24,
+    "id": 5932034643
+  },
+  "lib-dedupe": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/25",
+    "number": 25,
+    "id": 5932041989
+  },
+  "engine": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/26",
+    "number": 26,
+    "id": 5932044460
+  },
+  "eng-template": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/27",
+    "number": 27,
+    "id": 5932046705
+  },
+  "eng-adapter": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/28",
+    "number": 28,
+    "id": 5932049228
+  },
+  "eng-feeder": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/29",
+    "number": 29,
+    "id": 5932051527
+  },
+  "eng-asrun": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/30",
+    "number": 30,
+    "id": 5932054059
+  },
+  "eng-cache": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/31",
+    "number": 31,
+    "id": 5932056530
+  },
+  "eng-icecast": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/32",
+    "number": 32,
+    "id": 5932058891
+  },
+  "eng-silence": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/33",
+    "number": 33,
+    "id": 5932061294
+  },
+  "eng-safety": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/34",
+    "number": 34,
+    "id": 5932064297
+  },
+  "eng-lifecycle": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/35",
+    "number": 35,
+    "id": 5932066715
+  },
+  "rotation": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/36",
+    "number": 36,
+    "id": 5932069300
+  },
+  "rot-categories": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/37",
+    "number": 37,
+    "id": 5932072457
+  },
+  "rot-rules": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/38",
+    "number": 38,
+    "id": 5932075038
+  },
+  "rot-clocks": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/39",
+    "number": 39,
+    "id": 5932077693
+  },
+  "rot-grid": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/40",
+    "number": 40,
+    "id": 5932080803
+  },
+  "rot-freshness": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/41",
+    "number": 41,
+    "id": 5932083470
+  },
+  "rot-analysis": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/42",
+    "number": 42,
+    "id": 5932086217
+  },
+  "shows": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/43",
+    "number": 43,
+    "id": 5932088677
+  },
+  "show-model": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/44",
+    "number": 44,
+    "id": 5932090940
+  },
+  "show-ui": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/45",
+    "number": 45,
+    "id": 5932093367
+  },
+  "show-hardstart": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/46",
+    "number": 46,
+    "id": 5932095749
+  },
+  "show-missing": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/47",
+    "number": 47,
+    "id": 5932098666
+  },
+  "show-reruns": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/48",
+    "number": 48,
+    "id": 5932101209
+  },
+  "log": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/49",
+    "number": 49,
+    "id": 5932103541
+  },
+  "log-generator": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/50",
+    "number": 50,
+    "id": 5932105809
+  },
+  "log-timeline": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/51",
+    "number": 51,
+    "id": 5932108242
+  },
+  "log-markers": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/52",
+    "number": 52,
+    "id": 5932111204
+  },
+  "log-history": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/53",
+    "number": 53,
+    "id": 5932113675
+  },
+  "voice-tracks": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/54",
+    "number": 54,
+    "id": 5932116645
+  },
+  "vt-model": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/55",
+    "number": 55,
+    "id": 5932118759
+  },
+  "vt-render": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/56",
+    "number": 56,
+    "id": 5932121468
+  },
+  "vt-feeder": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/57",
+    "number": 57,
+    "id": 5932123801
+  },
+  "vt-editor": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/58",
+    "number": 58,
+    "id": 5932126283
+  },
+  "vt-record": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/59",
+    "number": 59,
+    "id": 5932129432
+  },
+  "vt-promo": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/60",
+    "number": 60,
+    "id": 5932131738
+  },
+  "vt-auto-placement": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/61",
+    "number": 61,
+    "id": 5932134328
+  },
+  "live": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/62",
+    "number": 62,
+    "id": 5932136762
+  },
+  "live-accounts": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/63",
+    "number": 63,
+    "id": 5932139118
+  },
+  "live-harbor": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/64",
+    "number": 64,
+    "id": 5932141879
+  },
+  "live-slots": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/65",
+    "number": 65,
+    "id": 5932144960
+  },
+  "live-handover": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/66",
+    "number": 66,
+    "id": 5932147287
+  },
+  "live-recording": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/67",
+    "number": 67,
+    "id": 5932149846
+  },
+  "live-metadata": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/68",
+    "number": 68,
+    "id": 5932152262
+  },
+  "dashboard": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/69",
+    "number": 69,
+    "id": 5932154752
+  },
+  "dash-onair": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/70",
+    "number": 70,
+    "id": 5932157017
+  },
+  "dash-health": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/71",
+    "number": 71,
+    "id": 5932159385
+  },
+  "dash-actions": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/72",
+    "number": 72,
+    "id": 5932162174
+  },
+  "public": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/73",
+    "number": 73,
+    "id": 5932164876
+  },
+  "pub-nowplaying": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/74",
+    "number": 74,
+    "id": 5932166970
+  },
+  "pub-schedule": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/75",
+    "number": 75,
+    "id": 5932169760
+  },
+  "pub-widgets": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/76",
+    "number": 76,
+    "id": 5932172268
+  },
+  "pub-webhooks": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/77",
+    "number": 77,
+    "id": 5932174638
+  },
+  "pub-stats": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/78",
+    "number": 78,
+    "id": 5932176964
+  },
+  "migration": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/79",
+    "number": 79,
+    "id": 5932179111
+  },
+  "mig-media": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/80",
+    "number": 80,
+    "id": 5932181407
+  },
+  "mig-playlists": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/81",
+    "number": 81,
+    "id": 5932183864
+  },
+  "mig-parallel": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/82",
+    "number": 82,
+    "id": 5932186505
+  },
+  "ops": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/83",
+    "number": 83,
+    "id": 5932188810
+  },
+  "ops-installer": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/84",
+    "number": 84,
+    "id": 5932191301
+  },
+  "ops-backup": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/85",
+    "number": 85,
+    "id": 5932193884
+  },
+  "ops-monitoring": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/86",
+    "number": 86,
+    "id": 5932196816
+  },
+  "ops-sizing": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/87",
+    "number": 87,
+    "id": 5932199409
+  },
+  "later": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/88",
+    "number": 88,
+    "id": 5932202056
+  },
+  "later-cartwall": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/89",
+    "number": 89,
+    "id": 5932204612
+  },
+  "later-hls": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/90",
+    "number": 90,
+    "id": 5932207202
+  },
+  "later-podcast": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/91",
+    "number": 91,
+    "id": 5932209916
+  },
+  "later-analytics": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/92",
+    "number": 92,
+    "id": 5932212535
+  },
+  "later-requests": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/93",
+    "number": 93,
+    "id": 5932215064
+  },
+  "later-traffic": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/94",
+    "number": 94,
+    "id": 5932217575
+  },
+  "later-royalties": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/95",
+    "number": 95,
+    "id": 5932220063
+  },
+  "later-oidc": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/96",
+    "number": 96,
+    "id": 5932223088
+  },
+  "later-ai-vt": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/97",
+    "number": 97,
+    "id": 5932226187
+  },
+  "later-stereotool": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/98",
+    "number": 98,
+    "id": 5932228474
+  },
+  "later-network": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/99",
+    "number": 99,
+    "id": 5932230844
+  },
+  "log-contract": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/100",
+    "number": 100,
+    "id": 5932668641
+  },
+  "log-regen": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/101",
+    "number": 101,
+    "id": 5932670833
+  },
+  "org-invites": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/113",
+    "number": 113,
+    "id": 5945454644
+  },
+  "ci-speedup": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/129",
+    "number": 129,
+    "id": 5960447313
+  },
+  "autocue-listening": {
+    "url": "https://github.com/martin-mael/ondes-v2/issues/139",
+    "number": 139,
+    "id": 5961620731
+  }
+}

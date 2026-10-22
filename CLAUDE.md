@@ -4,6 +4,7 @@ Ondes is a multi-tenant webradio engine and management app: Node.js + RabbitMQ +
 
 - **Spec:** GitHub issue #1 (pinned). It's the source of truth for scope, architecture and glossary.
 - **Research:** `docs/research/`; start with `00-SYNTHESIS.md`.
+- **Handoffs:** `.handoffs/`, one dated file per handoff (`YYYY-MM-DD-<topic>.md`), plus the orchestration scripts in `.handoffs/tools/`. A session that picks up orchestration reads the latest handoff first; one that hands over writes a new file there.
 - **Work tracking:** GitHub project "Ondes". Epics are issues; tasks are their sub-issues; order comes from "blocked by" links.
 
 Several agents work on this repo **in parallel**. Most of the rules below exist so they don't collide.
