@@ -138,7 +138,12 @@ export async function buildApp(options: AppOptions) {
   });
   // Live streamers (#63): CRUD, connection info, and the engines' internal harbor auth route.
   await app.register(livePlugin, {
-    ...(lifecycle ? { tokenFor: (stationId: string) => lifecycle.tokenFor(stationId) } : {}),
+    ...(lifecycle
+      ? {
+          tokenFor: (stationId: string) => lifecycle.tokenFor(stationId),
+          engineFor: (stationId: string) => lifecycle.adapterFor(stationId),
+        }
+      : {}),
     ...options.live,
   });
   // Playout cache (#31): `app.playoutCache` for the feeder, `GET …/cache`, cache alerts.

@@ -17,6 +17,7 @@ import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
 import { HttpError } from '../../plugins/errors.ts';
 import { createLiveAuthHandler, type LoginFailureLimiter } from './auth.ts';
 import * as repo from './repo.ts';
+import { createLiveRevoker, type LiveEngineLookup, liveHolder } from './revoke.ts';
 import { LIVE_AUTH_ROUTE } from './url.ts';
 
 // Live streamers API (#63), under /api/v1/stations/:stationId/live, and the internal harbor
@@ -34,6 +35,13 @@ export type LivePluginOptions = {
    */
   tokenFor?: (stationId: string) => string | undefined | Promise<string | undefined>;
   limiter?: LoginFailureLimiter;
+  /**
+   * The station's engine (the lifecycle's `adapterFor`), to take a revoked streamer off air.
+   * Unset: no engines here, nothing to revoke.
+   */
+  engineFor?: LiveEngineLookup;
+  /** How often expired streamers are swept off air. Default 30 s; 0 turns it off (tests). */
+  sweepIntervalMs?: number;
 };
 
 const stationParams = z.object({ stationId: z.string() });
@@ -49,6 +57,11 @@ export const livePlugin = fp(
     const manage = app.requirePermission('live', 'manage');
     const publicHost = options.publicHost || new URL(app.auth.config.appUrl).hostname;
     const BASE = '/api/v1/stations/:stationId/live';
+    const revoker = createLiveRevoker({
+      db: app.db,
+      engineFor: options.engineFor,
+      logger: app.log,
+    });
     const ctx = (request: FastifyRequest) => ({
       actor: actorOf(request),
       scope: stationScopeOf(request),
@@ -122,8 +135,19 @@ export const livePlugin = fp(
           response: { 200: streamerSchema },
         },
       },
-      (request) =>
-        repo.updateStreamer(app.db, ctx(request), request.params.streamerId, request.body),
+      async (request) => {
+        const updated = await repo.updateStreamer(
+          app.db,
+          ctx(request),
+          request.params.streamerId,
+          request.body,
+        );
+        // Disabled or expired while live: off air now, not at the next connection.
+        if (updated.status !== 'active') {
+          await revoker.revoke(stationScopeOf(request), updated.id, updated.status);
+        }
+        return updated;
+      },
     );
 
     // Managers, or the DJ linked to the streamer (`live:broadcast`).
@@ -155,7 +179,11 @@ export const livePlugin = fp(
       `${BASE}/streamers/:streamerId`,
       { preHandler: manage, schema: { params: streamerParams } },
       async (request, reply) => {
-        await repo.deleteStreamer(app.db, ctx(request), request.params.streamerId);
+        const { streamerId } = request.params;
+        const scope = stationScopeOf(request);
+        const wasHolder = (await liveHolder(app.db, scope.stationId)) === streamerId;
+        await repo.deleteStreamer(app.db, ctx(request), streamerId);
+        if (wasHolder) await revoker.revoke(scope, streamerId, 'deleted', true);
         return reply.code(204).send();
       },
     );
@@ -168,6 +196,23 @@ export const livePlugin = fp(
       },
       (request) => repo.connectionInfo(app.db, stationScopeOf(request), publicHost),
     );
+
+    const sweepMs = options.sweepIntervalMs ?? 30_000;
+    if (options.engineFor && sweepMs > 0) {
+      let running = false;
+      const timer = setInterval(() => {
+        if (running) return;
+        running = true;
+        revoker
+          .sweep()
+          .catch((err: unknown) => app.log.error({ err }, 'Live expiry sweep failed'))
+          .finally(() => {
+            running = false;
+          });
+      }, sweepMs);
+      timer.unref();
+      app.addHook('onClose', () => clearInterval(timer));
+    }
 
     // Internal only (the engines' live_auth_url): never route /internal through Caddy.
     if (options.tokenFor) {

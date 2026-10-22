@@ -23,13 +23,17 @@ export { LIVE_AUTH_ROUTE, liveAuthUrl } from './url.ts';
 // `LIVE_EARLY_CONNECT_MS` before an allowed show's slot until the slot ends (reruns excluded).
 // Connecting doesn't put the DJ on air: Node opens the live gate (#64, #65).
 
+/** Accepted logins closer together than this are not audited again (reconnect loops). */
+export const CONNECT_AUDIT_EVERY_MS = 10 * 60 * 1000;
+
 export type LiveLoginResult =
   | { ok: true; streamerId: string }
   | { ok: false; reason: LiveAuthRefusal; streamerId?: string };
 
 /**
  * Checks a source login against the database. Unknown usernames burn the same argon2 time as
- * known ones, so the answer time doesn't tell them apart. Accepted logins are audited.
+ * known ones, so the answer time doesn't tell them apart. Accepted logins stamp
+ * `last_connected_at` and are audited (at most once per `CONNECT_AUDIT_EVERY_MS`).
  */
 export async function checkLiveLogin(
   db: Db,
@@ -78,53 +82,100 @@ export async function checkLiveLogin(
     if (!inSlot) return { ok: false, reason: 'outside_slot', streamerId: row.id };
   }
 
-  await withAudit(db, { actor: { type: 'system', name: 'engine' }, scope }, async (tx, audit) => {
-    await tx.update(streamer).set({ lastConnectedAt: now }).where(eq(streamer.id, row.id));
-    await audit({
-      action: 'streamer.connect',
-      entity: { type: 'streamer', id: row.id },
-      diff: login.address ? { address: { from: null, to: login.address } } : {},
+  // DJ software reconnects in a loop after a network drop: audit a connection only when the
+  // previous one is older than `CONNECT_AUDIT_EVERY_MS`, and just stamp the time otherwise.
+  const quiet =
+    row.lastConnectedAt && now.getTime() - row.lastConnectedAt.getTime() < CONNECT_AUDIT_EVERY_MS;
+  if (quiet) {
+    await db.update(streamer).set({ lastConnectedAt: now }).where(eq(streamer.id, row.id));
+  } else {
+    await withAudit(db, { actor: { type: 'system', name: 'engine' }, scope }, async (tx, audit) => {
+      await tx.update(streamer).set({ lastConnectedAt: now }).where(eq(streamer.id, row.id));
+      await audit({
+        action: 'streamer.connect',
+        entity: { type: 'streamer', id: row.id },
+        diff: login.address ? { address: { from: null, to: login.address } } : {},
+      });
     });
-  });
+  }
   return { ok: true, streamerId: row.id };
 }
 
+/** Most recent failures kept per key, and how many keys at most (oldest touched dropped). */
+const LIMITER_MAX_KEYS = 10_000;
+
 /**
- * Refuses a source address after `max` failed logins in `windowMs`, without checking the
- * password: argon2 is slow on purpose, and the live port is public. In memory, per api
- * replica: a brake on guessing, not an account lockout (a lockout would let anyone lock a DJ
- * out before their show).
+ * Brakes password guessing on the public live port: after `max` failed logins in `windowMs`
+ * for one station, username and source address, that key gets one password check per
+ * `probeEveryMs` instead of one per attempt (argon2 is slow on purpose). The DJ with the right
+ * password still gets in within `probeEveryMs`, and other usernames from the same venue IP are
+ * not affected: a brake, never a lockout (which anyone could use to lock a DJ out before their
+ * show). In memory, per api replica, bounded to `LIMITER_MAX_KEYS` keys (least recently
+ * touched dropped first), so a flood of addresses costs O(1) per attempt and bounded memory.
  */
 export class LoginFailureLimiter {
-  readonly #failures = new Map<string, number[]>();
+  readonly #keys = new Map<string, { failures: number[]; lastProbe: number }>();
   readonly #max: number;
   readonly #windowMs: number;
+  readonly #probeEveryMs: number;
+  readonly #maxKeys: number;
 
-  constructor(options: { max?: number; windowMs?: number } = {}) {
+  constructor(
+    options: { max?: number; windowMs?: number; probeEveryMs?: number; maxKeys?: number } = {},
+  ) {
     this.#max = options.max ?? 10;
     this.#windowMs = options.windowMs ?? 10 * 60 * 1000;
+    this.#probeEveryMs = options.probeEveryMs ?? 30_000;
+    this.#maxKeys = options.maxKeys ?? LIMITER_MAX_KEYS;
   }
 
-  #recent(key: string, now: number) {
-    const kept = (this.#failures.get(key) ?? []).filter((t) => now - t < this.#windowMs);
-    if (kept.length) this.#failures.set(key, kept);
-    else this.#failures.delete(key);
-    return kept;
+  /** One key per station, username and source address (missing address: its own bucket). */
+  static key(stationId: string, username: string, address: string | undefined): string {
+    return `${stationId}|${username}|${address || '(no address)'}`;
   }
 
-  blocked(key: string, now = Date.now()): boolean {
-    return this.#recent(key, now).length >= this.#max;
+  get size(): number {
+    return this.#keys.size;
+  }
+
+  #entry(key: string, now: number) {
+    const entry = this.#keys.get(key);
+    if (!entry) return undefined;
+    entry.failures = entry.failures.filter((t) => now - t < this.#windowMs);
+    if (!entry.failures.length) {
+      this.#keys.delete(key);
+      return undefined;
+    }
+    return entry;
+  }
+
+  /**
+   * May this attempt check the password? False while braked, except one probe per
+   * `probeEveryMs` (which this call uses up).
+   */
+  allow(key: string, now = Date.now()): boolean {
+    const entry = this.#entry(key, now);
+    if (!entry || entry.failures.length < this.#max) return true;
+    if (now - entry.lastProbe < this.#probeEveryMs) return false;
+    entry.lastProbe = now;
+    return true;
   }
 
   fail(key: string, now = Date.now()): void {
-    this.#failures.set(key, [...this.#recent(key, now), now]);
-    // Bound the memory a flood of addresses can take.
-    if (this.#failures.size > 10_000) {
-      for (const k of this.#failures.keys()) {
-        this.#recent(k, now);
-        if (this.#failures.size <= 5_000) break;
-      }
+    const entry = this.#entry(key, now) ?? { failures: [], lastProbe: Number.NEGATIVE_INFINITY };
+    entry.failures.push(now);
+    if (entry.failures.length > this.#max) entry.failures.shift();
+    // Re-insert: Map order is the recency order the cap evicts by.
+    this.#keys.delete(key);
+    this.#keys.set(key, entry);
+    if (this.#keys.size > this.#maxKeys) {
+      const oldest = this.#keys.keys().next().value;
+      if (oldest !== undefined) this.#keys.delete(oldest);
     }
+  }
+
+  succeed(key: string): void {
+    this.#keys.delete(key);
   }
 }
 
@@ -176,9 +227,9 @@ export function createLiveAuthHandler(
       return { status: 400, body: { error: 'invalid body' } };
     }
     const address = parsed.data.address;
-    const key = `${stationId}|${address ?? ''}`;
     const login = { ...liveAuthLogin(parsed.data), address };
-    if (limiter.blocked(key)) {
+    const key = LoginFailureLimiter.key(stationId, login.username, address);
+    if (!limiter.allow(key)) {
       logger.warn({ stationId, address, username: login.username }, 'Live login throttled');
       return refused;
     }
@@ -191,6 +242,7 @@ export function createLiveAuthHandler(
       );
       return refused;
     }
+    limiter.succeed(key);
     logger.info({ stationId, address, streamerId: result.streamerId }, 'Live login accepted');
     return { status: 200, body: { ok: true } };
   };

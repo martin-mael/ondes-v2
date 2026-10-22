@@ -21,7 +21,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../../app.ts';
 import { createMemoryMailer } from '../../plugins/mail.ts';
 import { signUpAndLogin, TEST_AUTH_CONFIG, type TestApp } from '../auth/testing.ts';
-import { checkLiveLogin, LoginFailureLimiter } from './auth.ts';
+import { CONNECT_AUDIT_EVERY_MS, checkLiveLogin, LoginFailureLimiter } from './auth.ts';
+import { createLiveRevoker } from './revoke.ts';
 
 // Live streamers on the real app (#63): CRUD, permissions, tenant isolation, audit without
 // secrets, connection info, and the harbor auth callback against the database.
@@ -38,6 +39,19 @@ let presenterId: string;
 let showId: string;
 let otherShowId: string;
 
+/** A fake engine with a DJ connected and on air, recording live gate commands. */
+const engine = {
+  live: { enabled: true, connected: true, ready: true },
+  gate: [] as boolean[],
+  async state() {
+    return { live: { ...this.live } };
+  },
+  async setLive(enabled: boolean) {
+    this.gate.push(enabled);
+    this.live.enabled = enabled;
+  },
+};
+
 async function buildTestApp(): Promise<TestApp> {
   const tdb = await createTestDatabase();
   const mailer = createMemoryMailer();
@@ -48,7 +62,9 @@ async function buildTestApp(): Promise<TestApp> {
     auth: TEST_AUTH_CONFIG,
     live: {
       tokenFor: (stationId) => tokens.get(stationId),
-      limiter: new LoginFailureLimiter({ max: 5 }),
+      limiter: new LoginFailureLimiter({ max: 5, probeEveryMs: 60_000 }),
+      engineFor: async (stationId) => (stationId === scope?.stationId ? engine : undefined),
+      sweepIntervalMs: 0,
     },
     fastify: { logger: false },
   });
@@ -468,23 +484,44 @@ describe('streamers API', () => {
       ).toBe(200);
     });
 
-    it('throttles an address after repeated failures, not the others', async () => {
+    it('brakes guessing per username and address, letting the right password through', async () => {
       const at = { address: '10.0.0.7' };
-      for (let i = 0; i < 5; i++)
-        await engineLogin({ user: 'resident', password: `guess-${i}-xxxxxx`, ...at });
-      expect(
-        (await engineLogin({ user: 'resident', password: 'a-brand-new-password', ...at }))
-          .statusCode,
-      ).toBe(403);
-      expect(
-        (
-          await engineLogin({
-            user: 'resident',
-            password: 'a-brand-new-password',
-            address: '10.0.0.8',
-          })
-        ).statusCode,
-      ).toBe(200);
+      const login = (user: string, password: string, address = at.address) =>
+        engineLogin({ user, password, address }).then((r) => r.statusCode);
+      for (let i = 0; i < 5; i++) await login('resident', `guess-${i}-xxxxxx`);
+      // Braked: one password check per minute. A guess uses it up…
+      expect(await login('resident', 'guess-5-xxxxxx')).toBe(403);
+      // …so the right password waits for the next probe.
+      expect(await login('resident', 'a-brand-new-password')).toBe(403);
+      // Other addresses, and other DJs at the same venue address, aren't braked.
+      expect(await login('resident', 'a-brand-new-password', '10.0.0.8')).toBe(200);
+      expect(await login('presenter-x', 'whatever-password')).toBe(403);
+      const limiter = new LoginFailureLimiter({ max: 5, probeEveryMs: 60_000 });
+      const key = LoginFailureLimiter.key(scope.stationId, 'resident', at.address);
+      for (let i = 0; i < 5; i++) limiter.fail(key, 0);
+      // The next probe, a minute later, is a real check: the right password gets in.
+      expect(limiter.allow(key, 60_001)).toBe(true);
+    });
+
+    it('audits a reconnect loop once', async () => {
+      const list = await call('manager', 'GET', '/streamers');
+      const resident = list.json<StreamerList>().streamers.find((s) => s.username === 'resident');
+      const id = resident?.id ?? '';
+      const before = (await auditRows(id)).filter((a) => a.action === 'streamer.connect').length;
+      const t0 = new Date('2027-01-01T12:00:00Z');
+      const login = { username: 'resident', password: 'a-brand-new-password' };
+      // Throttled from the previous login: the last one comes more than the interval after it.
+      for (const offset of [0, 1000, 60_000, 60_000 + CONNECT_AUDIT_EVERY_MS + 1000]) {
+        const ok = await checkLiveLogin(
+          t.tdb.db,
+          scope.stationId,
+          login,
+          new Date(t0.getTime() + offset),
+        );
+        expect(ok.ok).toBe(true);
+      }
+      const after = (await auditRows(id)).filter((a) => a.action === 'streamer.connect').length;
+      expect(after - before).toBe(2);
     });
 
     it('lets a show-bound streamer connect only around its slots', async () => {
@@ -503,6 +540,81 @@ describe('streamers API', () => {
       // An expiry before the slot wins.
       await call('manager', 'PATCH', `/streamers/${djId}`, { expiresAt: '2026-11-05T18:55:00Z' });
       expect(await at('2026-11-05T19:30:00Z')).toMatchObject({ ok: false, reason: 'expired' });
+    });
+  });
+
+  describe('revocation', () => {
+    // Logins stamped after every earlier test's, so each new one holds the live input.
+    const connect = async (username: string, password: string, at = new Date()) =>
+      expect((await checkLiveLogin(t.tdb.db, scope.stationId, { username, password }, at)).ok).toBe(
+        true,
+      );
+
+    it('takes a streamer disabled while live off air', async () => {
+      const created = await call('manager', 'POST', '/streamers', {
+        displayName: 'Live now',
+        username: 'live-now',
+        password: 'live-now-password',
+        anyTime: true,
+      });
+      const id = created.json<StreamerWithPassword>().streamer.id;
+      await connect('live-now', 'live-now-password', new Date('2030-01-01T20:00:00Z'));
+      engine.live.enabled = true;
+      engine.gate.length = 0;
+      await call('manager', 'PATCH', `/streamers/${id}`, { enabled: false });
+      expect(engine.gate).toEqual([false]);
+      expect((await auditRows(id)).map((a) => a.action)).toContain('streamer.revoke');
+    });
+
+    it("leaves the air alone when the streamer isn't the one connected", async () => {
+      engine.live.enabled = true;
+      engine.gate.length = 0;
+      const list = await call('manager', 'GET', '/streamers');
+      const resident = list.json<StreamerList>().streamers.find((s) => s.username === 'resident');
+      await call('manager', 'PATCH', `/streamers/${resident?.id}`, { enabled: false });
+      expect(engine.gate).toEqual([]);
+      await call('manager', 'PATCH', `/streamers/${resident?.id}`, { enabled: true });
+    });
+
+    it('sweeps a guest off air when their expiry passes', async () => {
+      const expires = new Date('2030-01-02T22:00:00Z');
+      const created = await call('manager', 'POST', '/streamers', {
+        displayName: 'One night',
+        username: 'one-night',
+        password: 'one-night-password',
+        anyTime: true,
+        expiresAt: expires.toISOString(),
+      });
+      const id = created.json<StreamerWithPassword>().streamer.id;
+      await connect('one-night', 'one-night-password', new Date(expires.getTime() - 60_000));
+      engine.live.enabled = true;
+      engine.gate.length = 0;
+      const revoker = createLiveRevoker({
+        db: t.tdb.db,
+        engineFor: async () => engine,
+        logger: { warn: () => {}, error: () => {} },
+      });
+      expect(await revoker.sweep(new Date(expires.getTime() - 1000))).toBe(0);
+      expect(await revoker.sweep(new Date(expires.getTime() + 30_000))).toBe(1);
+      expect(engine.gate).toEqual([false]);
+      // Already off air: the next sweep does nothing.
+      expect(await revoker.sweep(new Date(expires.getTime() + 60_000))).toBe(0);
+      expect((await auditRows(id)).map((a) => a.action)).toContain('streamer.revoke');
+    });
+
+    it('takes a deleted streamer off air', async () => {
+      const created = await call('manager', 'POST', '/streamers', {
+        displayName: 'Gone',
+        username: 'gone',
+        password: 'gone-password-123',
+        anyTime: true,
+      });
+      const id = created.json<StreamerWithPassword>().streamer.id;
+      await connect('gone', 'gone-password-123', new Date('2030-01-03T20:00:00Z'));
+      engine.live.enabled = true;
+      engine.gate.length = 0;
+      expect((await call('manager', 'DELETE', `/streamers/${id}`)).statusCode).toBe(204);
+      expect(engine.gate).toEqual([false]);
     });
   });
 
