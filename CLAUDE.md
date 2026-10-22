@@ -81,6 +81,9 @@ Created by #3. Packages are named `@ondes/<folder>` (e.g. `@ondes/shared`) and a
   - **Time:** show the station's time only (its IANA zone), never server, UTC or browser time side by side.
   - **Coloured accents** (a show or category colour on a card or calendar entry): a straight-edged strip inside the element (`absolute inset-y-0 left-0 w-1`), not a `border-l-*` on a rounded box, whose inner edge curves; give the element a radius equal to the strip's width (`rounded-[4px]` for `w-1`) so the strip fills the corners. No extra ring around the element.
   - **Sizes:** headings inside a page's content (calendar day headers, list group titles, empty states) are `text-sm`; only the page title is large.
+  - **Toasts:** bottom-right (`<Toaster position="bottom-right" />` in `app/app.tsx`).
+  - **Room to work:** precision editors (cue points, waveforms) get a full page per item, not a cramped drawer panel.
+  - **Saving work in progress:** never block a save because something is incomplete (e.g. hours with no clock); show a calm inline warning instead.
 - **No paid/licensed components by default** (Stereo Tool, commercial AcoustID, Essentia models). Make them opt-in plugins.
 - **Naming:** files kebab-case; DB tables snake_case singular (`log_item`); API routes `/api/v1/stations/:stationId/...`.
 
