@@ -2,6 +2,7 @@ import type {
   EpisodeFallbackPolicy,
   EpisodeKind,
   EpisodeStatus,
+  RerunStrategy,
   SlotRule,
   SlotType,
   TracklistEntry,
@@ -150,6 +151,18 @@ export const showSlot = pgTable(
     /** Last local date it can air on; null: no end. */
     endsOn: date('ends_on', { mode: 'string' }),
     durationMs: integer('duration_ms').notNull(),
+    /**
+     * Only on `rerun` slots (#48, ADR 0028): which episode airs again. Null on a rerun slot
+     * means `latest_episode` (rerun slots written before #48 have none).
+     */
+    rerunStrategy: text('rerun_strategy').$type<RerunStrategy>(),
+    /**
+     * For `rerun_strategy = 'episode'`; one of the show's own (checked by the repository).
+     * Null once that episode is deleted: the latest one airs instead.
+     */
+    rerunEpisodeId: uuid('rerun_episode_id').references((): AnyPgColumn => episode.id, {
+      onDelete: 'set null',
+    }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -161,6 +174,15 @@ export const showSlot = pgTable(
     check('show_slot_type_check', sql`${t.type} in ('prerecorded', 'live', 'rerun')`),
     check('show_slot_duration_check', sql`${t.durationMs} between 60000 and 86400000`),
     check('show_slot_range_check', sql`${t.endsOn} >= ${t.startsOn}`),
+    check(
+      'show_slot_rerun_check',
+      sql`(${t.rerunStrategy} is null or ${t.type} = 'rerun')
+        and (${t.rerunStrategy} is null or ${t.rerunStrategy} in ('latest_episode', 'episode'))
+        and (${t.rerunEpisodeId} is null or ${t.rerunStrategy} = 'episode')`,
+    ),
+    index('show_slot_rerun_episode_idx')
+      .on(t.rerunEpisodeId)
+      .where(sql`${t.rerunEpisodeId} is not null`),
   ],
 );
 

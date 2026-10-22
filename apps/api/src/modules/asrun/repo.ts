@@ -3,6 +3,7 @@ import {
   asset,
   assetFile,
   type Executor,
+  episode,
   logItem,
   logItemFallback,
   type StationScope,
@@ -51,6 +52,10 @@ export function toEntry(row: Row): AsRunEntry {
     plannedDurationMs: row.plannedDurationMs,
     driftMs: row.plannedStart ? row.startedAt.getTime() - row.plannedStart.getTime() : null,
     fallback: row.fallback,
+    episode:
+      row.episodeId && row.showId && row.episodeNumber !== null
+        ? { id: row.episodeId, showId: row.showId, number: row.episodeNumber, rerun: row.rerun }
+        : null,
     bootId: row.bootId,
     seq: row.seq,
     recordedAt: row.recordedAt.toISOString(),
@@ -138,6 +143,10 @@ async function resolveItem(
           title: logItem.title,
           // Airing in place of a missing episode (#47): what stood in for it.
           fallback: logItemFallback.kind,
+          originShowSlotId: logItem.originShowSlotId,
+          // The show episode it airs (#48): number and premiere slot, for the rerun flag.
+          episode: { id: episode.id, showId: episode.showId, number: episode.number },
+          premiereSlotId: episode.slotId,
         })
         .from(logItem)
         // Only while the item still plays what the fallback put there (not swapped by hand).
@@ -147,6 +156,10 @@ async function resolveItem(
             eq(logItemFallback.logItemId, logItem.id),
             eq(logItemFallback.assetId, logItem.assetId),
           ),
+        )
+        .leftJoin(
+          episode,
+          and(eq(episode.id, logItem.episodeId), eq(episode.stationId, logItem.stationId)),
         )
         .where(and(whereStation(logItem, scope), eq(logItem.id, itemId)))
     : [];
@@ -185,12 +198,36 @@ async function resolveItem(
     plannedStart: item?.plannedStart ?? null,
     plannedDurationMs: item?.plannedDurationMs ?? null,
     fallback: item?.fallback ?? null,
+    ...episodeSnapshot(item),
     assetId,
     fileSha256,
     title: input.title ?? item?.title ?? a?.title ?? null,
     artist: input.artist ?? (a && a.artists.length > 0 ? a.artists.join(', ') : null),
     artists,
   };
+}
+
+/**
+ * The episode columns of an entry (#48). It airs again when it stands in for a missing
+ * episode, or when the show slot it was planned for isn't its premiere's (a rerun slot).
+ */
+function episodeSnapshot(
+  item:
+    | {
+        fallback: string | null;
+        originShowSlotId: string | null;
+        episode: { id: string; showId: string; number: number } | null;
+        premiereSlotId: string | null;
+      }
+    | undefined,
+) {
+  const e = item?.episode;
+  if (!item || !e) return { episodeId: null, showId: null, episodeNumber: null, rerun: false };
+  const rerun =
+    item.fallback === 'latest_episode' ||
+    item.fallback === 'episode' ||
+    (item.originShowSlotId !== null && item.originShowSlotId !== item.premiereSlotId);
+  return { episodeId: e.id, showId: e.showId, episodeNumber: e.number, rerun };
 }
 
 async function byEventId(db: Executor, scope: StationScope, eventId: string) {

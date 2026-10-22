@@ -1,6 +1,7 @@
 import type { AsRunOutcome, AsRunSource, EpisodeFallbackKind, LogItemKind } from '@ondes/shared';
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   foreignKey,
   index,
@@ -61,6 +62,14 @@ export const asRunEntry = pgTable(
     plannedDurationMs: integer('planned_duration_ms'),
     /** The item aired as the fallback of a missing episode (#47): what stood in for it. */
     fallback: text('fallback').$type<EpisodeFallbackKind>(),
+    /**
+     * The show episode it aired (#48), a snapshot like the rest (no foreign key): id, show and
+     * number as they were, and whether it aired again (now playing's "rerun" flag).
+     */
+    episodeId: uuid('episode_id'),
+    showId: uuid('show_id'),
+    episodeNumber: integer('episode_number'),
+    rerun: boolean('rerun').notNull().default(false),
     /** The api's clock when it was recorded. */
     recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -93,6 +102,12 @@ export const asRunEntry = pgTable(
         and (${t.durationMs} is null or ${t.durationMs} >= 0)`,
     ),
     check('asrun_entry_seq_check', sql`${t.seq} > 0`),
+    check(
+      'asrun_entry_episode_check',
+      sql`(${t.episodeId} is null) = (${t.episodeNumber} is null)
+        and (${t.episodeId} is null) = (${t.showId} is null)
+        and (${t.episodeId} is not null or not ${t.rerun})`,
+    ),
     check(
       'asrun_entry_fallback_check',
       sql`${t.fallback} is null or ${t.fallback} in ('latest_episode', 'episode', 'clock_music')`,

@@ -42,6 +42,18 @@ export function asRunOutcome(playedMs: number, expectedMs: number | null): AsRun
   return playedMs < AS_RUN_SKIP_MS ? 'skipped' : 'cut';
 }
 
+/**
+ * The show episode an entry aired, snapshot when it started (#48): its number, and whether it
+ * aired again (a rerun slot, a missing-episode fallback, or outside its own premiere slot).
+ */
+export const asRunEpisodeSchema = z.object({
+  id: uuidSchema,
+  showId: uuidSchema,
+  number: z.int().min(1),
+  rerun: z.boolean(),
+});
+export type AsRunEpisode = z.infer<typeof asRunEpisodeSchema>;
+
 export const asRunEntrySchema = z.object({
   id: uuidSchema,
   stationId: uuidSchema,
@@ -77,6 +89,11 @@ export const asRunEntrySchema = z.object({
    * Optional so older api versions' payloads still parse.
    */
   fallback: episodeFallbackKindSchema.nullable().optional(),
+  /**
+   * The show episode it aired (#48): original number and rerun flag, for now playing. Null for
+   * anything else. Optional so older api versions' payloads still parse.
+   */
+  episode: asRunEpisodeSchema.nullable().optional(),
   /** Engine boot and event sequence of the start, for tracing. */
   bootId: z.string(),
   seq: z.int().positive(),

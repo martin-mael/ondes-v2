@@ -8,6 +8,7 @@ import {
   FINAL_UPLOAD_STATUSES,
   type PutSlotException,
   presignedUploadPartsSchema,
+  type ScheduleRerun,
   showHostCandidateListSchema,
   showListSchema,
   showOccurrencesResponseSchema,
@@ -151,6 +152,13 @@ export const showsApi = {
   removeEpisode: (stationId: string, showId: string, episodeId: string) =>
     request(`${show(stationId, showId)}/episodes/${encodeURIComponent(episodeId)}`, {
       method: 'DELETE',
+    }),
+
+  /** "Schedule a rerun" (#48): the episode airs again once, as a one-off rerun slot. */
+  scheduleRerun: (stationId: string, showId: string, episodeId: string, body: ScheduleRerun) =>
+    request(`${show(stationId, showId)}/episodes/${encodeURIComponent(episodeId)}/reruns`, {
+      body,
+      schema: showSlotSchema,
     }),
 
   /** The station's `episode` assets, for attaching one to an episode. */
