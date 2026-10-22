@@ -27,28 +27,32 @@ Vandale), so two nights a year the week doesn't have 168 hours: the last Sunday 
 - **Overrides** (`clock_grid_override`): a station-local date range (inclusive), an hour range
   each day (`[startHour, endHour)`, all day by default) and a clock. Saved one by one.
 
-### Every hour has exactly one clock
-A grid is **complete** (`isGridComplete`) when it has a default clock or paints all 168 hours.
-The api keeps every saved grid complete:
-- `PUT …/clock-grid` refuses an incomplete grid (400 `incomplete_grid`); the editor shows how
-  many hours lack a clock and disables Save until there are none.
+### A complete grid is required for generation; an incomplete grid can be saved and is reported
+A grid is **complete** (`isGridComplete`) when it has a default clock or paints all 168 hours:
+then every hour resolves to exactly one clock.
+- `PUT …/clock-grid` saves an incomplete grid too: building a grid is work in progress, and
+  blocking the save until every hour is covered got in the way (owner feedback; the first
+  version refused it with 400 `incomplete_grid`). The editor reports it with a calm inline
+  notice: how many hours have no clock, that they'll have no music until a clock or a default
+  clock covers them, and a suggestion to set a default clock. Save stays enabled.
+- Hours without a clock resolve to `none` (`clockId: null`), and every consumer handles it
+  without failing: the missing-episode fallback (#47) turns it into a critical alert, and the
+  log generator (#50) needs a complete grid for the hours it generates and flags the gaps
+  (it alerts and lets the safety fallback play) rather than generating a log with holes.
 - Deleting a clock is refused (409 `clock_in_use`) while the grid needs it: it's the default
-  clock, an override's clock, or painted on a grid without a default. A clock that is only
-  painted on a grid with a default can go: its hours fall back to the default, and the grid
-  version is bumped so an editor open on the old grid gets `edit_conflict` instead of an
-  `unknown_clock` error. The default and override clocks are composite foreign keys with the
-  station (like the cells'), without cascade, as a backstop.
-
-The one grid that resolves hours to `none` is a station's grid before its first save. #50 checks
-`isGridComplete` and treats an incomplete grid as "no grid configured" (it alerts and lets the
-safety fallback play) rather than generating a log with holes.
+  clock, an override's clock, or painted on a grid without a default (deleting it would open
+  new gaps behind the editor's back). A clock that is only painted on a grid with a default can
+  go: its hours fall back to the default, and the grid version is bumped so an editor open on
+  the old grid gets `edit_conflict` instead of an `unknown_clock` error. The default and
+  override clocks are composite foreign keys with the station (like the cells'), without
+  cascade, as a backstop.
 
 ### Resolution
 In `@ondes/scheduling` (`src/grid`), pure:
 1. an override covering the date and the hour, if any;
 2. the hour's weekly cell;
 3. the default clock;
-4. otherwise `none` (an incomplete grid, above).
+4. otherwise `none` (a gap in an incomplete grid, above).
 
 **The API is instant-based.** `resolveClockAt(grid, instant, timeZone)` (the clock airing at an
 instant: the issue's `resolveClock(station, localDateTime)`) and `expandGrid(grid, range,

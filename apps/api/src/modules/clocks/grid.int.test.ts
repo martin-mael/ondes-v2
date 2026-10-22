@@ -163,16 +163,6 @@ describe('clock grid API', () => {
     });
   });
 
-  it('refuses a grid that leaves hours without a clock', async () => {
-    const res = await call('programmer', 'PUT', '/clock-grid', {
-      version: 1,
-      defaultClockId: null,
-      cells: [{ weekday: 1, hour: 7, clockId: clocks.Morning }],
-    });
-    expect(res.statusCode).toBe(400);
-    expect(res.json()).toMatchObject({ error: 'incomplete_grid', details: { unassigned: 167 } });
-  });
-
   it('refuses duplicate hours and other stations’ clocks', async () => {
     const dup = await call('programmer', 'PUT', '/clock-grid', {
       version: 1,
@@ -197,6 +187,43 @@ describe('clock grid API', () => {
       clockId: otherClock,
     });
     expect(override.statusCode).toBe(400);
+  });
+
+  it('saves a grid that leaves hours without a clock; they resolve to none', async () => {
+    const before = (await call('programmer', 'GET', '/clock-grid')).json<ClockGridDto>();
+    const res = await call('programmer', 'PUT', '/clock-grid', {
+      version: before.version,
+      defaultClockId: null,
+      cells: [{ weekday: 1, hour: 7, clockId: clocks.Morning }],
+    });
+    expect(res.statusCode).toBe(200);
+    const saved = res.json<ClockGridDto>();
+    expect(saved).toMatchObject({ defaultClockId: null, version: before.version + 1 });
+    expect(saved.cells).toHaveLength(1);
+
+    // Resolving the gaps doesn't fail: they come back as `none`. 2026-11-02 is a Monday.
+    const hours = await call('programmer', 'GET', '/clock-grid/hours?from=2026-11-02&days=1');
+    expect(hours.statusCode).toBe(200);
+    const items = hours.json<GridHours>().items;
+    expect(items.find((h) => h.hour === 7)).toMatchObject({
+      clockId: clocks.Morning,
+      source: 'grid',
+    });
+    expect(items.filter((h) => h.source === 'none')).toHaveLength(23);
+    expect(items.filter((h) => h.source === 'none').every((h) => h.clockId === null)).toBe(true);
+    const loaded = await loadClockGrid(t.tdb.db, scope);
+    expect(resolveClockAt(loaded, new Date('2026-11-02T12:00:00Z'), 'Europe/Paris')).toMatchObject({
+      clockId: null,
+      source: 'none',
+    });
+
+    // Back to the complete grid the next tests build on.
+    const restored = await call('programmer', 'PUT', '/clock-grid', {
+      version: saved.version,
+      defaultClockId: before.defaultClockId,
+      cells: before.cells,
+    });
+    expect(restored.statusCode).toBe(200);
   });
 
   it('keeps dayparts, with unique names', async () => {

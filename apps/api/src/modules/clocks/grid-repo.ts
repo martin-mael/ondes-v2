@@ -14,7 +14,7 @@ import {
   whereStation,
   withAudit,
 } from '@ondes/db';
-import { type ClockGrid, expandGrid, isGridComplete } from '@ondes/scheduling';
+import { type ClockGrid, expandGrid } from '@ondes/scheduling';
 import {
   addDays,
   type ClockGridDto,
@@ -188,8 +188,9 @@ function changedCells(before: readonly GridCell[], after: readonly GridCell[]) {
 
 /**
  * `PUT …/clock-grid`: replaces the cells and the default clock. Refuses (409 `edit_conflict`)
- * an edit based on another version than the stored one, and (400 `incomplete_grid`) a grid
- * that leaves hours without a clock: no default and not all 168 hours painted.
+ * an edit based on another version than the stored one. An incomplete grid (no default and
+ * not all 168 hours painted) is saved as is: work in progress; its gaps resolve to `none`
+ * (ADR 0020).
  */
 export async function updateClockGrid(
   db: Db,
@@ -198,14 +199,6 @@ export async function updateClockGrid(
 ): Promise<ClockGridDto> {
   const { version, defaultClockId, cells } = updateClockGridSchema.parse(input);
   const { scope } = ctx;
-  if (!isGridComplete({ defaultClockId, cells, overrides: [] })) {
-    throw new HttpError(
-      400,
-      'incomplete_grid',
-      'choose a default clock or paint every hour of the week',
-      { unassigned: 7 * 24 - cells.length },
-    );
-  }
   await withAudit(db, ctx, async (tx, audit) => {
     // The row is created on the first save; locking it serializes concurrent saves.
     await tx

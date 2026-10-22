@@ -106,11 +106,33 @@ describe('weekly grid page', () => {
     await user.click(await screen.findByRole('link', { name: 'Weekly grid' }));
     await waitFor(() => expect(history.location.pathname).toBe(`/stations/${stationId}/grid`));
     expect(
-      await screen.findByText(
-        '168 hours have no clock: choose a default clock (or paint every hour) before saving.',
-      ),
+      await screen.findByText(/^168 hours have no clock yet: they’ll have no music/),
     ).toBeVisible();
     expect(screen.getByText('Hours in station time (Europe/Paris).')).toBeVisible();
+  });
+
+  it('saves a grid that leaves hours without a clock, and keeps reporting them', async () => {
+    const { screen, user, calls } = renderApp(
+      `/stations/${stationId}/grid`,
+      asProgrammer({
+        [`GET ${base}`]: [200, grid()],
+        [`PUT ${base}`]: (body) => [200, grid({ ...(body as object), version: 3 })],
+      }),
+    );
+    // One hour painted with the first clock, no default: 167 hours stay empty.
+    await user.click(await screen.findByRole('button', { name: cell('Monday', '07:00') }));
+    expect(screen.getByText(/^167 hours have no clock yet/)).toBeVisible();
+    const save = screen.getByRole('button', { name: 'Save grid' });
+    expect(save).toBeEnabled();
+    await user.click(save);
+    await waitFor(() => expect(lastCall(calls, 'PUT', base)).toBeDefined());
+    expect(lastCall(calls, 'PUT', base)?.body).toMatchObject({
+      version: 2,
+      defaultClockId: null,
+      cells: [{ weekday: 1, hour: 7, clockId: music }],
+    });
+    expect((await screen.findAllByText('Grid saved.'))[0]).toBeVisible();
+    expect(screen.getByText(/^167 hours have no clock yet/)).toBeVisible();
   });
 
   it('paints by dragging and shift-click, applies a daypart and saves with the version', async () => {

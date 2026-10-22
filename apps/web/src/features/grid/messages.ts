@@ -19,7 +19,6 @@ const en = {
   'conflict.loadConfirm': 'Load their version? Your unsaved changes will be lost.',
   'conflict.keep': 'Keep my changes',
   unknownClock: 'Some hours use clocks that no longer exist. Reload the grid.',
-  incomplete: 'Choose a default clock or paint every hour before saving.',
   noClocks: 'No clock yet. Create a clock first, then paint it on the grid.',
   createClock: 'Create a clock',
 
@@ -30,8 +29,9 @@ const en = {
   'default.help': 'Airs in every hour you haven’t painted.',
   'default.none': 'None',
   'default.missing':
-    '{count} hours have no clock: choose a default clock (or paint every hour) before saving.',
-  'default.missingOne': '1 hour has no clock: choose a default clock before saving.',
+    '{count} hours have no clock yet: they’ll have no music until a clock or a default clock covers them. Setting a default clock fills them all.',
+  'default.missingOne':
+    '1 hour has no clock yet: it’ll have no music until a clock or a default clock covers it. Setting a default clock fills it.',
   'touch.paint': 'Drag to paint',
   'touch.help':
     'On a touch screen a drag scrolls and a tap paints one hour. Turn this on to paint by dragging.',
@@ -111,7 +111,6 @@ const fr: Record<GridMessageKey, string> = {
   'conflict.loadConfirm': 'Charger sa version ? Vos modifications non enregistrées seront perdues.',
   'conflict.keep': 'Garder mes modifications',
   unknownClock: 'Certaines heures utilisent des horloges supprimées. Rechargez la grille.',
-  incomplete: 'Choisissez une horloge par défaut ou peignez toutes les heures avant d’enregistrer.',
   noClocks: 'Aucune horloge. Créez d’abord une horloge, puis peignez-la sur la grille.',
   createClock: 'Créer une horloge',
 
@@ -122,9 +121,9 @@ const fr: Record<GridMessageKey, string> = {
   'default.help': 'Diffusée à toutes les heures non peintes.',
   'default.none': 'Aucune',
   'default.missing':
-    '{count} heures n’ont pas d’horloge : choisissez une horloge par défaut (ou peignez toutes les heures) avant d’enregistrer.',
+    '{count} heures n’ont pas encore d’horloge : elles resteront sans musique tant qu’une horloge ou l’horloge par défaut ne les couvre pas. Choisir une horloge par défaut les remplit toutes.',
   'default.missingOne':
-    '1 heure n’a pas d’horloge : choisissez une horloge par défaut avant d’enregistrer.',
+    '1 heure n’a pas encore d’horloge : elle restera sans musique tant qu’une horloge ou l’horloge par défaut ne la couvre pas. Choisir une horloge par défaut la remplit.',
   'touch.paint': 'Glisser pour peindre',
   'touch.help':
     'Sur un écran tactile, glisser fait défiler et toucher peint une heure. Activez ceci pour peindre en glissant.',
@@ -209,7 +208,6 @@ export function useGridError() {
   return (error: unknown): string => {
     if (isApiError(error, 'daypart_name_taken')) return t('dayparts.nameTaken');
     if (isApiError(error, 'unknown_clock')) return t('unknownClock');
-    if (isApiError(error, 'incomplete_grid')) return t('incomplete');
     if (isApiError(error, 'invalid_range')) return t('override.invalidRange');
     return error instanceof Error ? error.message : String(error);
   };

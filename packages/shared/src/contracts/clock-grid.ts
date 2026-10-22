@@ -176,8 +176,8 @@ export type ClockGridDto = z.infer<typeof clockGridSchema>;
 /**
  * `PUT …/clock-grid`: replaces the cells and the default clock. `version` is the grid version
  * the edit is based on; when the grid changed since, the api answers 409 `edit_conflict`. A
- * grid without a default clock must paint all 168 hours, or the api answers 400
- * `incomplete_grid`: a saved grid gives every hour exactly one clock (ADR 0020).
+ * grid without a default clock that leaves hours unpainted is saved too (work in progress):
+ * those hours resolve to `none` until a clock covers them (ADR 0020).
  */
 export const updateClockGridSchema = z.object({
   version: z.int().min(0),

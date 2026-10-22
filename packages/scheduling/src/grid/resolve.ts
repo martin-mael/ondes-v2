@@ -16,9 +16,10 @@ import {
 //
 // Order: an override covering the local date and hour, then the hour's weekly cell, then the
 // station's default clock. A grid is complete (`isGridComplete`) when it has a default clock or
-// paints all 168 hours: then every hour resolves to exactly one clock. The api refuses to save
-// an incomplete grid, so only a station that never saved one resolves hours to `none`, and the
-// log generator treats that as "no grid" (ADR 0020).
+// paints all 168 hours: then every hour resolves to exactly one clock. The api saves an
+// incomplete grid too (work in progress, reported in the editor), so callers handle hours that
+// resolve to `none`: the log generator (#50) needs a complete grid and flags the gaps, the
+// missing-episode fallback (#47) raises an alert (ADR 0020).
 //
 // DST (Europe/Paris, last Sundays of March and October): the grid is wall-clock time, so
 // - the hour that doesn't exist (02:00–03:00 the night clocks go forward) is skipped: its cell
@@ -66,7 +67,7 @@ export interface LocalHour {
 }
 
 export interface ClockResolution {
-  /** `null` only when `source` is `none`: an incomplete grid (never saved). */
+  /** `null` only when `source` is `none`: an hour an incomplete grid leaves without a clock. */
   clockId: string | null;
   source: GridHourSource;
   /** The winning override, when `source` is `override`. */

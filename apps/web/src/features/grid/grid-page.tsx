@@ -193,7 +193,7 @@ export function GridPage() {
                 {t('discard')}
               </Button>
             )}
-            <Button onClick={save} disabled={!dirty || saving || conflict || unassigned > 0}>
+            <Button onClick={save} disabled={!dirty || saving || conflict}>
               <DelayedSpinner when={saving} data-icon="inline-start" />
               {t('save')}
             </Button>
