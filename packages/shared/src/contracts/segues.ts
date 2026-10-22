@@ -348,6 +348,47 @@ export type ListIslandsQuery = z.input<typeof listIslandsQuerySchema>;
 export const islandListSchema = z.object({ items: z.array(islandSummarySchema) });
 export type IslandList = z.infer<typeof islandListSchema>;
 
+// --- Editor media (#58) ------------------------------------------------------------------
+
+/**
+ * How one lane's audio plays, as the island derivation sees it (`IslandMedia` without storage
+ * details): the playout copy, its effective cues (the log item's overrides, else the asset's,
+ * else the whole file) and its playout gain. The segue editor (#58) places waveforms and mixes
+ * its WebAudio preview from this, so the preview matches the render.
+ */
+export const segueMediaSchema = z.object({
+  assetId: uuidSchema,
+  /** The playout copy's hash: names the audio and peaks versions. */
+  sha256: sha256HexSchema,
+  sampleRate: z.int().positive(),
+  durationSamples: z.int().positive(),
+  /** Playout gain in dB (`getPlayoutGain`, with the log item's `gainDb` override for A and B). */
+  gainDb: z.number(),
+  cueIn: samples,
+  cueOut: samples,
+});
+export type SegueMedia = z.infer<typeof segueMediaSchema>;
+
+const idList = (max: number) =>
+  z
+    .string()
+    .transform((v) => v.split(',').filter(Boolean))
+    .pipe(z.array(uuidSchema).max(max));
+
+/** `GET …/segues/media?itemIds=a,b&assetIds=x,y`: log items (A, B) and voice assets. */
+export const segueMediaQuerySchema = z.object({
+  itemIds: idList(2).default([]),
+  assetIds: idList(SEGUE_MAX_VOICES).default([]),
+});
+export type SegueMediaQuery = z.input<typeof segueMediaQuerySchema>;
+
+/** Keyed by the requested ids; null when it has no usable playout copy (or doesn't exist). */
+export const segueMediaResponseSchema = z.object({
+  items: z.record(uuidSchema, segueMediaSchema.nullable()),
+  assets: z.record(uuidSchema, segueMediaSchema.nullable()),
+});
+export type SegueMediaResponse = z.infer<typeof segueMediaResponseSchema>;
+
 // --- Events ------------------------------------------------------------------------------
 
 export const segueChangeSchema = z.enum(['created', 'updated', 'deleted', 'synced']);
