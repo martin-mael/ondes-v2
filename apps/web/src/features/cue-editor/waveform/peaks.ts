@@ -15,10 +15,11 @@ export async function fetchPeaks(
   sha256?: string,
   signal?: AbortSignal,
 ): Promise<DecodedPeaks> {
-  const query = sha256 ? `?v=${sha256}` : '';
+  const query = sha256 ? `?v=${encodeURIComponent(sha256)}` : '';
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}/stations/${stationId}/assets/${assetId}/peaks${query}`, {
+    const path = `/stations/${encodeURIComponent(stationId)}/assets/${encodeURIComponent(assetId)}`;
+    res = await fetch(`${API_BASE}${path}/peaks${query}`, {
       credentials: 'same-origin',
       signal,
     });
@@ -32,8 +33,9 @@ export async function fetchPeaks(
   return decodePeaks(new Uint8Array(await res.arrayBuffer()));
 }
 
-export const peaksQuery = (stationId: string, assetId: string, sha256?: string) =>
+export const peaksQuery = (stationId: string, assetId: string, sha256?: string, enabled = true) =>
   queryOptions({
+    enabled,
     queryKey: peaksKey(stationId, assetId, sha256),
     queryFn: ({ signal }) => fetchPeaks(stationId, assetId, sha256, signal),
     // A versioned file never changes; an unversioned one is revalidated by the browser (ETag).
@@ -41,7 +43,10 @@ export const peaksQuery = (stationId: string, assetId: string, sha256?: string) 
     retry: (count, error) => !(error instanceof ApiError && error.status === 404) && count < 2,
   });
 
-/** The decoded peaks of an asset (a TanStack query). 404 (`not_found`) while none exist yet. */
-export function usePeaks(stationId: string, assetId: string, sha256?: string) {
-  return useQuery(peaksQuery(stationId, assetId, sha256));
+/**
+ * The decoded peaks of an asset (a TanStack query). 404 (`not_found`) while none exist yet.
+ * `enabled: false` (e.g. the asset lists no peaks file) sends nothing.
+ */
+export function usePeaks(stationId: string, assetId: string, sha256?: string, enabled = true) {
+  return useQuery(peaksQuery(stationId, assetId, sha256, enabled));
 }
