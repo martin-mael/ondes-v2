@@ -3,6 +3,7 @@ import type { LinkProps } from '@tanstack/react-router';
 import {
   CalendarClockIcon,
   CalendarDaysIcon,
+  CalendarRangeIcon,
   ClockIcon,
   LayoutDashboardIcon,
   LibraryBigIcon,
@@ -75,6 +76,12 @@ export const stationNav: NavItem[] = [
     to: '/stations/$stationId/clocks',
     label: 'shell.nav.clocks',
     icon: ClockIcon,
+    permission: 'clock:read',
+  },
+  {
+    to: '/stations/$stationId/grid',
+    label: 'shell.nav.grid',
+    icon: CalendarRangeIcon,
     permission: 'clock:read',
   },
   {
