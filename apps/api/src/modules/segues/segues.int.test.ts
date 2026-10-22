@@ -30,6 +30,7 @@ import type {
   RealtimeEvent,
   Segue,
   SegueList,
+  SegueMediaResponse,
   Show,
   ShowSlot,
   StationRole,
@@ -441,6 +442,47 @@ describe('segue CRUD and islands', () => {
       await call('programmer', 'PUT', `/segues/${segue.id}`, lanes(assets.VT1 as string)),
     );
     expect(segue.status).toBe('ready');
+  });
+});
+
+describe('editor media', () => {
+  it('resolves A, B and voices as the island sync does, and stays in the station', async () => {
+    const media = await ok<SegueMediaResponse>(
+      await call(
+        'presenter',
+        'GET',
+        `/segues/media?itemIds=${items.C},${items.D}&assetIds=${assets.VT1},${assets.VT3},${otherAsset}`,
+      ),
+    );
+    expect(media.items[items.C as string]).toMatchObject({
+      assetId: assets.C,
+      sampleRate: SR,
+      durationSamples: sec(150),
+      cueIn: 0,
+      cueOut: sec(150),
+    });
+    expect(typeof media.items[items.C as string]?.gainDb).toBe('number');
+    expect(media.items[items.D as string]?.assetId).toBe(assets.D);
+    expect(media.assets[assets.VT1 as string]).toMatchObject({ durationSamples: sec(5) });
+    // No playout copy yet, and another tenant's asset: both null.
+    expect(media.assets[assets.VT3 as string]).toBeNull();
+    expect(media.assets[otherAsset]).toBeNull();
+
+    expect((await call('viewer', 'GET', `/segues/media?itemIds=${items.C}`)).statusCode).toBe(403);
+    expect((await call('outsider', 'GET', `/segues/media?itemIds=${items.C}`)).statusCode).toBe(
+      404,
+    );
+    // From another station, our item resolves to nothing.
+    const other = await ok<SegueMediaResponse>(
+      await call('outsider', 'GET', `/segues/media?itemIds=${items.C}`, undefined, otherStationId),
+    );
+    expect(other.items[items.C as string]).toBeNull();
+    const tooMany = await call(
+      'presenter',
+      'GET',
+      `/segues/media?itemIds=${items.A},${items.B},${items.C}`,
+    );
+    expect(tooMany.statusCode).toBe(400);
   });
 });
 

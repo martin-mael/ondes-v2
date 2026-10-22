@@ -7,6 +7,8 @@ import {
   listSeguesQuerySchema,
   type Segue,
   segueListSchema,
+  segueMediaQuerySchema,
+  segueMediaResponseSchema,
   segueSchema,
   updateSegueSchema,
   uuidSchema,
@@ -18,6 +20,7 @@ import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
 import { HttpError } from '../../plugins/errors.ts';
 import { type EventSink, eventsOf, publishAll } from './events.ts';
 import { requestRenders } from './render.ts';
+import { segueMedia } from './media.ts';
 import * as repo from './repo.ts';
 
 // Segues and islands API (#55), under /api/v1/stations/:stationId. Writes are audited and
@@ -82,6 +85,20 @@ export async function seguesRoutes(app: FastifyInstance, options: SeguesRoutesOp
     async (request) => ({
       items: await repo.listSegues(app.db, stationScopeOf(request), request.query),
     }),
+  );
+
+  // The segue editor's (#58) lane media: A and B by log item, voices by asset.
+  r.get(
+    '/stations/:stationId/segues/media',
+    {
+      preHandler: read,
+      schema: {
+        params: stationParams,
+        querystring: segueMediaQuerySchema,
+        response: { 200: segueMediaResponseSchema },
+      },
+    },
+    (request) => segueMedia(app.db, stationScopeOf(request), request.query),
   );
 
   r.get(
