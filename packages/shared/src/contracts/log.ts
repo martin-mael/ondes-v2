@@ -291,7 +291,9 @@ export type LogSegmentPartInput = z.input<typeof partInputSchema>;
 
 /**
  * An item to insert or a replacement. Rules per kind:
- * - asset kinds need `assetId`; `marker` has duration 0; `segment` has 2–16 `parts` and
+ * - asset kinds need `assetId`, except `episode`: an episode item without one is a show
+ *   occurrence whose audio isn't there yet, which the missing-episode check fills (ADR 0022).
+ *   `marker` has duration 0; `segment` has 2–16 `parts` and
  *   its duration is computed from them (see `plannedDurationMs`; the input value is ignored);
  * - `timing` other than `flow` needs `anchorAt`, `flow` must not have one; `capMs` is `soft` only.
  *   The anchor must fall inside the item's local day (`startsAt <= anchorAt < endsAt`), or 422.
@@ -322,10 +324,11 @@ export const logItemInputSchema = z
     message: 'capMs only applies to soft timing',
     path: ['capMs'],
   })
-  .refine((v) => !(ASSET_KINDS as readonly string[]).includes(v.kind) || !!v.assetId, {
-    message: 'this kind needs an assetId',
-    path: ['assetId'],
-  })
+  .refine(
+    (v) =>
+      v.kind === 'episode' || !(ASSET_KINDS as readonly string[]).includes(v.kind) || !!v.assetId,
+    { message: 'this kind needs an assetId', path: ['assetId'] },
+  )
   .refine((v) => v.kind !== 'marker' || v.plannedDurationMs === 0, {
     message: 'a marker has no duration',
     path: ['plannedDurationMs'],

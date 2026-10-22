@@ -179,6 +179,11 @@ describe('logItemInputSchema', () => {
     expect(logItemInputSchema.safeParse({ kind: 'marker', plannedDurationMs: 5 }).success).toBe(
       false,
     );
+    // A show occurrence whose audio isn't there yet (ADR 0022).
+    expect(
+      logItemInputSchema.safeParse({ kind: 'episode', episodeId: assetId, plannedDurationMs: 1 })
+        .success,
+    ).toBe(true);
     const part = { kind: 'song', assetId, plannedDurationMs: 1_000 };
     expect(logItemInputSchema.safeParse({ kind: 'segment', parts: [part] }).success).toBe(false);
     expect(logItemInputSchema.safeParse({ kind: 'segment', parts: [part, part] }).success).toBe(
