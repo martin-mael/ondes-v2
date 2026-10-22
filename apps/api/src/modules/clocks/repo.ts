@@ -41,6 +41,7 @@ import {
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { HttpError } from '../../plugins/errors.ts';
 import { getCategory, type LibraryCandidate, loadCandidates } from '../rotation/repo.ts';
+import { releaseClockFromGrid } from './grid-repo.ts';
 import {
   type FixedPlacement,
   findPickSlots,
@@ -587,6 +588,8 @@ async function freeCopyName(tx: Tx, scope: StationScope, name: string): Promise<
 export async function deleteClock(db: Db, ctx: StationContext, id: string): Promise<void> {
   await mutate(db, ctx, async (tx, audit) => {
     const before = await loadClock(tx, ctx.scope, id);
+    // The weekly grid (#40) may refuse; painted hours go with the clock.
+    await releaseClockFromGrid(tx, ctx.scope, id);
     await tx.delete(clock).where(and(eq(clock.id, id), whereStation(clock, ctx.scope)));
     await audit({
       action: 'clock.delete',

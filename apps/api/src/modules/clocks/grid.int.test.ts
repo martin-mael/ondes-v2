@@ -7,7 +7,7 @@ import {
   resolveStationScope,
   type StationScope,
 } from '@ondes/db';
-import { resolveClock } from '@ondes/scheduling';
+import { clockForWallHour, resolveClockAt } from '@ondes/scheduling';
 import type {
   Actor,
   ClockDetail,
@@ -137,12 +137,40 @@ describe('clock grid API', () => {
 
     const stale = await call('programmer', 'PUT', '/clock-grid', {
       version: 0,
-      defaultClockId: null,
+      defaultClockId: clocks.Music,
       cells: [],
     });
     expect(stale.statusCode).toBe(409);
     expect(stale.json().error).toBe('edit_conflict');
     expect(await auditActions('clock_grid')).toEqual(['clock_grid.update']);
+    // The audit row lists the hours that changed, not the whole grid.
+    const [row] = await t.tdb.db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.entityType, 'clock_grid'), eq(auditLog.stationId, scope.stationId)));
+    expect(row?.diff).toEqual({
+      defaultClockId: { from: null, to: clocks.Music },
+      cells: {
+        from: [
+          { weekday: 1, hour: 7, clockId: null },
+          { weekday: 7, hour: 2, clockId: null },
+        ],
+        to: [
+          { weekday: 1, hour: 7, clockId: clocks.Morning },
+          { weekday: 7, hour: 2, clockId: clocks.Night },
+        ],
+      },
+    });
+  });
+
+  it('refuses a grid that leaves hours without a clock', async () => {
+    const res = await call('programmer', 'PUT', '/clock-grid', {
+      version: 1,
+      defaultClockId: null,
+      cells: [{ weekday: 1, hour: 7, clockId: clocks.Morning }],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: 'incomplete_grid', details: { unassigned: 167 } });
   });
 
   it('refuses duplicate hours and other stations’ clocks', async () => {
@@ -219,11 +247,11 @@ describe('clock grid API', () => {
     expect(backwards.statusCode).toBe(400);
 
     const grid = await loadClockGrid(t.tdb.db, scope);
-    expect(resolveClock(grid, { date: '2026-12-21', hour: 7 })).toMatchObject({
+    expect(clockForWallHour(grid, { date: '2026-12-21', hour: 7 })).toMatchObject({
       clockId: clocks.Xmas,
       source: 'override',
     });
-    expect(resolveClock(grid, { date: '2026-12-28', hour: 7 }).clockId).toBe(clocks.Morning);
+    expect(clockForWallHour(grid, { date: '2026-12-28', hour: 7 }).clockId).toBe(clocks.Morning);
 
     // The night the clocks go back: 25 hours, the 02 cell twice.
     const fall = await call('programmer', 'GET', '/clock-grid/hours?from=2026-10-25&days=1');
@@ -246,20 +274,43 @@ describe('clock grid API', () => {
     ]);
   });
 
-  it('falls back to the default when a painted clock is deleted', async () => {
-    const override = await call('programmer', 'POST', '/clock-grid/overrides', {
-      name: 'Night special',
-      startsOn: '2026-11-01',
-      endsOn: '2026-11-01',
-      clockId: clocks.Night,
-    });
+  it('keeps the grid complete when clocks are deleted', async () => {
+    const override = (
+      await call('programmer', 'POST', '/clock-grid/overrides', {
+        name: 'Night special',
+        startsOn: '2026-11-01',
+        endsOn: '2026-11-01',
+        clockId: clocks.Night,
+      })
+    ).json<GridOverride>();
+    // The default clock and an override's clock can't go.
+    const isDefault = await call('programmer', 'DELETE', `/clocks/${clocks.Music}`);
+    expect(isDefault.statusCode).toBe(409);
+    expect(isDefault.json()).toMatchObject({ error: 'clock_in_use', details: { default: true } });
+    const inOverride = await call('programmer', 'DELETE', `/clocks/${clocks.Night}`);
+    expect(inOverride.statusCode).toBe(409);
+    expect(inOverride.json().details.overrides).toEqual(['Night special']);
+
+    // Once the override is gone, deleting it removes its painted hour (back to the default)
+    // and bumps the version: an editor still on the old version gets edit_conflict.
+    await call('programmer', 'DELETE', `/clock-grid/overrides/${override.id}`);
+    const before = (await call('programmer', 'GET', '/clock-grid')).json<ClockGridDto>();
     expect((await call('programmer', 'DELETE', `/clocks/${clocks.Night}`)).statusCode).toBe(204);
     const grid = (await call('programmer', 'GET', '/clock-grid')).json<ClockGridDto>();
     expect(grid.cells.map((c) => c.clockId)).toEqual([clocks.Morning]);
-    const kept = grid.overrides.find((o) => o.id === override.json<GridOverride>().id);
-    expect(kept?.clockId).toBeNull();
+    expect(grid.version).toBe(before.version + 1);
+    const stale = await call('programmer', 'PUT', '/clock-grid', {
+      version: before.version,
+      defaultClockId: clocks.Music,
+      cells: before.cells,
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().error).toBe('edit_conflict');
+
     const loaded = await loadClockGrid(t.tdb.db, scope);
-    expect(resolveClock(loaded, { date: '2026-11-01', hour: 2 }).source).toBe('default');
+    // 2026-11-01 02:00 CET is 01:00Z.
+    const at = resolveClockAt(loaded, new Date('2026-11-01T01:00:00Z'), 'Europe/Paris');
+    expect([at.hour, at.source, at.clockId]).toEqual([2, 'default', clocks.Music]);
   });
 
   it('needs clock permissions and hides other tenants', async () => {

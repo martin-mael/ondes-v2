@@ -1,7 +1,7 @@
 import { createGridOverrideSchema, type GridOverride, type LocalDate } from '@ondes/shared';
 import { useQueryClient } from '@tanstack/react-query';
 import { cn } from 'cn';
-import { CircleAlertIcon, PencilIcon, PlusIcon, Trash2Icon } from 'lucide-react';
+import { PencilIcon, PlusIcon, Trash2Icon } from 'lucide-react';
 import { type FormEvent, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Badge } from '@/ui/badge';
@@ -90,7 +90,7 @@ export function OverridesPanel({
       ) : (
         <ul className="flex flex-col gap-1.5">
           {overrides.map((o) => {
-            const clock = o.clockId ? byId.get(o.clockId) : undefined;
+            const clock = byId.get(o.clockId);
             const past = o.endsOn < today;
             const dates =
               o.startsOn === o.endsOn
@@ -124,12 +124,6 @@ export function OverridesPanel({
                     {dates} · {hours}
                     {clock && ` · ${clock.name}`}
                   </span>
-                  {!clock && (
-                    <span className="flex items-center gap-1 text-xs text-destructive">
-                      <CircleAlertIcon className="size-3" />
-                      {t('overrides.clockDeleted')}
-                    </span>
-                  )}
                 </div>
                 {canEdit && (
                   <div className="ml-auto flex shrink-0 items-center">
@@ -222,7 +216,7 @@ function OverrideDialog({
             allDay: editing.startHour === 0 && editing.endHour === 24,
             startHour: editing.startHour,
             endHour: editing.endHour,
-            clockId: editing.clockId ?? '',
+            clockId: editing.clockId,
           };
     setInitial(start);
     setForm(start);

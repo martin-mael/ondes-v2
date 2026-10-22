@@ -1,4 +1,4 @@
-import type { ClockGridDto, MyOrg } from '@ondes/shared';
+import type { MyOrg } from '@ondes/shared';
 import { fireEvent, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -21,6 +21,7 @@ const music = '01a15ddf-0000-7000-8000-0000000000a1';
 const morning = '01a15ddf-0000-7000-8000-0000000000a2';
 const daypartId = '01a15ddf-0000-7000-8000-0000000000d1';
 const overrideId = '01a15ddf-0000-7000-8000-0000000000e1';
+const deleted = '01a15ddf-0000-7000-8000-0000000000a9';
 
 const programmerOrgs: MyOrg[] = orgs.map((org) => ({
   ...org,
@@ -42,7 +43,8 @@ const clock = (id: string, name: string, color: string | null) => ({
   estimate: { slots: [], totalMs: 0, targetMs: 3_600_000, warnings: [] },
 });
 
-function grid(partial: Partial<ClockGridDto> = {}) {
+/** A `GET …/clock-grid` body (JSON: dates as strings). */
+function grid(partial: Record<string, unknown> = {}) {
   return {
     defaultClockId: null,
     cells: [],
@@ -77,7 +79,7 @@ const asProgrammer = (routes: Record<string, ApiRoute> = {}): Record<string, Api
 const lastCall = (calls: ApiCall[], method: string, path: string) =>
   calls.filter((c) => c.method === method && c.path === path).at(-1);
 
-const cell = (day: string, hour: string) => new RegExp(`^${day} ${hour}: `) as unknown as string;
+const cell = (day: string, hour: string) => new RegExp(`^${day} ${hour}: `);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -96,12 +98,17 @@ describe('weekly grid page', () => {
   it('is in the station nav and warns about hours without a clock', async () => {
     const { screen, user, history } = renderApp(
       `/stations/${stationId}`,
-      asProgrammer({ [`GET ${base}`]: [200, grid()] }),
+      asProgrammer({
+        // An hour painted with a clock deleted since doesn't count as assigned.
+        [`GET ${base}`]: [200, grid({ cells: [{ weekday: 1, hour: 0, clockId: deleted }] })],
+      }),
     );
     await user.click(await screen.findByRole('link', { name: 'Weekly grid' }));
     await waitFor(() => expect(history.location.pathname).toBe(`/stations/${stationId}/grid`));
     expect(
-      await screen.findByText('168 hours have no clock: choose a default clock.'),
+      await screen.findByText(
+        '168 hours have no clock: choose a default clock (or paint every hour) before saving.',
+      ),
     ).toBeVisible();
     expect(screen.getByText('Hours in station time (Europe/Paris).')).toBeVisible();
   });
@@ -111,7 +118,7 @@ describe('weekly grid page', () => {
       `/stations/${stationId}/grid`,
       asProgrammer({
         [`GET ${base}`]: [200, grid()],
-        [`PUT ${base}`]: (body) => [200, grid({ ...(body as Partial<ClockGridDto>), version: 3 })],
+        [`PUT ${base}`]: (body) => [200, grid({ ...(body as object), version: 3 })],
       }),
     );
     const mon7 = await screen.findByRole('button', { name: cell('Monday', '07:00') });
@@ -155,15 +162,28 @@ describe('weekly grid page', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save grid' })).toBeDisabled());
   });
 
-  it('clears an hour pressed with its own clock, and reports a conflicting save', async () => {
-    const { screen, user } = renderApp(
+  it('clears an hour pressed with its own clock, and keeps the draft over a conflict', async () => {
+    let theirs = 2;
+    let puts = 0;
+    const { screen, user, calls } = renderApp(
       `/stations/${stationId}/grid`,
       asProgrammer({
-        [`GET ${base}`]: [
+        [`GET ${base}`]: () => [
           200,
-          grid({ defaultClockId: music, cells: [{ weekday: 1, hour: 7, clockId: morning }] }),
+          grid({
+            defaultClockId: music,
+            cells: [{ weekday: 1, hour: 7, clockId: morning }],
+            version: theirs,
+          }),
         ],
-        [`PUT ${base}`]: [409, { error: 'edit_conflict', message: 'changed', details: {} }],
+        [`PUT ${base}`]: (body) => {
+          puts++;
+          if (puts === 1) {
+            theirs = 5;
+            return [409, { error: 'edit_conflict', message: 'changed', details: { version: 5 } }];
+          }
+          return [200, grid({ ...(body as object), version: 6 })];
+        },
       }),
     );
     await user.click(await screen.findByRole('button', { name: 'Morning' }));
@@ -174,18 +194,93 @@ describe('weekly grid page', () => {
     expect(screen.getByRole('button', { name: 'Monday 07:00: default (Music)' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Save grid' }));
     expect(await screen.findByText(/Someone saved the grid/)).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Reload the grid' })).toBeVisible();
+
+    // Loading theirs asks first; declining keeps the draft.
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirm);
+    await user.click(screen.getByRole('button', { name: 'Load their version' }));
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: 'Monday 07:00: default (Music)' })).toBeVisible();
+
+    // Keeping mine rebases the draft on their version; the next save sends it.
+    await user.click(screen.getByRole('button', { name: 'Keep my changes' }));
+    await waitFor(() => expect(screen.queryByText(/Someone saved the grid/)).toBeNull());
+    expect(screen.getByRole('button', { name: 'Monday 07:00: default (Music)' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Save grid' }));
+    await waitFor(() => expect(puts).toBe(2));
+    expect(lastCall(calls, 'PUT', base)?.body).toMatchObject({ version: 5, cells: [] });
+  });
+
+  it('keeps hours painted while a save is in flight', async () => {
+    const { screen, user } = renderApp(
+      `/stations/${stationId}/grid`,
+      asProgrammer({
+        [`GET ${base}`]: [200, grid({ defaultClockId: music })],
+        [`PUT ${base}`]: (body) => {
+          // The user paints Tuesday 10:00 before the answer comes back.
+          fireEvent.pointerDown(screen.getByRole('button', { name: cell('Tuesday', '10:00') }), {
+            button: 0,
+          });
+          fireEvent.pointerUp(window);
+          return [200, grid({ ...(body as object), version: 3 })];
+        },
+      }),
+    );
+    fireEvent.pointerDown(await screen.findByRole('button', { name: cell('Monday', '10:00') }), {
+      button: 0,
+    });
+    fireEvent.pointerUp(window);
+    await user.click(screen.getByRole('button', { name: 'Save grid' }));
+    expect((await screen.findAllByText('Grid saved.'))[0]).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Monday 10:00: Music' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Tuesday 10:00: Music' })).toBeVisible();
+    // Tuesday isn't saved yet.
+    expect(screen.getByRole('button', { name: 'Save grid' })).toBeEnabled();
+  });
+
+  it('keeps the eraser when the clock list changes, and paints with a tap on touch', async () => {
+    const { screen, user, queryClient } = renderApp(
+      `/stations/${stationId}/grid`,
+      asProgrammer({
+        [`GET ${base}`]: [
+          200,
+          grid({ defaultClockId: morning, cells: [{ weekday: 3, hour: 9, clockId: music }] }),
+        ],
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Default clock' }));
+    queryClient.setQueryData(['stations', stationId, 'clocks'], {
+      items: [
+        clock(music, 'Music', '#2563eb'),
+        clock(morning, 'Morning', '#f59e0b'),
+        clock(deleted, 'Late', null),
+      ],
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Late' })).toBeVisible());
+    expect(screen.getByRole('button', { name: 'Default clock' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    // A touch press may become a scroll: nothing is painted until the tap completes.
+    const wed9 = screen.getByRole('button', { name: 'Wednesday 09:00: Music' });
+    fireEvent.pointerDown(wed9, { button: 0, pointerType: 'touch' });
+    expect(screen.getByRole('button', { name: 'Wednesday 09:00: Music' })).toBeVisible();
+    fireEvent.click(wed9);
+    expect(
+      screen.getByRole('button', { name: 'Wednesday 09:00: default (Morning)' }),
+    ).toBeVisible();
   });
 
   it('creates an override and lists it with its clock', async () => {
-    let overrides: ClockGridDto['overrides'] = [];
+    let overrides: unknown[] = [];
     const { screen, user, calls } = renderApp(
       `/stations/${stationId}/grid`,
       asProgrammer({
         [`GET ${base}`]: () => [200, grid({ defaultClockId: music, overrides })],
         [`POST ${base}/overrides`]: (body) => {
           const created = { ...(body as object), id: overrideId, createdAt: at, updatedAt: at };
-          overrides = [created as unknown as ClockGridDto['overrides'][number]];
+          overrides = [created];
           return [201, created];
         },
       }),

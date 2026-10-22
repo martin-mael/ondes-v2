@@ -15,8 +15,10 @@ import {
 // `loadClockGrid`) and pass it in.
 //
 // Order: an override covering the local date and hour, then the hour's weekly cell, then the
-// station's default clock. With a default clock every hour resolves to exactly one clock;
-// without one, unpainted hours resolve to `none`.
+// station's default clock. A grid is complete (`isGridComplete`) when it has a default clock or
+// paints all 168 hours: then every hour resolves to exactly one clock. The api refuses to save
+// an incomplete grid, so only a station that never saved one resolves hours to `none`, and the
+// log generator treats that as "no grid" (ADR 0020).
 //
 // DST (Europe/Paris, last Sundays of March and October): the grid is wall-clock time, so
 // - the hour that doesn't exist (02:00–03:00 the night clocks go forward) is skipped: its cell
@@ -24,8 +26,10 @@ import {
 //   clock, which is one real hour, then the 03 cell starts.
 // - the hour that happens twice (02:00–03:00 the night clocks go back) airs its cell's clock
 //   twice, once in summer time and once, `repeated`, in winter time: the day has 25 hours.
-// `resolveClock` itself is a lookup by wall-clock hour and knows nothing of either night;
-// `expandGrid` and `resolveClockAt`, which work on real instants, apply the two rules.
+// Callers work on real instants: `resolveClockAt` (one instant) and `expandGrid` (a range) are
+// the API, and apply the two rules. `clockForWallHour` is the wall-clock lookup underneath; it
+// knows nothing of either night (it answers for 02:00 on 29 March, which never happens), so
+// it's for editors and tests, not for scheduling.
 
 /** One painted hour: ISO weekday (1 = Monday) and wall-clock hour (0–23). */
 export interface ClockGridCell {
@@ -35,9 +39,8 @@ export interface ClockGridCell {
 }
 
 /**
- * Dates `startsOn`–`endsOn` (inclusive), hours `[startHour, endHour)` each day. `clockId` null
- * (its clock was deleted): the override is ignored. `id` breaks ties between overlapping
- * overrides: uuidv7 ids sort by creation.
+ * Dates `startsOn`–`endsOn` (inclusive), hours `[startHour, endHour)` each day. `id` breaks ties
+ * between overlapping overrides: uuidv7 ids sort by creation.
  */
 export interface ClockGridOverride {
   id: string;
@@ -45,7 +48,7 @@ export interface ClockGridOverride {
   endsOn: LocalDate;
   startHour: number;
   endHour: number;
-  clockId: string | null;
+  clockId: string;
 }
 
 /** What resolution needs from a station's grid. The api's `ClockGridDto` fits. */
@@ -63,7 +66,7 @@ export interface LocalHour {
 }
 
 export interface ClockResolution {
-  /** `null` only when `source` is `none`: no cell, no override and no default clock. */
+  /** `null` only when `source` is `none`: an incomplete grid (never saved). */
   clockId: string | null;
   source: GridHourSource;
   /** The winning override, when `source` is `override`. */
@@ -93,12 +96,19 @@ function beats(a: ClockGridOverride, b: ClockGridOverride): boolean {
   return a.id > b.id;
 }
 
-/** A grid indexed for repeated lookups. */
-function compile(grid: ClockGrid): (local: LocalHour) => ClockResolution {
+type Resolver = (local: LocalHour) => ClockResolution;
+
+/** Indexed grids, kept as long as the caller keeps the grid object: compiled once per grid. */
+const compiled = new WeakMap<ClockGrid, Resolver>();
+
+/** A grid indexed for repeated lookups. Grids are treated as immutable. */
+function compile(grid: ClockGrid): Resolver {
+  const cached = compiled.get(grid);
+  if (cached) return cached;
   const cells = new Map<number, string>();
   for (const cell of grid.cells) cells.set(cellKey(cell.weekday, cell.hour), cell.clockId);
-  const overrides = grid.overrides.filter((o) => o.clockId !== null);
-  return ({ date, hour }) => {
+  const overrides = grid.overrides;
+  const resolve: Resolver = ({ date, hour }) => {
     let winner: ClockGridOverride | null = null;
     for (const o of overrides) {
       if (date < o.startsOn || date > o.endsOn || hour < o.startHour || hour >= o.endHour) {
@@ -114,14 +124,16 @@ function compile(grid: ClockGrid): (local: LocalHour) => ClockResolution {
     }
     return { clockId: null, source: 'none', overrideId: null };
   };
+  compiled.set(grid, resolve);
+  return resolve;
 }
 
 /**
  * The clock of a station-local wall-clock hour: override, then weekly cell, then default.
- * A pure lookup: on DST nights use `expandGrid` or `resolveClockAt`, which know that 02:00
- * is skipped in March and runs twice in October.
+ * **Not DST-aware**: it answers for 02:00 on the night that hour doesn't exist, and once for
+ * the 02:00 that happens twice. Scheduling code uses `resolveClockAt` or `expandGrid`.
  */
-export function resolveClock(grid: ClockGrid, local: LocalHour): ClockResolution {
+export function clockForWallHour(grid: ClockGrid, local: LocalHour): ClockResolution {
   return compile(grid)(local);
 }
 
@@ -181,7 +193,11 @@ export function expandGrid(
   return out;
 }
 
-/** The hour `instant` falls in, resolved: what is (or was, or will be) on air then. */
+/**
+ * The clock airing at `instant`: the station hour it falls in (never the skipped hour; the
+ * repeated hour twice, `repeated` on the second run), resolved. The grid's main lookup, the
+ * `resolveClock(station, localDateTime)` of #40.
+ */
 export function resolveClockAt(grid: ClockGrid, instant: Date, timeZone: string): GridHour {
   const [hour] = expandGrid(grid, { from: instant, to: new Date(instant.getTime() + 1) }, timeZone);
   if (!hour) throw new Error(`no station hour at ${instant.toISOString()} in ${timeZone}`);
@@ -202,4 +218,9 @@ export function unassignedHours(grid: ClockGrid): { weekday: number; hour: numbe
     }
   }
   return out;
+}
+
+/** Every hour of every date resolves to a clock: a default clock, or all 168 hours painted. */
+export function isGridComplete(grid: ClockGrid): boolean {
+  return unassignedHours(grid).length === 0;
 }

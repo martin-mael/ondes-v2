@@ -36,6 +36,8 @@ const en = {
     'Someone saved this clock while you were editing it. Reload it to see their version (your unsaved changes will be lost).',
   'editor.reload': 'Reload the clock',
   'editor.unknownReference': 'Some slots point at categories or assets that no longer exist.',
+  'editor.inUse':
+    'The weekly grid still uses this clock (as its default clock, in an override, or on a grid without a default). Change the grid first.',
   'editor.general': 'General',
   'field.name': 'Name',
   'field.description': 'Description',
@@ -156,6 +158,8 @@ const fr: Record<ClockMessageKey, string> = {
   'editor.conflict':
     'Quelqu’un a enregistré cette horloge pendant que vous la modifiiez. Rechargez-la pour voir sa version (vos modifications non enregistrées seront perdues).',
   'editor.reload': 'Recharger l’horloge',
+  'editor.inUse':
+    'La grille hebdomadaire utilise encore cette horloge (horloge par défaut, exception, ou grille sans horloge par défaut). Modifiez d’abord la grille.',
   'editor.unknownReference':
     'Certaines cases pointent vers des catégories ou des éléments qui n’existent plus.',
   'editor.general': 'Général',

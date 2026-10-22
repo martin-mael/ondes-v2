@@ -3,8 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   type ClockGrid,
   type ClockGridOverride,
+  clockForWallHour,
   expandGrid,
-  resolveClock,
+  isGridComplete,
   resolveClockAt,
   unassignedHours,
 } from './resolve.ts';
@@ -41,7 +42,7 @@ const day = (date: string, timeZone = PARIS) => ({
   to: zonedInstant(addDays(date, 1), '00:00', timeZone),
 });
 
-describe('resolveClock', () => {
+describe('clockForWallHour', () => {
   const g = grid({
     cells: [
       { weekday: 1, hour: 7, clockId: MORNING },
@@ -53,37 +54,48 @@ describe('resolveClock', () => {
     // 2026-10-19 is a Monday.
     for (let d = 19; d <= 25; d++) {
       for (let hour = 0; hour < 24; hour++) {
-        const r = resolveClock(g, { date: `2026-10-${d}`, hour });
+        const r = clockForWallHour(g, { date: `2026-10-${d}`, hour });
         expect(r.clockId).not.toBeNull();
         expect(r.source).not.toBe('none');
       }
     }
     expect(unassignedHours(g)).toEqual([]);
+    expect(isGridComplete(g)).toBe(true);
   });
 
   it('reads the weekly cell, then the default', () => {
-    expect(resolveClock(g, { date: '2026-10-19', hour: 7 })).toEqual({
+    expect(clockForWallHour(g, { date: '2026-10-19', hour: 7 })).toEqual({
       clockId: MORNING,
       source: 'grid',
       overrideId: null,
     });
-    expect(resolveClock(g, { date: '2026-10-19', hour: 8 })).toEqual({
+    expect(clockForWallHour(g, { date: '2026-10-19', hour: 8 })).toEqual({
       clockId: MUSIC,
       source: 'default',
       overrideId: null,
     });
     // Same weekday, another week.
-    expect(resolveClock(g, { date: '2026-10-26', hour: 7 }).clockId).toBe(MORNING);
+    expect(clockForWallHour(g, { date: '2026-10-26', hour: 7 }).clockId).toBe(MORNING);
   });
 
   it('resolves to none without a cell or a default, and lists those hours', () => {
     const bare = grid({ defaultClockId: null, cells: [{ weekday: 1, hour: 0, clockId: NIGHT }] });
-    expect(resolveClock(bare, { date: '2026-10-19', hour: 1 })).toEqual({
+    expect(clockForWallHour(bare, { date: '2026-10-19', hour: 1 })).toEqual({
       clockId: null,
       source: 'none',
       overrideId: null,
     });
     expect(unassignedHours(bare)).toHaveLength(7 * 24 - 1);
+    expect(isGridComplete(bare)).toBe(false);
+    const allPainted = grid({
+      defaultClockId: null,
+      cells: Array.from({ length: 168 }, (_, i) => ({
+        weekday: Math.floor(i / 24) + 1,
+        hour: i % 24,
+        clockId: NIGHT,
+      })),
+    });
+    expect(isGridComplete(allPainted)).toBe(true);
   });
 
   it('lets overrides win on their dates and hours only', () => {
@@ -92,23 +104,23 @@ describe('resolveClock', () => {
       overrides: [override({ id: 'o1', startsOn: '2026-12-21', endsOn: '2026-12-27' })],
     });
     // Monday 21 December 07:00: the override beats the weekly cell.
-    expect(resolveClock(withXmas, { date: '2026-12-21', hour: 7 })).toEqual({
+    expect(clockForWallHour(withXmas, { date: '2026-12-21', hour: 7 })).toEqual({
       clockId: XMAS,
       source: 'override',
       overrideId: 'o1',
     });
     // The day after it ends, the grid is back.
-    expect(resolveClock(withXmas, { date: '2026-12-28', hour: 7 }).clockId).toBe(MORNING);
-    expect(resolveClock(withXmas, { date: '2026-12-20', hour: 7 }).clockId).toBe(MUSIC);
+    expect(clockForWallHour(withXmas, { date: '2026-12-28', hour: 7 }).clockId).toBe(MORNING);
+    expect(clockForWallHour(withXmas, { date: '2026-12-20', hour: 7 }).clockId).toBe(MUSIC);
 
     const evenings = grid({
       overrides: [
         override({ id: 'o2', startsOn: '2026-06-21', endsOn: '2026-06-21', startHour: 18 }),
       ],
     });
-    expect(resolveClock(evenings, { date: '2026-06-21', hour: 17 }).source).toBe('default');
-    expect(resolveClock(evenings, { date: '2026-06-21', hour: 18 }).source).toBe('override');
-    expect(resolveClock(evenings, { date: '2026-06-21', hour: 23 }).source).toBe('override');
+    expect(clockForWallHour(evenings, { date: '2026-06-21', hour: 17 }).source).toBe('default');
+    expect(clockForWallHour(evenings, { date: '2026-06-21', hour: 18 }).source).toBe('override');
+    expect(clockForWallHour(evenings, { date: '2026-06-21', hour: 23 }).source).toBe('override');
   });
 
   it('picks the override with the fewest days, then the later start, then the newest', () => {
@@ -120,25 +132,22 @@ describe('resolveClock', () => {
       clockId: SPECIAL,
     });
     const both = grid({ overrides: [oneDay, week] });
-    expect(resolveClock(both, { date: '2026-12-24', hour: 10 }).overrideId).toBe('b-day');
-    expect(resolveClock(both, { date: '2026-12-23', hour: 10 }).overrideId).toBe('a-week');
+    expect(clockForWallHour(both, { date: '2026-12-24', hour: 10 }).overrideId).toBe('b-day');
+    expect(clockForWallHour(both, { date: '2026-12-23', hour: 10 }).overrideId).toBe('a-week');
 
     const early = override({ id: 'z', startsOn: '2026-12-20', endsOn: '2026-12-22' });
     const late = override({ id: 'a', startsOn: '2026-12-22', endsOn: '2026-12-24' });
     expect(
-      resolveClock(grid({ overrides: [early, late] }), { date: '2026-12-22', hour: 0 }).overrideId,
+      clockForWallHour(grid({ overrides: [early, late] }), { date: '2026-12-22', hour: 0 })
+        .overrideId,
     ).toBe('a');
 
     const older = override({ id: '0190', clockId: SPECIAL });
     const newer = override({ id: '0191' });
     expect(
-      resolveClock(grid({ overrides: [newer, older] }), { date: '2026-12-25', hour: 0 }).clockId,
+      clockForWallHour(grid({ overrides: [newer, older] }), { date: '2026-12-25', hour: 0 })
+        .clockId,
     ).toBe(XMAS);
-  });
-
-  it('ignores an override whose clock was deleted', () => {
-    const g2 = grid({ overrides: [override({ id: 'o', clockId: null })] });
-    expect(resolveClock(g2, { date: '2026-12-25', hour: 9 }).source).toBe('default');
   });
 });
 

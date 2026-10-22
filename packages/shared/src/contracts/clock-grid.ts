@@ -4,8 +4,8 @@ import { uuidSchema } from './tenancy.ts';
 
 // Weekly clock grid (#40, ADR 0020): which clock airs in each station-local hour of the week.
 // Mirrors the grid tables in packages/db/src/schema/clocks.ts. Resolution (override, then the
-// weekly cell, then the default clock) is `resolveClock` in @ondes/scheduling; the log
-// generator (#50) reads the grid through it.
+// weekly cell, then the default clock) is `resolveClockAt` / `expandGrid` in
+// @ondes/scheduling; the log generator (#50) reads the grid through them.
 //
 // Hours are station-local wall-clock hours: `weekday` is ISO (1 = Monday … 7 = Sunday), `hour`
 // 0–23. What happens to the hour that doesn't exist or happens twice on DST nights is decided by
@@ -100,9 +100,8 @@ export function daypartCells(daypart: {
 
 /**
  * A date-range exception to the weekly grid (a holiday, a special week): on every station-local
- * date from `startsOn` to `endsOn` (inclusive), the hours `[startHour, endHour)` air `clockId`.
- * `clockId` is `null` when its clock was deleted since: the override then changes nothing and
- * the editor flags it. When overrides overlap, the one with the fewest days wins, then the one
+ * date from `startsOn` to `endsOn` (inclusive), the hours `[startHour, endHour)` air `clockId`
+ * (a clock used by an override can't be deleted). When overrides overlap, the one with the fewest days wins, then the one
  * that starts later, then the one created last (ADR 0020).
  */
 export const gridOverrideSchema = z.object({
@@ -112,7 +111,7 @@ export const gridOverrideSchema = z.object({
   endsOn: localDateSchema,
   startHour: gridHourSchema,
   endHour: gridEndHourSchema,
-  clockId: uuidSchema.nullable(),
+  clockId: uuidSchema,
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -176,7 +175,9 @@ export type ClockGridDto = z.infer<typeof clockGridSchema>;
 
 /**
  * `PUT …/clock-grid`: replaces the cells and the default clock. `version` is the grid version
- * the edit is based on; when the grid changed since, the api answers 409 `edit_conflict`.
+ * the edit is based on; when the grid changed since, the api answers 409 `edit_conflict`. A
+ * grid without a default clock must paint all 168 hours, or the api answers 400
+ * `incomplete_grid`: a saved grid gives every hour exactly one clock (ADR 0020).
  */
 export const updateClockGridSchema = z.object({
   version: z.int().min(0),

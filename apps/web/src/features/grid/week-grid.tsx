@@ -8,8 +8,10 @@ import { cellKey, clockColor, type Draft, textOn } from './paint.ts';
 // works with a mouse, a trackpad (press and drag, or a three-finger drag) and touch: the press
 // picks the stroke (paint the brush, or clear back to the default when the hour already has
 // it), then every hour the pointer passes over joins the stroke. The pointer is found with
-// `elementFromPoint`, so a captured pointer (touch) paints too. Shift-click fills the rectangle
-// from the last hour clicked; Enter or Space paints the focused hour.
+// `elementFromPoint`, so a captured pointer (touch) paints too. On a touch screen a drag
+// scrolls the page and a tap paints one hour, unless `touchPaint` is on: only then is the grid
+// `touch-action: none` (it can't change mid-gesture). Shift-click fills the rectangle from the
+// last hour clicked; Enter or Space paints the focused hour.
 
 export interface GridClock {
   id: string;
@@ -27,6 +29,7 @@ export function WeekGrid({
   clocks,
   defaultClockId,
   readOnly,
+  touchPaint,
   onStroke,
   onRectangle,
 }: {
@@ -34,6 +37,8 @@ export function WeekGrid({
   clocks: ReadonlyMap<string, GridClock>;
   defaultClockId: string | null;
   readOnly: boolean;
+  /** Touch drags paint (and don't scroll). */
+  touchPaint: boolean;
   /** A stroke starts (`first`) or goes on over `cell`. */
   onStroke(cell: Cell, first: boolean): void;
   /** Shift-click from `from` to `to`. */
@@ -46,6 +51,7 @@ export function WeekGrid({
   const painting = useRef(false);
   const last = useRef<string | null>(null);
   const anchor = useRef<Cell | null>(null);
+  const pointerType = useRef('mouse');
 
   useEffect(() => {
     const stop = () => {
@@ -67,7 +73,10 @@ export function WeekGrid({
   };
 
   const start = (event: React.PointerEvent, cell: Cell) => {
+    pointerType.current = event.pointerType;
     if (readOnly || event.button !== 0) return;
+    // A touch that may become a scroll: the tap (click) paints instead.
+    if (event.pointerType === 'touch' && !touchPaint) return;
     event.preventDefault();
     if (event.shiftKey && anchor.current) {
       onRectangle(anchor.current, cell);
@@ -97,7 +106,7 @@ export function WeekGrid({
       <div
         className={cn(
           'grid min-w-[560px] select-none grid-cols-[3rem_repeat(7,minmax(0,1fr))] gap-px',
-          !readOnly && 'touch-none',
+          !readOnly && touchPaint && 'touch-none',
         )}
         onPointerMove={move}
       >
@@ -159,6 +168,11 @@ export function WeekGrid({
                       : undefined
                   }
                   onPointerDown={(event) => start(event, cell)}
+                  onClick={() => {
+                    if (readOnly || pointerType.current !== 'touch' || touchPaint) return;
+                    anchor.current = cell;
+                    onStroke(cell, true);
+                  }}
                   onKeyDown={(event) => {
                     if (readOnly || (event.key !== 'Enter' && event.key !== ' ')) return;
                     event.preventDefault();

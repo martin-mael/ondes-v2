@@ -261,7 +261,8 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
       allowLeave();
       await navigate({ to: '/stations/$stationId/clocks', params: { stationId } });
     } catch (error) {
-      setFormError(error);
+      // The weekly grid (#40) still needs it: its default clock, an override, or painted hours.
+      setFormError(isApiError(error, 'clock_in_use') ? t('editor.inUse') : error);
     }
   };
 

@@ -2,7 +2,7 @@ import { type ClockGridDto, daypartCells, localDateOf, rolePermissions } from '@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi, Link } from '@tanstack/react-router';
 import { cn } from 'cn';
-import { CircleAlertIcon, EraserIcon } from 'lucide-react';
+import { CircleAlertIcon, EraserIcon, HandIcon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Alert, AlertDescription } from '@/ui/alert';
@@ -57,7 +57,10 @@ export function GridPage() {
     defaultClockId: string | null;
     version: number;
   } | null>(null);
-  const [brush, setBrush] = useState<string | null>(null);
+  /** The clock painted, `null` for the eraser (back to the default), `undefined` until set. */
+  const [brush, setBrush] = useState<string | null | undefined>(undefined);
+  /** Touch screens: drag paints instead of scrolling. */
+  const [touchPaint, setTouchPaint] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [saving, setSaving] = useState(false);
   /** What the stroke in progress paints: the brush, or `null` to clear. */
@@ -66,6 +69,9 @@ export function GridPage() {
   const dirty =
     base !== null && (!sameDraft(draft, base.cells) || defaultClockId !== base.defaultClockId);
   const { guard } = useUnsavedChanges(dirty);
+  /** The draft as last rendered, for a save that returns after more painting. */
+  const latest = useRef({ draft, defaultClockId });
+  latest.current = { draft, defaultClockId };
 
   const adopt = (saved: ClockGridDto) => {
     const cells = toDraft(saved.cells);
@@ -85,7 +91,7 @@ export function GridPage() {
   const byId = useMemo(() => new Map(clocks.map((c) => [c.id, c])), [clocks]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: pick a first brush once.
   useEffect(() => {
-    if (brush === null && clocks[0]) setBrush(clocks[0].id);
+    if (brush === undefined && clocks[0]) setBrush(clocks[0].id);
   }, [clocks.length]);
 
   if (grid.isPending || clockList.isPending) return <PageSkeleton />;
@@ -104,19 +110,24 @@ export function GridPage() {
 
   const timezone = grid.data.timezone;
   const brushName = brush ? (byId.get(brush)?.name ?? '') : t('brush.default');
-  const unassigned = defaultClockId ? 0 : 7 * 24 - draft.size;
+  // Hours painted with a clock deleted since don't count as assigned.
+  const unassigned =
+    defaultClockId && byId.has(defaultClockId)
+      ? 0
+      : 7 * 24 - [...draft.values()].filter((id) => byId.has(id)).length;
 
   const onStroke = (cell: { weekday: number; hour: number }, first: boolean) => {
     if (first) {
       const current = draft.get(cellKey(cell.weekday, cell.hour)) ?? null;
       // Pressing on an hour that already has the brush clears instead.
-      stroke.current = brush !== null && current === brush ? null : brush;
+      stroke.current = brush && current === brush ? null : (brush ?? null);
     }
     setDraft((d) => paint(d, [cell], stroke.current));
   };
 
   const save = async () => {
     if (!base) return;
+    const sent = { draft, defaultClockId };
     setSaving(true);
     try {
       const saved = await gridApi.save(stationId, {
@@ -124,7 +135,13 @@ export function GridPage() {
         defaultClockId,
         cells: toCells(draft),
       });
-      adopt(saved);
+      const cells = toDraft(saved.cells);
+      setBase({ cells, defaultClockId: saved.defaultClockId, version: saved.version });
+      // Painting goes on during the request: keep what changed since, on top of the save.
+      if (sameDraft(latest.current.draft, sent.draft)) setDraft(cells);
+      if (latest.current.defaultClockId === sent.defaultClockId) {
+        setDefaultClockId(saved.defaultClockId);
+      }
       queryClient.setQueryData(gridKeys.all(stationId), saved);
       toast.success(t('saved'));
     } catch (error) {
@@ -135,10 +152,24 @@ export function GridPage() {
     }
   };
 
-  const reload = async () => {
+  const fetchFresh = () => queryClient.fetchQuery({ ...gridQuery(stationId), staleTime: 0 });
+
+  /** After a conflict: their version replaces the draft, once the user agrees to lose it. */
+  const loadTheirs = async () => {
+    if (dirty && !window.confirm(t('conflict.loadConfirm'))) return;
+    adopt(await fetchFresh());
     setConflict(false);
-    const fresh = await queryClient.fetchQuery({ ...gridQuery(stationId), staleTime: 0 });
-    adopt(fresh);
+  };
+
+  /** After a conflict: keep the draft, based on their version; the next save replaces it. */
+  const keepMine = async () => {
+    const fresh = await fetchFresh();
+    setBase({
+      cells: toDraft(fresh.cells),
+      defaultClockId: fresh.defaultClockId,
+      version: fresh.version,
+    });
+    setConflict(false);
   };
 
   const discard = () => {
@@ -162,7 +193,7 @@ export function GridPage() {
                 {t('discard')}
               </Button>
             )}
-            <Button onClick={save} disabled={!dirty || saving || conflict}>
+            <Button onClick={save} disabled={!dirty || saving || conflict || unassigned > 0}>
               <DelayedSpinner when={saving} data-icon="inline-start" />
               {t('save')}
             </Button>
@@ -175,8 +206,11 @@ export function GridPage() {
           <CircleAlertIcon />
           <AlertDescription className="flex flex-wrap items-center gap-3">
             {t('conflict')}
-            <Button size="sm" variant="outline" onClick={reload}>
-              {t('reload')}
+            <Button size="sm" variant="outline" onClick={loadTheirs}>
+              {t('conflict.load')}
+            </Button>
+            <Button size="sm" variant="outline" onClick={keepMine}>
+              {t('conflict.keep')}
             </Button>
           </AlertDescription>
         </Alert>
@@ -213,8 +247,11 @@ export function GridPage() {
               clocks={byId}
               defaultClockId={defaultClockId}
               readOnly={!canEdit}
+              touchPaint={touchPaint}
               onStroke={onStroke}
-              onRectangle={(from, to) => setDraft((d) => paint(d, rectangle(from, to), brush))}
+              onRectangle={(from, to) =>
+                setDraft((d) => paint(d, rectangle(from, to), brush ?? null))
+              }
             />
           </div>
 
@@ -252,6 +289,21 @@ export function GridPage() {
                     {t('brush.default')}
                   </Button>
                 </div>
+                {/* Touch screens only: a drag scrolls the page unless this is on. */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-pressed={touchPaint}
+                  title={t('touch.help')}
+                  className={cn(
+                    'hidden self-start [@media(pointer:coarse)]:inline-flex',
+                    touchPaint && 'border-primary bg-accent',
+                  )}
+                  onClick={() => setTouchPaint((on) => !on)}
+                >
+                  <HandIcon data-icon="inline-start" />
+                  {t('touch.paint')}
+                </Button>
               </section>
             )}
 
@@ -279,7 +331,7 @@ export function GridPage() {
               canEdit={canEdit}
               brushName={brushName}
               onApply={(part) => {
-                setDraft((d) => paint(d, daypartCells(part), brush));
+                setDraft((d) => paint(d, daypartCells(part), brush ?? null));
                 toast.success(t('dayparts.applied', { daypart: part.name }));
               }}
             />

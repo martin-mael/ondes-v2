@@ -14,9 +14,12 @@ const en = {
   saved: 'Grid saved.',
   discard: 'Discard changes',
   conflict:
-    'Someone saved the grid while you were editing it. Reload it to see their version (your unsaved changes will be lost).',
-  reload: 'Reload the grid',
+    'Someone saved the grid while you were editing it. Load their version, or keep your changes and save them over theirs.',
+  'conflict.load': 'Load their version',
+  'conflict.loadConfirm': 'Load their version? Your unsaved changes will be lost.',
+  'conflict.keep': 'Keep my changes',
   unknownClock: 'Some hours use clocks that no longer exist. Reload the grid.',
+  incomplete: 'Choose a default clock or paint every hour before saving.',
   noClocks: 'No clock yet. Create a clock first, then paint it on the grid.',
   createClock: 'Create a clock',
 
@@ -26,8 +29,12 @@ const en = {
   'default.label': 'Default clock',
   'default.help': 'Airs in every hour you haven’t painted.',
   'default.none': 'None',
-  'default.missing': '{count} hours have no clock: choose a default clock.',
-  'default.missingOne': '1 hour has no clock: choose a default clock.',
+  'default.missing':
+    '{count} hours have no clock: choose a default clock (or paint every hour) before saving.',
+  'default.missingOne': '1 hour has no clock: choose a default clock before saving.',
+  'touch.paint': 'Drag to paint',
+  'touch.help':
+    'On a touch screen a drag scrolls and a tap paints one hour. Turn this on to paint by dragging.',
 
   'cell.label': '{day} {hour}: {clock}',
   'cell.default': 'default ({clock})',
@@ -64,7 +71,6 @@ const en = {
   'overrides.new': 'New override',
   'overrides.past': 'Past',
   'overrides.allDay': 'all day',
-  'overrides.clockDeleted': 'Its clock was deleted: this override changes nothing.',
   'overrides.edit': 'Edit',
   'overrides.delete': 'Delete',
   'overrides.deleteConfirm': 'Delete the override “{name}”?',
@@ -100,9 +106,12 @@ const fr: Record<GridMessageKey, string> = {
   saved: 'Grille enregistrée.',
   discard: 'Annuler les modifications',
   conflict:
-    'Quelqu’un a enregistré la grille pendant votre modification. Rechargez-la pour voir sa version (vos modifications non enregistrées seront perdues).',
-  reload: 'Recharger la grille',
+    'Quelqu’un a enregistré la grille pendant votre modification. Chargez sa version, ou gardez vos modifications et enregistrez-les à la place.',
+  'conflict.load': 'Charger sa version',
+  'conflict.loadConfirm': 'Charger sa version ? Vos modifications non enregistrées seront perdues.',
+  'conflict.keep': 'Garder mes modifications',
   unknownClock: 'Certaines heures utilisent des horloges supprimées. Rechargez la grille.',
+  incomplete: 'Choisissez une horloge par défaut ou peignez toutes les heures avant d’enregistrer.',
   noClocks: 'Aucune horloge. Créez d’abord une horloge, puis peignez-la sur la grille.',
   createClock: 'Créer une horloge',
 
@@ -112,8 +121,13 @@ const fr: Record<GridMessageKey, string> = {
   'default.label': 'Horloge par défaut',
   'default.help': 'Diffusée à toutes les heures non peintes.',
   'default.none': 'Aucune',
-  'default.missing': '{count} heures n’ont pas d’horloge : choisissez une horloge par défaut.',
-  'default.missingOne': '1 heure n’a pas d’horloge : choisissez une horloge par défaut.',
+  'default.missing':
+    '{count} heures n’ont pas d’horloge : choisissez une horloge par défaut (ou peignez toutes les heures) avant d’enregistrer.',
+  'default.missingOne':
+    '1 heure n’a pas d’horloge : choisissez une horloge par défaut avant d’enregistrer.',
+  'touch.paint': 'Glisser pour peindre',
+  'touch.help':
+    'Sur un écran tactile, glisser fait défiler et toucher peint une heure. Activez ceci pour peindre en glissant.',
 
   'cell.label': '{day} {hour} : {clock}',
   'cell.default': 'par défaut ({clock})',
@@ -150,7 +164,6 @@ const fr: Record<GridMessageKey, string> = {
   'overrides.new': 'Nouvelle exception',
   'overrides.past': 'Passée',
   'overrides.allDay': 'toute la journée',
-  'overrides.clockDeleted': 'Son horloge a été supprimée : cette exception ne change rien.',
   'overrides.edit': 'Modifier',
   'overrides.delete': 'Supprimer',
   'overrides.deleteConfirm': 'Supprimer l’exception « {name} » ?',
@@ -196,6 +209,7 @@ export function useGridError() {
   return (error: unknown): string => {
     if (isApiError(error, 'daypart_name_taken')) return t('dayparts.nameTaken');
     if (isApiError(error, 'unknown_clock')) return t('unknownClock');
+    if (isApiError(error, 'incomplete_grid')) return t('incomplete');
     if (isApiError(error, 'invalid_range')) return t('override.invalidRange');
     return error instanceof Error ? error.message : String(error);
   };

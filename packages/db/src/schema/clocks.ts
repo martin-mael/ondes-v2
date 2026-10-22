@@ -108,7 +108,7 @@ export const clockSlot = pgTable(
 );
 
 // Weekly clock grid (#40, ADR 0020). Contracts: packages/shared/src/contracts/clock-grid.ts.
-// Resolution (override, then weekly cell, then default) is `resolveClock` in
+// Resolution (override, then weekly cell, then default) is `resolveClockAt` / `expandGrid` in
 // @ondes/scheduling; these tables only store what the programmer painted.
 //
 // - `clock_grid`: one row per station, created on the first save: the default clock and the
@@ -117,17 +117,19 @@ export const clockSlot = pgTable(
 //   deletes its cells (composite foreign key, so a cell can't point at another tenant's
 //   clock): those hours fall back to the default clock.
 // - `daypart`: named hour ranges used to paint in bulk. They schedule nothing themselves.
-// - `clock_grid_override`: date-range exceptions. Their clock (and the grid's default) is a
-//   plain foreign key with `on delete set null`, like `clock_slot`'s references: deleting the
-//   clock keeps the override, which then changes nothing and is flagged in the editor. The
-//   repository checks the clock is in scope on write.
+// - `clock_grid_override`: date-range exceptions.
+// The default clock and the overrides' clocks are composite foreign keys like the cells', with
+// no cascade: the clocks api refuses (409 `clock_in_use`) to delete a clock that is the
+// default, used by an override, or painted on a grid without a default, so a saved grid stays
+// complete (ADR 0020). Deleting a clock that only has cells (with a default to fall back on)
+// removes them and bumps `clock_grid.version`.
 
 export const clockGrid = pgTable(
   'clock_grid',
   {
     stationId: uuid('station_id').primaryKey(),
     orgId: uuid('org_id').notNull(),
-    defaultClockId: uuid('default_clock_id').references(() => clock.id, { onDelete: 'set null' }),
+    defaultClockId: uuid('default_clock_id'),
     version: integer('version').notNull().default(0),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
@@ -140,6 +142,12 @@ export const clockGrid = pgTable(
       columns: [t.stationId, t.orgId],
       foreignColumns: [station.id, station.orgId],
     }).onDelete('cascade'),
+    // Composite: a null default isn't checked (MATCH SIMPLE).
+    foreignKey({
+      name: 'clock_grid_default_clock_fk',
+      columns: [t.defaultClockId, t.orgId, t.stationId],
+      foreignColumns: [clock.id, clock.orgId, clock.stationId],
+    }),
     index('clock_grid_default_clock_id_idx').on(t.defaultClockId),
     check('clock_grid_version_check', sql`${t.version} >= 0`),
   ],
@@ -217,7 +225,7 @@ export const clockGridOverride = pgTable(
     endsOn: date('ends_on', { mode: 'string' }).notNull(),
     startHour: integer('start_hour').notNull(),
     endHour: integer('end_hour').notNull(),
-    clockId: uuid('clock_id').references(() => clock.id, { onDelete: 'set null' }),
+    clockId: uuid('clock_id').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
@@ -230,6 +238,11 @@ export const clockGridOverride = pgTable(
       columns: [t.stationId, t.orgId],
       foreignColumns: [station.id, station.orgId],
     }).onDelete('cascade'),
+    foreignKey({
+      name: 'clock_grid_override_clock_fk',
+      columns: [t.clockId, t.orgId, t.stationId],
+      foreignColumns: [clock.id, clock.orgId, clock.stationId],
+    }),
     index('clock_grid_override_station_range_idx').on(t.stationId, t.startsOn, t.endsOn),
     index('clock_grid_override_clock_id_idx').on(t.clockId),
     check('clock_grid_override_range_check', sql`${t.endsOn} >= ${t.startsOn}`),

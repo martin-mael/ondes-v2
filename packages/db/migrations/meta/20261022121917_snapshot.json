@@ -1,5 +1,5 @@
 {
-  "id": "9b62aaf8-9ba9-4840-b639-36c36d4ec9fa",
+  "id": "812ba72c-94c1-4f38-a040-567da1b2058c",
   "prevId": "cfe8f127-ff99-4e43-b4cf-5d39d620fc18",
   "version": "7",
   "dialect": "postgresql",
@@ -1389,19 +1389,6 @@
         }
       },
       "foreignKeys": {
-        "clock_grid_default_clock_id_clock_id_fk": {
-          "name": "clock_grid_default_clock_id_clock_id_fk",
-          "tableFrom": "clock_grid",
-          "tableTo": "clock",
-          "columnsFrom": [
-            "default_clock_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
         "clock_grid_station_org_fk": {
           "name": "clock_grid_station_org_fk",
           "tableFrom": "clock_grid",
@@ -1415,6 +1402,23 @@
             "org_id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "clock_grid_default_clock_fk": {
+          "name": "clock_grid_default_clock_fk",
+          "tableFrom": "clock_grid",
+          "tableTo": "clock",
+          "columnsFrom": [
+            "default_clock_id",
+            "org_id",
+            "station_id"
+          ],
+          "columnsTo": [
+            "id",
+            "org_id",
+            "station_id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -1581,7 +1585,7 @@
           "name": "clock_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "created_at": {
           "name": "created_at",
@@ -1643,19 +1647,6 @@
         }
       },
       "foreignKeys": {
-        "clock_grid_override_clock_id_clock_id_fk": {
-          "name": "clock_grid_override_clock_id_clock_id_fk",
-          "tableFrom": "clock_grid_override",
-          "tableTo": "clock",
-          "columnsFrom": [
-            "clock_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
         "clock_grid_override_station_org_fk": {
           "name": "clock_grid_override_station_org_fk",
           "tableFrom": "clock_grid_override",
@@ -1669,6 +1660,23 @@
             "org_id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "clock_grid_override_clock_fk": {
+          "name": "clock_grid_override_clock_fk",
+          "tableFrom": "clock_grid_override",
+          "tableTo": "clock",
+          "columnsFrom": [
+            "clock_id",
+            "org_id",
+            "station_id"
+          ],
+          "columnsTo": [
+            "id",
+            "org_id",
+            "station_id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
