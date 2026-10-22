@@ -2,6 +2,7 @@ import type { AsRunEntry, LogItem, LogSegmentPart } from '@ondes/shared';
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  AudioWaveformIcon,
   BetweenHorizontalEndIcon,
   BetweenHorizontalStartIcon,
   EllipsisVerticalIcon,
@@ -35,6 +36,7 @@ import type { PassedOver } from './use-live.ts';
 export type ItemAction =
   | 'preview'
   | 'previewTransition'
+  | 'editSegue'
   | 'insertBefore'
   | 'insertAfter'
   | 'replace'
@@ -51,6 +53,10 @@ export function itemTitle(t: TimelineT, item: Pick<LogItem, 'asset' | 'title' | 
     item.asset?.title ?? item.title ?? (item.kind === 'marker' ? t('kind.marker') : t('untitled'))
   );
 }
+
+/** A segue (#58) joins two top-level items that play an asset (not a segment). */
+export const hasSegue = (item: LogItem) =>
+  isAssetKind(item.kind) && item.kind !== 'segment' && !!item.assetId;
 
 export interface ItemRowProps {
   item: LogItem;
@@ -70,6 +76,8 @@ export interface ItemRowProps {
   canMoveDown: boolean;
   /** The next item, for the transition preview. */
   next: LogItem | undefined;
+  /** May open the segue editor (#58) on the transition into the next item. */
+  canSegue?: boolean;
   onAction(action: ItemAction, item: LogItem): void;
   onDropItem(draggedId: string, target: LogItem, where: 'before' | 'after'): void;
 }
@@ -264,12 +272,14 @@ function ItemMenu({
   canMoveUp,
   canMoveDown,
   next,
+  canSegue,
   onAction,
 }: ItemRowProps & { title: string; editable: boolean }) {
   const audible = item.kind === 'segment' ? item.parts.length > 0 : !!item.assetId;
   const nextAudible = next && (next.kind === 'segment' ? next.parts.length > 0 : !!next.assetId);
   const changeable = editable && !item.locked;
-  if (!editable && !(canListen && audible)) return <span className="hidden sm:block" />;
+  const segue = !!canSegue && !!next && hasSegue(item) && hasSegue(next);
+  if (!editable && !(canListen && audible) && !segue) return <span className="hidden sm:block" />;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -288,6 +298,12 @@ function ItemMenu({
           <DropdownMenuItem onClick={() => onAction('previewTransition', item)}>
             <WavesIcon />
             {t('action.previewTransition')}
+          </DropdownMenuItem>
+        )}
+        {segue && (
+          <DropdownMenuItem onClick={() => onAction('editSegue', item)}>
+            <AudioWaveformIcon />
+            {t('action.editSegue')}
           </DropdownMenuItem>
         )}
         {!editable ? (

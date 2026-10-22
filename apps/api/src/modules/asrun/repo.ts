@@ -4,6 +4,7 @@ import {
   assetFile,
   type Executor,
   logItem,
+  logItemFallback,
   type StationScope,
   station,
   unsafeScope,
@@ -49,6 +50,7 @@ export function toEntry(row: Row): AsRunEntry {
     plannedStart: row.plannedStart?.toISOString() ?? null,
     plannedDurationMs: row.plannedDurationMs,
     driftMs: row.plannedStart ? row.startedAt.getTime() - row.plannedStart.getTime() : null,
+    fallback: row.fallback,
     bootId: row.bootId,
     seq: row.seq,
     recordedAt: row.recordedAt.toISOString(),
@@ -134,8 +136,18 @@ async function resolveItem(
           assetId: logItem.assetId,
           segmentId: logItem.segmentId,
           title: logItem.title,
+          // Airing in place of a missing episode (#47): what stood in for it.
+          fallback: logItemFallback.kind,
         })
         .from(logItem)
+        // Only while the item still plays what the fallback put there (not swapped by hand).
+        .leftJoin(
+          logItemFallback,
+          and(
+            eq(logItemFallback.logItemId, logItem.id),
+            eq(logItemFallback.assetId, logItem.assetId),
+          ),
+        )
         .where(and(whereStation(logItem, scope), eq(logItem.id, itemId)))
     : [];
   let fileSha256 = shaFromFilename(input.filename);
@@ -172,6 +184,7 @@ async function resolveItem(
     kind: item?.kind ?? null,
     plannedStart: item?.plannedStart ?? null,
     plannedDurationMs: item?.plannedDurationMs ?? null,
+    fallback: item?.fallback ?? null,
     assetId,
     fileSha256,
     title: input.title ?? item?.title ?? a?.title ?? null,

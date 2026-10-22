@@ -71,6 +71,10 @@ export function toIslandSummary(row: IslandRow): IslandSummary {
     itemIds: row.itemIds,
     lengthSamples: row.lengthSamples,
     storageKey: row.storageKey,
+    file:
+      row.fileSha256 && row.fileSizeBytes
+        ? { sha256: row.fileSha256, sizeBytes: row.fileSizeBytes }
+        : null,
     error: row.error,
     renderedAt: row.renderedAt,
     updatedAt: row.updatedAt,

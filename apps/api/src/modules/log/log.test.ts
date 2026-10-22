@@ -1,7 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { logItemInputSchema, realtimeEventSchema } from '@ondes/shared';
+import {
+  createSegueSchema,
+  logItemInputSchema,
+  PLAYOUT_SAMPLE_RATE,
+  realtimeEventSchema,
+} from '@ondes/shared';
 import { describe, expect, it } from 'vitest';
-import { buildFixtureDay, FIXTURE_LIBRARY, type FixtureAsset } from './fixture.ts';
+import {
+  buildFixtureLog,
+  FIXTURE_LIBRARY,
+  type FixtureAsset,
+  fixtureSegueLanes,
+} from './fixture.ts';
 import { addDays, localDateOf, localDayBounds } from './time.ts';
 import { retime, type TimedItem } from './timing.ts';
 
@@ -219,7 +229,7 @@ describe('buildFixtureDay', () => {
     ['2026-10-25', 25],
   ] as const) {
     it(`fills ${localDate} (${hours} h) with valid items, end to end`, () => {
-      const items = buildFixtureDay(localDate, PARIS, assets);
+      const { items, segues } = buildFixtureLog(localDate, PARIS, assets);
       for (const i of items) logItemInputSchema.parse(i);
       const rows: TimedItem[] = [];
       for (const i of items) {
@@ -253,7 +263,36 @@ describe('buildFixtureDay', () => {
       expect((endsAt.getTime() - startsAt.getTime()) / 3_600_000).toBe(hours);
       expect(items.filter((i) => i.kind === 'episode')).toHaveLength(1);
       expect(items.filter((i) => i.kind === 'live_slot')).toHaveLength(1);
-      expect(items.filter((i) => i.kind === 'segment').length).toBeGreaterThan(15);
+      expect(items.filter((i) => i.kind === 'segment')).toEqual([]);
+      // One voice-tracked transition per music hour, between two consecutive songs.
+      expect(segues.length).toBeGreaterThan(15);
+      for (const s of segues) {
+        expect(items[s.fromIndex]?.kind).toBe('song');
+        expect(items[s.fromIndex + 1]?.kind).toBe('song');
+        expect(s.voice.type).toBe('vt');
+      }
     });
   }
+
+  it('places the VT over the end of A, A and B ducked 8 dB with 300 ms ramps', () => {
+    const sr = PLAYOUT_SAMPLE_RATE;
+    const vt = randomUUID();
+    const lanes = fixtureSegueLanes(vt, 10 * sr);
+    const segue = createSegueSchema.parse({
+      fromItemId: randomUUID(),
+      toItemId: randomUUID(),
+      ...lanes,
+    });
+    // B where the log plays it (2 s crossfade); the voice from 8 s before A's end to 2 s after.
+    expect(segue.in.start).toBe(-2 * sr);
+    expect(segue.voices).toEqual([{ assetId: vt, start: -8 * sr, gainDb: 0, envelope: [] }]);
+    expect(segue.out.envelope).toEqual([
+      { at: -8 * sr - 0.3 * sr, gainDb: 0 },
+      { at: -8 * sr, gainDb: -8 },
+    ]);
+    expect(segue.in.envelope).toEqual([
+      { at: 2 * sr, gainDb: -8 },
+      { at: 2 * sr + 0.3 * sr, gainDb: 0 },
+    ]);
+  });
 });

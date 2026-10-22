@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { stableStringify } from '@ondes/shared';
+import { liveAuthUrl } from '../../live/url.ts';
 import { engineEventsUrl } from '../adapter/route.ts';
 import {
   defaultStationOutputs,
@@ -104,7 +105,12 @@ export function engineSettingsFor(
     // The metrics server has no auth and engines share a network: off until scraped.
     metrics: { port: ENGINE_PORTS.metrics, enabled: false },
     eventsUrl: engineEventsUrl(config.internalApiUrl, station.stationId),
-    live: { ...live, port: ENGINE_PORTS.live },
+    // Each DJ's own credentials, checked by the api (#63), not the shared live password.
+    live: {
+      ...live,
+      port: ENGINE_PORTS.live,
+      authUrl: liveAuthUrl(config.internalApiUrl, station.stationId),
+    },
     paths: {
       safetyDir: `${ENGINE_CACHE_MOUNT}/safety`,
       emergencyFile: `${ENGINE_CACHE_MOUNT}/emergency.flac`,

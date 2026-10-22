@@ -110,6 +110,28 @@ export const putSlotExceptionSchema = z.discriminatedUnion('kind', [
 ]);
 export type PutSlotException = z.input<typeof putSlotExceptionSchema>;
 
+// --- Missing-episode fallback (#47, ADR 0022) --------------------------------------------
+
+/**
+ * What airs in a pre-recorded occurrence whose episode is still missing when the fallback is
+ * decided (`EPISODE_FALLBACK_LEAD_MS` before it starts):
+ * - `latest_episode`: the show's latest episode with audio airs again (the default);
+ * - `episode`: `fallbackEpisodeId` airs again (the latest one if it was deleted or has no audio);
+ * - `clock_music`: music from the clock that covers the slot (needs the log generator, #50);
+ * - `none`: nothing; the slot stays empty and the safety playlist covers it (#34).
+ */
+export const episodeFallbackPolicySchema = z.enum([
+  'latest_episode',
+  'episode',
+  'clock_music',
+  'none',
+]);
+export type EpisodeFallbackPolicy = z.infer<typeof episodeFallbackPolicySchema>;
+
+/** What a fallback actually aired, as marked on the log item and the as-run entry. */
+export const episodeFallbackKindSchema = z.enum(['latest_episode', 'episode', 'clock_music']);
+export type EpisodeFallbackKind = z.infer<typeof episodeFallbackKindSchema>;
+
 // --- Show --------------------------------------------------------------------------------
 
 export const showHostSchema = z.object({ userId: uuidSchema, name: z.string() });
@@ -141,6 +163,10 @@ export const showSchema = z.object({
    * deleted episodes included: numbers are never handed out twice.
    */
   nextEpisodeNumber: z.int().min(1),
+  /** What airs when an episode is missing (#47). */
+  fallbackPolicy: episodeFallbackPolicySchema,
+  /** The episode `fallbackPolicy: 'episode'` airs again: one of this show's. */
+  fallbackEpisodeId: uuidSchema.nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -164,6 +190,8 @@ const showFields = {
     .array(uuidSchema)
     .max(20)
     .transform((ids) => [...new Set(ids)]),
+  fallbackPolicy: episodeFallbackPolicySchema,
+  fallbackEpisodeId: uuidSchema.nullable(),
 };
 
 export const createShowSchema = z.object({
@@ -175,6 +203,8 @@ export const createShowSchema = z.object({
   defaultSlotType: showFields.defaultSlotType.default('prerecorded'),
   tags: showFields.tags.default([]),
   hostUserIds: showFields.hostUserIds.default([]),
+  fallbackPolicy: showFields.fallbackPolicy.default('latest_episode'),
+  fallbackEpisodeId: showFields.fallbackEpisodeId.default(null),
 });
 export type CreateShow = z.input<typeof createShowSchema>;
 

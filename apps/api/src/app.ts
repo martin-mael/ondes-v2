@@ -24,11 +24,16 @@ import { type PeaksPluginOptions, peaksPlugin } from './modules/library/peaks-pl
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { librarySearchRoutes } from './modules/library/search-routes.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
+import { type LivePluginOptions, livePlugin } from './modules/live/plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
 import { rotationRoutes } from './modules/rotation/routes.ts';
 import { rotationRulesRoutes } from './modules/rotation/rules/routes.ts';
 import { type SeguesPluginOptions, seguesPlugin } from './modules/segues/plugin.ts';
+import {
+  type EpisodeCheckPluginOptions,
+  episodeCheckPlugin,
+} from './modules/shows/episode-check/plugin.ts';
 import { showsRoutes } from './modules/shows/routes.ts';
 import { type AuthConfig, authPlugin } from './plugins/auth.ts';
 import { type DbPluginOptions, dbPlugin } from './plugins/db.ts';
@@ -55,6 +60,8 @@ export interface AppOptions {
   cache?: CachePluginOptions;
   /** Safety playlist and emergency file (#34): alert interval, event queue (tests). */
   safety?: SafetyPluginOptions;
+  /** Missing-episode alerts and fallbacks (#47): the clock fallback's hooks, the interval. */
+  episodeCheck?: EpisodeCheckPluginOptions;
   /** Log feeder (#29), on when the api manages engines and has RabbitMQ. `false` turns it off. */
   feeder?: FeederPluginOptions | false;
   /** Media storage. Optional so tests that don't upload can skip S3; without it, no upload or peaks routes. */
@@ -63,6 +70,11 @@ export interface AppOptions {
   uploads?: Omit<UploadPluginOptions, 'storage'>;
   /** Peaks route settings beyond `storage` (tests). */
   peaks?: Omit<PeaksPluginOptions, 'storage'>;
+  /**
+   * Live streamers (#63): the public live host, and the engine token check for the harbor
+   * auth route (default: the engine lifecycle's, when it runs).
+   */
+  live?: LivePluginOptions;
   /** Team onboarding (#113): DNS resolver and sending limits. */
   invitations?: InvitationsOptions;
   /** Real-time stream tuning (tests shorten the timers). */
@@ -130,10 +142,22 @@ export async function buildApp(options: AppOptions) {
       : {}),
     ...options.alerts,
   });
+  // Live streamers (#63): CRUD, connection info, and the engines' internal harbor auth route.
+  await app.register(livePlugin, {
+    ...(lifecycle
+      ? {
+          tokenFor: (stationId: string) => lifecycle.tokenFor(stationId),
+          engineFor: (stationId: string) => lifecycle.adapterFor(stationId),
+        }
+      : {}),
+    ...options.live,
+  });
   // Playout cache (#31): `app.playoutCache` for the feeder, `GET …/cache`, cache alerts.
   await app.register(cachePlugin, options.cache ?? {});
   // Safety playlist and emergency file (#34): routes, on-air source, fallback alerts.
   await app.register(safetyPlugin, options.safety ?? {});
+  // Missing-episode alerts and fallbacks (#47): works off the worker's `episode_check` steps.
+  await app.register(episodeCheckPlugin, options.episodeCheck ?? {});
   // Log feeder (#29): keeps each station's engine queue ahead of air, one replica per station.
   if (lifecycle && options.rabbit && options.feeder !== false) {
     await app.register(feederPlugin, options.feeder ?? {});

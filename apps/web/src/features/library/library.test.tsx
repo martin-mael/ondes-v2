@@ -21,6 +21,10 @@ import { registerAssetDrawerSlot } from './drawer-slots.ts';
 import { filterOf } from './filters.ts';
 import { resetUploads } from './uploads.ts';
 
+// The drawer's own sections and a test slot, without the slots features ship (the cue editor,
+// #24, has its own tests).
+vi.mock('../cue-editor/asset-drawer-slot.tsx', () => ({ assetDrawerSlots: [] }));
+
 // The library screen on the whole app with a fake api: list and facets, search and facet
 // filters into the api filter, bulk edits on ids and on "all matching", the asset drawer and
 // its extension slot, uploads with progress and SSE status, and the read-only view.
@@ -284,6 +288,42 @@ describe('library page', () => {
       );
       expect(within(drawer).queryByRole('region', { name: 'Cue points' })).toBeNull();
       expect(await within(drawer).findByText('0 / 2')).toBeInTheDocument();
+    } finally {
+      unregister();
+    }
+  });
+
+  it('asks before closing the drawer while a slot has unsaved edits', async () => {
+    const unregister = registerAssetDrawerSlot({
+      id: 'dirty-test',
+      title: { en: 'Dirty', fr: 'Modifié' },
+      replaces: 'cues',
+      Component: ({ onDirtyChange }) => (
+        <button type="button" onClick={() => onDirtyChange?.(true)}>
+          edit
+        </button>
+      ),
+    });
+    try {
+      const { screen, user, history } = renderApp(
+        `/stations/${stationId}/library?asset=${ids[0]}`,
+        routes('programmer'),
+      );
+      const drawer = await screen.findByRole('dialog');
+      await user.click(await within(drawer).findByRole('button', { name: 'edit' }));
+      await user.keyboard('{Escape}');
+      const ask = await screen.findByRole('dialog', { name: 'Leave without saving?' });
+      await user.click(within(ask).getByRole('button', { name: 'Stay' }));
+      expect(history.location.search).toContain(`asset=${ids[0]}`);
+      expect(screen.getByRole('button', { name: 'edit' })).toBeInTheDocument();
+      await user.keyboard('{Escape}');
+      await user.click(
+        within(await screen.findByRole('dialog', { name: 'Leave without saving?' })).getByRole(
+          'button',
+          { name: 'Leave without saving' },
+        ),
+      );
+      await waitFor(() => expect(history.location.search).not.toContain('asset='));
     } finally {
       unregister();
     }

@@ -1,20 +1,22 @@
 import {
   type AssetType,
+  type CreateSegue,
+  type Envelope,
   LOG_TRANSITION_MS,
   type LocalDate,
   PLAYOUT_SAMPLE_RATE,
 } from '@ondes/shared';
 import type { LogDayItemInput } from './repo.ts';
 import { localDayBounds, zonedParts } from './time.ts';
-import { segmentDurationMs } from './timing.ts';
 
 // A hand-made log day for development (#100), before the generator (#50) exists. Pure: given
 // the station's fixture assets it returns the items of one local day, back-timed by hand so
 // every hour ends exactly on the hour. `deploy/dev/seed/log-fixture.ts` writes it.
 //
-// Each hour: a station-ID jingle soft-timed at HH:00 (60 s cap), songs, a voice-tracked island
-// segment (song → VT → song) around half past, more songs, and a fill bed sized to the second
-// before the next hour. 12:00 is a pre-recorded episode (hard start), 19:00–21:00 a live slot
+// Each hour: a station-ID jingle soft-timed at HH:00 (60 s cap), songs, a voice-tracked
+// transition around half past (two songs A and B, plus a segue A → B whose voice lane holds a
+// VT, ADR 0017: the seed creates it), more songs, and a fill bed sized to the second before the
+// next hour. 12:00 is a pre-recorded episode (hard start), 19:00–21:00 a live slot
 // (hard start), 18:30 an agenda jingle (not before 18:30), each full hour also gets a marker.
 // DST days come out 23 or 25 hours long.
 
@@ -83,11 +85,102 @@ function slot(a: FixtureAsset, overlapMs = 0) {
   return a.durationMs - overlapMs + LOG_TRANSITION_MS;
 }
 
+/**
+ * A voice-tracked transition of the fixture: the segue from `items[fromIndex]` to the item
+ * right after it, with `voice` in its voice lane. The seed creates it once the day is written.
+ */
+export interface FixtureSegue {
+  fromIndex: number;
+  voice: FixtureAsset;
+}
+
+export interface FixtureDay {
+  items: LogDayItemInput[];
+  segues: FixtureSegue[];
+}
+
+const samplesOf = (ms: number) => Math.round((ms * PLAYOUT_SAMPLE_RATE) / 1000);
+
+/** The segue editor's default duck (`DUCK_PRESETS[0]`): 8 dB under the voice, 300 ms ramps. */
+export const FIXTURE_DUCK = { depthDb: -8, rampMs: 300 } as const;
+
+/**
+ * The lanes of a fixture segue, on the segue axis (samples, 0 = A's end). B starts where the
+ * log plays it, `SONG_OVERLAP_MS` before A's end (log timing doesn't read segues yet, ADR 0017),
+ * so the island adds no time. The voice ends 2 s after A's end, over A's outro and B's intro;
+ * A ducks under it and B comes up after it, like the editor's duck preset (`applyDuck`).
+ * `voiceSamples`: the voice's length as it plays (its cue range).
+ */
+export function fixtureSegueLanes(
+  voiceAssetId: string,
+  voiceSamples: number,
+): Pick<CreateSegue, 'out' | 'in' | 'voices'> {
+  const ramp = samplesOf(FIXTURE_DUCK.rampMs);
+  const inStart = -samplesOf(SONG_OVERLAP_MS);
+  const end = samplesOf(2_000);
+  const start = end - voiceSamples;
+  const out: Envelope =
+    start < 0
+      ? [
+          { at: start - ramp, gainDb: 0 },
+          { at: start, gainDb: FIXTURE_DUCK.depthDb },
+        ]
+      : [];
+  const inEnvelope: Envelope =
+    end > inStart
+      ? [
+          { at: end, gainDb: FIXTURE_DUCK.depthDb },
+          { at: end + ramp, gainDb: 0 },
+        ]
+      : [];
+  return {
+    out: { envelope: out },
+    in: { start: inStart, envelope: inEnvelope },
+    voices: [{ assetId: voiceAssetId, start, gainDb: 0, envelope: [] }],
+  };
+}
+
+/** A fixture song: its slot overlaps the next item by `SONG_OVERLAP_MS`. */
+export function fixtureSong(a: FixtureAsset, slotIndex: number) {
+  return {
+    kind: 'song',
+    assetId: a.id,
+    plannedDurationMs: slot(a, SONG_OVERLAP_MS),
+    cueOverrides: { crossOutMs: SONG_OVERLAP_MS },
+    origin: { type: 'clock', clockId: null, slotIndex },
+  } satisfies LogDayItemInput;
+}
+
+/** The fill bed closing an hour: `durationMs` of it, cut to that length. */
+export function fixtureFill(bed: FixtureAsset, durationMs: number, slotIndex: number) {
+  return {
+    kind: 'fill',
+    assetId: bed.id,
+    title: 'Fill to the hour',
+    plannedDurationMs: durationMs,
+    cueOverrides: {
+      sampleRate: PLAYOUT_SAMPLE_RATE,
+      cueIn: 0,
+      cueOut: Math.round((durationMs * PLAYOUT_SAMPLE_RATE) / 1000),
+    },
+    origin: { type: 'clock', clockId: null, slotIndex },
+  } satisfies LogDayItemInput;
+}
+
+/** The items of {@link buildFixtureLog}, without its segues. */
 export function buildFixtureDay(
   localDate: LocalDate,
   timeZone: string,
   assets: readonly FixtureAsset[],
 ): LogDayItemInput[] {
+  return buildFixtureLog(localDate, timeZone, assets).items;
+}
+
+export function buildFixtureLog(
+  localDate: LocalDate,
+  timeZone: string,
+  assets: readonly FixtureAsset[],
+): FixtureDay {
   const of = (type: AssetType) => assets.filter((a) => a.type === type);
   const songs = of('song');
   const [stationId, stationId2, agenda] = of('jingle');
@@ -100,15 +193,9 @@ export function buildFixtureDay(
 
   const { startsAt, endsAt } = localDayBounds(localDate, timeZone);
   const items: LogDayItemInput[] = [];
+  const segues: FixtureSegue[] = [];
   let songIndex = (Number(localDate.slice(-2)) * 7) % songs.length;
   const nextSong = () => songs[songIndex++ % songs.length] as FixtureAsset;
-  const song = (a: FixtureAsset, slotIndex: number): LogDayItemInput => ({
-    kind: 'song',
-    assetId: a.id,
-    plannedDurationMs: slot(a, SONG_OVERLAP_MS),
-    cueOverrides: { crossOutMs: SONG_OVERLAP_MS },
-    origin: { type: 'clock', clockId: null, slotIndex },
-  });
 
   let liveUntil = 0;
   for (let hourStart = startsAt.getTime(); hourStart < endsAt.getTime(); hourStart += HOUR_MS) {
@@ -145,7 +232,7 @@ export function buildFixtureDay(
     let slotIndex = 1;
     const push = (item: LogDayItemInput) => {
       items.push(item);
-      used += item.kind === 'segment' ? 0 : (item.plannedDurationMs ?? 0);
+      used += item.plannedDurationMs ?? 0;
     };
 
     if (local.hour === 12) {
@@ -186,47 +273,26 @@ export function buildFixtureDay(
       }
       if (!islandDone && used >= 25 * 60_000) {
         islandDone = true;
-        const a = nextSong();
+        const a = songs[songIndex % songs.length] as FixtureAsset;
+        const b = songs[(songIndex + 1) % songs.length] as FixtureAsset;
         const vt = vts[local.hour % vts.length] as FixtureAsset;
-        const b = nextSong();
-        // Parts splice sample-exactly: no overlap between them, the VT over a cut point.
-        const parts = [
-          { kind: 'song' as const, assetId: a.id, plannedDurationMs: a.durationMs },
-          { kind: 'vt' as const, assetId: vt.id, plannedDurationMs: vt.durationMs },
-          { kind: 'song' as const, assetId: b.id, plannedDurationMs: b.durationMs },
-        ];
-        // Raw part lengths, one transition out of the segment (contracts/log.ts).
-        const total = segmentDurationMs(parts.map((p) => p.plannedDurationMs));
-        if (used + total > budget) continue;
-        items.push({
-          kind: 'segment',
-          title: `Island: ${a.title} → ${vt.title} → ${b.title}`,
-          parts,
-          origin: { type: 'clock', clockId: null, slotIndex: slotIndex++ },
-        });
-        used += total;
+        // Two plain songs: the VT is a lane of the segue between them, over A's end, so it
+        // adds no time (fixtureSegueLanes).
+        if (used + slot(a, SONG_OVERLAP_MS) + slot(b, SONG_OVERLAP_MS) > budget) continue;
+        segues.push({ fromIndex: items.length, voice: vt });
+        push(fixtureSong(nextSong(), slotIndex++));
+        push(fixtureSong(nextSong(), slotIndex++));
         continue;
       }
       const s = songs[songIndex % songs.length] as FixtureAsset;
       if (used + slot(s, SONG_OVERLAP_MS) > budget) break;
-      push(song(nextSong(), slotIndex++));
+      push(fixtureSong(nextSong(), slotIndex++));
     }
 
     const remaining = budget - used;
     if (remaining > 0) {
-      push({
-        kind: 'fill',
-        assetId: bed.id,
-        title: 'Fill to the hour',
-        plannedDurationMs: remaining,
-        cueOverrides: {
-          sampleRate: PLAYOUT_SAMPLE_RATE,
-          cueIn: 0,
-          cueOut: Math.round((remaining * PLAYOUT_SAMPLE_RATE) / 1000),
-        },
-        origin: { type: 'clock', clockId: null, slotIndex: slotIndex++ },
-      });
+      push(fixtureFill(bed, remaining, slotIndex++));
     }
   }
-  return items;
+  return { items, segues };
 }

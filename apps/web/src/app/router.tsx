@@ -13,8 +13,11 @@ import { toast } from 'sonner';
 import { z } from 'zod';
 import { EditClockPage, NewClockPage } from '../features/clocks/clock-editor-page.tsx';
 import { ClocksPage } from '../features/clocks/clocks-page.tsx';
+import { CueEditorPage, cueEditorSearchSchema } from '../features/cue-editor/cue-editor-page.tsx';
+import { GridPage } from '../features/grid/grid-page.tsx';
 import { librarySearchParamsSchema } from '../features/library/filters.ts';
 import { LibraryPage } from '../features/library/library-page.tsx';
+import { LivePage } from '../features/live/live-page.tsx';
 import { TimelinePage } from '../features/log-timeline/timeline-page.tsx';
 import { CategoriesPage } from '../features/rotation/categories/categories-page.tsx';
 import {
@@ -22,6 +25,7 @@ import {
   NewCategoryPage,
 } from '../features/rotation/categories/category-editor-page.tsx';
 import { RulesPage } from '../features/rotation/rules/rules-page.tsx';
+import { SegueEditorPage } from '../features/segue-editor/segue-editor-page.tsx';
 import { SafetyPage } from '../features/settings/safety/safety-page.tsx';
 import { CalendarPage, calendarViews } from '../features/shows/calendar-page.tsx';
 import { ShowPage } from '../features/shows/show-page.tsx';
@@ -186,6 +190,15 @@ const libraryRoute = createRoute({
   component: LibraryPage,
 });
 
+// The cue editor (#24): one track's cue points on a full page; the library's filters ride
+// along in the search params for the way back.
+const cueEditorRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'library/$assetId/cues',
+  validateSearch: cueEditorSearchSchema,
+  component: CueEditorPage,
+});
+
 // Music rotation: categories (#37).
 const categoriesRoute = createRoute({
   getParentRoute: () => stationRoute,
@@ -231,6 +244,13 @@ const clockRoute = createRoute({
   component: EditClockPage,
 });
 
+// Weekly clock grid (#40).
+const gridRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'grid',
+  component: GridPage,
+});
+
 // Shows (#45): list, calendar, show page.
 const showsRoute = createRoute({
   getParentRoute: () => stationRoute,
@@ -261,12 +281,32 @@ const safetySettingsRoute = createRoute({
   component: SafetyPage,
 });
 
+// Live (#63): streamers (DJ credentials) and connection settings.
+const liveRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'live',
+  component: LivePage,
+});
+
 // The log timeline (#51): one station-local day, `?date=YYYY-MM-DD` (default: today).
 const logRoute = createRoute({
   getParentRoute: () => stationRoute,
   path: 'log',
   validateSearch: z.object({ date: localDateSchema.optional().catch(undefined) }),
   component: TimelinePage,
+});
+
+// The segue editor (#58): the transition from log item `from` to `to`, on station-local day
+// `date` (the log the timeline shows). Opened from any transition in the timeline.
+const segueRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'log/segue',
+  validateSearch: z.object({
+    date: localDateSchema.optional().catch(undefined),
+    from: z.uuid().optional().catch(undefined),
+    to: z.uuid().optional().catch(undefined),
+  }),
+  component: SegueEditorPage,
 });
 
 const routeTree = rootRoute.addChildren([
@@ -284,6 +324,7 @@ const routeTree = rootRoute.addChildren([
     stationRoute.addChildren([
       dashboardRoute,
       libraryRoute,
+      cueEditorRoute,
       categoriesRoute,
       newCategoryRoute,
       categoryRoute,
@@ -291,11 +332,14 @@ const routeTree = rootRoute.addChildren([
       clocksRoute,
       newClockRoute,
       clockRoute,
+      gridRoute,
       showsRoute,
       showsCalendarRoute,
       showRoute,
       safetySettingsRoute,
+      liveRoute,
       logRoute,
+      segueRoute,
     ]),
   ]),
 ]);

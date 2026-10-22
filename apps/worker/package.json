@@ -13,6 +13,7 @@
   "dependencies": {
     "@ondes/db": "workspace:*",
     "@ondes/queue": "workspace:*",
+    "@ondes/scheduling": "workspace:*",
     "@ondes/shared": "workspace:*",
     "@ondes/storage": "workspace:*",
     "zod": "4.6.7"

@@ -30,11 +30,12 @@ apps/
     plugins/            # fastify plugins: db, auth, rabbit, sse, errors
     modules/<module>/   # routes.ts, service.ts, repo.ts, *.test.ts
                         # auth, orgs, stations, library, engine, asrun, rotation,
-                        # clocks, shows, log, public, jobs, alerts, cache, segues
+                        # clocks, shows, log, public, jobs, alerts, cache, segues, live
   worker/src/
     jobs/<job>/         # one folder per job type: ingest, loudness, autocue, analysis,
                         # peaks, dedupe, cache-sync (+ cache-fetch, its urgent
-                        # one-file variant), log-generate, island-render, …
+                        # one-file variant), episode-check, log-generate,
+                        # island-render, …
   web/src/
     app/                # shell, routing (router.tsx), auth pages, layout, api client,
                         # SSE client (sse/), i18n
@@ -80,6 +81,9 @@ Created by #3. Packages are named `@ondes/<folder>` (e.g. `@ondes/shared`) and a
   - **Time:** show the station's time only (its IANA zone), never server, UTC or browser time side by side.
   - **Coloured accents** (a show or category colour on a card or calendar entry): a straight-edged strip inside the element (`absolute inset-y-0 left-0 w-1`), not a `border-l-*` on a rounded box, whose inner edge curves; give the element a radius equal to the strip's width (`rounded-[4px]` for `w-1`) so the strip fills the corners. No extra ring around the element.
   - **Sizes:** headings inside a page's content (calendar day headers, list group titles, empty states) are `text-sm`; only the page title is large.
+  - **Toasts:** bottom-right (`<Toaster position="bottom-right" />` in `app/app.tsx`).
+  - **Room to work:** precision editors (cue points, waveforms) get a full page per item, not a cramped drawer panel.
+  - **Saving work in progress:** never block a save because something is incomplete (e.g. hours with no clock); show a calm inline warning instead.
 - **No paid/licensed components by default** (Stereo Tool, commercial AcoustID, Essentia models). Make them opt-in plugins.
 - **Naming:** files kebab-case; DB tables snake_case singular (`log_item`); API routes `/api/v1/stations/:stationId/...`.
 
@@ -102,7 +106,7 @@ Every PR must pass, locally and in CI:
   - **Never run `pnpm dev:down`, `pnpm dev:reset` or `docker compose … down` from a session**, and don't restart or recreate its services. You'd cut off every other session mid-test. Stopping the stack is for the human.
   - Integration tests stay isolated on the shared stack: a throwaway database per test file (`createTestDatabase`), random queue prefixes, random S3 keys. Keep it that way in new tests.
   - If you need extra containers (e.g. a spike's own engine), use your own compose project name and your own ports, like `engine/spikes/control` does.
-- Integration tests are split into the projects of `vitest.integration.config.ts`: `core`, `engine` (tests that start their own Liquidsoap/Icecast compose project) and `worker` (worker jobs, which need the ffmpeg image above). `pnpm test:integration` runs all three; `pnpm test:integration --project worker` runs one. A new `*.int.test.ts` lands in `core` unless it's under `apps/worker/src` or `apps/api/src/modules/engine`; add it to `engine` in that config if it starts Liquidsoap.
+- Integration tests are split into the projects of `vitest.integration.config.ts`: `core`, `engine` (tests that start their own Liquidsoap/Icecast compose project) and `worker` (worker jobs, which need the ffmpeg image above). `pnpm test:integration` runs all three; `pnpm test:integration --project worker` runs one. A new `*.int.test.ts` lands in `core` unless it's under `apps/worker/src` or `apps/api/src/modules/engine`; add it to `engine` in that config if it starts Liquidsoap. (e.g. `apps/api/src/modules/live/live-auth.engine.int.test.ts`, the harbor auth callback on the real template).
 - CI (`.github/workflows/ci.yml`) runs only what a PR needs. A `changes` job (path filters) decides; on `main`, on manual runs and on a PR labelled `ci:full`, everything runs. To force a full run that gates a PR, add the `ci:full` label: it starts a new pull_request run on the PR head (other labels don't cancel the run in flight). `gh workflow run ci.yml --ref <branch>` is for ad-hoc runs only: it isn't the PR's pull_request run, so don't rely on it for the PR's `CI ok`.
 
   | Job | Runs on a PR when it touches |

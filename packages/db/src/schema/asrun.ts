@@ -1,4 +1,4 @@
-import type { AsRunOutcome, AsRunSource, LogItemKind } from '@ondes/shared';
+import type { AsRunOutcome, AsRunSource, EpisodeFallbackKind, LogItemKind } from '@ondes/shared';
 import { sql } from 'drizzle-orm';
 import {
   check,
@@ -59,6 +59,8 @@ export const asRunEntry = pgTable(
     outcome: text('outcome').$type<AsRunOutcome>(),
     plannedStart: ms('planned_start'),
     plannedDurationMs: integer('planned_duration_ms'),
+    /** The item aired as the fallback of a missing episode (#47): what stood in for it. */
+    fallback: text('fallback').$type<EpisodeFallbackKind>(),
     /** The api's clock when it was recorded. */
     recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -91,5 +93,9 @@ export const asRunEntry = pgTable(
         and (${t.durationMs} is null or ${t.durationMs} >= 0)`,
     ),
     check('asrun_entry_seq_check', sql`${t.seq} > 0`),
+    check(
+      'asrun_entry_fallback_check',
+      sql`${t.fallback} is null or ${t.fallback} in ('latest_episode', 'episode', 'clock_music')`,
+    ),
   ],
 );

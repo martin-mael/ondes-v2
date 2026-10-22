@@ -46,7 +46,12 @@ describe('engine settings for a station', () => {
       control: { port: 7000 },
       metrics: { port: 9599, enabled: false },
       eventsUrl: 'http://api:3000/internal/engine/stations/st-1/events',
-      live: { enabled: false, port: 8005, mount: 'dj' },
+      live: {
+        enabled: false,
+        port: 8005,
+        mount: 'dj',
+        authUrl: 'http://api:3000/internal/engine/stations/st-1/live-auth',
+      },
       blank: { maxSeconds: 30 },
       paths: { safetyDir: '/cache/safety', emergencyFile: '/cache/emergency.flac' },
       icecast: { host: 'icecast', port: 8000 },

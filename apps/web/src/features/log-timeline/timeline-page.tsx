@@ -107,6 +107,7 @@ function Timeline() {
   const permissions = station ? rolePermissions[station.role] : [];
   const canWrite = permissions.includes('log:write');
   const canListen = permissions.includes('library:read');
+  const canSegue = permissions.includes('voice_track:read');
   const queryClient = useQueryClient();
   const preview = usePreview();
 
@@ -255,6 +256,15 @@ function Timeline() {
         return preview.play(item);
       case 'previewTransition':
         return next && preview.playTransition(item, next);
+      case 'editSegue':
+        return (
+          next &&
+          void navigate({
+            to: '/stations/$stationId/log/segue',
+            params: { stationId },
+            search: { date, from: item.id, to: next.id },
+          })
+        );
       case 'insertBefore':
         return setEditing({ type: 'insert', placement: { before: item.id }, kind: 'song' });
       case 'insertAfter':
@@ -453,6 +463,7 @@ function Timeline() {
                       canMoveUp={!!prev && !prevFrozen}
                       canMoveDown={!!next && !nextFrozen}
                       next={next}
+                      canSegue={canSegue}
                       onAction={onAction}
                       onDropItem={onDropItem}
                     />

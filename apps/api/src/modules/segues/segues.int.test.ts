@@ -20,6 +20,7 @@ import {
   updateStation,
 } from '@ondes/db';
 import { createTestDatabase } from '@ondes/db/testing';
+import type { JobPublisher } from '@ondes/queue';
 import type {
   Actor,
   CreateSegue,
@@ -29,6 +30,7 @@ import type {
   RealtimeEvent,
   Segue,
   SegueList,
+  SegueMediaResponse,
   Show,
   ShowSlot,
   StationRole,
@@ -136,6 +138,19 @@ const sink = {
     published.push(realtimeEventSchema.parse(JSON.parse(JSON.stringify(event))));
   },
 };
+/** Every job the module enqueues (#56: `island-render` for each hash left pending). */
+const enqueued: { name: string; payload: unknown }[] = [];
+const jobs = {
+  enqueue: async (job: { name: string }, payload: unknown) => {
+    enqueued.push({ name: job.name, payload });
+  },
+  close: async () => {},
+} as unknown as JobPublisher;
+const renders = () =>
+  enqueued
+    .filter((j) => j.name === 'island-render')
+    .map((j) => (j.payload as { hash: string }).hash);
+
 const take = <T extends RealtimeEvent['type']>(type: T) =>
   published.filter((e): e is Extract<RealtimeEvent, { type: T }> => e.type === type);
 
@@ -148,7 +163,7 @@ async function createSegueTestApp(): Promise<TestApp> {
     mail: { mailer },
     auth: TEST_AUTH_CONFIG,
     fastify: { logger: false },
-    segues: { events: sink },
+    segues: { events: sink, jobs },
   });
   await app.ready();
   return {
@@ -207,7 +222,7 @@ async function audits(entityId: string) {
 beforeAll(async () => {
   t = await createSegueTestApp();
   const db = t.tdb.db;
-  segueSync = createSegueSync({ db, events: sink, logger: t.app.log });
+  segueSync = createSegueSync({ db, events: sink, jobs, logger: t.app.log });
   const org = await createOrganization(db, system, { slug: 'segues-org', name: 'Org' });
   const orgScope = await resolveOrgScope(db, org.id);
   const st = await createStation(
@@ -427,6 +442,47 @@ describe('segue CRUD and islands', () => {
       await call('programmer', 'PUT', `/segues/${segue.id}`, lanes(assets.VT1 as string)),
     );
     expect(segue.status).toBe('ready');
+  });
+});
+
+describe('editor media', () => {
+  it('resolves A, B and voices as the island sync does, and stays in the station', async () => {
+    const media = await ok<SegueMediaResponse>(
+      await call(
+        'presenter',
+        'GET',
+        `/segues/media?itemIds=${items.C},${items.D}&assetIds=${assets.VT1},${assets.VT3},${otherAsset}`,
+      ),
+    );
+    expect(media.items[items.C as string]).toMatchObject({
+      assetId: assets.C,
+      sampleRate: SR,
+      durationSamples: sec(150),
+      cueIn: 0,
+      cueOut: sec(150),
+    });
+    expect(typeof media.items[items.C as string]?.gainDb).toBe('number');
+    expect(media.items[items.D as string]?.assetId).toBe(assets.D);
+    expect(media.assets[assets.VT1 as string]).toMatchObject({ durationSamples: sec(5) });
+    // No playout copy yet, and another tenant's asset: both null.
+    expect(media.assets[assets.VT3 as string]).toBeNull();
+    expect(media.assets[otherAsset]).toBeNull();
+
+    expect((await call('viewer', 'GET', `/segues/media?itemIds=${items.C}`)).statusCode).toBe(403);
+    expect((await call('outsider', 'GET', `/segues/media?itemIds=${items.C}`)).statusCode).toBe(
+      404,
+    );
+    // From another station, our item resolves to nothing.
+    const other = await ok<SegueMediaResponse>(
+      await call('outsider', 'GET', `/segues/media?itemIds=${items.C}`, undefined, otherStationId),
+    );
+    expect(other.items[items.C as string]).toBeNull();
+    const tooMany = await call(
+      'presenter',
+      'GET',
+      `/segues/media?itemIds=${items.A},${items.B},${items.C}`,
+    );
+    expect(tooMany.statusCode).toBe(400);
   });
 });
 
@@ -736,10 +792,18 @@ describe('events', () => {
     const a = await addItem(assets.C as string);
     const b = await addItem(assets.A as string);
     published.length = 0;
+    enqueued.length = 0;
     const segue = await ok<Segue>(
       await call('programmer', 'POST', '/segues', createBody(a, b, assets.VT1 as string)),
       201,
     );
+    // Re-render on change (#56): one render job per pending hash, scoped to the station.
+    expect(enqueued).toEqual([
+      {
+        name: 'island-render',
+        payload: { orgId: scope.orgId, stationId, hash: segue.island?.hash },
+      },
+    ]);
     expect(take('segue.changed')).toEqual([
       expect.objectContaining({
         stationId,
@@ -872,6 +936,7 @@ describe('invalidation triggers', () => {
 
   it('re-derives on a cue edit in the library', async () => {
     published.length = 0;
+    enqueued.length = 0;
     const res = await library('PUT', '/assets/:assetId/cues', assets.F as string, {
       sampleRate: SR,
       cueOut: { samples: sec(90) },
@@ -882,6 +947,8 @@ describe('invalidation triggers', () => {
     ]);
     const result = await deliver('asset.updated');
     expect(result?.islands.map((i) => i.id)).toEqual([segue.island?.id]);
+    // The consumer's sync enqueues the new hash's render too.
+    expect(renders()).toEqual(result?.islands.map((i) => i.hash));
     await expectRederived();
   });
 
@@ -976,10 +1043,11 @@ describe('feeder and renderer helpers', () => {
     // The renderer stores it: now it may air.
     published.length = 0;
     const key = islandStorageKey(scope.orgId, island.hash);
+    const file = { sha256: 'f'.repeat(64), sizeBytes: 12_345 };
     const rows = await markIslandRendered(
       t.tdb.db,
       scope,
-      { hash: island.hash, storageKey: key },
+      { hash: island.hash, storageKey: key, file },
       sink.publish,
     );
     expect(rows.map((r) => r.id)).toContain(island.id);
@@ -990,6 +1058,7 @@ describe('feeder and renderer helpers', () => {
     expect(rendered.islands.find((i) => i.hash === island.hash)?.rendered).toEqual({
       islandId: island.id,
       storageKey: key,
+      file,
     });
 
     // A library edit the sync hasn't seen yet: the inputs no longer match the render.
@@ -1002,7 +1071,7 @@ describe('feeder and renderer helpers', () => {
     expect(stale.islands.find((i) => i.head.itemId === items.C)?.rendered).toBeNull();
     // Nothing was written.
     const row = await ok<Island>(await call('programmer', 'GET', `/islands/${island.id}`));
-    expect(row).toMatchObject({ hash: island.hash, status: 'ready', storageKey: key });
+    expect(row).toMatchObject({ hash: island.hash, status: 'ready', storageKey: key, file });
   });
 
   it('only marks a render ready while the island still has the rendered hash', async () => {

@@ -37,6 +37,17 @@ const en = {
   'field.tagsHelp': 'Comma separated.',
   'field.hosts': 'Hosts',
   'field.hostsHelp': 'Hosts can edit the show and upload its episodes.',
+  'field.fallback': 'If an episode is missing',
+  'field.fallbackHelp':
+    'Hosts and programmers are emailed 48 h and 6 h before a slot whose episode has no audio. If it is still missing an hour before, this airs instead.',
+  'fallback.latest_episode': 'Rerun the latest episode',
+  'fallback.episode': 'Rerun a chosen episode',
+  'fallback.clock_music': 'Music from the clock',
+  'fallback.none': 'Nothing (safety playlist)',
+  'field.fallbackEpisode': 'Episode to rerun',
+  'field.fallbackEpisodeNone': 'Choose an episode',
+  'field.fallbackEpisodeHelp': 'Only episodes with audio. Without one, the latest episode airs.',
+  'field.fallbackEpisodeOnSave': 'Create the show first, then choose one of its episodes.',
 
   'type.prerecorded': 'Pre-recorded',
   'type.live': 'Live',
@@ -263,6 +274,18 @@ const fr: Record<ShowMessageKey, string> = {
   'field.tagsHelp': 'Séparés par des virgules.',
   'field.hosts': 'Animateurs',
   'field.hostsHelp': 'Les animateurs peuvent modifier l’émission et envoyer ses épisodes.',
+  'field.fallback': 'Si un épisode manque',
+  'field.fallbackHelp':
+    'Les animateurs et programmateurs reçoivent un e-mail 48 h et 6 h avant un créneau dont l’épisode n’a pas d’audio. S’il manque encore une heure avant, ceci est diffusé à la place.',
+  'fallback.latest_episode': 'Rediffuser le dernier épisode',
+  'fallback.episode': 'Rediffuser un épisode choisi',
+  'fallback.clock_music': 'De la musique selon l’horloge',
+  'fallback.none': 'Rien (playlist de secours)',
+  'field.fallbackEpisode': 'Épisode à rediffuser',
+  'field.fallbackEpisodeNone': 'Choisir un épisode',
+  'field.fallbackEpisodeHelp':
+    'Seulement les épisodes avec audio. Sans choix, le dernier épisode passe.',
+  'field.fallbackEpisodeOnSave': 'Créez d’abord l’émission, puis choisissez un de ses épisodes.',
 
   'type.prerecorded': 'Enregistrée',
   'type.live': 'Direct',

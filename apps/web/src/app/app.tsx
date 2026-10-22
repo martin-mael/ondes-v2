@@ -25,7 +25,7 @@ export function App({ queryClient: givenClient, history, locale }: AppProps) {
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
             <AppRouter queryClient={queryClient} history={history} />
-            <Toaster position="top-center" />
+            <Toaster position="bottom-right" />
           </TooltipProvider>
         </QueryClientProvider>
       </I18nProvider>

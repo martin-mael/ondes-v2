@@ -7,18 +7,18 @@ import type { Locale } from '../../app/i18n/messages.ts';
 // anywhere under `src/features/` that exports `assetDrawerSlots`. The drawer finds those
 // files at build time (Vite's `import.meta.glob`), so nothing else needs registering.
 //
-// The cue editor (#24), in e.g. src/features/cue-editor/asset-drawer-slot.tsx:
+// The cue summary (#24), in e.g. src/features/cue-editor/asset-drawer-slot.tsx:
 //
 //     import type { AssetDrawerSlot } from '../library/drawer-slots.ts';
-//     import { CueEditorSection } from './cue-editor-section.tsx';
+//     import { CueSummary } from './cue-summary.tsx';
 //
 //     export const assetDrawerSlots: AssetDrawerSlot[] = [
 //       {
 //         id: 'cue-editor',
-//         title: { en: 'Cue editor', fr: 'Éditeur de cues' },
+//         title: { en: 'Cue points', fr: 'Points de cue' },
 //         replaces: 'cues',
 //         permission: 'library:read',
-//         Component: CueEditorSection,
+//         Component: CueSummary,
 //       },
 //     ];
 //
@@ -45,6 +45,11 @@ export interface AssetDrawerSlotProps {
   canWrite: boolean;
   /** Reloads the asset (drawer) and the library list and counts. */
   refresh: () => Promise<void>;
+  /**
+   * Reports unsaved edits in the section: the drawer then asks before it closes, and the
+   * page before it's left (`useUnsavedChanges`). Stable across renders.
+   */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 export interface AssetDrawerSlot {

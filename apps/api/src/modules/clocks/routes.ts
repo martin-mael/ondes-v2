@@ -15,11 +15,13 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
+import { clockGridRoutes } from './grid-routes.ts';
 import * as repo from './repo.ts';
 
 // Clocks API (#39), under /api/v1/stations/:stationId/clocks. Reads (estimates and previews
 // included) need `clock:read`, edits `clock:write`; every edit writes an audit row. Previews
-// pick with #38's rules engine when this build has it (preview.ts), at random otherwise.
+// pick with #38's rules engine when this build has it (preview.ts), at random otherwise. The
+// weekly grid (#40) lives under …/clock-grid (grid-routes.ts).
 
 const stationParams = z.object({ stationId: z.string() });
 const clockParams = stationParams.extend({ clockId: uuidSchema });
@@ -139,4 +141,6 @@ export async function clocksRoutes(app: FastifyInstance) {
       return reply.code(204).send();
     },
   );
+
+  await clockGridRoutes(app);
 }

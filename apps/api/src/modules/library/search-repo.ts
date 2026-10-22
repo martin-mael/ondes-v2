@@ -25,11 +25,14 @@ import {
   type LibraryFacetsQuery,
   type LibraryFilter,
   type LibraryItem,
+  type LibraryRandom,
+  type LibraryRandomResult,
   type LibrarySearch,
   type LibrarySearchPage,
   type LibrarySort,
   libraryFacetsQuerySchema,
   libraryFilterSchema,
+  libraryRandomSchema,
   librarySearchSchema,
   type Tag,
   type TagKey,
@@ -135,6 +138,31 @@ export async function searchLibrary(
         ? encodeCursor(q.sort, q.direction, { value: last.value, id: last.id })
         : null,
   };
+}
+
+/**
+ * One asset matching the filter, uniformly at random (`order by random()`: a scan of the
+ * matching ids, fine at a station library's size), or `null`.
+ */
+export async function randomLibraryItem(
+  db: Executor,
+  scope: StationScope,
+  input: LibraryRandom,
+  at = new Date(),
+): Promise<LibraryRandomResult> {
+  const q = libraryRandomSchema.parse(input);
+  const where = filterSql(compileFilter(scope, q.filter, at));
+  const [row] = await db
+    .select({ id: asset.id })
+    .from(asset)
+    .where(
+      q.exclude.length ? and(where, sql`not (${asset.id} = any(${uuidArray(q.exclude)}))`) : where,
+    )
+    .orderBy(sql`random()`)
+    .limit(1);
+  if (!row) return { item: null };
+  const [item] = await libraryItems(db, scope, [row.id]);
+  return { item: item ?? null };
 }
 
 /** `"{a,b}"::uuid[]`: one parameter, however many ids. */

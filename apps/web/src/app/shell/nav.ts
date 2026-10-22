@@ -3,6 +3,7 @@ import type { LinkProps } from '@tanstack/react-router';
 import {
   CalendarClockIcon,
   CalendarDaysIcon,
+  CalendarRangeIcon,
   ClockIcon,
   LayoutDashboardIcon,
   LibraryBigIcon,
@@ -10,6 +11,7 @@ import {
   ListMusicIcon,
   type LucideIcon,
   MicIcon,
+  RadioTowerIcon,
   SlidersHorizontalIcon,
 } from 'lucide-react';
 import type { MessageKey } from '../i18n/messages.ts';
@@ -48,6 +50,12 @@ export const stationNav: NavItem[] = [
     permission: 'show:read',
   },
   {
+    to: '/stations/$stationId/live',
+    label: 'shell.nav.live',
+    icon: RadioTowerIcon,
+    permission: 'live:read',
+  },
+  {
     to: '/stations/$stationId/log',
     label: 'shell.nav.log',
     icon: CalendarClockIcon,
@@ -75,6 +83,12 @@ export const stationNav: NavItem[] = [
     to: '/stations/$stationId/clocks',
     label: 'shell.nav.clocks',
     icon: ClockIcon,
+    permission: 'clock:read',
+  },
+  {
+    to: '/stations/$stationId/grid',
+    label: 'shell.nav.grid',
+    icon: CalendarRangeIcon,
     permission: 'clock:read',
   },
   {

@@ -4,7 +4,9 @@ import { connectQueue, createJobPublisher, createJobWorker } from '@ondes/queue'
 import { createS3Storage, loadStorageConfig } from '@ondes/storage';
 import { cacheRootFromEnv } from './jobs/cache-sync/deps.ts';
 import { startCacheTriggers } from './jobs/cache-sync/trigger.ts';
+import { startEpisodeCheckSweep } from './jobs/episode-check/sweep.ts';
 import { sweepUploads } from './jobs/ingest/sweep.ts';
+import { sweepIslandRenders } from './jobs/island-render/sweep.ts';
 import { discoverJobs, discoverTriggers } from './registry.ts';
 import { startJobTriggers } from './triggers.ts';
 
@@ -58,6 +60,17 @@ async function sweep() {
     }
   } catch (err) {
     console.error(JSON.stringify({ level: 'error', msg: 'upload sweep failed', err: String(err) }));
+  }
+  try {
+    // Islands (#56): re-enqueue renders whose job was lost or whose worker died.
+    const islands = await sweepIslandRenders({ db: database.db, jobs: publisher });
+    if (Object.keys(islands).length) {
+      console.log(JSON.stringify({ level: 'info', msg: 'island render sweep', counts: islands }));
+    }
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: 'error', msg: 'island render sweep failed', err: String(err) }),
+    );
   } finally {
     sweeping = false;
   }
@@ -87,6 +100,16 @@ if (!cacheTriggers) {
   );
 }
 
+// Missing-episode check (#47): every minute, a pass per station with pre-recorded slots.
+const episodeCheckSweep = startEpisodeCheckSweep({
+  db: database.db,
+  jobs: publisher,
+  onError: (err) =>
+    console.error(
+      JSON.stringify({ level: 'error', msg: 'episode check sweep failed', err: String(err) }),
+    ),
+});
+
 console.log(
   JSON.stringify({
     level: 'info',
@@ -104,6 +127,7 @@ async function stop(signal: string) {
   clearInterval(sweepTimer);
   await Promise.all(triggerConsumers.map((consumer) => consumer.close()));
   await cacheTriggers?.close();
+  episodeCheckSweep.close();
   await worker.close();
   await publisher.close();
   await queue.close();

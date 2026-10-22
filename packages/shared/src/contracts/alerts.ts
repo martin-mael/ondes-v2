@@ -76,6 +76,15 @@ export const alertTypes = {
   feederItemsSkipped: 'feeder.items_skipped',
   /** Nothing from the log is queued or coming: the safety playlist plays (#29). */
   feederLogEmpty: 'feeder.log_empty',
+  /**
+   * A pre-recorded occurrence has no episode audio (#47): `info` at T−48h, `warning` at T−6h,
+   * `critical` when no fallback could be put in its place. One per occurrence
+   * (`details.slotId`, `occurrenceDate`); resolved once the audio is there or the slot is over.
+   * Title and message are English; `details.i18n` is `{ key, params }` for the web app to
+   * render (`episodeMissing.ahead` / `.fallback` / `.noFallback`, params `show`, `startsAt`
+   * ISO, and `lead`, `policy`, `fallback` or `reason`).
+   */
+  episodeMissing: 'show.episode_missing',
 } as const;
 
 /**

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { localDateSchema, logItemKindSchema } from './log.ts';
+import { episodeFallbackKindSchema } from './shows.ts';
 import { uuidSchema } from './tenancy.ts';
 
 // As-run (#30): what actually aired, one entry per item that took the air. Recorded from the
@@ -71,6 +72,11 @@ export const asRunEntrySchema = z.object({
   plannedDurationMs: z.int().nonnegative().nullable(),
   /** `startedAt − plannedStart` in ms: positive is late. Null without a plan. */
   driftMs: z.int().nullable(),
+  /**
+   * Set when the item aired as the fallback of a missing episode (#47): what stood in for it.
+   * Optional so older api versions' payloads still parse.
+   */
+  fallback: episodeFallbackKindSchema.nullable().optional(),
   /** Engine boot and event sequence of the start, for tracing. */
   bootId: z.string(),
   seq: z.int().positive(),

@@ -19,6 +19,7 @@ import {
   type Plan,
   reference,
   renderIsland,
+  renderIslandWithRenderer,
   type Splice,
 } from './island.ts';
 import {
@@ -171,7 +172,10 @@ async function runCase(c: Case, work: string, handle: number): Promise<CaseResul
   mkdirSync(dir, { recursive: true });
   const islandPath = join(dir, 'island.flac');
   const islandSrc = c.islandFromMaster ? mat.masters : { ...copies, vt: mat.masters.vt };
-  renderIsland(plan, islandSrc, islandPath);
+  // FLAC playout copies (what production plays): the production renderer (#56). Lossy cases
+  // keep the ffmpeg reference renderer, which can mix any format.
+  if (c.format === 'flac') await renderIslandWithRenderer(plan, islandSrc, islandPath);
+  else renderIsland(plan, islandSrc, islandPath);
 
   const cue = cues(plan, splice);
   const toContainer = (p: string) => `/work/${relative(work, p)}`;
