@@ -420,6 +420,8 @@ function Editor({
     const target = e.target as HTMLElement | null;
     if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]'))
       return;
+    // Space on a focused button is that button's click, not play.
+    if (e.key === ' ' && target?.closest('button, a, [role="menuitem"]')) return;
     const mod = e.metaKey || e.ctrlKey;
     if (mod && e.key.toLowerCase() === 'z') {
       e.preventDefault();
