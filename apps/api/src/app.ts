@@ -24,6 +24,7 @@ import { type PeaksPluginOptions, peaksPlugin } from './modules/library/peaks-pl
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { librarySearchRoutes } from './modules/library/search-routes.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
+import { type LivePluginOptions, livePlugin } from './modules/live/plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
 import { rotationRoutes } from './modules/rotation/routes.ts';
@@ -63,6 +64,11 @@ export interface AppOptions {
   uploads?: Omit<UploadPluginOptions, 'storage'>;
   /** Peaks route settings beyond `storage` (tests). */
   peaks?: Omit<PeaksPluginOptions, 'storage'>;
+  /**
+   * Live streamers (#63): the public live host, and the engine token check for the harbor
+   * auth route (default: the engine lifecycle's, when it runs).
+   */
+  live?: LivePluginOptions;
   /** Team onboarding (#113): DNS resolver and sending limits. */
   invitations?: InvitationsOptions;
   /** Real-time stream tuning (tests shorten the timers). */
@@ -129,6 +135,11 @@ export async function buildApp(options: AppOptions) {
         }
       : {}),
     ...options.alerts,
+  });
+  // Live streamers (#63): CRUD, connection info, and the engines' internal harbor auth route.
+  await app.register(livePlugin, {
+    ...(lifecycle ? { tokenFor: (stationId: string) => lifecycle.tokenFor(stationId) } : {}),
+    ...options.live,
   });
   // Playout cache (#31): `app.playoutCache` for the feeder, `GET …/cache`, cache alerts.
   await app.register(cachePlugin, options.cache ?? {});

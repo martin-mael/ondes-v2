@@ -295,8 +295,9 @@ auto =
   )
 
 # ---------------------------------------------------------------------------------------
-# Live input (live_input setting). Auth: Node's webhook if configured, else the shared
-# ENGINE_LIVE_PASSWORD. #64 extends this into a harbor pool.
+# Live input (live_input setting). Auth: Node's webhook if configured (it checks each DJ's
+# own credentials, #63), else the shared ENGINE_LIVE_PASSWORD. The webhook carries the
+# control token like the events do. #64 extends this into a harbor pool.
 
 live_enabled = ref(false)
 live_connected = ref(false)
@@ -316,7 +317,7 @@ def live_auth(login) =
       r =
         http.post(
           timeout=3.,
-          headers=[("Content-Type", "application/json")],
+          headers=event_headers,
           data=body.stringify(compact=true),
           live_auth_url
         )
