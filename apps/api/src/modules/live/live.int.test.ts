@@ -1,0 +1,634 @@
+import {
+  addMembership,
+  auditLog,
+  createOrganization,
+  createStation,
+  resolveOrgScope,
+  resolveStationScope,
+  type StationScope,
+  streamer,
+} from '@ondes/db';
+import { createTestDatabase } from '@ondes/db/testing';
+import type {
+  Actor,
+  LiveConnectionInfo,
+  Show,
+  StreamerList,
+  StreamerWithPassword,
+} from '@ondes/shared';
+import { and, eq } from 'drizzle-orm';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { buildApp } from '../../app.ts';
+import { createMemoryMailer } from '../../plugins/mail.ts';
+import { signUpAndLogin, TEST_AUTH_CONFIG, type TestApp } from '../auth/testing.ts';
+import { CONNECT_AUDIT_EVERY_MS, checkLiveLogin, LoginFailureLimiter } from './auth.ts';
+import { createLiveRevoker } from './revoke.ts';
+
+// Live streamers on the real app (#63): CRUD, permissions, tenant isolation, audit without
+// secrets, connection info, and the harbor auth callback against the database.
+
+const system: Actor = { type: 'system', name: 'test' };
+const TOKEN = 'engine-token-of-station-a';
+const OTHER_TOKEN = 'engine-token-of-station-b';
+
+let t: TestApp;
+let scope: StationScope;
+let otherScope: StationScope;
+const cookies = { manager: '', presenter: '', programmer: '', outsider: '' };
+let presenterId: string;
+let showId: string;
+let otherShowId: string;
+
+/** A fake engine with a DJ connected and on air, recording live gate commands. */
+const engine = {
+  live: { enabled: true, connected: true, ready: true },
+  gate: [] as boolean[],
+  async state() {
+    return { live: { ...this.live } };
+  },
+  async setLive(enabled: boolean) {
+    this.gate.push(enabled);
+    this.live.enabled = enabled;
+  },
+};
+
+async function buildTestApp(): Promise<TestApp> {
+  const tdb = await createTestDatabase();
+  const mailer = createMemoryMailer();
+  const tokens = new Map<string, string>();
+  const app = await buildApp({
+    db: { client: tdb },
+    mail: { mailer },
+    auth: TEST_AUTH_CONFIG,
+    live: {
+      tokenFor: (stationId) => tokens.get(stationId),
+      limiter: new LoginFailureLimiter({ max: 5, probeEveryMs: 60_000 }),
+      engineFor: async (stationId) => (stationId === scope?.stationId ? engine : undefined),
+      sweepIntervalMs: 0,
+    },
+    fastify: { logger: false },
+  });
+  app.decorate('testTokens', tokens);
+  await app.ready();
+  return {
+    app,
+    tdb,
+    outbox: mailer.outbox,
+    close: async () => {
+      await app.close();
+      await tdb.drop();
+    },
+  };
+}
+
+function call(
+  who: keyof typeof cookies,
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  url: string,
+  payload?: object,
+  stationId = scope.stationId,
+) {
+  return t.app.inject({
+    method,
+    url: `/api/v1/stations/${stationId}/live${url}`,
+    cookies: { ondes_session: cookies[who] },
+    ...(payload ? { payload } : {}),
+  });
+}
+
+function engineLogin(
+  body: object,
+  { stationId = scope.stationId, token = TOKEN }: { stationId?: string; token?: string } = {},
+) {
+  return t.app.inject({
+    method: 'POST',
+    url: `/internal/engine/stations/${stationId}/live-auth`,
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+    payload: body,
+  });
+}
+
+beforeAll(async () => {
+  t = await buildTestApp();
+  const db = t.tdb.db;
+  const org = await createOrganization(db, system, { slug: 'live-org', name: 'Org' });
+  const orgScope = await resolveOrgScope(db, org.id);
+  const st = await createStation(
+    db,
+    { actor: system, scope: orgScope },
+    { slug: 'live-fm', name: 'FM', timezone: 'Europe/Paris' },
+  );
+  scope = await resolveStationScope(db, org.id, st.id);
+
+  for (const role of ['manager', 'presenter', 'programmer'] as const) {
+    const { userId, cookie } = await signUpAndLogin(t, `${role}@live.test`);
+    await addMembership(
+      db,
+      { actor: system, scope: orgScope },
+      {
+        level: 'station',
+        stationId: st.id,
+        userId,
+        role: role === 'manager' ? 'station_manager' : role,
+      },
+    );
+    cookies[role] = cookie;
+    if (role === 'presenter') presenterId = userId;
+  }
+
+  const other = await createOrganization(db, system, { slug: 'live-other', name: 'Other' });
+  const otherOrgScope = await resolveOrgScope(db, other.id);
+  const ost = await createStation(
+    db,
+    { actor: system, scope: otherOrgScope },
+    { slug: 'live-other-fm', name: 'Other FM', timezone: 'Europe/Paris' },
+  );
+  otherScope = await resolveStationScope(db, other.id, ost.id);
+  const outsider = await signUpAndLogin(t, 'outsider@live.test');
+  await addMembership(
+    db,
+    { actor: system, scope: otherOrgScope },
+    { level: 'org', userId: outsider.userId, role: 'owner' },
+  );
+  cookies.outsider = outsider.cookie;
+
+  const tokens = (t.app as unknown as { testTokens: Map<string, string> }).testTokens;
+  tokens.set(scope.stationId, TOKEN);
+  tokens.set(otherScope.stationId, OTHER_TOKEN);
+
+  // A show with a one-off live slot on Thursday 5 November 2026, 20:00–21:00 in Paris
+  // (19:00–20:00 UTC), and a show of the other station.
+  const showRes = await t.app.inject({
+    method: 'POST',
+    url: `/api/v1/stations/${st.id}/shows`,
+    cookies: { ondes_session: cookies.manager },
+    payload: { name: 'Night Shift' },
+  });
+  showId = showRes.json<Show>().id;
+  const slot = await t.app.inject({
+    method: 'POST',
+    url: `/api/v1/stations/${st.id}/shows/${showId}/slots`,
+    cookies: { ondes_session: cookies.manager },
+    payload: {
+      type: 'live',
+      rule: { freq: 'once', date: '2026-11-05', time: '20:00' },
+      durationMs: 3_600_000,
+    },
+  });
+  expect(slot.statusCode).toBe(201);
+  const otherShow = await t.app.inject({
+    method: 'POST',
+    url: `/api/v1/stations/${ost.id}/shows`,
+    cookies: { ondes_session: cookies.outsider },
+    payload: { name: 'Theirs' },
+  });
+  otherShowId = otherShow.json<Show>().id;
+}, 60_000);
+
+afterAll(() => t?.close());
+
+async function auditRows(entityId: string) {
+  return t.tdb.db
+    .select()
+    .from(auditLog)
+    .where(and(eq(auditLog.entityType, 'streamer'), eq(auditLog.entityId, entityId)));
+}
+
+describe('streamers API', () => {
+  let djId: string;
+  let djPassword: string;
+
+  it('creates a streamer with a generated password, shown once and stored hashed', async () => {
+    const res = await call('manager', 'POST', '/streamers', {
+      displayName: 'DJ Nova',
+      username: 'Nova',
+      showIds: [showId],
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json<StreamerWithPassword>();
+    djId = body.streamer.id;
+    djPassword = body.password;
+    expect(djPassword).toMatch(/^[A-Za-z0-9]{24}$/);
+    expect(body.streamer).toMatchObject({
+      username: 'nova',
+      displayName: 'DJ Nova',
+      enabled: true,
+      anyTime: false,
+      status: 'active',
+      user: null,
+      shows: [{ id: showId, name: 'Night Shift' }],
+    });
+    expect(JSON.stringify(body.streamer)).not.toContain(djPassword);
+
+    const [row] = await t.tdb.db.select().from(streamer).where(eq(streamer.id, djId));
+    expect(row?.passwordHash).toMatch(/^\$argon2id\$/);
+    expect(row?.passwordHash).not.toContain(djPassword);
+
+    const audit = await auditRows(djId);
+    expect(audit.map((a) => a.action)).toEqual(['streamer.create']);
+    const diff = JSON.stringify(audit[0]?.diff);
+    expect(diff).not.toContain(djPassword);
+    expect(diff).not.toContain('argon2');
+    expect(audit[0]?.diff).toMatchObject({ password: { to: 'set' }, showIds: { to: [showId] } });
+  });
+
+  it('refuses a username already used on the station, whatever its case', async () => {
+    const res = await call('manager', 'POST', '/streamers', {
+      displayName: 'Copy',
+      username: 'NOVA',
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe('streamer_username_taken');
+  });
+
+  it('allows the same username on another station', async () => {
+    const res = await call(
+      'outsider',
+      'POST',
+      '/streamers',
+      {
+        displayName: 'Other Nova',
+        username: 'nova',
+        password: 'other-station-password',
+        anyTime: true,
+      },
+      otherScope.stationId,
+    );
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('refuses reserved usernames, short passwords, foreign shows and non-member users', async () => {
+    const reserved = await call('manager', 'POST', '/streamers', {
+      displayName: 'x',
+      username: 'source',
+    });
+    expect(reserved.statusCode).toBe(400);
+    const short = await call('manager', 'POST', '/streamers', {
+      displayName: 'x',
+      username: 'shorty',
+      password: 'short',
+    });
+    expect(short.statusCode).toBe(400);
+    const foreignShow = await call('manager', 'POST', '/streamers', {
+      displayName: 'x',
+      username: 'foreign',
+      showIds: [otherShowId],
+    });
+    expect(foreignShow.statusCode).toBe(422);
+    const outsiderUser = await call('manager', 'GET', '/streamers/user-candidates');
+    expect(outsiderUser.json().users.map((u: { name: string }) => u.name)).toEqual([
+      'manager',
+      'presenter',
+      'programmer',
+    ]);
+    const nonMember = await call('manager', 'POST', '/streamers', {
+      displayName: 'x',
+      username: 'stranger',
+      userId: '01900000-0000-7000-8000-000000000000',
+    });
+    expect(nonMember.statusCode).toBe(422);
+  });
+
+  it('links a streamer to a presenter, who sees only their own and can reset its password', async () => {
+    const created = await call('manager', 'POST', '/streamers', {
+      displayName: 'Presenter',
+      username: 'presenter',
+      userId: presenterId,
+      anyTime: true,
+    });
+    expect(created.statusCode).toBe(201);
+    const id = created.json<StreamerWithPassword>().streamer.id;
+
+    const mine = await call('presenter', 'GET', '/streamers');
+    expect(mine.json<StreamerList>().streamers.map((s) => s.username)).toEqual(['presenter']);
+    expect((await call('presenter', 'GET', `/streamers/${djId}`)).statusCode).toBe(404);
+    expect((await call('presenter', 'GET', `/streamers/${id}`)).statusCode).toBe(200);
+
+    const reset = await call('presenter', 'POST', `/streamers/${id}/password`, {});
+    expect(reset.statusCode).toBe(200);
+    expect(reset.json<StreamerWithPassword>().password).toHaveLength(24);
+    expect((await call('presenter', 'POST', `/streamers/${djId}/password`, {})).statusCode).toBe(
+      404,
+    );
+    // A programmer reads (live:read) but has no streamer of their own and can't broadcast.
+    expect((await call('programmer', 'GET', '/streamers')).json<StreamerList>().streamers).toEqual(
+      [],
+    );
+    expect(
+      (await call('presenter', 'POST', '/streamers', { displayName: 'x', username: 'xx' }))
+        .statusCode,
+    ).toBe(403);
+    expect(
+      (await call('presenter', 'PATCH', `/streamers/${id}`, { enabled: false })).statusCode,
+    ).toBe(403);
+  });
+
+  it('lists every streamer of the station for a manager, and none of another tenant', async () => {
+    const res = await call('manager', 'GET', '/streamers');
+    expect(res.json<StreamerList>().streamers.map((s) => s.username)).toEqual([
+      'nova',
+      'presenter',
+    ]);
+    expect((await call('outsider', 'GET', '/streamers')).statusCode).toBe(404);
+    expect(
+      (await call('outsider', 'GET', `/streamers/${djId}`, undefined, otherScope.stationId))
+        .statusCode,
+    ).toBe(404);
+  });
+
+  it('updates fields and shows, auditing only what changed', async () => {
+    const res = await call('manager', 'PATCH', `/streamers/${djId}`, {
+      displayName: 'DJ Nova (guest)',
+      showIds: [],
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ displayName: 'DJ Nova (guest)', shows: [] });
+    const audit = (await auditRows(djId)).find((a) => a.action === 'streamer.update');
+    expect(audit?.diff).toEqual({
+      displayName: { from: 'DJ Nova', to: 'DJ Nova (guest)' },
+      showIds: { from: [showId], to: [] },
+    });
+    await call('manager', 'PATCH', `/streamers/${djId}`, { showIds: [showId] });
+  });
+
+  it('reports an expired guest as expired', async () => {
+    const res = await call('manager', 'POST', '/streamers', {
+      displayName: 'Guest',
+      username: 'guest',
+      password: 'guest-password-123',
+      anyTime: true,
+      expiresAt: '2020-01-01T00:00:00Z',
+    });
+    expect(res.json<StreamerWithPassword>().streamer.status).toBe('expired');
+  });
+
+  it('gives the connection info', async () => {
+    const res = await call('presenter', 'GET', '/connection');
+    expect(res.statusCode).toBe(200);
+    expect(res.json<LiveConnectionInfo>()).toMatchObject({
+      enabled: true,
+      host: 'app.test',
+      port: null,
+      mount: 'live',
+      shoutcastPort: null,
+    });
+  });
+
+  describe('harbor auth callback', () => {
+    it('needs the station engine token', async () => {
+      const body = { user: 'presenter', password: 'x', address: '10.0.0.1' };
+      expect((await engineLogin(body, { token: '' })).statusCode).toBe(401);
+      expect((await engineLogin(body, { token: OTHER_TOKEN })).statusCode).toBe(401);
+      expect((await engineLogin(body, { token: `${TOKEN}x` })).statusCode).toBe(401);
+      expect((await engineLogin({ user: 1 })).statusCode).toBe(400);
+    });
+
+    it('accepts good credentials of an any-time streamer and audits the connection', async () => {
+      const reset = await call('manager', 'POST', '/streamers', {
+        displayName: 'Resident',
+        username: 'resident',
+        password: 'resident-password-1',
+        anyTime: true,
+      });
+      const id = reset.json<StreamerWithPassword>().streamer.id;
+      const ok = await engineLogin({
+        user: 'Resident',
+        password: 'resident-password-1',
+        address: '10.0.0.2',
+      });
+      expect(ok.statusCode).toBe(200);
+      const audit = (await auditRows(id)).find((a) => a.action === 'streamer.connect');
+      expect(audit).toMatchObject({ actorType: 'system', diff: { address: { to: '10.0.0.2' } } });
+      expect(JSON.stringify(audit)).not.toContain('resident-password-1');
+      const [row] = await t.tdb.db.select().from(streamer).where(eq(streamer.id, id));
+      expect(row?.lastConnectedAt).not.toBeNull();
+
+      // Shoutcast clients: user `source`, `username:password` as the password.
+      const icy = await engineLogin({
+        user: 'source',
+        password: 'resident:resident-password-1',
+        address: '10.0.0.2',
+      });
+      expect(icy.statusCode).toBe(200);
+    });
+
+    it('refuses wrong passwords, unknown users, disabled and expired streamers', async () => {
+      const at = { address: '10.0.0.3' };
+      expect(
+        (await engineLogin({ user: 'resident', password: 'nope-nope-nope', ...at })).statusCode,
+      ).toBe(403);
+      expect(
+        (await engineLogin({ user: 'ghost', password: 'resident-password-1', ...at })).statusCode,
+      ).toBe(403);
+      expect(
+        (await engineLogin({ user: 'guest', password: 'guest-password-123', ...at })).statusCode,
+      ).toBe(403);
+      const res = await call('manager', 'GET', '/streamers');
+      const resident = res.json<StreamerList>().streamers.find((s) => s.username === 'resident');
+      await call('manager', 'PATCH', `/streamers/${resident?.id}`, { enabled: false });
+      expect(
+        (
+          await engineLogin({
+            user: 'resident',
+            password: 'resident-password-1',
+            address: '10.0.0.4',
+          })
+        ).statusCode,
+      ).toBe(403);
+      await call('manager', 'PATCH', `/streamers/${resident?.id}`, { enabled: true });
+      expect(
+        (
+          await engineLogin({
+            user: 'resident',
+            password: 'resident-password-1',
+            address: '10.0.0.4',
+          })
+        ).statusCode,
+      ).toBe(200);
+    });
+
+    it("never accepts another station's streamer", async () => {
+      // `nova` exists on both stations; the other one's password is refused here.
+      const res = await engineLogin({
+        user: 'nova',
+        password: 'other-station-password',
+        address: '10.0.0.5',
+      });
+      expect(res.statusCode).toBe(403);
+      const there = await engineLogin(
+        { user: 'nova', password: 'other-station-password', address: '10.0.0.5' },
+        { stationId: otherScope.stationId, token: OTHER_TOKEN },
+      );
+      expect(there.statusCode).toBe(200);
+    });
+
+    it('stops a changed password at once', async () => {
+      const list = await call('manager', 'GET', '/streamers');
+      const resident = list.json<StreamerList>().streamers.find((s) => s.username === 'resident');
+      const reset = await call('manager', 'POST', `/streamers/${resident?.id}/password`, {
+        password: 'a-brand-new-password',
+      });
+      expect(reset.statusCode).toBe(200);
+      const audit = (await auditRows(resident?.id ?? '')).find(
+        (a) => a.action === 'streamer.password',
+      );
+      expect(JSON.stringify(audit?.diff)).not.toContain('a-brand-new-password');
+      const at = { address: '10.0.0.6' };
+      expect(
+        (await engineLogin({ user: 'resident', password: 'resident-password-1', ...at }))
+          .statusCode,
+      ).toBe(403);
+      expect(
+        (await engineLogin({ user: 'resident', password: 'a-brand-new-password', ...at }))
+          .statusCode,
+      ).toBe(200);
+    });
+
+    it('brakes guessing per username and address, letting the right password through', async () => {
+      const at = { address: '10.0.0.7' };
+      const login = (user: string, password: string, address = at.address) =>
+        engineLogin({ user, password, address }).then((r) => r.statusCode);
+      for (let i = 0; i < 5; i++) await login('resident', `guess-${i}-xxxxxx`);
+      // Braked: one password check per minute. A guess uses it up…
+      expect(await login('resident', 'guess-5-xxxxxx')).toBe(403);
+      // …so the right password waits for the next probe.
+      expect(await login('resident', 'a-brand-new-password')).toBe(403);
+      // Other addresses, and other DJs at the same venue address, aren't braked.
+      expect(await login('resident', 'a-brand-new-password', '10.0.0.8')).toBe(200);
+      expect(await login('presenter-x', 'whatever-password')).toBe(403);
+      const limiter = new LoginFailureLimiter({ max: 5, probeEveryMs: 60_000 });
+      const key = LoginFailureLimiter.key(scope.stationId, 'resident', at.address);
+      for (let i = 0; i < 5; i++) limiter.fail(key, 0);
+      // The next probe, a minute later, is a real check: the right password gets in.
+      expect(limiter.allow(key, 60_001)).toBe(true);
+    });
+
+    it('audits a reconnect loop once', async () => {
+      const list = await call('manager', 'GET', '/streamers');
+      const resident = list.json<StreamerList>().streamers.find((s) => s.username === 'resident');
+      const id = resident?.id ?? '';
+      const before = (await auditRows(id)).filter((a) => a.action === 'streamer.connect').length;
+      const t0 = new Date('2027-01-01T12:00:00Z');
+      const login = { username: 'resident', password: 'a-brand-new-password' };
+      // Throttled from the previous login: the last one comes more than the interval after it.
+      for (const offset of [0, 1000, 60_000, 60_000 + CONNECT_AUDIT_EVERY_MS + 1000]) {
+        const ok = await checkLiveLogin(
+          t.tdb.db,
+          scope.stationId,
+          login,
+          new Date(t0.getTime() + offset),
+        );
+        expect(ok.ok).toBe(true);
+      }
+      const after = (await auditRows(id)).filter((a) => a.action === 'streamer.connect').length;
+      expect(after - before).toBe(2);
+    });
+
+    it('lets a show-bound streamer connect only around its slots', async () => {
+      const db = t.tdb.db;
+      const login = { username: 'nova', password: djPassword };
+      const at = (iso: string) => checkLiveLogin(db, scope.stationId, login, new Date(iso));
+      // Slot: 19:00–20:00 UTC. Early connection from 18:45.
+      expect(await at('2026-11-05T18:40:00Z')).toMatchObject({ ok: false, reason: 'outside_slot' });
+      expect(await at('2026-11-05T18:50:00Z')).toMatchObject({ ok: true });
+      expect(await at('2026-11-05T19:59:00Z')).toMatchObject({ ok: true });
+      expect(await at('2026-11-05T20:00:00Z')).toMatchObject({ ok: false, reason: 'outside_slot' });
+      // Through the route, now (the slot is in the future): refused.
+      expect(
+        (await engineLogin({ user: 'nova', password: djPassword, address: '10.0.0.9' })).statusCode,
+      ).toBe(403);
+      // An expiry before the slot wins.
+      await call('manager', 'PATCH', `/streamers/${djId}`, { expiresAt: '2026-11-05T18:55:00Z' });
+      expect(await at('2026-11-05T19:30:00Z')).toMatchObject({ ok: false, reason: 'expired' });
+    });
+  });
+
+  describe('revocation', () => {
+    // Logins stamped after every earlier test's, so each new one holds the live input.
+    const connect = async (username: string, password: string, at = new Date()) =>
+      expect((await checkLiveLogin(t.tdb.db, scope.stationId, { username, password }, at)).ok).toBe(
+        true,
+      );
+
+    it('takes a streamer disabled while live off air', async () => {
+      const created = await call('manager', 'POST', '/streamers', {
+        displayName: 'Live now',
+        username: 'live-now',
+        password: 'live-now-password',
+        anyTime: true,
+      });
+      const id = created.json<StreamerWithPassword>().streamer.id;
+      await connect('live-now', 'live-now-password', new Date('2030-01-01T20:00:00Z'));
+      engine.live.enabled = true;
+      engine.gate.length = 0;
+      await call('manager', 'PATCH', `/streamers/${id}`, { enabled: false });
+      expect(engine.gate).toEqual([false]);
+      expect((await auditRows(id)).map((a) => a.action)).toContain('streamer.revoke');
+    });
+
+    it("leaves the air alone when the streamer isn't the one connected", async () => {
+      engine.live.enabled = true;
+      engine.gate.length = 0;
+      const list = await call('manager', 'GET', '/streamers');
+      const resident = list.json<StreamerList>().streamers.find((s) => s.username === 'resident');
+      await call('manager', 'PATCH', `/streamers/${resident?.id}`, { enabled: false });
+      expect(engine.gate).toEqual([]);
+      await call('manager', 'PATCH', `/streamers/${resident?.id}`, { enabled: true });
+    });
+
+    it('sweeps a guest off air when their expiry passes', async () => {
+      const expires = new Date('2030-01-02T22:00:00Z');
+      const created = await call('manager', 'POST', '/streamers', {
+        displayName: 'One night',
+        username: 'one-night',
+        password: 'one-night-password',
+        anyTime: true,
+        expiresAt: expires.toISOString(),
+      });
+      const id = created.json<StreamerWithPassword>().streamer.id;
+      await connect('one-night', 'one-night-password', new Date(expires.getTime() - 60_000));
+      engine.live.enabled = true;
+      engine.gate.length = 0;
+      const revoker = createLiveRevoker({
+        db: t.tdb.db,
+        engineFor: async () => engine,
+        logger: { warn: () => {}, error: () => {} },
+      });
+      expect(await revoker.sweep(new Date(expires.getTime() - 1000))).toBe(0);
+      expect(await revoker.sweep(new Date(expires.getTime() + 30_000))).toBe(1);
+      expect(engine.gate).toEqual([false]);
+      // Already off air: the next sweep does nothing.
+      expect(await revoker.sweep(new Date(expires.getTime() + 60_000))).toBe(0);
+      expect((await auditRows(id)).map((a) => a.action)).toContain('streamer.revoke');
+    });
+
+    it('takes a deleted streamer off air', async () => {
+      const created = await call('manager', 'POST', '/streamers', {
+        displayName: 'Gone',
+        username: 'gone',
+        password: 'gone-password-123',
+        anyTime: true,
+      });
+      const id = created.json<StreamerWithPassword>().streamer.id;
+      await connect('gone', 'gone-password-123', new Date('2030-01-03T20:00:00Z'));
+      engine.live.enabled = true;
+      engine.gate.length = 0;
+      expect((await call('manager', 'DELETE', `/streamers/${id}`)).statusCode).toBe(204);
+      expect(engine.gate).toEqual([false]);
+    });
+  });
+
+  it('deletes a streamer, audited, and its login stops working', async () => {
+    const res = await call('manager', 'DELETE', `/streamers/${djId}`);
+    expect(res.statusCode).toBe(204);
+    expect((await auditRows(djId)).map((a) => a.action)).toContain('streamer.delete');
+    expect((await call('manager', 'GET', `/streamers/${djId}`)).statusCode).toBe(404);
+    const result = await checkLiveLogin(
+      t.tdb.db,
+      scope.stationId,
+      { username: 'nova', password: djPassword },
+      new Date('2026-11-05T19:30:00Z'),
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'unknown' });
+  });
+});

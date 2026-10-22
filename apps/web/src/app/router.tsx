@@ -16,6 +16,7 @@ import { ClocksPage } from '../features/clocks/clocks-page.tsx';
 import { GridPage } from '../features/grid/grid-page.tsx';
 import { librarySearchParamsSchema } from '../features/library/filters.ts';
 import { LibraryPage } from '../features/library/library-page.tsx';
+import { LivePage } from '../features/live/live-page.tsx';
 import { TimelinePage } from '../features/log-timeline/timeline-page.tsx';
 import { CategoriesPage } from '../features/rotation/categories/categories-page.tsx';
 import {
@@ -270,6 +271,13 @@ const safetySettingsRoute = createRoute({
   component: SafetyPage,
 });
 
+// Live (#63): streamers (DJ credentials) and connection settings.
+const liveRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'live',
+  component: LivePage,
+});
+
 // The log timeline (#51): one station-local day, `?date=YYYY-MM-DD` (default: today).
 const logRoute = createRoute({
   getParentRoute: () => stationRoute,
@@ -318,6 +326,7 @@ const routeTree = rootRoute.addChildren([
       showsCalendarRoute,
       showRoute,
       safetySettingsRoute,
+      liveRoute,
       logRoute,
       segueRoute,
     ]),

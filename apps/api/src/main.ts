@@ -25,6 +25,8 @@ const app = await buildApp({
   auth: authConfigFromEnv(env),
   // Station engines (#35), when ENGINE_DOCKER_URL points at the Docker socket proxy.
   engine: engineLifecycleConfigFromEnv(env) ?? undefined,
+  // Live streamers (#63): the host DJs connect to (default: APP_URL's).
+  live: { publicHost: env.LIVE_PUBLIC_HOST },
   fastify: {
     logger: { level: env.LOG_LEVEL ?? 'info' },
     // Behind Caddy, rate limits key on the client IP from X-Forwarded-For. Default: trust
