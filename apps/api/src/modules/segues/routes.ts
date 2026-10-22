@@ -19,8 +19,8 @@ import { z } from 'zod';
 import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
 import { HttpError } from '../../plugins/errors.ts';
 import { type EventSink, eventsOf, publishAll } from './events.ts';
-import { requestRenders } from './render.ts';
 import { segueMedia } from './media.ts';
+import { requestRenders } from './render.ts';
 import * as repo from './repo.ts';
 
 // Segues and islands API (#55), under /api/v1/stations/:stationId. Writes are audited and
