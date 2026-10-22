@@ -17,6 +17,7 @@ import {
   type SegueVoiceLane,
 } from '../contracts/segues.ts';
 import { stableStringify } from '../json.ts';
+import { dbToAmplitude, envelopeGainAt } from './gain.ts';
 import { sha256Hex } from './sha256.ts';
 
 // Island derivation (#55, ADR 0017): segues → island specs. Pure and deterministic, so the api
@@ -72,29 +73,6 @@ export type IslandPlan = {
 };
 
 // --- Envelopes ---------------------------------------------------------------------------
-
-export const dbToAmplitude = (db: number) => (db <= ENVELOPE_SILENCE_DB ? 0 : 10 ** (db / 20));
-
-/**
- * The envelope's gain at `at`, as a linear amplitude factor: linear interpolation in amplitude
- * between points, holding before the first and after the last; 1 when empty. The renderer
- * multiplies each sample by this (and by every other envelope of the source).
- */
-export function envelopeGainAt(points: Envelope, at: number): number {
-  const first = points[0];
-  if (!first) return 1;
-  if (at <= first.at) return dbToAmplitude(first.gainDb);
-  for (let i = 1; i < points.length; i++) {
-    const b = points[i] as EnvelopePoint;
-    if (at <= b.at) {
-      const a = points[i - 1] as EnvelopePoint;
-      const ga = dbToAmplitude(a.gainDb);
-      const gb = dbToAmplitude(b.gainDb);
-      return ga + ((gb - ga) * (at - a.at)) / (b.at - a.at);
-    }
-  }
-  return dbToAmplitude((points[points.length - 1] as EnvelopePoint).gainDb);
-}
 
 const amplitudeToDb = (a: number) =>
   a <= 0 ? ENVELOPE_SILENCE_DB : Math.max(ENVELOPE_SILENCE_DB, 20 * Math.log10(a));
