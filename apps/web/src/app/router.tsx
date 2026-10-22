@@ -22,6 +22,7 @@ import {
   NewCategoryPage,
 } from '../features/rotation/categories/category-editor-page.tsx';
 import { RulesPage } from '../features/rotation/rules/rules-page.tsx';
+import { SegueEditorPage } from '../features/segue-editor/segue-editor-page.tsx';
 import { SafetyPage } from '../features/settings/safety/safety-page.tsx';
 import { CalendarPage, calendarViews } from '../features/shows/calendar-page.tsx';
 import { ShowPage } from '../features/shows/show-page.tsx';
@@ -269,6 +270,19 @@ const logRoute = createRoute({
   component: TimelinePage,
 });
 
+// The segue editor (#58): the transition from log item `from` to `to`, on station-local day
+// `date` (the log the timeline shows). Opened from any transition in the timeline.
+const segueRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'log/segue',
+  validateSearch: z.object({
+    date: localDateSchema.optional().catch(undefined),
+    from: z.uuid().optional().catch(undefined),
+    to: z.uuid().optional().catch(undefined),
+  }),
+  component: SegueEditorPage,
+});
+
 const routeTree = rootRoute.addChildren([
   authLayout.addChildren([
     loginRoute,
@@ -296,6 +310,7 @@ const routeTree = rootRoute.addChildren([
       showRoute,
       safetySettingsRoute,
       logRoute,
+      segueRoute,
     ]),
   ]),
 ]);
