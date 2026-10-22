@@ -1,16 +1,19 @@
 import { type AssetActivity, type AssetDetail, CUE_FIELDS, type Permission } from '@ondes/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckIcon, CircleDashedIcon, LockIcon } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { type ReactNode, useCallback, useState } from 'react';
 import { Badge } from '@/ui/badge';
 import { Separator } from '@/ui/separator';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/ui/sheet';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
 import { ListSkeleton } from '../../app/pending.tsx';
+import { useUnsavedChanges } from '../../app/unsaved.tsx';
 import { activityQuery, assetQuery, invalidateLibrary } from './api.ts';
 import {
   type AssetDrawerSectionId,
+  type AssetDrawerSlot,
+  type AssetDrawerSlotProps,
   assetDrawerSlots,
   type DrawerEntry,
   drawerLayout,
@@ -40,12 +43,45 @@ export function AssetDrawer({
   onClose: () => void;
 }) {
   const t = useLibraryT();
+  // Sections with unsaved edits (the cue editor's): closing the drawer asks first.
+  const [dirtySlots, setDirtySlots] = useState<ReadonlySet<string>>(new Set());
+  const { guard, allowLeave, confirmDiscard } = useUnsavedChanges(dirtySlots.size > 0);
+  const onDirtyChange = useCallback((slotId: string, dirty: boolean) => {
+    setDirtySlots((current) => {
+      if (current.has(slotId) === dirty) return current;
+      const next = new Set(current);
+      if (dirty) next.add(slotId);
+      else next.delete(slotId);
+      return next;
+    });
+  }, []);
   return (
-    <Sheet open={assetId !== undefined} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent className="w-full gap-0 overflow-y-auto data-[side=right]:sm:max-w-xl">
-        {assetId && <DrawerBody stationId={stationId} assetId={assetId} allowed={allowed} t={t} />}
-      </SheetContent>
-    </Sheet>
+    <>
+      <Sheet
+        open={assetId !== undefined}
+        onOpenChange={(open) =>
+          !open &&
+          confirmDiscard(() => {
+            // Closing navigates (drops `?asset=`): past the guard once the person chose to.
+            allowLeave();
+            onClose();
+          })
+        }
+      >
+        <SheetContent className="w-full gap-0 overflow-y-auto data-[side=right]:sm:max-w-xl">
+          {assetId && (
+            <DrawerBody
+              stationId={stationId}
+              assetId={assetId}
+              allowed={allowed}
+              onDirtyChange={onDirtyChange}
+              t={t}
+            />
+          )}
+        </SheetContent>
+      </Sheet>
+      {guard}
+    </>
   );
 }
 
@@ -53,11 +89,13 @@ function DrawerBody({
   stationId,
   assetId,
   allowed,
+  onDirtyChange,
   t,
 }: {
   stationId: string;
   assetId: string;
   allowed: (permission: Permission) => boolean;
+  onDirtyChange: (slotId: string, dirty: boolean) => void;
   t: LibraryT;
 }) {
   const { locale } = useI18n();
@@ -111,11 +149,13 @@ function DrawerBody({
             title={entry.kind === 'slot' ? entry.slot.title[locale] : t(`drawer.${entry.id}`)}
           >
             {entry.kind === 'slot' ? (
-              <entry.slot.Component
+              <SlotSection
+                slot={entry.slot}
                 stationId={stationId}
                 asset={asset}
                 canWrite={allowed('library:write')}
                 refresh={refresh}
+                onDirtyChange={onDirtyChange}
               />
             ) : (
               <BuiltinSection id={entry.id} asset={asset} activity={activity.data} t={t} />
@@ -125,6 +165,21 @@ function DrawerBody({
       </div>
     </>
   );
+}
+
+function SlotSection({
+  slot,
+  onDirtyChange,
+  ...props
+}: Omit<AssetDrawerSlotProps, 'onDirtyChange'> & {
+  slot: AssetDrawerSlot;
+  onDirtyChange: (slotId: string, dirty: boolean) => void;
+}) {
+  const report = useCallback(
+    (dirty: boolean) => onDirtyChange(slot.id, dirty),
+    [onDirtyChange, slot.id],
+  );
+  return <slot.Component {...props} onDirtyChange={report} />;
 }
 
 function DrawerSection({

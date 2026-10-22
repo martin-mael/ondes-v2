@@ -69,6 +69,8 @@ export const libraryFilterSchema = z.object({
   notPlayedSince: dateInputSchema.optional(),
   /** Never aired on this station. */
   neverPlayed: z.boolean().optional(),
+  /** Has a playout copy (ingest done), so it can be listened to or queued (#24). */
+  playable: z.boolean().optional(),
 });
 export type LibraryFilter = z.input<typeof libraryFilterSchema>;
 export type ParsedLibraryFilter = z.output<typeof libraryFilterSchema>;
@@ -129,6 +131,22 @@ export const librarySearchPageSchema = z.object({
   nextCursor: z.string().nullable(),
 });
 export type LibrarySearchPage = z.infer<typeof librarySearchPageSchema>;
+
+// --- Random pick ---------------------------------------------------------------------------
+
+/**
+ * `POST …/library/random`: one asset matching the filter, drawn uniformly at random from the
+ * whole station (the cue editor's random next track, #24), or `null` when none matches.
+ */
+export const libraryRandomSchema = z.object({
+  filter: libraryFilterSchema.default({}),
+  /** Assets not to draw (the one being edited, the current pick). */
+  exclude: z.array(uuidSchema).max(50).default([]),
+});
+export type LibraryRandom = z.input<typeof libraryRandomSchema>;
+
+export const libraryRandomResultSchema = z.object({ item: libraryItemSchema.nullable() });
+export type LibraryRandomResult = z.infer<typeof libraryRandomResultSchema>;
 
 // --- Facets ------------------------------------------------------------------------------
 

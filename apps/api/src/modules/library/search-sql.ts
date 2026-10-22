@@ -71,6 +71,8 @@ const hasLoudness = sql`exists (select 1 from ${assetLoudness} where ${assetLoud
 const hasCues = sql`exists (select 1 from ${assetCues} where ${assetCues.assetId} = ${asset.id})`;
 const hasPeaks = sql`exists (select 1 from ${assetFile}
   where ${assetFile.assetId} = ${asset.id} and ${assetFile.role} = 'peaks')`;
+const hasPlayout = sql`exists (select 1 from ${assetFile}
+  where ${assetFile.assetId} = ${asset.id} and ${assetFile.role} = 'playout')`;
 const bpmOf = sql`(select ${assetAnalysis.bpm} from ${assetAnalysis} where ${assetAnalysis.assetId} = ${asset.id})`;
 
 /** One analysis state as a boolean over the three presence flags. */
@@ -156,6 +158,9 @@ export function compileFilter(
     ${since ? sql`and ${asRunEntry.startedAt} >= ${since.toISOString()}::timestamptz` : sql``})`;
   if (filter.notPlayedSince) base.push(sql`not ${plays(filter.notPlayedSince)}`);
   if (filter.neverPlayed) base.push(sql`not ${plays()}`);
+  if (filter.playable !== undefined) {
+    base.push(filter.playable ? hasPlayout : sql`not ${hasPlayout}`);
+  }
 
   const types = filter.types?.length
     ? sql`${asset.type} in (${sql.join(

@@ -37,7 +37,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestApp, signUpAndLogin, type TestApp } from '../auth/testing.ts';
 import { createCategory, getCategory } from '../rotation/repo.ts';
 import { bulkEdit, type LibraryChangeEvent } from './search-bulk.ts';
-import { assetActivity, libraryFacets, matchingIds, searchLibrary } from './search-repo.ts';
+import {
+  assetActivity,
+  libraryFacets,
+  matchingIds,
+  randomLibraryItem,
+  searchLibrary,
+} from './search-repo.ts';
 
 // Library search, facets and bulk edits (#23) against a throwaway database: results checked
 // against hand-written expectations and against each other (facet counts = search counts),
@@ -671,6 +677,51 @@ describe('library bulk edits', () => {
   });
 });
 
+describe('library random pick and playable filter', () => {
+  it('draws only matching, playable assets of the station, minus the excluded ones', async () => {
+    const { scope } = await tenant();
+    const other = (await tenant()).scope;
+    const ids = await seed(scope, [
+      { type: 'song', title: 'Playable A' },
+      { type: 'song', title: 'Playable B' },
+      { type: 'song', title: 'No audio yet' },
+      { type: 'jingle', title: 'Playable jingle' },
+    ]);
+    await seed(other, [{ type: 'song', title: 'Elsewhere' }]);
+    const ctx = { actor: system, scope };
+    for (const id of [ids[0], ids[1], ids[3]]) {
+      const sha256 = randomBytes(32).toString('hex');
+      await putAssetFile(db, ctx, id ?? '', {
+        role: 'playout',
+        storageKey: contentKey({ orgId: scope.orgId, sha256, ext: 'flac' }),
+        sha256,
+        sizeBytes: 10,
+        codec: 'flac',
+        sampleRate: 44_100,
+        flacBlockSize: 4096,
+      });
+    }
+    const songs = { types: ['song' as const], playable: true };
+    const titles = async (filter: LibraryFilter) =>
+      (await allPages(scope, filter)).map((i) => i.title).sort();
+    expect(await titles(songs)).toEqual(['Playable A', 'Playable B']);
+    expect(await titles({ types: ['song'], playable: false })).toEqual(['No audio yet']);
+
+    const drawn = new Set<string>();
+    for (let i = 0; i < 40; i++) {
+      const { item } = await randomLibraryItem(db, scope, { filter: songs });
+      if (item) drawn.add(item.title);
+    }
+    expect([...drawn].sort()).toEqual(['Playable A', 'Playable B']);
+    const { item } = await randomLibraryItem(db, scope, { filter: songs, exclude: [ids[0] ?? ''] });
+    expect(item?.title).toBe('Playable B');
+    expect(
+      await randomLibraryItem(db, scope, { filter: songs, exclude: [ids[0] ?? '', ids[1] ?? ''] }),
+    ).toEqual({ item: null });
+    expect(await randomLibraryItem(db, other, { filter: songs })).toEqual({ item: null });
+  });
+});
+
 describe('library search routes', () => {
   it('lets readers search and writers bulk edit', async () => {
     const { orgScope, scope } = await tenant();
@@ -700,6 +751,10 @@ describe('library search routes', () => {
     expect(search.statusCode).toBe(200);
     expect(search.json().items).toHaveLength(1);
     expect((await call(cookies.presenter ?? '', 'POST', '/facets', {})).json().total).toBe(1);
+    const random = await call(cookies.presenter ?? '', 'POST', '/random', { filter: {} });
+    expect(random.statusCode).toBe(200);
+    expect(random.json().item.id).toBe(id);
+    expect((await call(outsider, 'POST', '/random', {})).statusCode).toBe(404);
     expect((await call(cookies.presenter ?? '', 'GET', `/assets/${id}/activity`)).statusCode).toBe(
       200,
     );
