@@ -59,7 +59,7 @@ export default defineJob(
       deps = undefined;
       throw error;
     });
-    await renderIsland(await deps, payload, ctx);
+    await renderIsland(await deps, payload, { signal: ctx.signal, jobId: ctx.jobId });
   },
   { lane: 'high' },
 );

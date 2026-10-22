@@ -1,5 +1,5 @@
 {
-  "id": "747701f0-e655-495e-a6a0-9ee353b71a77",
+  "id": "db0ebfb5-43f5-4a7d-9bdf-8cce9a5f5209",
   "prevId": "cfe8f127-ff99-4e43-b4cf-5d39d620fc18",
   "version": "7",
   "dialect": "postgresql",
@@ -5186,6 +5186,25 @@
         "error": {
           "name": "error",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "render_claim": {
+          "name": "render_claim",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "render_attempts": {
+          "name": "render_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "retry_at": {
+          "name": "retry_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },

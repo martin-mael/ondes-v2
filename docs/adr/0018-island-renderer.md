@@ -34,11 +34,21 @@ what airs.
 
 ### The job
 `island-render` (`apps/worker/src/jobs/island-render`), **high** lane, payload
-`{ orgId, stationId, hash }` (`islandRenderJobPayloadSchema`), no explicit idempotency key:
-duplicates collapse while one runs (`in_flight`) and a hash that comes back later renders again.
-Idempotency comes from the data: `claimIslandRender` is a compare-and-set on the hash (nothing
-claimed = nothing to do), and the object key is the spec hash (`islandStorageKey`), so a render
-already stored (a retry, another station of the org) is recorded without rendering.
+`{ orgId, stationId, hash }` (`islandRenderJobPayloadSchema`).
+
+**Keying.** The job is keyed by the island hash, through the payload: it has no explicit
+idempotency key, so the queue derives one from a hash of name + payload, in `in_flight` mode.
+Two enqueues of one hash while a render runs collapse into it; an enqueue after it finished
+runs again. An explicit key (`once` mode) would be wrong here: a spec that goes A → B → A must
+render A again if A's render was dropped meanwhile, and a failed hash must be retryable. Doing
+the work once is the data's job:
+- `claimIslandRender` is a compare-and-set on the hash: nothing claimed means nothing to do;
+- the claim is held by the job's id (`island.render_claim`), which is stable across the queue's
+  retries of one enqueue, so a retry re-claims the rows its earlier attempt holds (for example
+  after a crash between the claim and the render);
+- the object key is the spec hash (`islandStorageKey`), so a render already stored (a retry,
+  another station of the org) is downloaded, hashed against its recorded SHA-256 and recorded
+  without rendering; an object that doesn't check out is rendered again and overwritten.
 
 1. Download each source's playout copy (`files`), hashing it on the way: it must be the exact
    file the spec pins, never the master (spike #12: a different file shows the codec difference
@@ -46,7 +56,7 @@ already stored (a retry, another station of the org) is recorded without renderi
 2. Decode each source's range `[from, to)` with ffmpeg to 32-bit PCM, cut with `atrim` on sample
    counts (sample-exact whatever the packet grid; ranges are already snapped to it by the
    derivation, ADR 0017).
-3. Mix in float64 (`mix.ts`): each source at `at`, times `fillSourceGain`; mono plays on both
+3. Mix in float64 (`mixIsland`, `packages/shared/src/segues/mix.ts`, pure): each source at `at`, times `fillSourceGain`; mono plays on both
    channels; quantise to 24 bits with rounding, clipping counted and logged. **No
    micro-crossfade**: the 10 ms handles at both ends are plain A × gain and plain B × gain, and
    the engine butt-splices on them.
@@ -58,14 +68,29 @@ already stored (a retry, another station of the org) is recorded without renderi
    `island.file_sha256` / `file_size_bytes` (`island.file` in the DTOs, `rendered.file` in
    `deriveIslandsFor`): the engine plays it from the cache as `playoutPath({ sha256, ext: 'flac' })`.
 
-Each state change publishes `island.updated` (`rendering`, then `ready` or `failed`). We add no
-separate `island.rendered` event: `island.updated` with `ready` already says it, with the hash.
+Each state change publishes `island.updated` (`rendering`, then `ready` or `failed`) after it
+commits. Publishing is best-effort, like every event in Ondes: a failed publish is logged and
+never fails or rolls back the render (the state is in the database, and neither the sweep nor
+`GET …/islands` needs the event). We add no separate `island.rendered` event: `island.updated`
+with `ready` already says it, with the hash.
 
-**Failures.** An input problem (a source missing from storage, not matching its hash, not a
-44.1 kHz FLAC, not decodable; a spec that fails its schema or its hash) is final: `failed`
-with the reason, not retried; the next spec change renders again. Anything else (S3, Postgres,
-a killed ffmpeg) marks the rows `failed` and throws, so the queue retries, and the retry claims
-the `failed` rows again.
+**Failures.**
+- *Input* (a source whose whole object hashes to something else than the spec pins, a file
+  that isn't FLAC or isn't 44.1 kHz, a decode ffmpeg rejects, a spec that fails its schema or
+  its hash): final. `failed` with the reason and no `retry_at`; the next spec change renders it
+  again.
+- *Transient* (S3, Postgres, local I/O, a short download, a killed ffmpeg, and a source object
+  not found, which may still be landing): the job's rows become `failed` with
+  `retry_at = now + 1, 2, 4 … 60 min` (by attempts), and the job throws, so the queue retries it
+  (each retry claims the rows again). Once the queue gives up, the sweep re-enqueues the island at
+  `retry_at`. `island.render_attempts` counts claims of the current hash (reset with the hash);
+  at 8 the island stays `failed` without `retry_at`.
+
+**Stale claims.** A `rendering` claim untouched for 10 minutes is taken over (a worker died
+mid-render). If the first job was only slow, both finish: `markIslandRendered` marks every row of
+the hash `ready` whichever job finishes (the render is bit-exact and content-addressed, so either
+file is the right one), and `markIslandFailed` only touches rows the failing job still holds, so
+a superseded job can't fail the live render.
 
 ### Re-render on change
 The api enqueues one job per hash a sync leaves `pending`, after commit, from every sync: the
@@ -76,13 +101,32 @@ untouched for 10 minutes (a worker that died mid-render: `claimIslandRender(…,
 `listIslandsToRender`).
 
 ### Speed
-A 5 s voice-track island (three sources) renders in about 0.2 s with a native ffmpeg (most of
-it the decode of A up to its end). Under the docker wrapper the tests use, each ffmpeg spawn
-costs a `docker run`, about 2.4 s in all; production runs ffmpeg natively in the worker image.
+The under-2 s target holds **with a native ffmpeg**, which is what production runs (the worker
+image installs it): a 5 s voice-track island (three sources) renders in about 0.2 s, most of it
+the decode of A up to its end. Under the docker wrapper the integration tests use
+(`apps/worker/test/bin`), every ffmpeg spawn is a `docker run`, and the same render measured
+2.4 s; that figure is the wrapper's overhead, not the renderer's.
+
+### Grid snapping
+Spike #12's rules are all followed, but one of them is not the renderer's to apply.
+- B's join (the tail item's cue-in after the island) is snapped up to B's 1024-sample grid by
+  the derivation (ADR 0017), and the island's length absorbs the difference.
+- A's join is a cue-out and needs no snapping.
+- A's own **cue-in** (where A's body starts, before the island) must be on A's grid too: the
+  engine seeks there packet-granularly and then plays `cue_out − cue_in`, so an unsnapped cue-in
+  moves A's end, and with it the A → island join (the splice test's `-unsnapped` cases). That
+  value is not in the island: the island starts at A's join and never contains A's cue-in
+  (when A has no body left, the island renders A from its cue-in, with no seek). So it is the
+  feeder's to send (#57): `liq_cue_in` = A's effective cue-in moved up to the next 1024-sample
+  boundary, as the spike's metadata table says, and the same for every seek into a body,
+  island or not. Moving it up by less than 23 ms only shortens A's body, never the island.
 
 ### Verification
 - `island-render.int.test.ts`: renders from playout copies in Garage, decodes the stored file and
-  nulls it against a mix of the decoded inputs with `sourceGainAt`: every sample within ½ LSB.
+  nulls it against a mix of the decoded inputs with a gain written out independently in the test
+  (10^(dB/20) and a plain lerp, not the shared code): every sample within ½ LSB. Also covered:
+  idempotency, a moved-on spec, bad input, transient retries and the attempt cap, own-claim
+  re-claims, a superseded job, a failed publish, and a corrupt stored object.
 - The splice test (`pnpm test:engine:splice`, CI's `--quick`) now renders its FLAC islands with
   this renderer (`renderIslandWithRenderer` in `engine/tests/splice/island.ts`) and plays them in
   the pinned Liquidsoap: shift 0 at both joins, residual −127 dB (tone) / −116.5 dB (noise).
@@ -90,7 +134,7 @@ costs a `docker run`, about 2.4 s in all; production runs ffmpeg natively in the
   path filter now includes the renderer.
 
 ## Consequences
-- **Engine (#57):** play `rendered.file` from the cache; ADR 0004's horizon must add island
+- **Engine (#57):** snap A's cue-in (above); play `rendered.file` from the cache; ADR 0004's horizon must add island
   files (by `file_sha256`) so cache-sync keeps them and the urgent fetch can fetch one (today it
   takes an asset file id). Until then a render placed by this job stays until the cache needs
   room.

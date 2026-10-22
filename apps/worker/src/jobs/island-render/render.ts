@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -25,34 +25,48 @@ import {
   islandHash,
   islandSpecSchema,
   islandStorageKey,
+  mixIsland,
+  type RealtimeEvent,
+  type SourcePcm,
 } from '@ondes/shared';
 import { ObjectNotFoundError, type Storage } from '@ondes/storage';
-import { z } from 'zod';
 import { isFileError, readFlacStreamInfo, type Tools } from '../ingest/ffmpeg.ts';
 import { decodeRange, encodeIsland } from './codec.ts';
-import { mixIsland, type SourcePcm } from './mix.ts';
 
 // Island render (#56, ADR 0017 and 0018): one job per spec hash and station.
 //
-// 1. Claim the hash's `pending`/`failed` rows (compare-and-set on the hash, `rendering`).
-//    Nothing claimed: already rendered, or the spec moved on: done.
+// 1. Claim the hash's `pending`/`failed` rows (compare-and-set on the hash, `rendering`, held
+//    by this job's id). Nothing claimed: already rendered, or the spec moved on: done. A retry
+//    of this job re-claims the rows it already holds.
 // 2. If the content-addressed key `islandStorageKey(org, hash)` already holds a render (a
-//    retry, or another station of the org), record it. Otherwise:
+//    retry, or another station of the org), verify it and record it. Otherwise:
 // 3. download each source's playout copy (the exact file the engine plays, checked against
-//    the spec's sha256), decode the sample ranges, mix (mix.ts: shared gain model, no
+//    the spec's sha256), decode the sample ranges, mix (`mixIsland`: shared gain model, no
 //    micro-crossfade), encode 24-bit FLAC with 1024-sample blocks;
 // 4. upload it, place it in this worker's playout cache when it keeps one, mark the rows
-//    `ready` with the file's own hash (each publishes `island.updated`).
+//    `ready` with the file's own hash.
 //
-// Failures: a source that doesn't match its hash, is missing from storage or doesn't decode
-// is final (`failed`, not retried: a spec change renders it again). Anything else (S3,
-// Postgres, a killed ffmpeg) marks the rows `failed` and throws, so the queue retries, and the
-// retry claims the `failed` rows again.
-
-export const ISLAND_RENDER_ACTOR = { type: 'system', name: 'island-render' } as const;
+// Failures. Bad input (a source that isn't the file the spec pins, isn't a 44.1 kHz FLAC or
+// doesn't decode; a spec that fails its schema or hash) is final: `failed`, not retried until
+// the spec changes. Anything else (S3, Postgres, local I/O, a killed ffmpeg, a source not found
+// yet) marks this job's rows `failed` with a `retry_at` and throws: the queue retries the job,
+// and once its retries are spent the sweep picks the island up again at `retry_at` (backoff,
+// up to {@link MAX_RENDER_ATTEMPTS} claims of the hash).
+//
+// Events (`island.updated`) are published after each state change commits, best-effort like
+// every event here: a failed publish is logged and never fails the render (the state is in the
+// database; `GET …/islands` and the sweep don't depend on the event).
 
 /** A `rendering` claim untouched this long belongs to a dead worker: taken over. */
 export const STALE_RENDER_MS = 10 * 60 * 1000;
+
+/** Claims of one hash before a transient failure stops being retried by the sweep. */
+export const MAX_RENDER_ATTEMPTS = 8;
+
+/** Sweep backoff after the `attempts`-th claim failed: 1, 2, 4, … minutes, at most an hour. */
+export function retryDelayMs(attempts: number): number {
+  return Math.min(2 ** Math.max(0, attempts - 1), 60) * 60 * 1000;
+}
 
 export interface IslandRenderDeps {
   db: Db;
@@ -83,7 +97,7 @@ export class IslandInputError extends Error {
 export async function renderIsland(
   deps: IslandRenderDeps,
   payload: IslandRenderJobPayload,
-  run: { signal?: AbortSignal } = {},
+  run: { signal?: AbortSignal; jobId?: string } = {},
 ): Promise<IslandRenderOutcome> {
   let scope: StationScope;
   try {
@@ -92,21 +106,26 @@ export async function renderIsland(
     if (error instanceof NotFoundError) return { kind: 'nothing' };
     throw error;
   }
-  const rows = await claimIslandRender(deps.db, scope, payload.hash, deps.publish, {
+  const publish = safePublish(deps);
+  // The job id is the same for every attempt of one enqueue: a retry finds its own claim.
+  const claim = run.jobId ?? randomUUID();
+  const rows = await claimIslandRender(deps.db, scope, payload.hash, publish, {
     staleAfterMs: STALE_RENDER_MS,
+    claim,
   });
   const row = rows[0];
   if (!row) return { kind: 'nothing' };
+  const attempts = Math.max(...rows.map((r) => r.renderAttempts));
   const started = performance.now();
   try {
     const key = islandStorageKey(scope.orgId, payload.hash, row.specVersion);
     const found = await findStored(deps.storage, key);
     if (found) {
-      await finish(deps, scope, payload.hash, key, found);
+      await finish(deps, scope, payload.hash, key, found, publish);
       return { kind: 'stored', file: found };
     }
     const { file, clipped } = await render(deps, row, payload.hash, key, run.signal);
-    await finish(deps, scope, payload.hash, key, file);
+    await finish(deps, scope, payload.hash, key, file, publish);
     const ms = Math.round(performance.now() - started);
     deps.log?.({
       level: clipped ? 'warn' : 'info',
@@ -120,13 +139,46 @@ export async function renderIsland(
     return { kind: 'rendered', file, ms, clipped };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await markIslandFailed(deps.db, scope, { hash: payload.hash, error: message }, deps.publish);
-    if (error instanceof IslandInputError) {
-      deps.log?.({ level: 'warn', msg: 'island render failed', hash: payload.hash, err: message });
-      return { kind: 'failed', error: message };
-    }
+    const final = error instanceof IslandInputError;
+    const retryAt =
+      final || attempts >= MAX_RENDER_ATTEMPTS
+        ? null
+        : new Date(Date.now() + retryDelayMs(attempts));
+    await markIslandFailed(
+      deps.db,
+      scope,
+      { hash: payload.hash, error: message, claim, retryAt },
+      publish,
+    );
+    deps.log?.({
+      level: final ? 'warn' : 'error',
+      msg: 'island render failed',
+      hash: payload.hash,
+      attempts,
+      retryAt,
+      err: message,
+    });
+    if (final) return { kind: 'failed', error: message };
     throw error;
   }
+}
+
+/** The deps' publisher, made best-effort: a failed publish is logged, never thrown. */
+function safePublish(deps: IslandRenderDeps): PublishEvent | undefined {
+  const publish = deps.publish;
+  if (!publish) return undefined;
+  return async (event: RealtimeEvent) => {
+    try {
+      await publish(event);
+    } catch (error) {
+      deps.log?.({
+        level: 'error',
+        msg: 'event publish failed',
+        type: event.type,
+        err: String(error),
+      });
+    }
+  };
 }
 
 async function finish(
@@ -135,6 +187,7 @@ async function finish(
   hash: string,
   storageKey: string,
   file: IslandFile,
+  publish: PublishEvent | undefined,
 ) {
   // The cache is a head start for the engine, not a condition of `ready`: cache-sync and the
   // feeder's urgent fetch place it otherwise.
@@ -145,21 +198,28 @@ async function finish(
       deps.log?.({ level: 'warn', msg: 'island cache placement failed', hash, err: String(error) });
     }
   }
-  await markIslandRendered(deps.db, scope, { hash, storageKey, file }, deps.publish);
+  await markIslandRendered(deps.db, scope, { hash, storageKey, file }, publish);
 }
 
-/** Metadata on each island object, so a later run records it without reading it. */
-const objectMetadataSchema = z.object({
-  sha256: z.string().regex(/^[0-9a-f]{64}$/),
-});
-
+/**
+ * A render already stored at `key` (a retry, or the same audio for another station of the
+ * org): read back and hashed, so a truncated or foreign object is never recorded as the file.
+ * Undefined when there is none or it doesn't check out: render again and overwrite it.
+ */
 async function findStored(storage: Storage, key: string): Promise<IslandFile | undefined> {
   const head = await storage.head(key);
-  if (!head) return undefined;
-  const parsed = objectMetadataSchema.safeParse(head.metadata);
-  // Written without our metadata: render again and overwrite it.
-  if (!parsed.success || head.size <= 0) return undefined;
-  return { sha256: parsed.data.sha256, sizeBytes: head.size };
+  if (!head || head.size <= 0) return undefined;
+  const claimed = head.metadata?.sha256;
+  if (!claimed || !/^[0-9a-f]{64}$/.test(claimed)) return undefined;
+  const { body } = await storage.get(key);
+  const hash = createHash('sha256');
+  let size = 0;
+  for await (const chunk of body) {
+    hash.update(chunk as Buffer);
+    size += (chunk as Buffer).length;
+  }
+  if (size !== head.size || hash.digest('hex') !== claimed) return undefined;
+  return { sha256: claimed, sizeBytes: size };
 }
 
 async function render(
@@ -182,7 +242,12 @@ async function render(
         const path = join(work, `${sha256}.flac`);
         await download(deps.storage, where.storageKey, sha256, path);
         const info = await readFlacStreamInfo(path).catch((error: unknown) => {
-          throw new IslandInputError(`source ${sha256}: ${(error as Error).message}`);
+          // Only a file that isn't FLAC is the input's fault; local I/O errors are retried.
+          const message = error instanceof Error ? error.message : '';
+          if (FLAC_FORMAT_ERRORS.some((re) => re.test(message))) {
+            throw new IslandInputError(`source ${sha256}: ${message}`);
+          }
+          throw error;
         });
         if (info.sampleRate !== ISLAND_FORMAT.sampleRate || info.channels > 2) {
           throw new IslandInputError(
@@ -230,6 +295,9 @@ async function render(
   }
 }
 
+/** Errors `parseFlacStreamInfo` throws for a file that isn't a FLAC stream: final. */
+const FLAC_FORMAT_ERRORS = [/^not a FLAC stream$/, /^first FLAC metadata block is not STREAMINFO$/];
+
 function parseSpec(row: IslandRow, hash: string): IslandSpec {
   const parsed = islandSpecSchema.safeParse(row.spec);
   if (!parsed.success)
@@ -241,26 +309,35 @@ function parseSpec(row: IslandRow, hash: string): IslandSpec {
 
 /** Downloads `key` to `path`, hashing it on the way: it must be the playout copy the spec pins. */
 async function download(storage: Storage, key: string, sha256: string, path: string) {
-  let body: Readable;
+  let object: { body: Readable; contentLength: number };
   try {
-    body = (await storage.get(key)).body;
+    object = await storage.get(key);
   } catch (error) {
+    // Transient as far as we can tell (an ingest or a replication still landing): retried, then
+    // swept with a backoff, and given up after the attempt cap.
     if (error instanceof ObjectNotFoundError) {
-      throw new IslandInputError(`source ${sha256} missing from storage (${key})`);
+      throw new Error(`source ${sha256} missing from storage (${key})`);
     }
     throw error;
   }
   const hash = createHash('sha256');
+  let size = 0;
   await pipeline(
-    body,
+    object.body,
     new Transform({
       transform(chunk: Buffer, _enc, cb) {
         hash.update(chunk);
+        size += chunk.length;
         cb(null, chunk);
       },
     }),
     createWriteStream(path),
   );
+  // A short read is the network's fault: retried. A whole object with another hash is not the
+  // playout copy the spec pins: final.
+  if (size !== object.contentLength) {
+    throw new Error(`source ${sha256}: downloaded ${size} of ${object.contentLength} bytes`);
+  }
   const actual = hash.digest('hex');
   if (actual !== sha256) {
     throw new IslandInputError(`source ${sha256}: stored object hashes to ${actual}`);

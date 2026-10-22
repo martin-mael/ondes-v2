@@ -1,6 +1,8 @@
-import { fillSourceGain, type IslandSource, type IslandSpec } from '@ondes/shared';
+import type { IslandSource, IslandSpec } from '../contracts/segues.ts';
+import { fillSourceGain } from './gain.ts';
 
-// The island mix (#56, ADR 0018): pure, no I/O. Every source's samples `[from, to)` placed at
+// The island mix (#56, ADR 0018): pure, no I/O or platform APIs, so the worker's renderer, the
+// splice test and (if it wants a sample-exact buffer) the editor all mix the same way. Every source's samples `[from, to)` placed at
 // `at`, scaled per sample by the shared gain model (`fillSourceGain`: static gain as
 // `liq_amplify` applies it, times the product of its envelopes), summed in float64, then
 // quantised to the output's 24 bits. No micro-crossfade: the engine butt-splices the island

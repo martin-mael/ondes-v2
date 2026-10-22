@@ -127,6 +127,12 @@ export const island = pgTable(
     fileSha256: text('file_sha256'),
     fileSizeBytes: bigint('file_size_bytes', { mode: 'number' }),
     error: text('error'),
+    /** The render job holding the `rendering` claim (its job id, stable across its retries). */
+    renderClaim: uuid('render_claim'),
+    /** Claims of the current hash so far; reset with the hash. Caps transient retries. */
+    renderAttempts: integer('render_attempts').notNull().default(0),
+    /** When the sweep may render a `failed` island again; null: not until its spec changes. */
+    retryAt: timestamp('retry_at', { withTimezone: true }),
     renderedAt: timestamp('rendered_at', { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

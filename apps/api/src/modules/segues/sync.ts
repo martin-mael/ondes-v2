@@ -595,6 +595,10 @@ async function saveIsland(
     fileSizeBytes: rendered?.fileSizeBytes ?? null,
     renderedAt: rendered?.renderedAt ?? null,
     error: null,
+    // A new hash starts its render bookkeeping afresh (#56).
+    renderClaim: null,
+    renderAttempts: 0,
+    retryAt: null,
   };
   const [row] = existing
     ? await tx

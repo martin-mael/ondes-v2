@@ -225,7 +225,9 @@ export type IslandJoin = z.infer<typeof islandJoinSchema>;
  * - `pending`: to render (new or changed spec). The renderer picks these up (`island.updated`).
  * - `rendering`: claimed by a render job.
  * - `ready`: the file at `storageKey` matches `hash`.
- * - `failed`: the render failed (`error`); a spec change or a retry renders it again.
+ * - `failed`: the render failed (`error`). A transient failure is retried by the queue, then by
+ *   the renderer's sweep with a backoff (up to a cap of attempts); bad input waits for the spec
+ *   to change (ADR 0018).
  */
 export const islandStatusSchema = z.enum(['pending', 'rendering', 'ready', 'failed']);
 export type IslandStatus = z.infer<typeof islandStatusSchema>;

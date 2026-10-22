@@ -6,7 +6,8 @@ import { STALE_RENDER_MS } from './render.ts';
 // Island render sweep (#56), run by the worker on its 5 min timer next to the storage sweep.
 // The api enqueues a render after every sync; this catches what got lost: an enqueue that
 // failed after the commit, a job that died in the queue, a worker killed mid-render (its
-// `rendering` claim is taken over once stale). Safe from every replica: duplicate jobs
+// `rendering` claim is taken over once stale), and transient failures whose `retry_at` has come
+// (render.ts sets it with a backoff, up to a cap of attempts). Safe from every replica: duplicate jobs
 // collapse on their payload while one runs, and the render itself is a compare-and-set.
 
 /** A `pending` island this old has missed its job. */

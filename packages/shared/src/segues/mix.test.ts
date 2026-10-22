@@ -1,13 +1,11 @@
+import { describe, expect, it } from 'vitest';
 import {
-  dbToAmplitude,
-  envelopeAutomation,
-  type GainAutomationEvent,
   ISLAND_FORMAT,
   ISLAND_SPEC_VERSION,
   type IslandSource,
   type IslandSpec,
-} from '@ondes/shared';
-import { describe, expect, it } from 'vitest';
+} from '../contracts/segues.ts';
+import { dbToAmplitude, envelopeAutomation, type GainAutomationEvent } from './gain.ts';
 import { mixIsland, type SourcePcm } from './mix.ts';
 
 // Null test of the island mix against an independent reference: the editor's preview path

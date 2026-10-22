@@ -8,6 +8,7 @@ import {
   createOrganization,
   createStation,
   island,
+  markIslandFailed,
   resolveOrgScope,
   resolveStationScope,
   type StationScope,
@@ -22,19 +23,24 @@ import {
   islandHash,
   islandStorageKey,
   type RealtimeEvent,
-  sourceGainAt,
 } from '@ondes/shared';
 import { createS3Storage, loadStorageConfig, type Storage } from '@ondes/storage';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { defaultTools, readFlacStreamInfo } from '../ingest/ffmpeg.ts';
 import { decodeRange } from './codec.ts';
-import { type IslandRenderDeps, renderIsland } from './render.ts';
+import {
+  type IslandRenderDeps,
+  MAX_RENDER_ATTEMPTS,
+  renderIsland,
+  retryDelayMs,
+} from './render.ts';
 import { sweepIslandRenders } from './sweep.ts';
 
 // The island-render job end to end: playout copies in Garage, island rows in a throwaway
 // database, ffmpeg from the PATH (the worker image's: apps/worker/test/bin, as CI does). The
-// output is decoded and nulled against a reference mixed here from the decoded inputs with the
-// shared gain model: every sample within 1 LSB (24-bit).
+// output is decoded and nulled against a reference mixed here from the decoded inputs with a
+// gain written out independently of the shared gain model (`referenceGain`): every sample
+// within ½ LSB (24-bit).
 
 const exec = promisify(execFile);
 const enabled = Boolean(process.env.S3_ENDPOINT);
@@ -71,6 +77,34 @@ async function flac(name: string, exprs: string[], seconds: number): Promise<str
     path,
   ]);
   return path;
+}
+
+/**
+ * The ADR 0017 gain, written out here without the shared code under test: 10^(dB/20) (0 at or
+ * below −90 dB) times, per envelope, a straight-line interpolation in amplitude between the
+ * two points around `at`, holding outside them.
+ */
+function referenceGain(
+  source: { gainDb: number; envelopes: { at: number; gainDb: number }[][] },
+  at: number,
+): number {
+  const amp = (db: number) => (db <= -90 ? 0 : 10 ** (db / 20));
+  let g = amp(source.gainDb);
+  for (const points of source.envelopes) {
+    if (!points.length) continue;
+    const first = points[0] as { at: number; gainDb: number };
+    const last = points[points.length - 1] as { at: number; gainDb: number };
+    if (at <= first.at) g *= amp(first.gainDb);
+    else if (at >= last.at) g *= amp(last.gainDb);
+    else {
+      const i = points.findIndex((p) => p.at >= at);
+      const a = points[i - 1] as { at: number; gainDb: number };
+      const b = points[i] as { at: number; gainDb: number };
+      const t = (at - a.at) / (b.at - a.at);
+      g *= amp(a.gainDb) * (1 - t) + amp(b.gainDb) * t;
+    }
+  }
+  return g;
 }
 
 describe.runIf(enabled)('island-render job', () => {
@@ -262,7 +296,7 @@ describe.runIf(enabled)('island-render job', () => {
       const info = await readFlacStreamInfo(m.path);
       const pcm = await decodeRange(tools, m.path, { ...s, channels: info.channels });
       for (let k = 0; k < s.to - s.from; k++) {
-        const g = sourceGainAt(s, s.at + k);
+        const g = referenceGain(s, s.at + k);
         for (let c = 0; c < 2; c++) {
           const x = (pcm[c] ?? pcm[0]) as Float32Array;
           const r = ref[c] as Float64Array;
@@ -345,5 +379,99 @@ describe.runIf(enabled)('island-render job', () => {
 
     expect((await renderIsland(deps, payload(fresh.hash))).kind).toBe('nothing');
     expect((await renderIsland(deps, payload(stale.hash))).kind).toBe('rendered');
+  });
+
+  /** Files map with source `name` read from `storageKey` instead. */
+  const filesWith = (name: string, storageKey: string) =>
+    Object.fromEntries(
+      Object.entries(media).map(([k, m]) => [
+        m.sha256,
+        { storageKey: k === name ? storageKey : m.key, assetId: randomUUID() },
+      ]),
+    );
+  const sweepOnce = async () => {
+    const enqueued: { hash: string }[] = [];
+    const jobs = {
+      enqueue: async (_job: unknown, p: { hash: string }) => {
+        enqueued.push(p);
+      },
+    } as unknown as JobPublisher;
+    await sweepIslandRenders({ db: tdb.db, jobs });
+    return enqueued.map((p) => p.hash);
+  };
+
+  it('retries a transient failure: the queue first, then the sweep at retry_at, up to a cap', async () => {
+    const missing = `org/${scope.orgId}/sha256/not-yet-${randomUUID()}.flac`;
+    const row = await insertIsland(vtSpec(++n), { files: filesWith('vt', missing) });
+    await expect(renderIsland(deps, payload(row.hash))).rejects.toThrow(/missing from storage/);
+    let after = await rowOf(row.id);
+    expect(after).toMatchObject({ status: 'failed', renderAttempts: 1, renderClaim: null });
+    expect(after.retryAt?.getTime()).toBeGreaterThan(Date.now() + retryDelayMs(1) - 10_000);
+    expect(await sweepOnce()).not.toContain(row.hash);
+
+    // Its time comes; meanwhile the object landed.
+    await tdb.sql`update island set retry_at = now() - interval '1 second' where id = ${row.id}`;
+    expect(await sweepOnce()).toContain(row.hash);
+    await tdb.sql`update island set files = ${JSON.stringify(filesWith('vt', (media.vt as { key: string }).key))}::jsonb where id = ${row.id}`;
+    expect((await renderIsland(deps, payload(row.hash))).kind).toBe('rendered');
+    after = await rowOf(row.id);
+    expect(after).toMatchObject({ status: 'ready', retryAt: null });
+
+    // Out of attempts: failed for good (until the spec changes).
+    const capped = await insertIsland(vtSpec(++n), {
+      files: filesWith('vt', missing),
+      renderAttempts: MAX_RENDER_ATTEMPTS - 1,
+    });
+    await expect(renderIsland(deps, payload(capped.hash))).rejects.toThrow();
+    expect(await rowOf(capped.id)).toMatchObject({
+      status: 'failed',
+      renderAttempts: MAX_RENDER_ATTEMPTS,
+      retryAt: null,
+    });
+  });
+
+  it('a retry of the claiming job carries on; another job leaves a live claim alone', async () => {
+    const jobId = randomUUID();
+    const row = await insertIsland(vtSpec(++n), { status: 'rendering', renderClaim: jobId });
+    expect(await renderIsland(deps, payload(row.hash), { jobId: randomUUID() })).toEqual({
+      kind: 'nothing',
+    });
+    // A job taken over (it looked dead) can't fail the live render.
+    expect(
+      await markIslandFailed(tdb.db, scope, { hash: row.hash, error: 'late', claim: randomUUID() }),
+    ).toEqual([]);
+    expect((await renderIsland(deps, payload(row.hash), { jobId })).kind).toBe('rendered');
+  });
+
+  it('never fails a render on a failed event publish', async () => {
+    const row = await insertIsland(vtSpec(++n));
+    const logs: Record<string, unknown>[] = [];
+    const outcome = await renderIsland(
+      {
+        ...deps,
+        publish: async () => {
+          throw new Error('broker down');
+        },
+        log: (e) => logs.push(e),
+      },
+      payload(row.hash),
+    );
+    expect(outcome.kind).toBe('rendered');
+    expect((await rowOf(row.id)).status).toBe('ready');
+    expect(logs.filter((l) => l.msg === 'event publish failed')).toHaveLength(2);
+  });
+
+  it('renders again over a stored object that does not match its recorded hash', async () => {
+    const spec = vtSpec(++n);
+    const row = await insertIsland(spec);
+    const key = islandStorageKey(scope.orgId, row.hash);
+    await storage.put(key, Buffer.from('fLaC, truncated'), {
+      contentType: 'audio/flac',
+      metadata: { sha256: 'a'.repeat(64) },
+    });
+    const outcome = await renderIsland(deps, payload(row.hash));
+    expect(outcome.kind).toBe('rendered');
+    const head = await storage.head(key);
+    if (outcome.kind === 'rendered') expect(head?.metadata?.sha256).toBe(outcome.file.sha256);
   });
 });

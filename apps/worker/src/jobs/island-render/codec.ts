@@ -1,8 +1,7 @@
 import { spawn } from 'node:child_process';
 import { endianness } from 'node:os';
-import { ISLAND_FORMAT } from '@ondes/shared';
+import { ISLAND_FORMAT, type SourcePcm } from '@ondes/shared';
 import { ToolError, ToolKilledError, type Tools } from '../ingest/ffmpeg.ts';
-import type { SourcePcm } from './mix.ts';
 
 // ffmpeg I/O for the island renderer. Decoding goes to 32-bit integer PCM (a 16- or 24-bit
 // FLAC is exact in it, and in float32 after scaling), cut with `atrim` on sample counts so the
