@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { type RealtimeEvent, realtimeEventSchema } from '@ondes/shared';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, lt, or, sql } from 'drizzle-orm';
 import type { Executor } from '../client.ts';
 import { island } from '../schema/segues.ts';
 import { type StationScope, whereStation } from '../tenant.ts';
@@ -39,24 +39,30 @@ async function publishRows(rows: IslandRow[], publish: PublishEvent | undefined)
 
 /**
  * Claims the render of `hash`: its `pending` (or `failed`) rows become `rendering`. Returns
- * them; none means there is nothing to render (already rendered, or the spec changed).
+ * them; none means there is nothing to render (already rendered, or the spec changed). With
+ * `staleAfterMs`, a `rendering` claim untouched for that long (a worker that died mid-render)
+ * is taken over too.
  */
 export async function claimIslandRender(
   db: Executor,
   scope: StationScope,
   hash: string,
   publish?: PublishEvent,
+  options: { staleAfterMs?: number } = {},
 ): Promise<IslandRow[]> {
+  const claimable = options.staleAfterMs
+    ? or(
+        inArray(island.status, ['pending', 'failed']),
+        and(
+          eq(island.status, 'rendering'),
+          lt(island.updatedAt, staleBefore(options.staleAfterMs)),
+        ),
+      )
+    : inArray(island.status, ['pending', 'failed']);
   const rows = await db
     .update(island)
     .set({ status: 'rendering', error: null })
-    .where(
-      and(
-        whereStation(island, scope),
-        eq(island.hash, hash),
-        inArray(island.status, ['pending', 'failed']),
-      ),
-    )
+    .where(and(whereStation(island, scope), eq(island.hash, hash), claimable))
     .returning();
   await publishRows(rows, publish);
   return rows;
@@ -69,7 +75,13 @@ export async function claimIslandRender(
 export async function markIslandRendered(
   db: Executor,
   scope: StationScope,
-  input: { hash: string; storageKey: string; renderedAt?: Date },
+  input: {
+    hash: string;
+    storageKey: string;
+    /** The rendered file's own hash and size (#56): its playout cache key. */
+    file?: { sha256: string; sizeBytes: number };
+    renderedAt?: Date;
+  },
   publish?: PublishEvent,
 ): Promise<IslandRow[]> {
   const rows = await db
@@ -77,6 +89,8 @@ export async function markIslandRendered(
     .set({
       status: 'ready',
       storageKey: input.storageKey,
+      fileSha256: input.file?.sha256 ?? null,
+      fileSizeBytes: input.file?.sizeBytes ?? null,
       renderedAt: input.renderedAt ?? new Date(),
       error: null,
     })
@@ -112,4 +126,39 @@ export async function markIslandFailed(
     .returning();
   await publishRows(rows, publish);
   return rows;
+}
+
+const staleBefore = (ms: number) => sql`now() - make_interval(secs => ${ms / 1000})`;
+
+/**
+ * The hashes of the station's islands left to render (the renderer's sweep, #56): `pending`
+ * ones not touched for `pendingAfterMs` (their job was lost, or never enqueued), and
+ * `rendering` ones untouched for `staleAfterMs` (a worker died mid-render). Oldest first.
+ */
+export async function listIslandsToRender(
+  db: Executor,
+  scope: StationScope,
+  options: { pendingAfterMs: number; staleAfterMs: number; limit?: number },
+): Promise<string[]> {
+  const rows = await db
+    .selectDistinct({ hash: island.hash, updatedAt: island.updatedAt })
+    .from(island)
+    .where(
+      and(
+        whereStation(island, scope),
+        or(
+          and(
+            eq(island.status, 'pending'),
+            lt(island.updatedAt, staleBefore(options.pendingAfterMs)),
+          ),
+          and(
+            eq(island.status, 'rendering'),
+            lt(island.updatedAt, staleBefore(options.staleAfterMs)),
+          ),
+        ),
+      ),
+    )
+    .orderBy(island.updatedAt)
+    .limit(options.limit ?? 100);
+  return [...new Set(rows.map((r) => r.hash))];
 }

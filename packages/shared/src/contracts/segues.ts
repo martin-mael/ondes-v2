@@ -230,6 +230,16 @@ export type IslandJoin = z.infer<typeof islandJoinSchema>;
 export const islandStatusSchema = z.enum(['pending', 'rendering', 'ready', 'failed']);
 export type IslandStatus = z.infer<typeof islandStatusSchema>;
 
+/**
+ * A rendered island file, set with `ready`. The engine plays it from the playout cache like any
+ * playout copy, addressed by the file's own hash (`playoutPath({ sha256, ext: 'flac' })`).
+ */
+export const islandFileSchema = z.object({
+  sha256: sha256HexSchema,
+  sizeBytes: z.int().positive(),
+});
+export type IslandFile = z.infer<typeof islandFileSchema>;
+
 export const islandSummarySchema = z.object({
   id: uuidSchema,
   stationId: uuidSchema,
@@ -243,6 +253,8 @@ export const islandSummarySchema = z.object({
   itemIds: z.array(uuidSchema).min(2),
   lengthSamples: z.int().positive(),
   storageKey: z.string().nullable(),
+  /** SHA-256 and size of the rendered FLAC file (not the spec hash): its playout cache key. */
+  file: islandFileSchema.nullable(),
   error: z.string().nullable(),
   renderedAt: z.date().nullable(),
   updatedAt: z.date(),
@@ -263,6 +275,24 @@ export function islandStorageKey(
 ): string {
   return `org/${orgId}/islands/v${specVersion}/${hash}.flac`;
 }
+
+// --- `island-render` job (#56) -----------------------------------------------------------
+
+export const ISLAND_RENDER_JOB = 'island-render';
+
+/**
+ * Renders the station's islands whose spec has this hash (ADR 0018). High lane. Enqueued by the
+ * api after every sync that leaves an island `pending`, and by the worker's sweep. No explicit
+ * key: concurrent requests collapse on the payload (`in_flight`), and a hash that comes back
+ * later renders again; the render state is a compare-and-set on the hash, so extra runs do
+ * nothing.
+ */
+export const islandRenderJobPayloadSchema = z.object({
+  orgId: uuidSchema,
+  stationId: uuidSchema,
+  hash: sha256HexSchema,
+});
+export type IslandRenderJobPayload = z.infer<typeof islandRenderJobPayloadSchema>;
 
 // --- Segue DTOs --------------------------------------------------------------------------
 

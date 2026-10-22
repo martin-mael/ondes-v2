@@ -35,7 +35,9 @@ For each case of the matrix (signal × playout format × engine mode):
    B 660 Hz, VT 1 kHz). `noise`: white noise (unambiguous sample alignment). `music`:
    "Scheming Weasel (faster)" by Kevin MacLeod, CC BY 4.0, downloaded and SHA-1 checked.
    Lossy playout copies are encoded from the masters (MP3 256k LAME, AAC 256k in .m4a).
-2. **Island** (`island.ts`): rendered by ffmpeg from the playout copies (or the masters for
+2. **Island** (`island.ts`): FLAC cases are rendered by the production island renderer (#56,
+   `apps/worker/src/jobs/island-render`, ADR 0018), so this test checks what airs; lossy cases
+   by an ffmpeg `aeval` reference renderer. Both render from the playout copies (or the masters for
    the `-island-from-master` cases). A ducks to −12 dB then fades out, the VT plays, B fades
    in. Gains are applied per sample exactly as the engine applies `liq_amplify`
    (10^(dB/20)): A at −3.5 dB, B at −1.5 dB, the island at 0 dB.

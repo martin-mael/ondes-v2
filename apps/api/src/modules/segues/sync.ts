@@ -574,7 +574,12 @@ async function saveIsland(
     return { island: row as IslandRow, changed: false };
   }
   const [rendered] = await tx
-    .select({ storageKey: island.storageKey, renderedAt: island.renderedAt })
+    .select({
+      storageKey: island.storageKey,
+      fileSha256: island.fileSha256,
+      fileSizeBytes: island.fileSizeBytes,
+      renderedAt: island.renderedAt,
+    })
     .from(island)
     .where(and(whereStation(island, scope), eq(island.hash, hash), eq(island.status, 'ready')))
     .limit(1);
@@ -586,6 +591,8 @@ async function saveIsland(
     lengthSamples: plan.spec.lengthSamples,
     status: rendered ? ('ready' as const) : ('pending' as const),
     storageKey: rendered?.storageKey ?? null,
+    fileSha256: rendered?.fileSha256 ?? null,
+    fileSizeBytes: rendered?.fileSizeBytes ?? null,
     renderedAt: rendered?.renderedAt ?? null,
     error: null,
   };
@@ -607,7 +614,12 @@ async function saveIsland(
 export type DerivedIsland = IslandPlan & {
   hash: string;
   /** A `ready` island of the station with this exact hash: what may air. Null otherwise. */
-  rendered: { islandId: string; storageKey: string } | null;
+  rendered: {
+    islandId: string;
+    storageKey: string;
+    /** The rendered file's hash and size: `playoutPath({ sha256, ext: 'flac' })` in the cache. */
+    file: { sha256: string; sizeBytes: number } | null;
+  } | null;
 };
 
 export type Derivation = {
@@ -634,7 +646,13 @@ export async function deriveIslandsFor(
   const hashes = [...new Set(plans.map((p) => p.hash))];
   const ready = hashes.length
     ? await db
-        .select({ id: island.id, hash: island.hash, storageKey: island.storageKey })
+        .select({
+          id: island.id,
+          hash: island.hash,
+          storageKey: island.storageKey,
+          fileSha256: island.fileSha256,
+          fileSizeBytes: island.fileSizeBytes,
+        })
         .from(island)
         .where(
           and(
@@ -654,7 +672,16 @@ export async function deriveIslandsFor(
       const r = byHash.get(plan.hash);
       return {
         ...plan,
-        rendered: r?.storageKey ? { islandId: r.id, storageKey: r.storageKey } : null,
+        rendered: r?.storageKey
+          ? {
+              islandId: r.id,
+              storageKey: r.storageKey,
+              file:
+                r.fileSha256 && r.fileSizeBytes
+                  ? { sha256: r.fileSha256, sizeBytes: r.fileSizeBytes }
+                  : null,
+            }
+          : null,
       };
     }),
   };

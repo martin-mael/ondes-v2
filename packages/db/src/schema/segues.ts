@@ -12,6 +12,7 @@ import type {
 import { sql } from 'drizzle-orm';
 import {
   type AnyPgColumn,
+  bigint,
   boolean,
   check,
   foreignKey,
@@ -122,6 +123,9 @@ export const island = pgTable(
     lengthSamples: integer('length_samples').notNull(),
     status: text('status').$type<IslandStatus>().notNull().default('pending'),
     storageKey: text('storage_key'),
+    /** SHA-256 and size of the rendered file (#56): its playout cache key. Set with `ready`. */
+    fileSha256: text('file_sha256'),
+    fileSizeBytes: bigint('file_size_bytes', { mode: 'number' }),
     error: text('error'),
     renderedAt: timestamp('rendered_at', { withTimezone: true }),
     createdAt: createdAt(),
@@ -138,6 +142,7 @@ export const island = pgTable(
     index('island_station_hash_idx').on(t.stationId, t.hash),
     check('island_status_check', sql`${t.status} in ('pending', 'rendering', 'ready', 'failed')`),
     check('island_ready_check', sql`${t.status} <> 'ready' or ${t.storageKey} is not null`),
+    check('island_file_check', sql`(${t.fileSha256} is null) = (${t.fileSizeBytes} is null)`),
     check('island_length_check', sql`${t.lengthSamples} > 0`),
   ],
 );
