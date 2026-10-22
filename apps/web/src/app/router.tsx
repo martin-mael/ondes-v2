@@ -13,6 +13,7 @@ import { toast } from 'sonner';
 import { z } from 'zod';
 import { EditClockPage, NewClockPage } from '../features/clocks/clock-editor-page.tsx';
 import { ClocksPage } from '../features/clocks/clocks-page.tsx';
+import { CueEditorPage, cueEditorSearchSchema } from '../features/cue-editor/cue-editor-page.tsx';
 import { GridPage } from '../features/grid/grid-page.tsx';
 import { librarySearchParamsSchema } from '../features/library/filters.ts';
 import { LibraryPage } from '../features/library/library-page.tsx';
@@ -189,6 +190,15 @@ const libraryRoute = createRoute({
   component: LibraryPage,
 });
 
+// The cue editor (#24): one track's cue points on a full page; the library's filters ride
+// along in the search params for the way back.
+const cueEditorRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'library/$assetId/cues',
+  validateSearch: cueEditorSearchSchema,
+  component: CueEditorPage,
+});
+
 // Music rotation: categories (#37).
 const categoriesRoute = createRoute({
   getParentRoute: () => stationRoute,
@@ -314,6 +324,7 @@ const routeTree = rootRoute.addChildren([
     stationRoute.addChildren([
       dashboardRoute,
       libraryRoute,
+      cueEditorRoute,
       categoriesRoute,
       newCategoryRoute,
       categoryRoute,

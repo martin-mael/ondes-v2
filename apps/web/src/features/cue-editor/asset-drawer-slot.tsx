@@ -1,13 +1,14 @@
 import type { AssetDrawerSlot } from '../library/drawer-slots.ts';
-import { CueEditorSection } from './cue-editor-section.tsx';
+import { CueSummary } from './cue-summary.tsx';
 
-// The cue editor (#24) takes the place of the drawer's read-only cue list (#23).
+// The cue summary (#24), with a link to the cue editor page, takes the place of the drawer's
+// read-only cue list (#23).
 export const assetDrawerSlots: AssetDrawerSlot[] = [
   {
     id: 'cue-editor',
-    title: { en: 'Cue editor', fr: 'Éditeur de cues' },
+    title: { en: 'Cue points', fr: 'Points de cue' },
     replaces: 'cues',
     permission: 'library:read',
-    Component: CueEditorSection,
+    Component: CueSummary,
   },
 ];

@@ -38,6 +38,8 @@ const en = {
   'zoom.out': 'Zoom out',
   'zoom.all': 'Whole track',
   'zoom.hint': 'Wheel to zoom, Shift + wheel to scroll. Drag a marker, or focus it and use ← →.',
+  'keys.hint': 'With the waveform focused: Space plays or stops, ← → scroll, ↑ ↓ zoom.',
+  'keys.region': 'Waveform: Space plays or stops, arrows scroll and zoom',
 
   'play.start': 'Play from cue in',
   'play.cursor': 'Play from the cursor',
@@ -61,6 +63,15 @@ const en = {
   'save.error': "The cue points couldn't be saved.",
   readOnly: "You can listen, but you don't have the right to edit cue points.",
   analyzer: 'Analyser: {version}',
+  unsaved: 'Unsaved changes',
+  'section.points': 'Cue points',
+  'section.transition': 'Transition preview',
+
+  'page.back': 'Back to the library',
+  'page.notFound': 'This track is not in the library.',
+  'summary.edit': 'Edit cues',
+  'summary.waveform': 'Waveform of {title} with its cue points',
+  'summary.none': 'Not analysed yet.',
 } as const;
 
 export type CueEditorMessageKey = keyof typeof en;
@@ -101,6 +112,9 @@ const fr: Record<CueEditorMessageKey, string> = {
   'zoom.all': 'Tout le morceau',
   'zoom.hint':
     'Molette pour zoomer, Maj + molette pour défiler. Faites glisser un repère, ou sélectionnez-le et utilisez ← →.',
+  'keys.hint':
+    'Forme d’onde sélectionnée : Espace lance ou arrête l’écoute, ← → font défiler, ↑ ↓ zooment.',
+  'keys.region': 'Forme d’onde : Espace pour écouter ou arrêter, flèches pour défiler et zoomer',
 
   'play.start': "Écouter depuis l'entrée",
   'play.cursor': 'Écouter depuis le curseur',
@@ -126,6 +140,15 @@ const fr: Record<CueEditorMessageKey, string> = {
   'save.error': 'Les points de cue n’ont pas pu être enregistrés.',
   readOnly: 'Vous pouvez écouter, mais pas modifier les points de cue.',
   analyzer: 'Analyseur : {version}',
+  unsaved: 'Modifications non enregistrées',
+  'section.points': 'Points de cue',
+  'section.transition': 'Écoute de l’enchaînement',
+
+  'page.back': 'Retour à la bibliothèque',
+  'page.notFound': 'Ce morceau n’est pas dans la bibliothèque.',
+  'summary.edit': 'Éditer les points',
+  'summary.waveform': 'Forme d’onde de {title} avec ses points de cue',
+  'summary.none': 'Pas encore analysé.',
 };
 
 const messages: Record<Locale, Record<CueEditorMessageKey, string>> = { en, fr };

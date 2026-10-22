@@ -16,9 +16,10 @@ import { toast } from 'sonner';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { cn } from '@/ui/lib/utils';
+import { Skeleton } from '@/ui/skeleton';
 import { isApiError, request } from '../../app/api/client.ts';
 import { FormAlert } from '../../app/forms.tsx';
-import { DelayedSpinner, PageSkeleton } from '../../app/pending.tsx';
+import { DelayedSpinner, useDelayed } from '../../app/pending.tsx';
 import type { AssetDrawerSlotProps } from '../library/drawer-slots.ts';
 import { formatSamples } from '../library/format.ts';
 import { type CueEditorT, useCueEditorT } from './messages.ts';
@@ -56,7 +57,8 @@ import {
   zoomView,
 } from './waveform/index.ts';
 
-// The cue editor (#24), in the asset drawer in place of its read-only cue list: the waveform
+// The cue editor (#24), on its own page per track (cue-editor-page.tsx; the asset drawer shows
+// a read-only summary that links to it, cue-summary.tsx): the waveform
 // with draggable markers for cue in/out, intro end, outro start and next-track start, playback
 // from any marker, and a transition preview into a chosen or random song. Saving sends the
 // changed points (`PUT …/cues`), locked unless the person unlocked them, and `manual`, so
@@ -74,7 +76,25 @@ const LIST_FIELDS: readonly CueField[] = [
   'cueOut',
 ];
 
-const WAVEFORM_HEIGHT = 112;
+/** Waveform height per layout: the drawer's strip (tests, compact uses) and the full page. */
+const WAVEFORM_HEIGHT: Record<CueEditorLayout, number> = { compact: 112, page: 320 };
+
+/**
+ * `compact`: one column, for narrow containers. `page`: the cue editor page (a tall waveform
+ * across the page, the points and the transition preview side by side, a sticky save bar).
+ */
+export type CueEditorLayout = 'compact' | 'page';
+
+export interface CueEditorSectionProps extends AssetDrawerSlotProps {
+  layout?: CueEditorLayout;
+}
+
+/** Keys the editor uses as shortcuts; they must not reach the page (scrolling). */
+const isTyping = (target: EventTarget) =>
+  target instanceof HTMLElement &&
+  (target.isContentEditable ||
+    target.closest('input, textarea, select, button, a, [role="combobox"], [role="listbox"]') !==
+      null);
 
 export function CueEditorSection({
   stationId,
@@ -82,7 +102,8 @@ export function CueEditorSection({
   canWrite,
   refresh,
   onDirtyChange,
-}: AssetDrawerSlotProps) {
+  layout = 'compact',
+}: CueEditorSectionProps) {
   const t = useCueEditorT();
   const peaksFile = asset.files.find((f) => f.role === 'peaks');
   const playout = asset.files.find((f) => f.role === 'playout');
@@ -132,6 +153,11 @@ export function CueEditorSection({
     setCursor(sample);
     player.playFrom(sample, cueOut);
   };
+  const canPlay = playout !== undefined && length > 0;
+  const togglePlay = () => {
+    if (player.state !== 'idle') player.stop();
+    else if (canPlay) playFrom(cursor ?? draft.cueIn.samples ?? 0);
+  };
 
   const save = useMutation({
     mutationFn: async (sent: CueDraft) => {
@@ -153,102 +179,193 @@ export function CueEditorSection({
   const canEdit = canWrite && !save.isPending;
 
   const waveformMissing = !peaksFile || (peaks.isError && isApiError(peaks.error, 'not_found'));
+  const page = layout === 'page';
+
+  // Shortcuts while the waveform or a marker has focus: Space plays or stops, ← → scroll the
+  // view (a focused marker moves instead), ↑ ↓ zoom. None of them scrolls the page.
+  const onKeyDown = (event: React.KeyboardEvent) => {
+    if (event.defaultPrevented || event.altKey || event.metaKey || event.ctrlKey) return;
+    if (isTyping(event.target)) return;
+    const span = view.toSample - view.fromSample;
+    const centre = (view.fromSample + view.toSample) / 2;
+    switch (event.key) {
+      case ' ':
+        togglePlay();
+        break;
+      case 'ArrowLeft':
+      case 'ArrowRight': {
+        if (length <= 0) return;
+        const by = (event.key === 'ArrowLeft' ? -span : span) * (event.shiftKey ? 0.5 : 0.1);
+        setZoomed(
+          clampView({ fromSample: view.fromSample + by, toSample: view.toSample + by }, length),
+        );
+        break;
+      }
+      case 'ArrowUp':
+      case 'ArrowDown':
+        if (length <= 0) return;
+        setZoomed(
+          zoomView(
+            view,
+            event.key === 'ArrowUp' ? 2 : 0.5,
+            player.position.get() ?? cursor ?? centre,
+            length,
+          ),
+        );
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+  };
+
+  const waveform = waveformMissing ? (
+    <p className="text-muted-foreground">{t('peaks.missing')}</p>
+  ) : peaks.isError ? (
+    <div className="flex flex-col gap-1">
+      <p className="text-destructive">{t('peaks.error')}</p>
+      <FormAlert error={peaks.error} />
+    </div>
+  ) : peaks.isPending ? (
+    <WaveformSkeleton height={WAVEFORM_HEIGHT[layout] + 64} />
+  ) : (
+    <WaveformPanel
+      peaks={peaks.data}
+      draft={draft}
+      canEdit={canEdit}
+      title={asset.title}
+      sampleRate={sampleRate}
+      player={player}
+      canPlay={playout !== undefined}
+      view={view}
+      onViewChange={setZoomed}
+      cursor={cursor}
+      height={WAVEFORM_HEIGHT[layout]}
+      onSeek={(sample) => {
+        setCursor(sample);
+        if (player.state === 'asset') player.playFrom(sample, cueOut);
+      }}
+      onPlay={togglePlay}
+      onMove={(field, samples) =>
+        setDraft((d) => moveMarker(d, field, samples, peaks.data.lengthSamples))
+      }
+      t={t}
+    />
+  );
+  const points = (
+    <PointList
+      saved={saved}
+      draft={draft}
+      sampleRate={sampleRate}
+      length={length}
+      canEdit={canEdit}
+      canPlay={canPlay}
+      player={player}
+      cursor={cursor}
+      onPlayFrom={playFrom}
+      onShow={(sample) => setZoomed(centreView(sample, view.toSample - view.fromSample, length))}
+      onChange={setDraft}
+      t={t}
+    />
+  );
+  const transition = canPlay ? (
+    <TransitionPreview
+      stationId={stationId}
+      assetId={asset.id}
+      draft={draft}
+      length={length}
+      sampleRate={sampleRate}
+      player={player}
+      t={t}
+    />
+  ) : (
+    <p className="text-muted-foreground">{t('play.noAudio')}</p>
+  );
+  const analyzer = stored?.analyzerVersion && (
+    <p className="text-muted-foreground">{t('analyzer', { version: stored.analyzerVersion })}</p>
+  );
+  const saveError = save.isError && (
+    <div className="flex flex-col gap-1" role="alert">
+      <p className="text-destructive">{t('save.error')}</p>
+      <FormAlert error={save.error} />
+    </div>
+  );
+  const actions = canWrite && (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      {page && dirty && (
+        <span className="mr-auto text-muted-foreground" aria-live="polite">
+          {t('unsaved')}
+        </span>
+      )}
+      <Button
+        type="button"
+        variant="ghost"
+        disabled={!dirty || save.isPending}
+        onClick={() => {
+          save.reset();
+          setDraft(saved);
+        }}
+      >
+        {t('reset')}
+      </Button>
+      <Button type="button" disabled={!dirty || save.isPending} onClick={() => save.mutate(draft)}>
+        <DelayedSpinner when={save.isPending} data-icon="inline-start" />
+        {t('save')}
+      </Button>
+    </div>
+  );
+
+  if (page) {
+    return (
+      // biome-ignore lint/a11y/noStaticElementInteractions: shortcuts for the focused waveform and markers inside
+      <div className="flex flex-col gap-4" onKeyDown={onKeyDown}>
+        {!canWrite && <p className="text-muted-foreground">{t('readOnly')}</p>}
+        {waveform}
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(18rem,26rem)]">
+          <section aria-labelledby="cue-points" className="flex flex-col gap-2">
+            <h2 id="cue-points" className="text-sm font-semibold">
+              {t('section.points')}
+            </h2>
+            {points}
+            {analyzer}
+          </section>
+          <section aria-labelledby="cue-transition" className="flex flex-col gap-2">
+            <h2 id="cue-transition" className="text-sm font-semibold">
+              {t('section.transition')}
+            </h2>
+            {transition}
+          </section>
+        </div>
+        {saveError}
+        {actions && (
+          <div className="sticky bottom-0 -mx-4 border-t bg-background/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
+            {actions}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
-    <div className="flex flex-col gap-3">
+    // biome-ignore lint/a11y/noStaticElementInteractions: shortcuts for the focused waveform and markers inside
+    <div className="flex flex-col gap-3" onKeyDown={onKeyDown}>
       {!canWrite && <p className="text-muted-foreground">{t('readOnly')}</p>}
-      {waveformMissing ? (
-        <p className="text-muted-foreground">{t('peaks.missing')}</p>
-      ) : peaks.isError ? (
-        <div className="flex flex-col gap-1">
-          <p className="text-destructive">{t('peaks.error')}</p>
-          <FormAlert error={peaks.error} />
-        </div>
-      ) : peaks.isPending ? (
-        <PageSkeleton className="h-[176px]" />
-      ) : (
-        <WaveformPanel
-          peaks={peaks.data}
-          draft={draft}
-          canEdit={canEdit}
-          title={asset.title}
-          sampleRate={sampleRate}
-          player={player}
-          canPlay={playout !== undefined}
-          view={view}
-          onViewChange={setZoomed}
-          cursor={cursor}
-          onSeek={(sample) => {
-            setCursor(sample);
-            if (player.state === 'asset') player.playFrom(sample, cueOut);
-          }}
-          onPlay={() => playFrom(cursor ?? draft.cueIn.samples ?? 0)}
-          onMove={(field, samples) =>
-            setDraft((d) => moveMarker(d, field, samples, peaks.data.lengthSamples))
-          }
-          t={t}
-        />
-      )}
-      <PointList
-        saved={saved}
-        draft={draft}
-        sampleRate={sampleRate}
-        length={length}
-        canEdit={canEdit}
-        canPlay={playout !== undefined && length > 0}
-        player={player}
-        cursor={cursor}
-        onPlayFrom={playFrom}
-        onShow={(sample) => setZoomed(centreView(sample, view.toSample - view.fromSample, length))}
-        onChange={setDraft}
-        t={t}
-      />
-      {playout && length > 0 && (
-        <TransitionPreview
-          stationId={stationId}
-          assetId={asset.id}
-          draft={draft}
-          length={length}
-          sampleRate={sampleRate}
-          player={player}
-          t={t}
-        />
-      )}
-      {!playout && <p className="text-muted-foreground">{t('play.noAudio')}</p>}
-      {stored?.analyzerVersion && (
-        <p className="text-muted-foreground">
-          {t('analyzer', { version: stored.analyzerVersion })}
-        </p>
-      )}
-      {save.isError && (
-        <div className="flex flex-col gap-1" role="alert">
-          <p className="text-destructive">{t('save.error')}</p>
-          <FormAlert error={save.error} />
-        </div>
-      )}
-      {canWrite && (
-        <div className="flex flex-wrap justify-end gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={!dirty || save.isPending}
-            onClick={() => {
-              save.reset();
-              setDraft(saved);
-            }}
-          >
-            {t('reset')}
-          </Button>
-          <Button
-            type="button"
-            disabled={!dirty || save.isPending}
-            onClick={() => save.mutate(draft)}
-          >
-            <DelayedSpinner when={save.isPending} data-icon="inline-start" />
-            {t('save')}
-          </Button>
-        </div>
-      )}
+      {waveform}
+      {points}
+      {transition}
+      {analyzer}
+      {saveError}
+      {actions}
+    </div>
+  );
+}
+
+/** The waveform's space, reserved at once; the skeleton shows only if the peaks are slow. */
+export function WaveformSkeleton({ height }: { height: number }) {
+  const shown = useDelayed(true);
+  return (
+    <div aria-busy style={{ height }}>
+      {shown && <Skeleton className="size-full" />}
     </div>
   );
 }
@@ -264,6 +381,7 @@ function WaveformPanel({
   view,
   onViewChange,
   cursor,
+  height,
   onSeek,
   onPlay,
   onMove,
@@ -279,6 +397,7 @@ function WaveformPanel({
   view: WaveformView;
   onViewChange: (view: WaveformView) => void;
   cursor: number | null;
+  height: number;
   onSeek: (sample: number) => void;
   onPlay: () => void;
   onMove: (field: MarkerField, samples: number) => void;
@@ -286,7 +405,7 @@ function WaveformPanel({
 }) {
   const length = peaks.lengthSamples;
   const centre = (view.fromSample + view.toSample) / 2;
-  const [box, width] = useElementWidth<HTMLDivElement>();
+  const [box, width] = useElementWidth<HTMLElement>();
 
   const markers = MARKER_FIELDS.flatMap((field) => {
     const samples = draft[field].samples;
@@ -357,12 +476,19 @@ function WaveformPanel({
           </Button>
         </div>
       </div>
-      <div ref={box} className="relative">
+      {/* Focusable, for the editor's shortcuts (Space, arrows); a click on the waveform focuses it. */}
+      <section
+        ref={box}
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: the waveform takes the editor's keyboard shortcuts
+        tabIndex={0}
+        aria-label={t('keys.region')}
+        className="relative rounded-[4px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
         <WaveformEditor
           peaks={peaks}
           view={view}
           onViewChange={(next) => onViewChange(clampView(next, length))}
-          height={WAVEFORM_HEIGHT}
+          height={height}
           markers={markers}
           regions={regions}
           // While playing, the moving playhead below takes over from the clicked position.
@@ -376,8 +502,10 @@ function WaveformPanel({
           }}
         />
         <PlayingHead player={player} view={view} width={width} />
-      </div>
-      <p className="text-[0.625rem] text-muted-foreground">{t('zoom.hint')}</p>
+      </section>
+      <p className="text-[0.625rem] text-muted-foreground">
+        {t('zoom.hint')} {t('keys.hint')}
+      </p>
     </div>
   );
 }
