@@ -1,3 +1,4 @@
+import type { JobPublisher } from '@ondes/queue';
 import {
   createSegueSchema,
   islandListSchema,
@@ -16,6 +17,7 @@ import { z } from 'zod';
 import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
 import { HttpError } from '../../plugins/errors.ts';
 import { type EventSink, eventsOf, publishAll } from './events.ts';
+import { requestRenders } from './render.ts';
 import * as repo from './repo.ts';
 
 // Segues and islands API (#55), under /api/v1/stations/:stationId. Writes are audited and
@@ -29,7 +31,11 @@ const stationParams = z.object({ stationId: uuidSchema });
 const segueParams = stationParams.extend({ segueId: uuidSchema });
 const islandParams = stationParams.extend({ islandId: uuidSchema });
 
-export type SeguesRoutesOptions = { events?: EventSink | undefined };
+export type SeguesRoutesOptions = {
+  events?: EventSink | undefined;
+  /** Enqueues the renders a write calls for (#56). */
+  jobs?: JobPublisher | undefined;
+};
 
 export async function seguesRoutes(app: FastifyInstance, options: SeguesRoutesOptions) {
   const r = app.withTypeProvider<ZodTypeProvider>();
@@ -106,6 +112,7 @@ export async function seguesRoutes(app: FastifyInstance, options: SeguesRoutesOp
         eventsOf(c.scope, sync, { change: 'created', segue: eventData(segue) }),
         request.log,
       );
+      await requestRenders(options.jobs, c.scope, sync, request.log);
       return reply.code(201).send(segue);
     },
   );
@@ -145,6 +152,7 @@ export async function seguesRoutes(app: FastifyInstance, options: SeguesRoutesOp
         eventsOf(c.scope, sync, { change: 'updated', segue: eventData(segue) }),
         request.log,
       );
+      await requestRenders(options.jobs, c.scope, sync, request.log);
       return segue;
     },
   );
@@ -180,6 +188,7 @@ export async function seguesRoutes(app: FastifyInstance, options: SeguesRoutesOp
         }),
         request.log,
       );
+      await requestRenders(options.jobs, c.scope, sync, request.log);
       return reply.code(204).send();
     },
   );

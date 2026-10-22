@@ -5,6 +5,7 @@ import { createS3Storage, loadStorageConfig } from '@ondes/storage';
 import { cacheRootFromEnv } from './jobs/cache-sync/deps.ts';
 import { startCacheTriggers } from './jobs/cache-sync/trigger.ts';
 import { sweepUploads } from './jobs/ingest/sweep.ts';
+import { sweepIslandRenders } from './jobs/island-render/sweep.ts';
 import { discoverJobs, discoverTriggers } from './registry.ts';
 import { startJobTriggers } from './triggers.ts';
 
@@ -58,6 +59,17 @@ async function sweep() {
     }
   } catch (err) {
     console.error(JSON.stringify({ level: 'error', msg: 'upload sweep failed', err: String(err) }));
+  }
+  try {
+    // Islands (#56): re-enqueue renders whose job was lost or whose worker died.
+    const islands = await sweepIslandRenders({ db: database.db, jobs: publisher });
+    if (Object.keys(islands).length) {
+      console.log(JSON.stringify({ level: 'info', msg: 'island render sweep', counts: islands }));
+    }
+  } catch (err) {
+    console.error(
+      JSON.stringify({ level: 'error', msg: 'island render sweep failed', err: String(err) }),
+    );
   } finally {
     sweeping = false;
   }

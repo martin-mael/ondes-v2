@@ -7,6 +7,20 @@
 //   B:  fades in from silence over [2.20, 2.80] s, starting at B-time `bEnter`
 // The first and last `handle` samples of the island are pure A×gA and pure B×gB, so the
 // engine can either butt-splice or micro-crossfade over them.
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+// The mix is shared (packages/shared/src/segues/mix.ts). The ffmpeg decode and encode are the
+// worker's own on purpose: this test must play the bytes production writes (24-bit, fixed
+// 1024-sample blocks, bit-exact), and a copy of the encoder arguments would test the copy.
+import { defaultTools, readFlacStreamInfo } from '../../../apps/worker/src/jobs/ingest/ffmpeg.ts';
+import { decodeRange, encodeIsland } from '../../../apps/worker/src/jobs/island-render/codec.ts';
+import {
+  ISLAND_FORMAT,
+  ISLAND_SPEC_VERSION,
+  type IslandSource,
+  type IslandSpec,
+  mixIsland,
+} from '../../../packages/shared/src/index.ts';
 import { type Audio, concat, dbToLinear, ffmpeg, SAMPLE_RATE, slice } from './audio.ts';
 
 const sec = (s: number) => Math.round(s * SAMPLE_RATE);
@@ -129,6 +143,81 @@ export function renderIsland(
     's32',
     out,
   ]);
+}
+
+/**
+ * The plan as an island spec, rendered by the production renderer (#56,
+ * `apps/worker/src/jobs/island-render`): its mix (shared gain model) and its FLAC encoder.
+ * FLAC playout copies only, like production. Envelope ramps are linear in amplitude, as in
+ * {@link renderIsland}; amplitude 0 is −90 dB, and the duck level is given in dB.
+ */
+export async function renderIslandWithRenderer(
+  p: Plan,
+  src: { a: string; vt: string; b: string },
+  out: string,
+): Promise<IslandSpec> {
+  const e = p.envelope;
+  const duckDb = 20 * Math.log10(e.duck);
+  const sha = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
+  const bLen = p.length - sec(p.bStart);
+  const vtInfo = await readFlacStreamInfo(src.vt);
+  const sources: IslandSource[] = [
+    {
+      sha256: sha(src.a),
+      from: p.aJoin,
+      to: p.aJoin + p.length,
+      at: 0,
+      gainDb: p.gainA,
+      envelopes: [
+        [
+          { at: sec(e.duckStart), gainDb: 0 },
+          { at: sec(e.duckEnd), gainDb: duckDb },
+        ],
+        [
+          { at: sec(e.aOutStart), gainDb: 0 },
+          { at: sec(e.aOutEnd), gainDb: -90 },
+        ],
+      ],
+    },
+    {
+      sha256: sha(src.vt),
+      from: 0,
+      to: Math.min(vtInfo.totalSamples, p.length - sec(p.vtStart)),
+      at: sec(p.vtStart),
+      gainDb: 0,
+      envelopes: [],
+    },
+    {
+      sha256: sha(src.b),
+      from: p.bEnter,
+      to: p.bEnter + bLen,
+      at: sec(p.bStart),
+      gainDb: p.gainB,
+      envelopes: [
+        [
+          { at: sec(p.bStart), gainDb: -90 },
+          { at: sec(p.bFullAt), gainDb: 0 },
+        ],
+      ],
+    },
+  ];
+  const spec: IslandSpec = {
+    version: ISLAND_SPEC_VERSION,
+    format: ISLAND_FORMAT,
+    lengthSamples: p.length,
+    sources,
+  };
+  const tools = defaultTools();
+  const paths = [src.a, src.vt, src.b];
+  const pcm = await Promise.all(
+    sources.map(async (s, i) => {
+      const path = paths[i] as string;
+      const { channels } = await readFlacStreamInfo(path);
+      return decodeRange(tools, path, { from: s.from, to: s.to, channels });
+    }),
+  );
+  await encodeIsland(tools, mixIsland(spec, pcm).samples, out);
+  return spec;
 }
 
 /**

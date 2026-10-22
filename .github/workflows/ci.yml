@@ -62,11 +62,14 @@ jobs:
               - apps/web/**
               - packages/shared/**
             # The template is rendered by the api's engine config module, which (like
-            # engine/tests) imports @ondes/shared; no other package feeds it.
+            # engine/tests) imports @ondes/shared. The splice test renders its FLAC islands
+            # with the worker's island renderer (#56), which uses ingest's ffmpeg helpers.
             engine:
               - *tooling
               - engine/**
               - apps/api/src/modules/engine/config/**
+              - apps/worker/src/jobs/island-render/**
+              - apps/worker/src/jobs/ingest/ffmpeg.ts
               - packages/shared/**
               - deploy/compose.dev.yml
             integration:

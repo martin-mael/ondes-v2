@@ -1,10 +1,12 @@
 import { type Db, resolveStationScope, type StationScope, station } from '@ondes/db';
+import type { JobPublisher } from '@ondes/queue';
 import { consumeEventsDurable, type EventSubscription } from '@ondes/queue';
 import { type RealtimeEvent, realtimeEventSchema } from '@ondes/shared';
 import { eq } from 'drizzle-orm';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import fp from 'fastify-plugin';
 import { type EventSink, eventsOf, publishAll } from './events.ts';
+import { requestRenders } from './render.ts';
 import { seguesRoutes } from './routes.ts';
 import { type SyncResult, type SyncSeeds, syncSegues } from './sync.ts';
 
@@ -16,6 +18,8 @@ export type SeguesPluginOptions = {
   eventQueue?: string;
   /** Where events go. Default: the RabbitMQ fanout when configured (tests pass a sink). */
   events?: EventSink;
+  /** Where render jobs go (#56). Default: the RabbitMQ job publisher when configured. */
+  jobs?: JobPublisher;
 };
 
 /** Station fields that change every playout gain, hence every island. */
@@ -44,6 +48,7 @@ export type SegueSync = {
 export function createSegueSync(deps: {
   db: Db;
   events?: EventSink | undefined;
+  jobs?: JobPublisher | undefined;
   logger: FastifyBaseLogger;
 }): SegueSync {
   const scopes = new Map<string, StationScope>();
@@ -63,6 +68,7 @@ export function createSegueSync(deps: {
   async function sync(scope: StationScope, seeds: SyncSeeds) {
     const result = await deps.db.transaction((tx) => syncSegues(tx, scope, seeds));
     await publishAll(deps.events, eventsOf(scope, result), deps.logger);
+    await requestRenders(deps.jobs, scope, result, deps.logger);
     return result;
   }
 
@@ -105,9 +111,10 @@ export const seguesPlugin = fp(
     const rabbit = app.hasDecorator('rabbit') ? app.rabbit : undefined;
     const events: EventSink | undefined =
       options.events ?? (rabbit ? { publish: (event) => rabbit.events.publish(event) } : undefined);
-    await app.register(seguesRoutes, { prefix: '/api/v1', events });
+    const jobs = options.jobs ?? rabbit?.jobs;
+    await app.register(seguesRoutes, { prefix: '/api/v1', events, jobs });
     if (!rabbit) return;
-    const segueSync = createSegueSync({ db: app.db, events, logger: app.log });
+    const segueSync = createSegueSync({ db: app.db, events, jobs, logger: app.log });
     let consumer: EventSubscription | undefined;
     app.addHook('onReady', async () => {
       const { rabbit: connection, topology } = rabbit.queue;
