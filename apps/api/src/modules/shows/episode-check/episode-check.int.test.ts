@@ -26,12 +26,13 @@ import {
 } from '@ondes/shared';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { runEpisodeCheck } from '../../../../../worker/src/jobs/episode-check/check.ts';
 import * as asrun from '../../asrun/repo.ts';
 import { createTestApp, signUpAndLogin, type TestApp } from '../../auth/testing.ts';
 import { createEpisodeCheckService } from './service.ts';
 
-// Missing-episode alerts and fallbacks (#47) on the real app: the steps the worker records in
-// `episode_check` are inserted here directly (the worker's own test covers recording them).
+// Missing-episode alerts and fallbacks (#47) on the real app. Most tests insert the steps the
+// worker records in `episode_check` directly; the last one runs the worker's pass end to end.
 // Real time: the log refuses to edit what already aired, so the occurrence is 40 min ahead.
 
 const system: Actor = { type: 'system', name: 'test' };
@@ -172,6 +173,51 @@ async function openAlert(p: Planned) {
 
 const mailsTo = (email: string) => t.outbox.filter((m) => m.to === email);
 
+let seq = 1000;
+/** The engine says `itemId` went on air: the as-run entry it records. */
+async function airs(itemId: string, at: Date) {
+  const recorded = await asrun.recordStart(t.tdb.db, scope, {
+    eventId: randomUUID(),
+    bootId: 'boot-ep',
+    seq: seq++,
+    at,
+    itemId,
+    segmentId: null,
+    source: 'queue',
+    title: null,
+    artist: null,
+    filename: null,
+    rid: String(seq),
+  });
+  if (!recorded) throw new Error('not recorded');
+  return recorded.entry;
+}
+
+async function stepOf(p: Planned, step: EpisodeCheckStep) {
+  const [row] = await t.tdb.db
+    .select()
+    .from(episodeCheck)
+    .where(and(eq(episodeCheck.slotId, p.slot.id), eq(episodeCheck.step, step)));
+  return row;
+}
+
+/** An older, aired episode of the show with audio: what `latest_episode` reruns. */
+async function airedEpisode(p: Planned, number: number) {
+  const assetId = await audio(`${p.show.name} #${number}`);
+  const ep = await api<Episode>(
+    'POST',
+    `/shows/${p.show.id}/episodes`,
+    {
+      number,
+      assetId,
+      status: 'aired',
+      airedAt: new Date(Date.now() - 7 * 86_400_000).toISOString(),
+    },
+    201,
+  );
+  return { episodeId: ep.id, assetId };
+}
+
 describe('missing-episode alerts', () => {
   it('alerts the dashboard and emails the hosts and programmers once per step', async () => {
     const p = await plan('Le Midi', 40);
@@ -275,7 +321,8 @@ describe('fallbacks', () => {
     expect(audits[0]).toMatchObject({ actorType: 'system', actorId: 'episode-check' });
     expect(await openAlert(p)).toMatchObject({
       severity: 'warning',
-      title: 'Episode missing: La Matinale, fallback airs',
+      title: 'Episode missing: La Matinale',
+      details: { fallback: 'latest_episode', i18n: { key: 'episodeMissing.fallback' } },
     });
 
     // The item goes on air: its as-run entry says it was a fallback.
@@ -405,6 +452,92 @@ describe('fallbacks', () => {
   });
 });
 
+describe('robustness', () => {
+  it('backs a failed step off to a later sweep instead of burning its attempts', async () => {
+    const p = await plan('Le Retry', 40);
+    await due(p, 't6h');
+    let clock = Date.now();
+    let failures = 1;
+    const service = createEpisodeCheckService({
+      db: t.tdb.db,
+      alerts: t.app.alerts,
+      mailer: {
+        async send(message) {
+          if (failures-- > 0) throw new Error('SMTP down');
+          await t.app.mailer.send(message);
+        },
+      },
+      appUrl: 'http://app.test',
+      logger: t.app.log,
+      fallback: { resolveClock: async () => null, clockMusic: { fill: async () => null } },
+      now: () => new Date(clock),
+    });
+    await service.processPending();
+    const failed = await stepOf(p, 't6h');
+    expect(failed).toMatchObject({ processedAt: null, attempts: 1, error: 'SMTP down' });
+    expect(failed?.retryAt?.getTime()).toBe(clock + 30_000);
+    // Not again in the same sweep, nor before its time.
+    expect(await service.processPending()).toBe(0);
+
+    clock += 31_000;
+    await service.processPending();
+    expect(await stepOf(p, 't6h')).toMatchObject({ result: 'alerted', attempts: 1 });
+    expect(
+      mailsTo('host@ep-check.test').filter((m) => m.subject.includes('Le Retry')),
+    ).toHaveLength(1);
+  });
+
+  it('waits for the slot’s log item until the slot starts', async () => {
+    const p = await plan('Le Retard', 40);
+    await airedEpisode(p, 7);
+    await due(p, 'fallback');
+    await t.app.episodeCheck.processPending();
+    // No item yet (the generator hasn't written it): no critical alert, looked at again later.
+    const waiting = await stepOf(p, 'fallback');
+    expect(waiting).toMatchObject({ processedAt: null, attempts: 0 });
+    expect(waiting?.retryAt?.getTime()).toBeGreaterThan(Date.now());
+    expect(await openAlert(p)).toBeUndefined();
+
+    const itemId = await emptySlotItem(p);
+    await t.tdb.db
+      .update(episodeCheck)
+      .set({ retryAt: new Date(Date.now() - 1000) })
+      .where(eq(episodeCheck.id, waiting?.id ?? ''));
+    await t.app.episodeCheck.processPending();
+    expect((await stepOf(p, 'fallback'))?.result).toBe('fallback_applied');
+    expect((await airs(itemId, p.startsAt)).fallback).toBe('latest_episode');
+  });
+
+  it('leaves an item an operator changed alone: no fallback mark on air, no restore', async () => {
+    const p = await plan('Le Choix', 45);
+    await airedEpisode(p, 3);
+    const itemId = await emptySlotItem(p);
+    await due(p, 'fallback');
+    await t.app.episodeCheck.processPending();
+
+    // The programmer puts something else there by hand.
+    const special = await audio('Le Choix spécial');
+    await api('PUT', `/log/items/${itemId}`, {
+      kind: 'episode',
+      assetId: special,
+      plannedDurationMs: 60 * MIN,
+      timing: 'hard',
+      anchorAt: p.startsAt.toISOString(),
+    });
+    // The premiere's audio arrives: the operator's choice stays.
+    await api('PATCH', `/shows/${p.show.id}/episodes/${p.premiere.id}`, {
+      assetId: await audio('Le Choix #1'),
+    });
+    await t.app.episodeCheck.reconcile();
+    const [item] = await t.tdb.db.select().from(logItem).where(eq(logItem.id, itemId));
+    expect(item?.assetId).toBe(special);
+    expect(
+      await t.tdb.db.select().from(logItemFallback).where(eq(logItemFallback.logItemId, itemId)),
+    ).toHaveLength(0);
+    expect((await airs(itemId, p.startsAt)).fallback).toBeNull();
+  });
+});
+
 describe('show settings', () => {
   it('saves the fallback policy, audited, and refuses another show’s episode', async () => {
     const a = await plan('A', 600);
@@ -429,5 +562,41 @@ describe('show settings', () => {
     expect(audit?.diff).toMatchObject({
       fallbackPolicy: { from: 'latest_episode', to: 'clock_music' },
     });
+  });
+});
+
+describe('end to end', () => {
+  it('the worker’s pass records the steps, the api airs the fallback, the as-run marks it', async () => {
+    const p = await plan('Le Bout en Bout', 40);
+    const rerun = await airedEpisode(p, 9);
+    const itemId = await emptySlotItem(p);
+
+    // The worker's job, as the sweep runs it.
+    const report = await runEpisodeCheck(t.tdb.db, scope, new Date());
+    expect(report.recorded).toEqual(
+      expect.arrayContaining([
+        { slotId: p.slot.id, occurrenceDate: p.date, step: 't6h' },
+        { slotId: p.slot.id, occurrenceDate: p.date, step: 'fallback' },
+      ]),
+    );
+    await t.app.episodeCheck.processPending();
+
+    // In air order: the 6 h alert (emails), then the fallback, which has the last word.
+    expect(
+      mailsTo('programmer@ep-check.test').filter((m) => m.subject.includes('Le Bout')),
+    ).toHaveLength(1);
+    expect(await openAlert(p)).toMatchObject({
+      severity: 'warning',
+      title: 'Episode missing: Le Bout en Bout',
+    });
+    expect((await openAlert(p))?.details).toMatchObject({
+      i18n: {
+        key: 'episodeMissing.fallback',
+        params: { show: 'Le Bout en Bout', fallback: 'latest_episode' },
+      },
+    });
+    const [item] = await t.tdb.db.select().from(logItem).where(eq(logItem.id, itemId));
+    expect(item).toMatchObject({ assetId: rerun.assetId, episodeId: rerun.episodeId });
+    expect((await airs(itemId, p.startsAt)).fallback).toBe('latest_episode');
   });
 });

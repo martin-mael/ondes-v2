@@ -1,5 +1,5 @@
 {
-  "id": "39c597fa-b327-430e-a52c-bf985411a229",
+  "id": "bd6d040c-0bd6-457f-a809-0e6fdf83d07a",
   "prevId": "cfe8f127-ff99-4e43-b4cf-5d39d620fc18",
   "version": "7",
   "dialect": "postgresql",
@@ -1717,6 +1717,326 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.episode_check": {
+      "name": "episode_check",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "org_id": {
+          "name": "org_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "station_id": {
+          "name": "station_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "show_id": {
+          "name": "show_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "slot_id": {
+          "name": "slot_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurrence_date": {
+          "name": "occurrence_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "step": {
+          "name": "step",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "starts_at": {
+          "name": "starts_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ends_at": {
+          "name": "ends_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "episode_id": {
+          "name": "episode_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "notified": {
+          "name": "notified",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "retry_at": {
+          "name": "retry_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claimed_at": {
+          "name": "claimed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "processed_at": {
+          "name": "processed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "result": {
+          "name": "result",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "episode_check_pending_idx": {
+          "name": "episode_check_pending_idx",
+          "columns": [
+            {
+              "expression": "starts_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"episode_check\".\"processed_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "episode_check_slot_fk": {
+          "name": "episode_check_slot_fk",
+          "tableFrom": "episode_check",
+          "tableTo": "show_slot",
+          "columnsFrom": [
+            "slot_id",
+            "org_id",
+            "station_id"
+          ],
+          "columnsTo": [
+            "id",
+            "org_id",
+            "station_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "episode_check_occurrence_step_key": {
+          "name": "episode_check_occurrence_step_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "slot_id",
+            "occurrence_date",
+            "step"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "episode_check_step_check": {
+          "name": "episode_check_step_check",
+          "value": "\"episode_check\".\"step\" in ('t48h', 't6h', 'fallback')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.log_item_fallback": {
+      "name": "log_item_fallback",
+      "schema": "",
+      "columns": {
+        "log_item_id": {
+          "name": "log_item_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "org_id": {
+          "name": "org_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "station_id": {
+          "name": "station_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "slot_id": {
+          "name": "slot_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurrence_date": {
+          "name": "occurrence_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "asset_id": {
+          "name": "asset_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "episode_id": {
+          "name": "episode_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "missing_episode_id": {
+          "name": "missing_episode_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "restore_attempts": {
+          "name": "restore_attempts",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "log_item_fallback_station_idx": {
+          "name": "log_item_fallback_station_idx",
+          "columns": [
+            {
+              "expression": "station_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "slot_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurrence_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "log_item_fallback_log_item_id_log_item_id_fk": {
+          "name": "log_item_fallback_log_item_id_log_item_id_fk",
+          "tableFrom": "log_item_fallback",
+          "tableTo": "log_item",
+          "columnsFrom": [
+            "log_item_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "log_item_fallback_slot_fk": {
+          "name": "log_item_fallback_slot_fk",
+          "tableFrom": "log_item_fallback",
+          "tableTo": "show_slot",
+          "columnsFrom": [
+            "slot_id",
+            "org_id",
+            "station_id"
+          ],
+          "columnsTo": [
+            "id",
+            "org_id",
+            "station_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "log_item_fallback_kind_check": {
+          "name": "log_item_fallback_kind_check",
+          "value": "\"log_item_fallback\".\"kind\" in ('latest_episode', 'episode', 'clock_music')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.feeder_push": {
@@ -5866,301 +6186,6 @@
         "episode_occurrence_pair_check": {
           "name": "episode_occurrence_pair_check",
           "value": "(\"episode\".\"slot_id\" is null) = (\"episode\".\"occurrence_date\" is null)"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.episode_check": {
-      "name": "episode_check",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "org_id": {
-          "name": "org_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "station_id": {
-          "name": "station_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "show_id": {
-          "name": "show_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "slot_id": {
-          "name": "slot_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "occurrence_date": {
-          "name": "occurrence_date",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "step": {
-          "name": "step",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "starts_at": {
-          "name": "starts_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ends_at": {
-          "name": "ends_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "episode_id": {
-          "name": "episode_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "notified": {
-          "name": "notified",
-          "type": "text[]",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::text[]"
-        },
-        "attempts": {
-          "name": "attempts",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "claimed_at": {
-          "name": "claimed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "processed_at": {
-          "name": "processed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "result": {
-          "name": "result",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "episode_check_pending_idx": {
-          "name": "episode_check_pending_idx",
-          "columns": [
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"episode_check\".\"processed_at\" is null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "episode_check_slot_fk": {
-          "name": "episode_check_slot_fk",
-          "tableFrom": "episode_check",
-          "tableTo": "show_slot",
-          "columnsFrom": [
-            "slot_id",
-            "org_id",
-            "station_id"
-          ],
-          "columnsTo": [
-            "id",
-            "org_id",
-            "station_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "episode_check_occurrence_step_key": {
-          "name": "episode_check_occurrence_step_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "slot_id",
-            "occurrence_date",
-            "step"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "episode_check_step_check": {
-          "name": "episode_check_step_check",
-          "value": "\"episode_check\".\"step\" in ('t48h', 't6h', 'fallback')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.log_item_fallback": {
-      "name": "log_item_fallback",
-      "schema": "",
-      "columns": {
-        "log_item_id": {
-          "name": "log_item_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "org_id": {
-          "name": "org_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "station_id": {
-          "name": "station_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "slot_id": {
-          "name": "slot_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "occurrence_date": {
-          "name": "occurrence_date",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "episode_id": {
-          "name": "episode_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "missing_episode_id": {
-          "name": "missing_episode_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "log_item_fallback_occurrence_idx": {
-          "name": "log_item_fallback_occurrence_idx",
-          "columns": [
-            {
-              "expression": "slot_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "occurrence_date",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "log_item_fallback_log_item_id_log_item_id_fk": {
-          "name": "log_item_fallback_log_item_id_log_item_id_fk",
-          "tableFrom": "log_item_fallback",
-          "tableTo": "log_item",
-          "columnsFrom": [
-            "log_item_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "log_item_fallback_slot_fk": {
-          "name": "log_item_fallback_slot_fk",
-          "tableFrom": "log_item_fallback",
-          "tableTo": "show_slot",
-          "columnsFrom": [
-            "slot_id",
-            "org_id",
-            "station_id"
-          ],
-          "columnsTo": [
-            "id",
-            "org_id",
-            "station_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "log_item_fallback_kind_check": {
-          "name": "log_item_fallback_kind_check",
-          "value": "\"log_item_fallback\".\"kind\" in ('latest_episode', 'episode', 'clock_music')"
         }
       },
       "isRLSEnabled": false

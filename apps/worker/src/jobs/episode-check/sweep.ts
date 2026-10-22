@@ -27,7 +27,9 @@ export function startEpisodeCheckSweep(options: EpisodeCheckSweepOptions): Episo
   async function sweep() {
     const stations = await listCheckedStations(options.db);
     for (const s of stations) {
-      await options.jobs.enqueue(episodeCheckJobType, s, s);
+      const scope = { orgId: s.orgId, stationId: s.stationId };
+      // The payload, then the envelope's tenant fields (`EnqueueOptions`).
+      await options.jobs.enqueue(episodeCheckJobType, scope, scope);
     }
     return stations.length;
   }

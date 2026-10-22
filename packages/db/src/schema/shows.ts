@@ -1,6 +1,4 @@
 import type {
-  EpisodeCheckStep,
-  EpisodeFallbackKind,
   EpisodeFallbackPolicy,
   EpisodeKind,
   EpisodeStatus,
@@ -19,7 +17,6 @@ import {
   jsonb,
   pgTable,
   primaryKey,
-  smallint,
   text,
   timestamp,
   unique,
@@ -27,7 +24,6 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { asset } from './library.ts';
-import { logItem } from './log.ts';
 import { station, user } from './tenancy.ts';
 
 // Shows, slots and episodes (#44, ADR 0014). Contracts: packages/shared/src/contracts/shows.ts.
@@ -241,88 +237,6 @@ export const episode = pgTable(
     check(
       'episode_occurrence_pair_check',
       sql`(${t.slotId} is null) = (${t.occurrenceDate} is null)`,
-    ),
-  ],
-);
-
-// Missing-episode alerts and fallbacks (#47, ADR 0022).
-
-/**
- * One step of the missing-episode check for one occurrence: an alert (`t48h`, `t6h`) or the
- * fallback. The worker's `episode-check` job inserts it when it is due and the episode has no
- * audio; the unique key makes that idempotent per occurrence and step. The api works it off
- * (an outbox): it claims pending rows (`claimed_at`, `SKIP LOCKED`), raises the alert, emails
- * whoever isn't in `notified` yet, applies the fallback, and sets `processed_at`.
- */
-export const episodeCheck = pgTable(
-  'episode_check',
-  {
-    id: id(),
-    orgId: orgId(),
-    stationId: stationId(),
-    showId: showId(),
-    slotId: uuid('slot_id').notNull(),
-    occurrenceDate: date('occurrence_date', { mode: 'string' }).notNull(),
-    step: text('step').$type<EpisodeCheckStep>().notNull(),
-    /** The occurrence as the worker saw it (UTC). */
-    startsAt: timestamp('starts_at', { withTimezone: true }).notNull(),
-    endsAt: timestamp('ends_at', { withTimezone: true }).notNull(),
-    /** The premiere planned for the occurrence then, if any (still without audio). */
-    episodeId: uuid('episode_id'),
-    /** Emails already sent for this step: a retry skips them. */
-    notified: text('notified').array().notNull().default(sql`'{}'::text[]`),
-    attempts: smallint('attempts').notNull().default(0),
-    claimedAt: timestamp('claimed_at', { withTimezone: true }),
-    processedAt: timestamp('processed_at', { withTimezone: true }),
-    /** What the api did: `alerted`, `fallback_applied`, `no_fallback`, `episode_ready`, … */
-    result: text('result'),
-    error: text('error'),
-    createdAt: createdAt(),
-  },
-  (t) => [
-    foreignKey({
-      name: 'episode_check_slot_fk',
-      columns: [t.slotId, t.orgId, t.stationId],
-      foreignColumns: [showSlot.id, showSlot.orgId, showSlot.stationId],
-    }).onDelete('cascade'),
-    unique('episode_check_occurrence_step_key').on(t.slotId, t.occurrenceDate, t.step),
-    index('episode_check_pending_idx').on(t.createdAt).where(sql`${t.processedAt} is null`),
-    check('episode_check_step_check', sql`${t.step} in ('t48h', 't6h', 'fallback')`),
-  ],
-);
-
-/**
- * A log item that airs a fallback in place of a missing episode. The as-run copies `kind`
- * onto the entry when the item airs (`asrun_entry.fallback`). Deleted when the episode's audio
- * arrived in time and the item was put back to it.
- */
-export const logItemFallback = pgTable(
-  'log_item_fallback',
-  {
-    logItemId: uuid('log_item_id')
-      .primaryKey()
-      .references(() => logItem.id, { onDelete: 'cascade' }),
-    orgId: orgId(),
-    stationId: stationId(),
-    slotId: uuid('slot_id').notNull(),
-    occurrenceDate: date('occurrence_date', { mode: 'string' }).notNull(),
-    kind: text('kind').$type<EpisodeFallbackKind>().notNull(),
-    /** The episode that airs again (`latest_episode`, `episode`). */
-    episodeId: uuid('episode_id'),
-    /** The premiere that was missing, if one was planned. */
-    missingEpisodeId: uuid('missing_episode_id'),
-    createdAt: createdAt(),
-  },
-  (t) => [
-    foreignKey({
-      name: 'log_item_fallback_slot_fk',
-      columns: [t.slotId, t.orgId, t.stationId],
-      foreignColumns: [showSlot.id, showSlot.orgId, showSlot.stationId],
-    }).onDelete('cascade'),
-    index('log_item_fallback_occurrence_idx').on(t.slotId, t.occurrenceDate),
-    check(
-      'log_item_fallback_kind_check',
-      sql`${t.kind} in ('latest_episode', 'episode', 'clock_music')`,
     ),
   ],
 );

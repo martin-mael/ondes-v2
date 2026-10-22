@@ -1,7 +1,8 @@
 import type { EpisodeCheckStep, LocalDate, SlotRule } from '@ondes/shared';
 import { and, eq, gte, inArray, isNotNull, isNull, lte, or } from 'drizzle-orm';
 import type { Executor } from '../client.ts';
-import { episode, episodeCheck, showSlot, showSlotException } from '../schema/shows.ts';
+import { episodeCheck } from '../schema/episode-check.ts';
+import { episode, showSlot, showSlotException } from '../schema/shows.ts';
 import { station } from '../schema/tenancy.ts';
 import { type StationScope, whereStation } from '../tenant.ts';
 

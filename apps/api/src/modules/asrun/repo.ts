@@ -140,7 +140,14 @@ async function resolveItem(
           fallback: logItemFallback.kind,
         })
         .from(logItem)
-        .leftJoin(logItemFallback, eq(logItemFallback.logItemId, logItem.id))
+        // Only while the item still plays what the fallback put there (not swapped by hand).
+        .leftJoin(
+          logItemFallback,
+          and(
+            eq(logItemFallback.logItemId, logItem.id),
+            eq(logItemFallback.assetId, logItem.assetId),
+          ),
+        )
         .where(and(whereStation(logItem, scope), eq(logItem.id, itemId)))
     : [];
   let fileSha256 = shaFromFilename(input.filename);

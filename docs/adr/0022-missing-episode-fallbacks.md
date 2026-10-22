@@ -5,6 +5,12 @@
 - Issue: #47. Builds on ADR 0006 (jobs and events), 0012 (log feeder), 0014 (show recurrence)
   and 0015 (as-run). Read by #48 (reruns) and #50 (log generator).
 
+> **Until the log generator (#50) lands, the fallback is inactive.** It replaces the
+> occurrence's item in the log, and nothing writes that item yet. Until then, the fallback step
+> waits for the item until the slot starts, then raises the critical "no fallback" alert. The
+> T−48h and T−6h alerts and emails work today. What #50 must create is listed at the end of
+> this ADR.
+
 ## Context
 A pre-recorded show slot is only as good as its file. Community hosts upload late, and a slot
 with no audio is dead air, covered at best by the safety playlist. The team wants warnings
@@ -36,8 +42,13 @@ Two things shape the design:
   collapses concurrent enqueues.
 - **The api plugin** (`apps/api/src/modules/shows/episode-check`) works the table off every
   15 s, on every replica.
-  - It claims rows with `FOR UPDATE SKIP LOCKED`; a claim older than 2 min is taken over.
-  - A failure releases the row for the next sweep, and it is given up after 10 attempts.
+  - It claims rows with `FOR UPDATE SKIP LOCKED`, in air order: start time, then `t48h`,
+    `t6h`, `fallback`. An alert step whose fallback already ran is skipped, so it can't
+    overwrite the fallback's news.
+  - A claim older than 10 min is taken over. Every write, and every email, first checks that
+    the claim is still this replica's, so a slow replica doesn't send emails twice.
+  - A failure counts in `attempts` and backs off through `retry_at` (30 s, doubling, up to
+    15 min), so it is retried on a later sweep. The step is given up after 8 failures.
 - **Rejected alternatives:**
   - Raising alerts from the worker would duplicate the framework (reopen, escalation, events).
   - An event or a `notify` job per step would need a new event type with permissions, or a job
@@ -66,7 +77,8 @@ Two things shape the design:
 - One `show.episode_missing` alert per occurrence: key `show.episode_missing:<slotId>:<date>`.
 - Severity:
   - `info` at T−48h, `warning` at T−6h;
-  - `warning` with a "fallback airs" title once the fallback is in;
+  - still `warning` once the fallback is in. A repeat raise only merges `details` (#33), so the
+    title and message stay the first ones, and `details.fallback` says what airs;
   - `critical` when nothing can stand in (policy `none`, nothing to rerun, no clock music, or
     no log item for the slot). Critical goes through the framework's manager email.
 - **Emails.**
@@ -75,6 +87,12 @@ Two things shape the design:
   - They are sent by the plugin: one per recipient and step, recorded in
     `episode_check.notified` so that a retry skips them.
   - Times are written on the station's clock.
+  - Emails are in English, like the framework's alert emails, until users have a locale.
+- **Dashboard text.** The alert's title and message are English. `details.i18n` holds a
+  message key and its parameters, for the web app to render in French or English:
+  - keys `episodeMissing.ahead`, `.fallback` and `.noFallback`;
+  - params `show` and `startsAt` (ISO), plus `lead`, `policy`, `fallback` or `reason`.
+  The web app has no alerts page yet.
 - The reconcile resolves the alert as:
   - `episode_ready` once the audio is there;
   - `occurrence_ended` once the slot is over. A premiere still `planned` then becomes
@@ -99,21 +117,39 @@ Two things shape the design:
   - The edit is audited as the system actor `episode-check` and published as `log.item.changed`
     and `log.updated`, so the cache and the feeder follow.
   - Reruns stay minimal until #48: the item airs that episode's asset.
-- **The mark.** `log_item_fallback` (one row per log item) records the fallback kind, the
-  episode rerun and the missing premiere.
-  - It is written before the edit, so a retry finds it.
-  - `log_item` isn't touched, because the log's schema belongs to #100.
-- **As-run.** On `track.started`, the recorder joins the mark and copies the kind into the new
+  - When the slot has no item in the log yet, the step looks again every minute until the slot
+    starts. Only then does it raise the critical "no log item" alert.
+- **The mark.** `log_item_fallback` (one row per log item) records:
+  - the fallback kind;
+  - the asset the fallback put in the item;
+  - the episode rerun and the missing premiere.
+
+  The edit and the mark are written in one transaction. A retry that finds the mark raises the
+  "fallback airs" alert again (idempotently) and finishes.
+  - Both #47 tables live in their own schema file, `packages/db/src/schema/episode-check.ts`.
+    They point at `show_slot` and `log_item` through foreign keys only. `log.ts` (#100) and
+    `shows.ts` (#44) gain no table.
+- **An operator's edit wins.** The mark counts only while the item still plays the mark's
+  asset:
+  - the as-run joins on it, so an item swapped by hand airs without the fallback mark;
+  - the restore leaves such an item alone and drops its mark.
+  - A restore that keeps failing is given up after 5 attempts.
+- **As-run.** On `track.started`, the recorder copies the mark's kind into the new
   `asrun_entry.fallback` column. It is exposed as `fallback` on `GET …/asrun`.
+  - This is the one column #47 adds to the as-run (#30's table). The issue asks for the mark on
+    as-run rows.
+  - It has to be a snapshot: entries are append-only and outlive regenerated log days
+    (ADR 0015).
 
 **Clock music: an interface, stubbed until #50.**
 - `ClockResolver(scope, at) → clockId | null` is #40's `resolveClock`.
 - `ClockMusicSource.fill(scope, { clockId, startsAt, durationMs }) → LogItemInput[] | null` is
   #50's.
 - Both are options of the api plugin (`buildApp({ episodeCheck: { resolveClock, clockMusic } })`).
+  - Glue for #40: `resolveClockAt(await loadClockGrid(db, scope), at, station.timezone).clockId`.
   The defaults return null, so `clock_music` raises the critical alert today.
 - With a filler, the first item takes the empty item's place and timing, and the others are
-  inserted after it.
+  inserted after it. The whole fill is one transaction.
 - Every item of the fill is marked. Putting an episode back in place of clock music is left to #50 (several items).
 
 ## What #50 (log generator) must do
@@ -130,6 +166,15 @@ Two things shape the design:
 - When regenerating a day, keep items that carry a `log_item_fallback` mark, or drop the mark
   with them. The foreign key cascades.
 
+## Code
+| Where | What |
+|---|---|
+| `apps/worker/src/jobs/episode-check/plan.ts` | Pure: which steps are due at a given time. DST tests in `plan.test.ts`. |
+| `apps/worker/src/jobs/episode-check/check.ts`, `index.ts`, `sweep.ts` | A pass over a station, the job, the 1-min sweep (`main.ts`). |
+| `packages/db/src/repos/episode-check.ts` | The worker's queries. |
+| `packages/db/src/schema/episode-check.ts` | `episode_check`, `log_item_fallback`. |
+| `apps/api/src/modules/shows/episode-check` | Alerts, emails, fallbacks, restore, the plugin. Its integration test also runs the worker's pass end to end. |
+
 ## Consequences
 - New tables `episode_check` and `log_item_fallback`, new columns `show.fallback_policy`,
   `show.fallback_episode_id` and `asrun_entry.fallback` (migration `*_episode-alerts`).
@@ -140,4 +185,3 @@ Two things shape the design:
   - `contracts/episode-check.ts` (steps, leads, the job payload).
 - A replaced item becomes `manual` in the log (that's what `replaceLogItem` does), so a regenerated
   day won't see it as the show's. `log_item_fallback` still links it to the occurrence.
-- Emails are in English, like the other alert emails, until users have a locale.
