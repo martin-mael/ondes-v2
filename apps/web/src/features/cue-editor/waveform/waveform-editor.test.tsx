@@ -88,6 +88,29 @@ describe('WaveformEditor', () => {
     expect(onSeek).toHaveBeenCalledWith(220_500);
   });
 
+  it('keeps a dragged marker mounted, at the edge, when it leaves the view', () => {
+    const onChange = vi.fn();
+    const markers = (sample: number) => [{ id: 'in', sample, label: 'In', color: 'red' }];
+    const props = {
+      peaks,
+      view: { fromSample: 0, toSample: 44_100 },
+      onViewChange: () => {},
+      onMarkerChange: onChange,
+    };
+    const { rerender } = render(<WaveformEditor {...props} markers={markers(22_050)} />);
+    const handle = screen.getByRole('slider', { name: 'In' });
+    fireEvent.pointerDown(handle, { clientX: 500, pointerId: 1 });
+    fireEvent.pointerMove(handle, { clientX: 1500, pointerId: 1 });
+    expect(onChange).toHaveBeenLastCalledWith('in', 66_150);
+    rerender(<WaveformEditor {...props} markers={markers(66_150)} />);
+    const moved = screen.getByRole('slider', { name: 'In' });
+    expect(moved).toBe(handle);
+    expect(moved.parentElement?.style.left).toBe('1000px');
+    fireEvent.pointerUp(moved, { clientX: 1500, pointerId: 1 });
+    rerender(<WaveformEditor {...props} markers={markers(66_150)} />);
+    expect(screen.queryByRole('slider', { name: 'In' })).toBeNull();
+  });
+
   it('zooms around the pointer with the wheel', () => {
     const onViewChange = vi.fn();
     const { container } = render(

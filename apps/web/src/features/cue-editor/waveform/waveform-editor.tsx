@@ -1,5 +1,5 @@
 import type { DecodedPeaks } from '@ondes/shared';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/ui/lib/utils';
 import { sampleToX, scrollView, type WaveformView, xToSample, zoomView } from './view.ts';
 import { useElementWidth, Waveform } from './waveform.tsx';
@@ -73,6 +73,8 @@ export function WaveformEditor({
   className,
 }: WaveformEditorProps) {
   const [box, width] = useElementWidth<HTMLElement>();
+  // The marker being dragged stays mounted (clamped to the edge) when it leaves the view.
+  const [dragging, setDragging] = useState<string | null>(null);
   const length = peaks.lengthSamples;
   const step = keyStep ?? Math.max(1, Math.round(peaks.sampleRate / 100));
   // The wheel listener is registered once; it reads the latest props from here.
@@ -162,11 +164,12 @@ export function WaveformEditor({
       )}
       {width > 0 &&
         markers.map((marker) =>
-          visible(marker.sample) ? (
+          visible(marker.sample) || dragging === marker.id ? (
             <Marker
               key={marker.id}
               marker={marker}
-              left={x(marker.sample)}
+              left={Math.min(width, Math.max(0, x(marker.sample)))}
+              onDragging={(on) => setDragging(on ? marker.id : null)}
               length={length}
               step={step}
               sampleAt={sampleAt}
@@ -189,9 +192,11 @@ function Marker({
   formatSample,
   onChange,
   onCommit,
+  onDragging,
 }: {
   marker: WaveformMarker;
   left: number;
+  onDragging: (dragging: boolean) => void;
   length: number;
   step: number;
   sampleAt: (clientX: number) => number;
@@ -209,6 +214,13 @@ function Marker({
     onChange?.(marker.id, clamped);
   };
   const title = marker.title ?? marker.label;
+  const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    onDragging(false);
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    onCommit?.(marker.id, last.current);
+  };
 
   return (
     <div
@@ -238,16 +250,13 @@ function Marker({
           event.stopPropagation();
           event.currentTarget.setPointerCapture?.(event.pointerId);
           dragging.current = true;
+          onDragging(true);
         }}
         onPointerMove={(event) => {
           if (dragging.current) move(sampleAt(event.clientX));
         }}
-        onPointerUp={(event) => {
-          if (!dragging.current) return;
-          dragging.current = false;
-          event.currentTarget.releasePointerCapture?.(event.pointerId);
-          onCommit?.(marker.id, last.current);
-        }}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => {
           if (!draggable) return;
