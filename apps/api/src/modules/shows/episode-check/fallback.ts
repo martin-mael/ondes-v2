@@ -1,6 +1,16 @@
-import { asset, type Executor, episode, type StationScope, show, whereStation } from '@ondes/db';
+import {
+  asset,
+  type Executor,
+  episode,
+  type StationScope,
+  show,
+  station,
+  whereStation,
+} from '@ondes/db';
+import { resolveClockAt } from '@ondes/scheduling';
 import type { EpisodeFallbackKind, EpisodeFallbackPolicy, LogItemInput } from '@ondes/shared';
 import { and, desc, eq, isNotNull, isNull, lt, ne, or } from 'drizzle-orm';
+import { loadClockGrid } from '../../clocks/grid-repo.ts';
 
 // What airs in place of a missing episode (#47, ADR 0022). Read by the episode check when it
 // applies a fallback, and meant for the log generator (#50): a generator that plans an
@@ -27,6 +37,18 @@ export interface ClockMusicSource {
 /** Until #50 exists, clock music isn't available: the slot is left to the safety playlist. */
 export const noClockMusic: ClockMusicSource = { fill: async () => null };
 export const noClockResolver: ClockResolver = async () => null;
+
+/** #40's grid: the clock airing at `at` in the station's own timezone (DST-aware). */
+export function gridClockResolver(db: Executor): ClockResolver {
+  return async (scope, at) => {
+    const [row] = await db
+      .select({ timezone: station.timezone })
+      .from(station)
+      .where(and(eq(station.id, scope.stationId), eq(station.orgId, scope.orgId)));
+    if (!row) return null;
+    return resolveClockAt(await loadClockGrid(db, scope), at, row.timezone).clockId;
+  };
+}
 
 export type FallbackDeps = { resolveClock: ClockResolver; clockMusic: ClockMusicSource };
 
