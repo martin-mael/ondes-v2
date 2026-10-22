@@ -17,7 +17,7 @@ import {
   type SegueVoiceLane,
 } from '../contracts/segues.ts';
 import { stableStringify } from '../json.ts';
-import { dbToAmplitude, envelopeGainAt } from './gain.ts';
+import { envelopeGainAt } from './gain.ts';
 import { sha256Hex } from './sha256.ts';
 
 // Island derivation (#55, ADR 0017): segues → island specs. Pure and deterministic, so the api
