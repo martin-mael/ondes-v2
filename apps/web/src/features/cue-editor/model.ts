@@ -62,7 +62,10 @@ export function boundsOf(draft: CueDraft, field: MarkerField, length: number): [
   return [cueIn, cueOut];
 }
 
-/** The draft with `field` moved to `samples`, kept inside its bounds; marks it manual. */
+/**
+ * The draft with `field` moved to `samples`, kept inside its bounds; marks it manual and
+ * locks it (the lock button shows what a save sends: a person may unlock it again).
+ */
 export function moveMarker(
   draft: CueDraft,
   field: MarkerField,
@@ -71,13 +74,13 @@ export function moveMarker(
 ): CueDraft {
   const [lo, hi] = boundsOf(draft, field, length);
   const clamped = Math.round(Math.min(hi, Math.max(lo, samples)));
-  return { ...draft, [field]: { ...draft[field], samples: clamped, source: 'manual' } };
+  return { ...draft, [field]: { samples: clamped, source: 'manual', locked: true } };
 }
 
-/** The draft with `field` cleared (the engine falls back to its default). */
+/** The draft with `field` cleared (the engine falls back to its default), locked like a move. */
 export const clearPoint = (draft: CueDraft, field: CueField): CueDraft => ({
   ...draft,
-  [field]: { ...draft[field], samples: null, source: 'manual' },
+  [field]: { samples: null, source: 'manual', locked: true },
 });
 
 export const setLocked = (draft: CueDraft, field: CueField, locked: boolean): CueDraft => ({
@@ -86,9 +89,9 @@ export const setLocked = (draft: CueDraft, field: CueField, locked: boolean): Cu
 });
 
 /**
- * The `PUT …/cues` body that turns `saved` into `draft`, or `null` when nothing changed. A
- * moved or cleared point is sent locked: autocue never overwrites it (it skips manual points
- * anyway; the lock says so in the drawer and survives a later "unlock" of the others).
+ * The `PUT …/cues` body that turns `saved` into `draft`, or `null` when nothing changed. Points
+ * go with the draft's lock: a move locks a point unless the person unlocked it again. Either
+ * way a moved point becomes `manual`, which autocue never overwrites.
  */
 export function patchOf(saved: CueDraft, draft: CueDraft, sampleRate: number): UpdateCues | null {
   const patch: Record<string, { samples?: number | null; locked?: boolean }> = {};
@@ -96,7 +99,7 @@ export function patchOf(saved: CueDraft, draft: CueDraft, sampleRate: number): U
     const before = saved[field];
     const after = draft[field];
     const moved = before.samples !== after.samples;
-    if (moved) patch[field] = { samples: after.samples, locked: true };
+    if (moved) patch[field] = { samples: after.samples, locked: after.locked };
     else if (before.locked !== after.locked) patch[field] = { locked: after.locked };
   }
   if (Object.keys(patch).length === 0) return null;
@@ -145,7 +148,8 @@ export function transitionPlan(
 ): TransitionPlan {
   const cueIn = draft.cueIn.samples ?? 0;
   const stopAt = draft.cueOut.samples ?? length;
-  const switchAt = draft.crossStartNext.samples ?? stopAt;
+  // A stored next-track start past cue-out (it shouldn't be) starts the next track at cue-out.
+  const switchAt = Math.min(draft.crossStartNext.samples ?? stopAt, stopAt);
   const fadeOut = draft.fadeOut.samples;
   return {
     fromSample: Math.max(cueIn, switchAt - TRANSITION_LEAD_S * sampleRate),

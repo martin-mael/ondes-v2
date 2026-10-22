@@ -58,11 +58,64 @@ describe('useCuePlayer', () => {
     if (!main) throw new Error('no audio');
     main.currentTime = 11;
     act(runFrame);
-    expect(result.current.position).toBe(SR * 11);
+    expect(result.current.position.get()).toBe(SR * 11);
     main.currentTime = 12;
     act(runFrame);
     expect(result.current.state).toBe('idle');
     expect(main.paused).toBe(true);
+  });
+
+  it('plays to the end when started at or past the stop point', async () => {
+    const { result } = renderHook(() => useCuePlayer({ src: '/a.flac', sampleRate: SR }));
+    await act(async () => result.current.playFrom(SR * 196, SR * 195));
+    const [main] = FakeAudio.all;
+    if (!main) throw new Error('no audio');
+    main.currentTime = 197;
+    act(runFrame);
+    expect(result.current.state).toBe('asset');
+    expect(main.paused).toBe(false);
+    act(() => main.onended?.());
+    expect(result.current.state).toBe('idle');
+  });
+
+  it('starts the next track when the outgoing one ends early, and stops when it ends', async () => {
+    const { result } = renderHook(() => useCuePlayer({ src: '/a.flac', sampleRate: SR }));
+    await act(async () =>
+      result.current.playTransition(
+        { fromSample: SR * 184, switchAt: SR * 190, stopAt: SR * 195, fadeOutFrom: null },
+        { src: '/b.flac', fromSeconds: 0 },
+      ),
+    );
+    const [main, next] = FakeAudio.all;
+    if (!main || !next) throw new Error('no audio');
+    main.currentTime = 186;
+    act(() => main.onended?.());
+    expect(next.play).toHaveBeenCalled();
+    act(runFrame);
+    expect(result.current.state).toBe('transition');
+    act(() => next.onended?.());
+    expect(result.current.state).toBe('idle');
+  });
+
+  it('starts the next track at the stop point when the next-track start is past it', async () => {
+    const now = vi.spyOn(performance, 'now').mockReturnValue(0);
+    const { result } = renderHook(() => useCuePlayer({ src: '/a.flac', sampleRate: SR }));
+    await act(async () =>
+      result.current.playTransition(
+        { fromSample: SR * 190, switchAt: SR * 199, stopAt: SR * 195, fadeOutFrom: null },
+        { src: '/b.flac', fromSeconds: 0 },
+      ),
+    );
+    const [main, next] = FakeAudio.all;
+    if (!main || !next) throw new Error('no audio');
+    main.currentTime = 195;
+    act(runFrame);
+    expect(main.paused).toBe(true);
+    expect(next.play).toHaveBeenCalled();
+    now.mockReturnValue(7000);
+    act(runFrame);
+    expect(result.current.state).toBe('idle');
+    now.mockRestore();
   });
 
   it('starts the next track on the next-track start', async () => {

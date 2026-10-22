@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { API_BASE } from '../../app/api/client.ts';
 import { fadeGain, TRANSITION_TAIL_S, type TransitionPlan } from './model.ts';
 
@@ -8,8 +8,8 @@ import { fadeGain, TRANSITION_TAIL_S, type TransitionPlan } from './model.ts';
 // curve, but the cue positions (unsaved ones included) and a linear fade-out.
 
 export const assetAudioUrl = (stationId: string, assetId: string, playoutSha256?: string) =>
-  `${API_BASE}/stations/${stationId}/assets/${encodeURIComponent(assetId)}/audio${
-    playoutSha256 ? `?v=${playoutSha256}` : ''
+  `${API_BASE}/stations/${encodeURIComponent(stationId)}/assets/${encodeURIComponent(assetId)}/audio${
+    playoutSha256 ? `?v=${encodeURIComponent(playoutSha256)}` : ''
   }`;
 
 /** Loads `src` and plays it from `seconds` once the browser knows the media. */
@@ -41,6 +41,7 @@ function preload(audio: HTMLAudioElement, src: string, seconds: number) {
 function silence(audio: HTMLAudioElement) {
   audio.onloadedmetadata = null;
   audio.onerror = null;
+  audio.onended = null;
   audio.pause();
   audio.removeAttribute('src');
 }
@@ -59,15 +60,49 @@ export interface NextTrack {
 
 export type PlayerState = 'idle' | 'asset' | 'transition';
 
+/**
+ * The playback position, outside React state: it changes every frame, and only the parts that
+ * show it (the playhead, the time) subscribe, through {@link usePlayerPosition}.
+ */
+export interface PositionStore {
+  /** Position in the asset, in samples (null when stopped). */
+  get(): number | null;
+  subscribe(listener: () => void): () => void;
+}
+
 export interface CuePlayer {
   state: PlayerState;
-  /** Playback position in the asset, in samples (null when stopped). */
-  position: number | null;
-  /** Plays the asset from `sample`, up to `stopAt` (default: its end). */
+  position: PositionStore;
+  /**
+   * Plays the asset from `sample`, up to `stopAt` (default: its end). Starting at or past
+   * `stopAt` plays to the end instead of stopping at once.
+   */
   playFrom(sample: number, stopAt?: number): void;
   /** Plays the end of the asset and the start of `next`, as `plan` times them. */
   playTransition(plan: TransitionPlan, next: NextTrack): void;
   stop(): void;
+}
+
+/** The playback position (re-renders the caller on every frame while playing). */
+export function usePlayerPosition(player: Pick<CuePlayer, 'position'>): number | null {
+  return useSyncExternalStore(player.position.subscribe, player.position.get, player.position.get);
+}
+
+function createPositionStore(): PositionStore & { set(position: number | null): void } {
+  let value: number | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    get: () => value,
+    set(position) {
+      if (position === value) return;
+      value = position;
+      for (const listener of listeners) listener();
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
 }
 
 export function useCuePlayer({
@@ -83,7 +118,7 @@ export function useCuePlayer({
   const frame = useRef<number | null>(null);
   const run = useRef(0);
   const [state, setState] = useState<PlayerState>('idle');
-  const [position, setPosition] = useState<number | null>(null);
+  const [position] = useState(createPositionStore);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
@@ -93,8 +128,8 @@ export function useCuePlayer({
     frame.current = null;
     if (audios.current) for (const a of audios.current) silence(a);
     setState('idle');
-    setPosition(null);
-  }, []);
+    position.set(null);
+  }, [position]);
 
   useEffect(() => stop, [stop]);
   // A new asset (or a new playout copy) stops what was playing.
@@ -117,7 +152,7 @@ export function useCuePlayer({
       const step = () => {
         if (id !== run.current) return;
         const sample = Math.round(main.currentTime * sampleRate);
-        setPosition(sample);
+        position.set(sample);
         if (!tick(sample)) {
           stop();
           return;
@@ -126,7 +161,7 @@ export function useCuePlayer({
       };
       frame.current = requestAnimationFrame(step);
     },
-    [sampleRate, stop],
+    [sampleRate, stop, position],
   );
 
   const playFrom = useCallback(
@@ -134,15 +169,17 @@ export function useCuePlayer({
       stop();
       const id = run.current;
       const [main] = elementsOf(audios);
+      // Started at or past the stop point (in the outro, past cue-out): play to the end.
+      const until = stopAt !== undefined && sample < stopAt ? stopAt : undefined;
       setState('asset');
-      setPosition(sample);
+      position.set(sample);
       main.onended = () => id === run.current && stop();
       startAt(main, src, sample / sampleRate).then(
-        () => follow(id, (s) => stopAt === undefined || s < stopAt),
+        () => follow(id, (s) => until === undefined || s < until),
         (error) => fail(id, error),
       );
     },
-    [src, sampleRate, stop, follow, fail],
+    [src, sampleRate, stop, follow, fail, position],
   );
 
   const playTransition = useCallback(
@@ -150,31 +187,49 @@ export function useCuePlayer({
       stop();
       const id = run.current;
       const [main, incoming] = elementsOf(audios);
+      // The next track starts by the outgoing one's stop point at the latest.
+      const switchAt = Math.min(plan.switchAt, plan.stopAt);
       setState('transition');
-      setPosition(plan.fromSample);
+      position.set(plan.fromSample);
       preload(incoming, next.src, next.fromSeconds);
       let started: number | null = null;
+      let outgoingDone = false;
+      const startNext = () => {
+        if (started !== null) return;
+        started = performance.now();
+        incoming.play().catch((error) => fail(id, error));
+      };
+      // The outgoing file may end before its cue-out (a stale cue): the next one starts then.
+      main.onended = () => {
+        if (id !== run.current) return;
+        outgoingDone = true;
+        startNext();
+      };
+      incoming.onended = () => id === run.current && stop();
       startAt(main, src, plan.fromSample / sampleRate).then(
         () =>
           follow(id, (s) => {
-            if (s < plan.stopAt) main.volume = fadeGain(plan, s);
-            else if (!main.paused) main.pause();
-            if (started === null && s >= plan.switchAt) {
-              started = performance.now();
-              incoming.play().catch((error) => fail(id, error));
+            if (!outgoingDone && s >= plan.stopAt) {
+              outgoingDone = true;
+              main.pause();
             }
-            // Ends once the next track has played its part and the outgoing one is done.
+            if (!outgoingDone) main.volume = fadeGain(plan, s);
+            if (s >= switchAt) startNext();
+            // Ends once the outgoing track is done and the next one has played its part.
             return (
               started === null ||
-              s < plan.stopAt ||
+              !outgoingDone ||
               performance.now() - started < TRANSITION_TAIL_S * 1000
             );
           }),
         (error) => fail(id, error),
       );
     },
-    [src, sampleRate, stop, follow, fail],
+    [src, sampleRate, stop, follow, fail, position],
   );
 
-  return { state, position, playFrom, playTransition, stop };
+  return useMemo(
+    () => ({ state, position, playFrom, playTransition, stop }),
+    [state, position, playFrom, playTransition, stop],
+  );
 }

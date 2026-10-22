@@ -11,7 +11,7 @@ import {
   ZoomInIcon,
   ZoomOutIcon,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
@@ -37,12 +37,19 @@ import {
   setLocked,
   transitionPlan,
 } from './model.ts';
-import { NextTrackPicker, useResolveNextTrack } from './next-track.tsx';
-import { assetAudioUrl, type CuePlayer, useCuePlayer } from './player.ts';
+import {
+  NextTrackPicker,
+  NoAudioError,
+  type PickedTrack,
+  useResolveNextTrack,
+} from './next-track.tsx';
+import { assetAudioUrl, type CuePlayer, useCuePlayer, usePlayerPosition } from './player.ts';
 import {
   centreView,
   clampView,
   fullView,
+  sampleToX,
+  useElementWidth,
   usePeaks,
   WaveformEditor,
   type WaveformView,
@@ -52,9 +59,10 @@ import {
 // The cue editor (#24), in the asset drawer in place of its read-only cue list: the waveform
 // with draggable markers for cue in/out, intro end, outro start and next-track start, playback
 // from any marker, and a transition preview into a chosen or random song. Saving sends the
-// changed points (`PUT …/cues`), locked so autocue never overwrites them. The feeder reads the
-// cues from the database each time it queues the track, so they reach the engine on the next
-// play (an item already queued in the engine keeps the cues it was queued with).
+// changed points (`PUT …/cues`), locked unless the person unlocked them, and `manual`, so
+// autocue never overwrites them. The feeder reads the cues from the database each time it
+// queues the track, so they reach the engine on the next play (an item already queued in the
+// engine keeps the cues it was queued with).
 
 const LIST_FIELDS: readonly CueField[] = [
   'cueIn',
@@ -78,15 +86,27 @@ export function CueEditorSection({
   const t = useCueEditorT();
   const peaksFile = asset.files.find((f) => f.role === 'peaks');
   const playout = asset.files.find((f) => f.role === 'playout');
-  const peaks = usePeaks(stationId, asset.id, peaksFile?.sha256);
-  // What's stored: the asset's cues, or a save's answer until the drawer has reloaded.
+  const peaks = usePeaks(stationId, asset.id, peaksFile?.sha256, peaksFile !== undefined);
+
+  // What's stored (the asset's cues, or a save's answer until the drawer reloads) and the
+  // person's draft. A new copy from the server (a save, a refetch, someone else's edit) only
+  // replaces the draft when it has no unsaved edits: they're never lost.
   const [stored, setStored] = useState(asset.cues);
-  useEffect(() => setStored(asset.cues), [asset.cues]);
+  const [draft, setDraft] = useState(() => draftOf(asset.cues));
   const saved = useMemo(() => draftOf(stored), [stored]);
-  const [draft, setDraft] = useState(saved);
-  // A save (or another person's edit) reloads the asset: start again from what's stored.
-  useEffect(() => setDraft(saved), [saved]);
   const dirty = isDirty(saved, draft);
+  const latest = useRef({ saved, draft });
+  latest.current = { saved, draft };
+  const adopt = (cues: AssetCues | null, keepUnless?: CueDraft) => {
+    const { saved: before, draft: current } = latest.current;
+    const unsaved = isDirty(keepUnless ?? before, current);
+    setStored(cues);
+    if (!unsaved) setDraft(draftOf(cues));
+  };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: adopt reads the latest state from a ref
+  useEffect(() => {
+    if (asset.cues !== stored) adopt(asset.cues);
+  }, [asset.cues]);
   useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
@@ -106,10 +126,16 @@ export function CueEditorSection({
     sampleRate,
     onError: () => toast.error(t('play.error')),
   });
+  const cueOut = draft.cueOut.samples ?? length;
+  /** Plays from a point, and leaves the cursor there. */
+  const playFrom = (sample: number) => {
+    setCursor(sample);
+    player.playFrom(sample, cueOut);
+  };
 
   const save = useMutation({
-    mutationFn: async () => {
-      const patch = patchOf(saved, draft, sampleRate);
+    mutationFn: async (sent: CueDraft) => {
+      const patch = patchOf(saved, sent, sampleRate);
       if (!patch) return null;
       return request(`/stations/${stationId}/assets/${asset.id}/cues`, {
         method: 'PUT',
@@ -117,12 +143,14 @@ export function CueEditorSection({
         schema: assetCuesSchema,
       });
     },
-    onSuccess: async (cues: AssetCues | null) => {
-      if (cues) setStored(cues);
+    onSuccess: async (cues, sent) => {
+      // The draft becomes the stored copy, unless it changed while the save was in flight.
+      if (cues) adopt(cues, sent);
       toast.success(t('saved'));
       await refresh();
     },
   });
+  const canEdit = canWrite && !save.isPending;
 
   const waveformMissing = !peaksFile || (peaks.isError && isApiError(peaks.error, 'not_found'));
 
@@ -132,14 +160,17 @@ export function CueEditorSection({
       {waveformMissing ? (
         <p className="text-muted-foreground">{t('peaks.missing')}</p>
       ) : peaks.isError ? (
-        <FormAlert error={peaks.error} />
+        <div className="flex flex-col gap-1">
+          <p className="text-destructive">{t('peaks.error')}</p>
+          <FormAlert error={peaks.error} />
+        </div>
       ) : peaks.isPending ? (
         <PageSkeleton className="h-[176px]" />
       ) : (
         <WaveformPanel
           peaks={peaks.data}
           draft={draft}
-          canWrite={canWrite}
+          canEdit={canEdit}
           title={asset.title}
           sampleRate={sampleRate}
           player={player}
@@ -147,7 +178,11 @@ export function CueEditorSection({
           view={view}
           onViewChange={setZoomed}
           cursor={cursor}
-          onCursorChange={setCursor}
+          onSeek={(sample) => {
+            setCursor(sample);
+            if (player.state === 'asset') player.playFrom(sample, cueOut);
+          }}
+          onPlay={() => playFrom(cursor ?? draft.cueIn.samples ?? 0)}
           onMove={(field, samples) =>
             setDraft((d) => moveMarker(d, field, samples, peaks.data.lengthSamples))
           }
@@ -159,10 +194,11 @@ export function CueEditorSection({
         draft={draft}
         sampleRate={sampleRate}
         length={length}
-        canWrite={canWrite}
+        canEdit={canEdit}
         canPlay={playout !== undefined && length > 0}
         player={player}
         cursor={cursor}
+        onPlayFrom={playFrom}
         onShow={(sample) => setZoomed(centreView(sample, view.toSample - view.fromSample, length))}
         onChange={setDraft}
         t={t}
@@ -179,12 +215,17 @@ export function CueEditorSection({
         />
       )}
       {!playout && <p className="text-muted-foreground">{t('play.noAudio')}</p>}
-      {asset.cues?.analyzerVersion && (
+      {stored?.analyzerVersion && (
         <p className="text-muted-foreground">
-          {t('analyzer', { version: asset.cues.analyzerVersion })}
+          {t('analyzer', { version: stored.analyzerVersion })}
         </p>
       )}
-      {save.isError && <FormAlert error={save.error} />}
+      {save.isError && (
+        <div className="flex flex-col gap-1" role="alert">
+          <p className="text-destructive">{t('save.error')}</p>
+          <FormAlert error={save.error} />
+        </div>
+      )}
       {canWrite && (
         <div className="flex flex-wrap justify-end gap-2">
           <Button
@@ -198,7 +239,11 @@ export function CueEditorSection({
           >
             {t('reset')}
           </Button>
-          <Button type="button" disabled={!dirty || save.isPending} onClick={() => save.mutate()}>
+          <Button
+            type="button"
+            disabled={!dirty || save.isPending}
+            onClick={() => save.mutate(draft)}
+          >
             <DelayedSpinner when={save.isPending} data-icon="inline-start" />
             {t('save')}
           </Button>
@@ -211,7 +256,7 @@ export function CueEditorSection({
 function WaveformPanel({
   peaks,
   draft,
-  canWrite,
+  canEdit,
   title,
   sampleRate,
   player,
@@ -219,13 +264,14 @@ function WaveformPanel({
   view,
   onViewChange,
   cursor,
-  onCursorChange,
+  onSeek,
+  onPlay,
   onMove,
   t,
 }: {
   peaks: DecodedPeaks;
   draft: CueDraft;
-  canWrite: boolean;
+  canEdit: boolean;
   title: string;
   sampleRate: number;
   player: CuePlayer;
@@ -233,14 +279,14 @@ function WaveformPanel({
   view: WaveformView;
   onViewChange: (view: WaveformView) => void;
   cursor: number | null;
-  onCursorChange: (sample: number) => void;
+  onSeek: (sample: number) => void;
+  onPlay: () => void;
   onMove: (field: MarkerField, samples: number) => void;
   t: CueEditorT;
 }) {
   const length = peaks.lengthSamples;
-  const setView = onViewChange;
   const centre = (view.fromSample + view.toSample) / 2;
-  const playhead = player.position ?? cursor;
+  const [box, width] = useElementWidth<HTMLDivElement>();
 
   const markers = MARKER_FIELDS.flatMap((field) => {
     const samples = draft[field].samples;
@@ -253,7 +299,7 @@ function WaveformPanel({
             label: t(`short.${field}`),
             title: t(`field.${field}`),
             color: MARKER_COLORS[field],
-            draggable: canWrite,
+            draggable: canEdit,
           },
         ];
   });
@@ -261,22 +307,15 @@ function WaveformPanel({
     ...r,
     color: MARKER_COLORS[r.id === 'fadeIn' ? 'cueIn' : 'cueOut'],
   }));
-  const cueIn = draft.cueIn.samples ?? 0;
-  const cueOut = draft.cueOut.samples ?? length;
+  const anchor = () => player.position.get() ?? cursor ?? centre;
 
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-1">
         {player.state === 'idle' ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={!canPlay}
-            onClick={() => player.playFrom(cursor ?? cueIn, cueOut)}
-          >
+          <Button type="button" size="sm" variant="outline" disabled={!canPlay} onClick={onPlay}>
             <PlayIcon data-icon="inline-start" />
-            {t('play.start')}
+            {t(cursor === null ? 'play.start' : 'play.cursor')}
           </Button>
         ) : (
           <Button type="button" size="sm" variant="outline" onClick={player.stop}>
@@ -284,9 +323,7 @@ function WaveformPanel({
             {t('play.stop')}
           </Button>
         )}
-        <span className="ml-1 tabular-nums text-muted-foreground">
-          {playhead === null ? '' : formatSamples(playhead, sampleRate)}
-        </span>
+        <PositionTime player={player} cursor={cursor} sampleRate={sampleRate} />
         <div className="ml-auto flex gap-1">
           <Button
             type="button"
@@ -294,7 +331,7 @@ function WaveformPanel({
             variant="ghost"
             aria-label={t('zoom.in')}
             title={t('zoom.in')}
-            onClick={() => setView(zoomView(view, 2, playhead ?? centre, length))}
+            onClick={() => onViewChange(zoomView(view, 2, anchor(), length))}
           >
             <ZoomInIcon />
           </Button>
@@ -304,7 +341,7 @@ function WaveformPanel({
             variant="ghost"
             aria-label={t('zoom.out')}
             title={t('zoom.out')}
-            onClick={() => setView(zoomView(view, 0.5, centre, length))}
+            onClick={() => onViewChange(zoomView(view, 0.5, centre, length))}
           >
             <ZoomOutIcon />
           </Button>
@@ -314,33 +351,74 @@ function WaveformPanel({
             variant="ghost"
             aria-label={t('zoom.all')}
             title={t('zoom.all')}
-            onClick={() => setView(fullView(length))}
+            onClick={() => onViewChange(fullView(length))}
           >
             <MaximizeIcon />
           </Button>
         </div>
       </div>
-      <WaveformEditor
-        peaks={peaks}
-        view={view}
-        onViewChange={(next) => setView(clampView(next, length))}
-        height={WAVEFORM_HEIGHT}
-        markers={markers}
-        regions={regions}
-        playhead={playhead}
-        aria-label={t('waveform', { title })}
-        className="rounded-[4px] bg-muted/40"
-        formatSample={(s) => formatSamples(s, sampleRate)}
-        onSeek={(sample) => {
-          onCursorChange(sample);
-          if (player.state === 'asset') player.playFrom(sample, cueOut);
-        }}
-        onMarkerChange={(id, sample) => {
-          if (isMarkerField(id)) onMove(id, sample);
-        }}
-      />
+      <div ref={box} className="relative">
+        <WaveformEditor
+          peaks={peaks}
+          view={view}
+          onViewChange={(next) => onViewChange(clampView(next, length))}
+          height={WAVEFORM_HEIGHT}
+          markers={markers}
+          regions={regions}
+          // While playing, the moving playhead below takes over from the clicked position.
+          playhead={player.state === 'idle' ? cursor : null}
+          aria-label={t('waveform', { title })}
+          className="rounded-[4px] bg-muted/40"
+          formatSample={(s) => formatSamples(s, sampleRate)}
+          onSeek={onSeek}
+          onMarkerChange={(id, sample) => {
+            if (isMarkerField(id)) onMove(id, sample);
+          }}
+        />
+        <PlayingHead player={player} view={view} width={width} />
+      </div>
       <p className="text-[0.625rem] text-muted-foreground">{t('zoom.hint')}</p>
     </div>
+  );
+}
+
+/** The moving playhead: the only part that re-renders on every frame while playing. */
+function PlayingHead({
+  player,
+  view,
+  width,
+}: {
+  player: CuePlayer;
+  view: WaveformView;
+  width: number;
+}) {
+  const position = usePlayerPosition(player);
+  if (player.state === 'idle' || position === null || width <= 0) return null;
+  if (position < view.fromSample || position > view.toSample) return null;
+  return (
+    <div
+      aria-hidden
+      data-playing-head
+      className="pointer-events-none absolute inset-y-0 w-px bg-foreground"
+      style={{ left: sampleToX(view, width, position) }}
+    />
+  );
+}
+
+function PositionTime({
+  player,
+  cursor,
+  sampleRate,
+}: {
+  player: CuePlayer;
+  cursor: number | null;
+  sampleRate: number;
+}) {
+  const position = usePlayerPosition(player) ?? cursor;
+  return (
+    <span className="ml-1 tabular-nums text-muted-foreground" data-position>
+      {position === null ? '' : formatSamples(position, sampleRate)}
+    </span>
   );
 }
 
@@ -349,10 +427,11 @@ function PointList({
   draft,
   sampleRate,
   length,
-  canWrite,
+  canEdit,
   canPlay,
   player,
   cursor,
+  onPlayFrom,
   onShow,
   onChange,
   t,
@@ -361,24 +440,24 @@ function PointList({
   draft: CueDraft;
   sampleRate: number;
   length: number;
-  canWrite: boolean;
+  canEdit: boolean;
   canPlay: boolean;
   player: CuePlayer;
   cursor: number | null;
+  onPlayFrom: (sample: number) => void;
   onShow: (sample: number) => void;
   onChange: (update: (draft: CueDraft) => CueDraft) => void;
   t: CueEditorT;
 }) {
-  const cueOut = draft.cueOut.samples ?? length;
+  const hasPosition = player.state !== 'idle' || cursor !== null;
   return (
     <ul className="flex flex-col gap-1">
       {LIST_FIELDS.map((field) => {
         const point = draft[field];
-        const edited =
-          point.samples !== saved[field].samples || point.locked !== saved[field].locked;
+        const samples = point.samples;
+        const edited = samples !== saved[field].samples || point.locked !== saved[field].locked;
         const name = t(`field.${field}`);
         const marker = isMarkerField(field) ? field : null;
-        const position = player.position ?? cursor;
         return (
           <li
             key={field}
@@ -394,10 +473,10 @@ function PointList({
             )}
             <span className="min-w-28 font-medium">{name}</span>
             <span className="tabular-nums">
-              {point.samples === null ? (
+              {samples === null ? (
                 <span className="text-muted-foreground">{t('point.unset')}</span>
               ) : (
-                formatSamples(point.samples, sampleRate)
+                formatSamples(samples, sampleRate)
               )}
             </span>
             <span className="text-muted-foreground">
@@ -405,39 +484,40 @@ function PointList({
             </span>
             {edited && <Badge variant="secondary">{t('point.edited')}</Badge>}
             <span className="ml-auto flex gap-0.5">
-              {marker && point.samples !== null && (
+              {marker && samples !== null && (
                 <>
                   <IconButton
                     label={t('point.show', { field: name })}
-                    onClick={() => point.samples !== null && onShow(point.samples)}
+                    onClick={() => onShow(samples)}
                     icon={<CrosshairIcon />}
                   />
                   <IconButton
                     label={t('point.play', { field: name })}
                     disabled={!canPlay}
-                    onClick={() => player.playFrom(point.samples ?? 0, cueOut)}
+                    onClick={() => onPlayFrom(samples)}
                     icon={<PlayIcon />}
                   />
                 </>
               )}
-              {canWrite && marker && (
+              {canEdit && marker && (
                 <IconButton
                   label={t('point.here', { field: name })}
-                  disabled={position === null}
-                  onClick={() =>
-                    position !== null && onChange((d) => moveMarker(d, marker, position, length))
-                  }
+                  disabled={!hasPosition}
+                  onClick={() => {
+                    const at = player.position.get() ?? cursor;
+                    if (at !== null) onChange((d) => moveMarker(d, marker, at, length));
+                  }}
                   icon={<span className="text-[0.625rem] font-semibold">⇥</span>}
                 />
               )}
-              {canWrite && point.samples !== null && (
+              {canEdit && samples !== null && (
                 <IconButton
                   label={t('point.clear', { field: name })}
                   onClick={() => onChange((d) => clearPoint(d, field))}
                   icon={<EraserIcon />}
                 />
               )}
-              {canWrite && (
+              {canEdit && (
                 <IconButton
                   label={t(point.locked ? 'point.unlock' : 'point.lock', { field: name })}
                   pressed={point.locked}
@@ -445,8 +525,8 @@ function PointList({
                   icon={point.locked ? <LockIcon /> : <LockOpenIcon />}
                 />
               )}
-              {!canWrite && point.locked && (
-                <LockIcon className="size-3" aria-label={t('point.unlock', { field: name })} />
+              {!canEdit && point.locked && (
+                <LockIcon className="size-3" aria-label={t('point.locked', { field: name })} />
               )}
             </span>
           </li>
@@ -486,7 +566,7 @@ function IconButton({
   );
 }
 
-function TransitionPreview({
+export function TransitionPreview({
   stationId,
   assetId,
   draft,
@@ -503,15 +583,15 @@ function TransitionPreview({
   player: CuePlayer;
   t: CueEditorT;
 }) {
-  const [next, setNext] = useState<string | null>(null);
+  const [next, setNext] = useState<PickedTrack | null>(null);
   const resolve = useResolveNextTrack(stationId);
   const preview = useMutation({
     mutationFn: async (nextId: string) => {
       const track = await resolve(nextId);
-      if (!track) throw new Error('no audio');
       player.playTransition(transitionPlan(draft, length, sampleRate), track);
     },
-    onError: () => toast.error(t('play.error')),
+    onError: (error) =>
+      toast.error(t(error instanceof NoAudioError ? 'next.noAudio' : 'play.error')),
   });
   return (
     <div className="flex flex-col gap-2">
@@ -533,10 +613,13 @@ function TransitionPreview({
             type="button"
             variant="outline"
             disabled={next === null || preview.isPending}
-            onClick={() => next && preview.mutate(next)}
+            onClick={() => next && preview.mutate(next.id)}
           >
-            <DelayedSpinner when={preview.isPending} data-icon="inline-start" />
-            {!preview.isPending && <PlayIcon data-icon="inline-start" />}
+            {preview.isPending ? (
+              <DelayedSpinner when data-icon="inline-start" />
+            ) : (
+              <PlayIcon data-icon="inline-start" />
+            )}
             {t('next.preview')}
           </Button>
         )}

@@ -47,7 +47,7 @@ describe('cue editor model', () => {
     expect(moveMarker(draft, 'cueIn', SR * 60, LENGTH).cueIn).toEqual({
       samples: SR * 15,
       source: 'manual',
-      locked: false,
+      locked: true,
     });
     expect(moveMarker(draft, 'crossStartNext', LENGTH, LENGTH).crossStartNext.samples).toBe(
       SR * 195,
@@ -55,6 +55,15 @@ describe('cue editor model', () => {
     expect(moveMarker(draft, 'cueOut', 10.6, LENGTH).cueOut.samples).toBe(SR * 190);
     // Without a cue-out, the end of the asset bounds the markers.
     expect(boundsOf(draftOf(null), 'outroStart', LENGTH)).toEqual([0, LENGTH]);
+  });
+
+  it('sends a moved point unlocked when the person unlocked it again', () => {
+    const saved = draftOf(cues());
+    const draft = setLocked(moveMarker(saved, 'introEnd', SR * 20, LENGTH), 'introEnd', false);
+    expect(patchOf(saved, draft, SR)).toEqual({
+      sampleRate: SR,
+      introEnd: { samples: SR * 20, locked: false },
+    });
   });
 
   it('sends only what changed, moved points locked', () => {
@@ -73,8 +82,12 @@ describe('cue editor model', () => {
     // Moving a point back where it was is no change.
     expect(isDirty(saved, moveMarker(draft, 'cueIn', SR, LENGTH))).toBe(true);
     const back = setLocked(
-      { ...moveMarker(draft, 'cueIn', SR, LENGTH), introEnd: saved.introEnd },
-      'fadeOut',
+      setLocked(
+        { ...moveMarker(draft, 'cueIn', SR, LENGTH), introEnd: saved.introEnd },
+        'fadeOut',
+        false,
+      ),
+      'cueIn',
       false,
     );
     expect(isDirty(saved, back)).toBe(false);
@@ -101,5 +114,11 @@ describe('cue editor model', () => {
     const bare = transitionPlan(draftOf(null), LENGTH, SR);
     expect(bare.switchAt).toBe(LENGTH);
     expect(bare.fromSample).toBe(LENGTH - 6 * SR);
+    // A next-track start past cue-out is held at cue-out.
+    const late = {
+      ...draftOf(cues()),
+      crossStartNext: { samples: SR * 199, source: 'auto' as const, locked: false },
+    };
+    expect(transitionPlan(late, LENGTH, SR).switchAt).toBe(SR * 195);
   });
 });

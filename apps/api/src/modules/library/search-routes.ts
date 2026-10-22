@@ -4,6 +4,8 @@ import {
   libraryBulkSchema,
   libraryFacetsQuerySchema,
   libraryFacetsSchema,
+  libraryRandomResultSchema,
+  libraryRandomSchema,
   librarySearchPageSchema,
   librarySearchSchema,
   uuidSchema,
@@ -13,11 +15,11 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
 import { type BulkDeps, bulkEdit } from './search-bulk.ts';
-import { assetActivity, libraryFacets, searchLibrary } from './search-repo.ts';
+import { assetActivity, libraryFacets, randomLibraryItem, searchLibrary } from './search-repo.ts';
 
-// Library screen api (#23), under /api/v1/stations/:stationId/library. Search and facets are
-// POSTs because filters nest; they only read (`library:read`). Bulk edits need
-// `library:write` and audit every asset they change.
+// Library screen api (#23), under /api/v1/stations/:stationId/library. Search, facets and the
+// random pick (#24) are POSTs because filters nest; they only read (`library:read`). Bulk
+// edits need `library:write` and audit every asset they change.
 
 const stationParams = z.object({ stationId: uuidSchema });
 const assetParams = stationParams.extend({ assetId: uuidSchema });
@@ -46,6 +48,19 @@ export async function librarySearchRoutes(
       },
     },
     (request) => searchLibrary(app.db, stationScopeOf(request), request.body),
+  );
+
+  r.post(
+    '/stations/:stationId/library/random',
+    {
+      preHandler: read,
+      schema: {
+        params: stationParams,
+        body: libraryRandomSchema,
+        response: { 200: libraryRandomResultSchema },
+      },
+    },
+    (request) => randomLibraryItem(app.db, stationScopeOf(request), request.body),
   );
 
   r.post(

@@ -45,7 +45,7 @@ export function AssetDrawer({
   const t = useLibraryT();
   // Sections with unsaved edits (the cue editor's): closing the drawer asks first.
   const [dirtySlots, setDirtySlots] = useState<ReadonlySet<string>>(new Set());
-  const { guard, confirmDiscard } = useUnsavedChanges(dirtySlots.size > 0);
+  const { guard, allowLeave, confirmDiscard } = useUnsavedChanges(dirtySlots.size > 0);
   const onDirtyChange = useCallback((slotId: string, dirty: boolean) => {
     setDirtySlots((current) => {
       if (current.has(slotId) === dirty) return current;
@@ -57,7 +57,17 @@ export function AssetDrawer({
   }, []);
   return (
     <>
-      <Sheet open={assetId !== undefined} onOpenChange={(open) => !open && confirmDiscard(onClose)}>
+      <Sheet
+        open={assetId !== undefined}
+        onOpenChange={(open) =>
+          !open &&
+          confirmDiscard(() => {
+            // Closing navigates (drops `?asset=`): past the guard once the person chose to.
+            allowLeave();
+            onClose();
+          })
+        }
+      >
         <SheetContent className="w-full gap-0 overflow-y-auto data-[side=right]:sm:max-w-xl">
           {assetId && (
             <DrawerBody

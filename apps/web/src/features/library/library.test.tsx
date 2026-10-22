@@ -293,6 +293,42 @@ describe('library page', () => {
     }
   });
 
+  it('asks before closing the drawer while a slot has unsaved edits', async () => {
+    const unregister = registerAssetDrawerSlot({
+      id: 'dirty-test',
+      title: { en: 'Dirty', fr: 'Modifié' },
+      replaces: 'cues',
+      Component: ({ onDirtyChange }) => (
+        <button type="button" onClick={() => onDirtyChange?.(true)}>
+          edit
+        </button>
+      ),
+    });
+    try {
+      const { screen, user, history } = renderApp(
+        `/stations/${stationId}/library?asset=${ids[0]}`,
+        routes('programmer'),
+      );
+      const drawer = await screen.findByRole('dialog');
+      await user.click(await within(drawer).findByRole('button', { name: 'edit' }));
+      await user.keyboard('{Escape}');
+      const ask = await screen.findByRole('dialog', { name: 'Leave without saving?' });
+      await user.click(within(ask).getByRole('button', { name: 'Stay' }));
+      expect(history.location.search).toContain(`asset=${ids[0]}`);
+      expect(screen.getByRole('button', { name: 'edit' })).toBeInTheDocument();
+      await user.keyboard('{Escape}');
+      await user.click(
+        within(await screen.findByRole('dialog', { name: 'Leave without saving?' })).getByRole(
+          'button',
+          { name: 'Leave without saving' },
+        ),
+      );
+      await waitFor(() => expect(history.location.search).not.toContain('asset='));
+    } finally {
+      unregister();
+    }
+  });
+
   it('shows the cue points when no slot replaces them', async () => {
     const { screen } = renderApp(
       `/stations/${stationId}/library?asset=${ids[0]}`,

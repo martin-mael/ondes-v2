@@ -5,7 +5,6 @@ import type { Locale } from '../../app/i18n/messages.ts';
 // Strings of the cue editor (#24), English and French. `fr` must have every key.
 
 const en = {
-  title: 'Cue editor',
   waveform: 'Waveform of {title}',
   'peaks.missing': 'The waveform is not ready yet (analysis pending). Cue points are listed below.',
   'peaks.error': "The waveform couldn't be loaded.",
@@ -33,6 +32,7 @@ const en = {
   'point.here': 'Set {field} at the playhead (or the clicked position)',
   'point.clear': 'Clear {field}',
   'point.show': 'Show {field}',
+  'point.locked': '{field} is locked',
 
   'zoom.in': 'Zoom in',
   'zoom.out': 'Zoom out',
@@ -40,6 +40,7 @@ const en = {
   'zoom.hint': 'Wheel to zoom, Shift + wheel to scroll. Drag a marker, or focus it and use ← →.',
 
   'play.start': 'Play from cue in',
+  'play.cursor': 'Play from the cursor',
   'play.stop': 'Stop',
   'play.error': "The audio couldn't be played.",
   'play.noAudio': 'No playout copy yet: nothing to play.',
@@ -48,7 +49,11 @@ const en = {
   'next.random': 'Random',
   'next.pick': 'Choose a track…',
   'next.preview': 'Preview the transition',
-  'next.none': 'No other song in the library.',
+  'next.none': 'No other song with audio in the library.',
+  'next.noMatch': 'No song matches.',
+  'next.search': 'Search songs',
+  'next.noAudio': 'This track has no playout copy any more: pick another one.',
+  'next.more': 'More songs match: type to narrow the list, or draw one at random.',
 
   save: 'Save cue points',
   reset: 'Discard changes',
@@ -61,7 +66,6 @@ const en = {
 export type CueEditorMessageKey = keyof typeof en;
 
 const fr: Record<CueEditorMessageKey, string> = {
-  title: 'Éditeur de cues',
   waveform: 'Forme d’onde de {title}',
   'peaks.missing':
     'La forme d’onde n’est pas encore prête (analyse en cours). Les points de cue sont listés ci-dessous.',
@@ -90,6 +94,7 @@ const fr: Record<CueEditorMessageKey, string> = {
   'point.here': 'Placer {field} à la tête de lecture',
   'point.clear': 'Effacer {field}',
   'point.show': 'Afficher {field}',
+  'point.locked': '{field} est verrouillé',
 
   'zoom.in': 'Zoomer',
   'zoom.out': 'Dézoomer',
@@ -98,6 +103,7 @@ const fr: Record<CueEditorMessageKey, string> = {
     'Molette pour zoomer, Maj + molette pour défiler. Faites glisser un repère, ou sélectionnez-le et utilisez ← →.',
 
   'play.start': "Écouter depuis l'entrée",
+  'play.cursor': 'Écouter depuis le curseur',
   'play.stop': 'Arrêter',
   'play.error': 'Le son n’a pas pu être lu.',
   'play.noAudio': 'Pas encore de copie de diffusion : rien à écouter.',
@@ -106,7 +112,12 @@ const fr: Record<CueEditorMessageKey, string> = {
   'next.random': 'Au hasard',
   'next.pick': 'Choisir un morceau…',
   'next.preview': 'Écouter l’enchaînement',
-  'next.none': 'Aucun autre morceau dans la bibliothèque.',
+  'next.none': 'Aucun autre morceau écoutable dans la bibliothèque.',
+  'next.noMatch': 'Aucun morceau ne correspond.',
+  'next.search': 'Chercher un morceau',
+  'next.noAudio': 'Ce morceau n’a plus de copie de diffusion : choisissez-en un autre.',
+  'next.more':
+    'D’autres morceaux correspondent : tapez pour affiner la liste, ou tirez-en un au hasard.',
 
   save: 'Enregistrer les cues',
   reset: 'Annuler les modifications',
