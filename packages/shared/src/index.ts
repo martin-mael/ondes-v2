@@ -6,6 +6,7 @@ export * from './contracts/cache.ts';
 export * from './contracts/clock-grid.ts';
 export * from './contracts/clocks.ts';
 export * from './contracts/engine.ts';
+export * from './contracts/episode-check.ts';
 export * from './contracts/errors.ts';
 export * from './contracts/events.ts';
 export * from './contracts/health.ts';

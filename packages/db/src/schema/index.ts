@@ -5,6 +5,7 @@ export * from './asrun.ts';
 export * from './cache.ts';
 export * from './clocks.ts';
 export * from './engine.ts';
+export * from './episode-check.ts';
 export * from './feeder.ts';
 export * from './invitations.ts';
 export * from './jobs.ts';

@@ -1,4 +1,11 @@
-import type { EpisodeKind, EpisodeStatus, SlotRule, SlotType, TracklistEntry } from '@ondes/shared';
+import type {
+  EpisodeFallbackPolicy,
+  EpisodeKind,
+  EpisodeStatus,
+  SlotRule,
+  SlotType,
+  TracklistEntry,
+} from '@ondes/shared';
 import { sql } from 'drizzle-orm';
 import {
   type AnyPgColumn,
@@ -80,6 +87,15 @@ export const show = pgTable(
     tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
     /** What the next episode is numbered by default: above every number the show ever used. */
     nextEpisodeNumber: integer('next_episode_number').notNull().default(1),
+    /** What airs when an episode is missing (#47, ADR 0022). */
+    fallbackPolicy: text('fallback_policy')
+      .$type<EpisodeFallbackPolicy>()
+      .notNull()
+      .default('latest_episode'),
+    /** For `fallback_policy = 'episode'`; one of the show's own (checked by the repository). */
+    fallbackEpisodeId: uuid('fallback_episode_id').references((): AnyPgColumn => episode.id, {
+      onDelete: 'set null',
+    }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -94,6 +110,10 @@ export const show = pgTable(
     check('show_default_slot_type_check', sql`${t.defaultSlotType} in ('prerecorded', 'live')`),
     check('show_colour_check', sql`${t.colour} ~ '^#[0-9a-f]{6}$'`),
     check('show_default_duration_check', sql`${t.defaultDurationMs} between 60000 and 86400000`),
+    check(
+      'show_fallback_policy_check',
+      sql`${t.fallbackPolicy} in ('latest_episode', 'episode', 'clock_music', 'none')`,
+    ),
   ],
 );
 

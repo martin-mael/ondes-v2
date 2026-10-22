@@ -1,4 +1,10 @@
-import { createShowSchema, type Show, updateShowSchema } from '@ondes/shared';
+import {
+  createShowSchema,
+  type EpisodeFallbackPolicy,
+  episodeFallbackPolicySchema,
+  type Show,
+  updateShowSchema,
+} from '@ondes/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { type FormEvent, useEffect, useState } from 'react';
 import { Button } from '@/ui/button';
@@ -17,7 +23,7 @@ import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { Textarea } from '@/ui/textarea';
 import { type FieldErrors, FormAlert, fieldErrors } from '../../app/forms.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
-import { hostCandidatesQuery, invalidateShows, showsApi } from './api.ts';
+import { episodesQuery, hostCandidatesQuery, invalidateShows, showsApi } from './api.ts';
 import { useShowT } from './messages.ts';
 
 // Create or edit a show. Hosts are offered to `show:write` only (the api refuses the field to
@@ -32,6 +38,8 @@ interface Draft {
   defaultSlotType: 'prerecorded' | 'live';
   tags: string;
   hostUserIds: string[];
+  fallbackPolicy: EpisodeFallbackPolicy;
+  fallbackEpisodeId: string | null;
 }
 
 const draftOf = (show: Show | undefined): Draft => ({
@@ -43,6 +51,8 @@ const draftOf = (show: Show | undefined): Draft => ({
   defaultSlotType: show?.defaultSlotType ?? 'prerecorded',
   tags: show?.tags.join(', ') ?? '',
   hostUserIds: show?.hosts.map((h) => h.userId) ?? [],
+  fallbackPolicy: show?.fallbackPolicy ?? 'latest_episode',
+  fallbackEpisodeId: show?.fallbackEpisodeId ?? null,
 });
 
 export function ShowFormDialog({
@@ -72,6 +82,11 @@ export function ShowFormDialog({
   const [formError, setFormError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
   const hosts = useQuery({ ...hostCandidatesQuery(stationId), enabled: open && canManage });
+  // Episodes to rerun by name (#47): only an existing show has some, and only with audio.
+  const episodes = useQuery({
+    ...episodesQuery(stationId, show?.id ?? ''),
+    enabled: open && !!show && draft.fallbackPolicy === 'episode',
+  });
 
   useEffect(() => {
     if (open) {
@@ -99,6 +114,8 @@ export function ShowFormDialog({
         .map((tag) => tag.trim())
         .filter(Boolean),
       ...(canManage ? { hostUserIds: draft.hostUserIds } : {}),
+      fallbackPolicy: draft.fallbackPolicy,
+      fallbackEpisodeId: draft.fallbackPolicy === 'episode' ? draft.fallbackEpisodeId : null,
     };
     const parsed = (show ? updateShowSchema : createShowSchema).safeParse(body);
     if (!parsed.success) {
@@ -235,6 +252,48 @@ export function ShowFormDialog({
               />
               <FieldDescription>{t('field.tagsHelp')}</FieldDescription>
             </Field>
+            <Field>
+              <FieldLabel htmlFor="show-fallback">{t('field.fallback')}</FieldLabel>
+              <NativeSelect
+                id="show-fallback"
+                value={draft.fallbackPolicy}
+                onChange={(e) => set('fallbackPolicy', e.target.value as EpisodeFallbackPolicy)}
+              >
+                {episodeFallbackPolicySchema.options.map((policy) => (
+                  <NativeSelectOption key={policy} value={policy}>
+                    {t(`fallback.${policy}`)}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+              <FieldDescription>{t('field.fallbackHelp')}</FieldDescription>
+            </Field>
+            {draft.fallbackPolicy === 'episode' &&
+              (show ? (
+                <Field>
+                  <FieldLabel htmlFor="show-fallback-episode">
+                    {t('field.fallbackEpisode')}
+                  </FieldLabel>
+                  <NativeSelect
+                    id="show-fallback-episode"
+                    value={draft.fallbackEpisodeId ?? ''}
+                    onChange={(e) => set('fallbackEpisodeId', e.target.value || null)}
+                  >
+                    <NativeSelectOption value="">
+                      {t('field.fallbackEpisodeNone')}
+                    </NativeSelectOption>
+                    {episodes.data?.items
+                      .filter((e) => e.assetId || e.id === draft.fallbackEpisodeId)
+                      .map((e) => (
+                        <NativeSelectOption key={e.id} value={e.id}>
+                          {`#${e.number}${e.title ? ` · ${e.title}` : ''}`}
+                        </NativeSelectOption>
+                      ))}
+                  </NativeSelect>
+                  <FieldDescription>{t('field.fallbackEpisodeHelp')}</FieldDescription>
+                </Field>
+              ) : (
+                <FieldDescription>{t('field.fallbackEpisodeOnSave')}</FieldDescription>
+              ))}
             {canManage && (
               <FieldSet>
                 <FieldLegend variant="label">{t('field.hosts')}</FieldLegend>

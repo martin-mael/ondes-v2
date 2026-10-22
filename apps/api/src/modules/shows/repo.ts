@@ -121,6 +121,8 @@ async function toShows(db: Executor, rows: ShowRow[]): Promise<Show[]> {
     tags: r.tags,
     hosts: hosts.get(r.id) ?? [],
     nextEpisodeNumber: r.nextEpisodeNumber,
+    fallbackPolicy: r.fallbackPolicy,
+    fallbackEpisodeId: r.fallbackEpisodeId,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   }));
@@ -219,6 +221,8 @@ async function setHosts(tx: Tx, scope: StationScope, showId: string, userIds: st
 
 export async function createShow(db: Db, ctx: StationContext, input: CreateShow): Promise<Show> {
   const { hostUserIds, ...fields } = createShowSchema.parse(input);
+  // A new show has no episodes yet: nothing to rerun by name.
+  if (fields.fallbackEpisodeId) throw fallbackEpisodeInvalid();
   return withAudit(db, ctx, async (tx, audit) => {
     const [row] = await tx
       .insert(show)
@@ -244,6 +248,8 @@ export async function updateShow(
   const { hostUserIds, ...fields } = updateShowSchema.parse(input);
   return withAudit(db, ctx, async (tx, audit) => {
     const before = await getShow(tx, ctx.scope, showId);
+    if (fields.fallbackEpisodeId)
+      await checkFallbackEpisode(tx, ctx.scope, showId, fields.fallbackEpisodeId);
     if (Object.values(fields).some((v) => v !== undefined)) {
       await tx
         .update(show)
@@ -260,6 +266,25 @@ export async function updateShow(
     return after;
   });
 }
+
+/** The fallback episode (#47) must be one of the show's own. */
+async function checkFallbackEpisode(
+  db: Executor,
+  scope: StationScope,
+  showId: string,
+  episodeId: string,
+) {
+  const [row] = await db
+    .select({ id: episode.id })
+    .from(episode)
+    .where(
+      and(eq(episode.id, episodeId), eq(episode.showId, showId), whereStation(episode, scope)),
+    );
+  if (!row) throw fallbackEpisodeInvalid();
+}
+
+const fallbackEpisodeInvalid = () =>
+  new HttpError(422, 'invalid_fallback_episode', 'the fallback episode must be one of the show’s');
 
 const auditable = ({ hosts, nextEpisodeNumber: _, updatedAt: __, ...s }: Show) => ({
   ...s,
