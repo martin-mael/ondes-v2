@@ -21,6 +21,10 @@ import { registerAssetDrawerSlot } from './drawer-slots.ts';
 import { filterOf } from './filters.ts';
 import { resetUploads } from './uploads.ts';
 
+// The drawer's own sections and a test slot, without the slots features ship (the cue editor,
+// #24, has its own tests).
+vi.mock('../cue-editor/asset-drawer-slot.tsx', () => ({ assetDrawerSlots: [] }));
+
 // The library screen on the whole app with a fake api: list and facets, search and facet
 // filters into the api filter, bulk edits on ids and on "all matching", the asset drawer and
 // its extension slot, uploads with progress and SSE status, and the read-only view.

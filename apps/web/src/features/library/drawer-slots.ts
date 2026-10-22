@@ -45,6 +45,11 @@ export interface AssetDrawerSlotProps {
   canWrite: boolean;
   /** Reloads the asset (drawer) and the library list and counts. */
   refresh: () => Promise<void>;
+  /**
+   * Reports unsaved edits in the section: the drawer then asks before it closes, and the
+   * page before it's left (`useUnsavedChanges`). Stable across renders.
+   */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 export interface AssetDrawerSlot {
