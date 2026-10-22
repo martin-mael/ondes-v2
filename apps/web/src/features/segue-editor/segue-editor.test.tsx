@@ -305,6 +305,53 @@ describe('segue editor', () => {
     expect(await screen.findByRole('dialog', { name: 'Add a voice' })).toBeInTheDocument();
   });
 
+  it('hands the draft to the recorder and gets it back with the take placed', async () => {
+    const take = '01a15ddf-0000-7000-8000-0000000002f2';
+    const put = vi.fn((body: unknown): [number, unknown] => [200, segue(body as object)]);
+    const { screen, user, history } = renderApp(
+      url,
+      routes(segue(), {
+        [`GET ${base}/segues/media`]: [
+          200,
+          {
+            items: {
+              [a.id]: media(a.assetId as string, 200),
+              [b.id]: media(b.assetId as string, 200),
+            },
+            assets: { [vtAsset]: media(vtAsset, 5), [take]: media(take, 4) },
+          },
+        ],
+        [`PUT ${base}/segues/${segue().id}`]: put,
+      }),
+    );
+    await screen.findByText('Voice 1');
+    // An unsaved edit: going to the recorder doesn't ask, the draft goes with it.
+    await user.click(screen.getByRole('button', { name: 'Envelopes' }));
+    await user.click(
+      await screen.findByRole('menuitem', { name: 'Fade out the outgoing song (2 s)' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Record a VT' }));
+    expect(
+      await screen.findByRole('heading', { name: 'Record a VT for this segue' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(history.location.pathname).toBe(`${base}/log/segue/record`);
+    expect(screen.getByText('Fourviere → Saone Drift')).toBeInTheDocument();
+
+    // The recorder's upload brings the take back: placed where it was recorded, from its
+    // first sample, on top of the draft.
+    history.push(`${url}&voice=${take}&at=${-s(4)}`);
+    expect(await screen.findByText('Voice 2')).toBeInTheDocument();
+    await waitFor(() => expect(history.location.search).not.toContain('voice='));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(put).toHaveBeenCalledOnce());
+    expect(put.mock.calls[0]?.[0]).toMatchObject({
+      version: 4,
+      out: { envelope: [{ at: -s(2) }, { at: 0, gainDb: -90 }] },
+      voices: [{ assetId: vtAsset }, { assetId: take, start: -s(4), cueIn: 0 }],
+    });
+  });
+
   it('says when the transition is gone from the log', async () => {
     const { screen } = renderApp(
       `${base}/log/segue?date=2026-10-21&from=${b.id}&to=${a.id}`,

@@ -30,6 +30,7 @@ import { SafetyPage } from '../features/settings/safety/safety-page.tsx';
 import { CalendarPage, calendarViews } from '../features/shows/calendar-page.tsx';
 import { ShowPage } from '../features/shows/show-page.tsx';
 import { ShowsPage } from '../features/shows/shows-page.tsx';
+import { SegueRecorderPage, VtRecorderPage } from '../features/vt-recorder/vt-recorder-page.tsx';
 import { AcceptInvitationPage } from './auth/accept-invitation-page.tsx';
 import { AccountPage } from './auth/account-page.tsx';
 import { AuthLayout } from './auth/auth-layout.tsx';
@@ -305,8 +306,31 @@ const segueRoute = createRoute({
     date: localDateSchema.optional().catch(undefined),
     from: z.uuid().optional().catch(undefined),
     to: z.uuid().optional().catch(undefined),
+    /** A take just recorded (#59) to place as a new voice, at axis position `at`. */
+    voice: z.uuid().optional().catch(undefined),
+    at: z.number().int().optional().catch(undefined),
   }),
   component: SegueEditorPage,
+});
+
+// The VT recorder (#59): a take for the transition `from` → `to`, recorded over its pre-roll,
+// trimmed, uploaded as a `vt` asset and placed back in the segue editor.
+const segueRecordRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'log/segue/record',
+  validateSearch: z.object({
+    date: localDateSchema.optional().catch(undefined),
+    from: z.uuid().optional().catch(undefined),
+    to: z.uuid().optional().catch(undefined),
+  }),
+  component: SegueRecorderPage,
+});
+
+// A standalone VT (a promo, #60), recorded without pre-roll and left in the library.
+const vtRecordRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'voice-tracks/record',
+  component: VtRecorderPage,
 });
 
 const routeTree = rootRoute.addChildren([
@@ -340,6 +364,8 @@ const routeTree = rootRoute.addChildren([
       liveRoute,
       logRoute,
       segueRoute,
+      segueRecordRoute,
+      vtRecordRoute,
     ]),
   ]),
 ]);

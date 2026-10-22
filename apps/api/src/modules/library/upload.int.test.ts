@@ -319,4 +319,20 @@ describe.skipIf(!enabled)('upload api (integration)', () => {
     const song = (await create(10)).id;
     expect((await api('DELETE', `/uploads/${song}`, undefined, presenter)).statusCode).toBe(403);
   });
+
+  it('lets presenters upload the voice tracks they record, and act on their own only', async () => {
+    const vt = { filename: 'take.wav', sizeBytes: 10, assetType: 'vt' };
+    const mine = await api('POST', '/uploads', vt, presenter);
+    expect(mine.statusCode, mine.body).toBe(201);
+    const id = (mine.json() as Upload).id;
+    const parts = await api('POST', `/uploads/${id}/parts`, { partNumbers: [1] }, presenter);
+    expect(parts.statusCode, parts.body).toBe(200);
+    expect((await api('POST', `/uploads/${id}/abort`, undefined, presenter)).statusCode).toBe(200);
+
+    // Someone else's voice track upload: still library:write.
+    const theirs = (await api('POST', '/uploads', vt)).json() as Upload;
+    expect(
+      (await api('POST', `/uploads/${theirs.id}/abort`, undefined, presenter)).statusCode,
+    ).toBe(403);
+  });
 });
