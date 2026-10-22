@@ -27,17 +27,21 @@ const en = {
   'connection.shoutcastOff':
     'Shoutcast (v1) clients would connect on the port + 1 and type username:password as the password, but this station doesn’t listen for them yet: use the Icecast settings.',
   'connection.window':
-    'You can connect from 15 minutes before your show’s slot until it ends. Connecting doesn’t put you on air: the station switches to you at the slot’s start.',
+    'You can connect from {minutes} minutes before your show’s slot until it ends. Connecting doesn’t put you on air: the station switches to you at the slot’s start.',
+  'connection.noStreamers':
+    'Nobody can go live yet: each DJ connects with their own streamer credentials, made below. There is no shared station password.',
   'connection.copy': 'Copy',
   'connection.copied': 'Copied.',
   'butt.title': 'BUTT',
-  'butt.where': 'Settings → Main → Server → Add',
+  'butt.where': 'Settings → Main → Server: Add',
   'butt.type': 'Type: Icecast',
   'mixxx.title': 'Mixxx',
-  'mixxx.where': 'Preferences → Live Broadcasting',
+  'mixxx.where': 'Options → Preferences → Live Broadcasting',
   'mixxx.type': 'Type: Icecast 2',
   'obs.title': 'OBS',
-  'obs.where': 'Settings → Output → Recording, type “Custom Output (FFmpeg)”',
+  'obs.where':
+    'Settings → Output, Output Mode “Advanced” → Recording, Type “Custom Output (FFmpeg)”',
+  'obs.urlLabel': 'URL',
   'obs.url': 'FFmpeg output type “Output to URL”, URL:',
   'obs.format': 'Container format mp3, audio encoder libmp3lame, then Start Recording.',
 
@@ -123,17 +127,21 @@ const fr: typeof en = {
   'connection.shoutcastOff':
     'Les clients Shoutcast (v1) se connecteraient sur le port + 1 avec identifiant:mot de passe comme mot de passe, mais cette station ne les écoute pas encore : utilisez les réglages Icecast.',
   'connection.window':
-    'Vous pouvez vous connecter 15 minutes avant le créneau de votre émission et jusqu’à sa fin. Vous connecter ne vous met pas à l’antenne : la station bascule sur vous au début du créneau.',
+    'Vous pouvez vous connecter {minutes} minutes avant le créneau de votre émission et jusqu’à sa fin. Vous connecter ne vous met pas à l’antenne : la station bascule sur vous au début du créneau.',
+  'connection.noStreamers':
+    'Personne ne peut encore passer en direct : chaque DJ se connecte avec ses propres identifiants de streamer, créés ci-dessous. Il n’y a pas de mot de passe partagé pour la station.',
   'connection.copy': 'Copier',
   'connection.copied': 'Copié.',
   'butt.title': 'BUTT',
-  'butt.where': 'Settings → Main → Server → Add',
+  'butt.where': 'Settings → Main → Server: Add',
   'butt.type': 'Type : Icecast',
   'mixxx.title': 'Mixxx',
-  'mixxx.where': 'Préférences → Diffusion en direct',
+  'mixxx.where': 'Options → Préférences → Diffusion en direct',
   'mixxx.type': 'Type : Icecast 2',
   'obs.title': 'OBS',
-  'obs.where': 'Paramètres → Sortie → Enregistrement, type « Sortie personnalisée (FFmpeg) »',
+  'obs.where':
+    'Paramètres → Sortie, mode de sortie « Avancé » → Enregistrement, type « Sortie personnalisée (FFmpeg) »',
+  'obs.urlLabel': 'URL',
   'obs.url': 'Type de sortie FFmpeg « Sortie vers une URL », URL :',
   'obs.format':
     'Format de conteneur mp3, encodeur audio libmp3lame, puis Démarrer l’enregistrement.',

@@ -101,6 +101,8 @@ describe('live page', () => {
         ],
       }),
     );
+    expect(await screen.findByText(/Nobody can go live yet/)).toBeTruthy();
+    expect(screen.getByText(/connect from 15 minutes before/)).toBeTruthy();
     await user.click(await screen.findByRole('button', { name: 'New streamer' }));
     const dialog = within(await screen.findByRole('dialog'));
     await user.type(dialog.getByLabelText('Name'), 'Guest DJ');

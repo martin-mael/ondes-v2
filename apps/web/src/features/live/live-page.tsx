@@ -1,4 +1,5 @@
 import {
+  LIVE_EARLY_CONNECT_MS,
   type LiveConnectionInfo,
   rolePermissions,
   type Streamer,
@@ -17,7 +18,7 @@ import { isApiError } from '../../app/api/client.ts';
 import { findStation, useMe, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
-import { ListSkeleton } from '../../app/pending.tsx';
+import { DelayedSpinner, ListSkeleton } from '../../app/pending.tsx';
 import { connectionQuery, invalidateLive, liveApi, streamersQuery } from './api.ts';
 import { type LiveT, useLiveError, useLiveT } from './messages.ts';
 import { ShowChip } from './show-chip.tsx';
@@ -137,7 +138,7 @@ function ConnectionSettings({
           <p>{t('obs.url')}</p>
           <dl>
             <Setting
-              label="URL"
+              label={t('obs.urlLabel')}
               value={`icecast://${user}:${password}@${info.host}:${port}/${info.mount}`}
             />
           </dl>
@@ -146,7 +147,7 @@ function ConnectionSettings({
       </div>
       <ul className="flex list-disc flex-col gap-1 pl-5 text-sm text-muted-foreground">
         <li>{t('connection.formats', { formats: info.formats.join(', ') })}</li>
-        <li>{t('connection.window')}</li>
+        <li>{t('connection.window', { minutes: LIVE_EARLY_CONNECT_MS / 60_000 })}</li>
         <li>
           {info.shoutcastPort === null
             ? t('connection.shoutcastOff')
@@ -163,6 +164,7 @@ function StreamerRow({
   canManage,
   canResetPassword,
   onEdit,
+  busy,
   onNewPassword,
   onDelete,
 }: {
@@ -171,6 +173,8 @@ function StreamerRow({
   canManage: boolean;
   canResetPassword: boolean;
   onEdit(): void;
+  /** The action running on this row, if any. */
+  busy: 'password' | 'delete' | null;
   onNewPassword(): void;
   onDelete(): void;
 }) {
@@ -225,12 +229,14 @@ function StreamerRow({
           </Button>
         )}
         {canResetPassword && (
-          <Button variant="outline" size="sm" onClick={onNewPassword}>
+          <Button variant="outline" size="sm" disabled={busy !== null} onClick={onNewPassword}>
+            <DelayedSpinner when={busy === 'password'} data-icon="inline-start" />
             {t('streamers.newPassword')}
           </Button>
         )}
         {canManage && (
-          <Button variant="ghost" size="sm" onClick={onDelete}>
+          <Button variant="ghost" size="sm" disabled={busy !== null} onClick={onDelete}>
+            <DelayedSpinner when={busy === 'delete'} data-icon="inline-start" />
             {t('streamers.delete')}
           </Button>
         )}
@@ -250,28 +256,36 @@ export function LivePage() {
   const connection = useQuery(connectionQuery(stationId));
   const [editing, setEditing] = useState<Streamer | 'new' | null>(null);
   const [password, setPassword] = useState<StreamerWithPassword | null>(null);
+  const [busy, setBusy] = useState<{ id: string; action: 'password' | 'delete' } | null>(null);
 
   const list = streamers.data?.streamers ?? [];
   const own = list.filter((s) => s.user?.id === access.userId);
   const ownUsername = own.length === 1 ? own[0]?.username : undefined;
 
   const newPassword = async (s: Streamer) => {
+    // window.confirm, like the other destructive actions (shows' delete).
     if (!window.confirm(t('streamers.newPasswordConfirm', { name: s.displayName }))) return;
+    setBusy({ id: s.id, action: 'password' });
     try {
       setPassword(await liveApi.setPassword(stationId, s.id));
       await invalidateLive(queryClient, stationId);
     } catch (error) {
       toast.error(liveError(error));
+    } finally {
+      setBusy(null);
     }
   };
   const remove = async (s: Streamer) => {
     if (!window.confirm(t('streamers.deleteConfirm', { name: s.displayName }))) return;
+    setBusy({ id: s.id, action: 'delete' });
     try {
       await liveApi.remove(stationId, s.id);
       await invalidateLive(queryClient, stationId);
       toast.success(t('streamers.deleted'));
     } catch (error) {
       toast.error(liveError(error));
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -301,7 +315,14 @@ export function LivePage() {
         ) : connection.isError ? (
           <FormAlert error={connection.error} />
         ) : (
-          <ConnectionSettings info={connection.data} username={ownUsername} t={t} />
+          <>
+            {access.canManage && streamers.isSuccess && list.length === 0 && (
+              <Alert>
+                <AlertDescription>{t('connection.noStreamers')}</AlertDescription>
+              </Alert>
+            )}
+            <ConnectionSettings info={connection.data} username={ownUsername} t={t} />
+          </>
         )}
       </section>
 
@@ -332,6 +353,7 @@ export function LivePage() {
                     canResetPassword={
                       access.canManage || (access.canBroadcast && s.user?.id === access.userId)
                     }
+                    busy={busy?.id === s.id ? busy.action : null}
                     onEdit={() => setEditing(s)}
                     onNewPassword={() => newPassword(s)}
                     onDelete={() => remove(s)}

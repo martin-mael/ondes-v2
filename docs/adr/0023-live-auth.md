@@ -27,10 +27,11 @@ another tenant's show.
   by the create and "new password" calls and never again. A manager may type one instead
   (12+ characters). DJ software stores the password in clear, so a long random one costs nothing.
 - **Audit:** create, update, new password and delete are audited like every mutation; the diff
-  never carries the password or its hash (`password: set | generated`). Accepted logins are
-  audited as `streamer.connect` (actor `system:engine`, the source address) and stamp
-  `last_connected_at`. Refused logins are only logged: the live port is public, and a flood of
-  bad logins must not fill the audit log.
+  never carries the password or its hash (`password: set | generated`). Accepted logins stamp
+  `last_connected_at` and are audited as `streamer.connect` (actor `system:engine`, the source
+  address), at most once per 10 minutes per streamer: DJ software reconnects in a loop after a
+  network drop. Refused logins are only logged: the live port is public, and a flood of bad
+  logins must not fill the audit log.
 
 ### The callback: `POST /internal/engine/stations/:stationId/live-auth`
 The lifecycle renders `live.authUrl` into every station's script (`engineSettingsFor`), so the
@@ -49,12 +50,34 @@ A login passes when, in order:
    occurrences come from the shows module (`getOccurrences`), station time and DST included.
 
 200 accepts; 403 refuses, with the reason logged, never returned. A per-api-replica limiter
-refuses an address after 10 failed logins in 10 minutes without checking the password (argon2
-is deliberately slow and the port public). It throttles guessing; it is not an account lockout,
-which anyone could use to lock a DJ out before their show.
+brakes guessing (argon2 is deliberately slow and the port public): after 10 failed logins in 10
+minutes for one **station, username and source address**, that key gets one password check per
+30 s instead of one per attempt. The DJ with the right password still gets in within 30 s, and
+other DJs behind the same venue address aren't affected: it is a brake, not an account lockout,
+which anyone could use to lock a DJ out before their show. A login without an address gets its
+own bucket per username. The limiter keeps at most 10,000 keys, dropping the least recently
+failed one first, so a flood of addresses costs O(1) per attempt and bounded memory.
 
 Connecting is not going on air: Node still opens the live gate (`POST /v1/live`), at a live
 slot's start (#65) or by hand (#64).
+
+### Revocation
+The callback only runs when a source connects, so a streamer disabled, deleted or expiring
+mid-set would keep streaming. `revoke.ts` acts on the connection that is already up:
+- disabling or expiring a streamer through the api (`PATCH`), and deleting it, revoke it at once;
+- a sweep every 30 s (each api replica; idempotent) revokes streamers whose expiry passed in the
+  last 10 minutes.
+
+Revoking means **closing the live gate** through the engine adapter (`setLive(false)`), audited
+as `streamer.revoke`: the DJ is off air immediately and automation takes the air back. It is
+not a disconnect: the source stays connected (and holds the station's single live input) until
+it hangs up. Disconnecting it needs an engine command (`input.harbor`'s `stop`) that the harbor
+pool (#64) adds; it plugs in behind the `LiveEngine` interface. Revocation only acts on the
+streamer holding the input: the engine doesn't say who connected, so that is the station's most
+recent accepted login while the engine reports a connected source. #64/#65 must check the
+holder is still allowed (`liveHolder` + its status) before opening the gate. A new password
+doesn't revoke: a DJ who resets their own password mid-set stays on air, and the new one applies
+from their next connection.
 
 ### Shoutcast clients
 Shoutcast (ICY) sources send no username. When the login name is empty or a placeholder
@@ -76,8 +99,12 @@ it into BUTT, Mixxx and OBS settings.
 make a new password for those.
 
 ## Consequences
-- An engine started before this change keeps the shared password until it is re-rendered
-  (restart, or any reconcile). Station managers must create streamers before their DJs' next set.
+- **The shared password goes.** Once an engine is re-rendered (restart, or any reconcile), the
+  station's `ENGINE_LIVE_PASSWORD` no longer works. Nobody depends on it: the lifecycle generates
+  it per station and stores it encrypted, and no api route or page ever showed it, so no DJ can
+  have been using it. The template still reads it, as the fallback when no auth URL is rendered
+  (tests, a hand-run engine). The Live page tells managers that nobody can go live until they
+  create streamers.
 - `engine/tests/live-auth/run.ts` checks the whole path on the real template and image: good
   credentials connect, wrong, unknown, disabled, out-of-slot and shared-password logins are
   refused, the Shoutcast form connects. It needs the dev Postgres, Docker and ffmpeg, so it's
