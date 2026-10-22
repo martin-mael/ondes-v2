@@ -53,6 +53,7 @@ import {
 import { assetDetailQuery, logDayQuery } from '../log-timeline/api.ts';
 import { AssetPickerDialog } from '../log-timeline/asset-picker.tsx';
 import { hasSegue } from '../log-timeline/item-row.tsx';
+import { PreviewProvider } from '../log-timeline/preview.tsx';
 import { formatClock } from '../log-timeline/time.ts';
 import { segueApi, segueKey, segueMediaQuery, segueQuery } from './api.ts';
 import { useHistory } from './history.ts';
@@ -100,7 +101,7 @@ import { clampAxisView, formatOffset, initialView, padded } from './view.ts';
 const route = getRouteApi('/_app/stations/$stationId/log/segue');
 
 const LANE_HEIGHT = 72;
-const VOICE_HEIGHT = 60;
+const VOICE_HEIGHT = 76;
 const PREROLL_S = [2, 5, 10, 20] as const;
 /** Zoom per step of the toolbar buttons and keys; pinch and Ctrl-scroll zoom continuously. */
 const ZOOM_STEP = 1.5;
@@ -188,15 +189,18 @@ export function SegueEditorPage() {
     return problem(<p className="text-sm text-muted-foreground">{t('notTransition')}</p>);
   }
   return (
-    <Editor
-      stationId={stationId}
-      timeZone={timeZone}
-      canWrite={canWrite}
-      a={a}
-      b={b}
-      segue={segue.data}
-      back={back}
-    />
+    // The voice picker is the timeline's, whose rows have their own listen buttons.
+    <PreviewProvider stationId={stationId}>
+      <Editor
+        stationId={stationId}
+        timeZone={timeZone}
+        canWrite={canWrite}
+        a={a}
+        b={b}
+        segue={segue.data}
+        back={back}
+      />
+    </PreviewProvider>
   );
 }
 
@@ -333,6 +337,11 @@ function Editor({
   const [preroll, setPreroll] = useState<number>(5);
 
   const play = async (from: number) => {
+    // Playing from off screen: bring the start into view, a fifth from the left.
+    if (from < view.fromSample || from > view.toSample) {
+      const span = view.toSample - view.fromSample;
+      setView({ fromSample: from - span / 5, toSample: from + (span * 4) / 5 });
+    }
     // `player.play` stops what plays first (its `onEnd` sets idle), then loads: say so after.
     const started = player.play(clips, from, () => {
       setPhase('idle');

@@ -295,6 +295,16 @@ describe('segue editor', () => {
     expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument();
   });
 
+  it('opens the voice picker', async () => {
+    const { screen, user } = renderApp(url, {
+      ...routes(segue()),
+      [`GET ${base}/assets`]: [200, { items: [], nextCursor: null }],
+    });
+    await screen.findByText('Voice 1');
+    await user.click(screen.getByRole('button', { name: 'Add a voice' }));
+    expect(await screen.findByRole('dialog', { name: 'Add a voice' })).toBeInTheDocument();
+  });
+
   it('says when the transition is gone from the log', async () => {
     const { screen } = renderApp(
       `${base}/log/segue?date=2026-10-21&from=${b.id}&to=${a.id}`,
