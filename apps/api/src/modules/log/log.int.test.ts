@@ -25,7 +25,6 @@ import {
 import {
   type Actor,
   addDays,
-  LOG_TRANSITION_MS,
   type LogItem,
   type LogRangeResponse,
   localDateOf,
@@ -239,13 +238,8 @@ describe('log reads', () => {
       '2026-10-25T00:00:00.000Z',
       '2026-10-25T01:00:00.000Z',
     ]);
-    // Segments come with their parts and asset summaries.
-    const seg = day.items.find((i) => i.kind === 'segment') as LogItem;
-    expect(seg.parts).toHaveLength(3);
-    expect(seg.parts[1]?.asset?.type).toBe('vt');
-    expect(seg.plannedDurationMs).toBe(
-      seg.parts.reduce((n, p) => n + p.plannedDurationMs, 0) + LOG_TRANSITION_MS,
-    );
+    // Voice tracks are segue lanes now (the seed creates them): the fixture has no segments.
+    expect(day.items.some((i) => i.kind === 'segment')).toBe(false);
     expect(day.items.some((i) => i.segmentId !== null)).toBe(false);
 
     // The hour around the switch, starting mid-item: the item on air at `from` is included.
