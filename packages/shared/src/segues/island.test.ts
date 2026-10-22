@@ -5,11 +5,11 @@ import {
   islandSpecSchema,
   islandStorageKey,
 } from '../contracts/segues.ts';
+import { envelopeGainAt } from './gain.ts';
 import {
   checkSegue,
   clipEnvelope,
   deriveIslands,
-  envelopeGainAt,
   type IslandMedia,
   type IslandPlan,
   type IslandSegueInput,
