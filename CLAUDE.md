@@ -34,7 +34,8 @@ apps/
   worker/src/
     jobs/<job>/         # one folder per job type: ingest, loudness, autocue, analysis,
                         # peaks, dedupe, cache-sync (+ cache-fetch, its urgent
-                        # one-file variant), log-generate, island-render, …
+                        # one-file variant), episode-check, log-generate,
+                        # island-render, …
   web/src/
     app/                # shell, routing (router.tsx), auth pages, layout, api client,
                         # SSE client (sse/), i18n

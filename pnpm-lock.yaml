@@ -172,6 +172,9 @@ importers:
       '@ondes/queue':
         specifier: workspace:*
         version: link:../../packages/queue
+      '@ondes/scheduling':
+        specifier: workspace:*
+        version: link:../../packages/scheduling
       '@ondes/shared':
         specifier: workspace:*
         version: link:../../packages/shared

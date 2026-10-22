@@ -55,6 +55,8 @@ const show = (overrides: Partial<Show> = {}): Show => ({
   tags: ['talk'],
   hosts: [{ userId: me.user.id, name: 'Camille Dj' }],
   nextEpisodeNumber: 13,
+  fallbackPolicy: 'latest_episode',
+  fallbackEpisodeId: null,
   createdAt: new Date(at),
   updatedAt: new Date(at),
   ...overrides,
@@ -186,6 +188,8 @@ describe('shows list', () => {
       defaultSlotType: 'prerecorded',
       tags: ['talk', 'news'],
       hostUserIds: [me.user.id],
+      fallbackPolicy: 'latest_episode',
+      fallbackEpisodeId: null,
     });
     expect(await screen.findByRole('heading', { name: 'La Matinale' })).toBeVisible();
   });
@@ -235,6 +239,37 @@ describe('show page', () => {
     expect(created).toHaveLength(2);
     expect(created[0]).toMatchObject({ slotId: otherSlotId });
     expect(created[1]).toMatchObject({ slotId });
+  });
+
+  it('sets the missing-episode fallback to a chosen episode with audio', async () => {
+    const aired = episode({ id: newEpisodeId, number: 11, title: 'Best of', assetId });
+    const { screen, user, calls } = renderApp(
+      showBase,
+      showRoutes('presenter', {
+        [`GET ${showBase}/episodes`]: [200, { items: [episode(), aired] }],
+        [`GET ${base}/show-occurrences`]: occurrences([]),
+        [`PATCH ${showBase}`]: [
+          200,
+          show({ fallbackPolicy: 'episode', fallbackEpisodeId: newEpisodeId }),
+        ],
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Edit' }));
+    const policy = await screen.findByLabelText('If an episode is missing');
+    expect(policy).toHaveValue('latest_episode');
+    await user.selectOptions(policy, 'episode');
+    const chosen = await screen.findByLabelText('Episode to rerun');
+    // Only episodes with audio can stand in.
+    expect(await screen.findByRole('option', { name: '#11 · Best of' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: '#12 · Spécial rentrée' })).toBeNull();
+    await user.selectOptions(chosen, newEpisodeId);
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === 'PATCH' && c.path === showBase)?.body).toMatchObject({
+        fallbackPolicy: 'episode',
+        fallbackEpisodeId: newEpisodeId,
+      }),
+    );
   });
 
   it('uploads an airing’s episode as a presenter: creates it, uploads, attaches', async () => {
