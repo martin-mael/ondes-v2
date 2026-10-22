@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { localDateSchema, logItemKindSchema } from './log.ts';
+import { localDateSchema, logItemKindSchema, logItemTimingSchema } from './log.ts';
 import { episodeFallbackKindSchema } from './shows.ts';
 import { uuidSchema } from './tenancy.ts';
 
@@ -132,3 +132,80 @@ export const asRunListSchema = z.object({
   nextCursor: z.string().nullable(),
 });
 export type AsRunList = z.infer<typeof asRunListSchema>;
+
+// --- Log vs as-run (#53, ADR 0029) -------------------------------------------------------
+
+/**
+ * One row of the plan-vs-aired overlay:
+ * - `aired`: a planned item aired (its entry's `outcome` says whether whole, cut or skipped);
+ * - `replaced`: something else aired for it: the entry's asset isn't the plan's, or it never
+ *   aired and off-plan audio (safety, emergency, an unplanned push, a live takeover) held its
+ *   slot (`replacedBy`);
+ * - `fallback`: it aired as the fallback of a missing episode (#47, the entry's `fallback`);
+ * - `missed`: planned, its slot is over, nothing aired for it and nothing off-plan held it;
+ * - `pending`: planned, its slot isn't over yet;
+ * - `live`: a live DJ was on air (in a live slot of the plan, or not);
+ * - `safety` / `emergency`: the station's safety playlist or emergency file (the engine's own
+ *   fallbacks when the log ran dry or the engine failed);
+ * - `unplanned`: aired from the log, but no item of today's plan matches it (the day was
+ *   regenerated, or the item deleted); the entry's own plan snapshot says what it was.
+ */
+export const asRunOverlayStatusSchema = z.enum([
+  'aired',
+  'replaced',
+  'fallback',
+  'missed',
+  'pending',
+  'live',
+  'safety',
+  'emergency',
+  'unplanned',
+]);
+export type AsRunOverlayStatus = z.infer<typeof asRunOverlayStatusSchema>;
+
+/** The log item a row is about, as the log has it now. */
+export const asRunOverlayPlanSchema = z.object({
+  logItemId: uuidSchema,
+  /** The island segment this item is a part of (the row is for that part). */
+  segmentId: uuidSchema.nullable(),
+  kind: logItemKindSchema,
+  plannedStart: isoTime,
+  plannedDurationMs: z.int().nonnegative(),
+  timing: logItemTimingSchema,
+  assetId: uuidSchema.nullable(),
+  /** The item's title, else its asset's. */
+  title: z.string().nullable(),
+  artists: z.array(z.string()),
+});
+export type AsRunOverlayPlan = z.infer<typeof asRunOverlayPlanSchema>;
+
+export const asRunOverlayRowSchema = z.object({
+  status: asRunOverlayStatusSchema,
+  /** Where the row sits in the day: when it aired, else its planned start. */
+  at: isoTime,
+  /** Null for off-plan audio (`live` outside a live slot, `safety`, `emergency`, `unplanned`). */
+  plan: asRunOverlayPlanSchema.nullable(),
+  /** What aired. Null for `missed`, `pending`, and a `replaced` item that never aired. */
+  entry: asRunEntrySchema.nullable(),
+  /** `replaced` without an entry: the off-plan entries that held its slot, in air order. */
+  replacedBy: z.array(uuidSchema),
+  /** The plan item aired more than once (e.g. again after an engine restart): a later airing. */
+  repeat: z.boolean(),
+});
+export type AsRunOverlayRow = z.infer<typeof asRunOverlayRowSchema>;
+
+/** `GET …/asrun/overlay?date`: the station-local day. */
+export const asRunOverlayQuerySchema = z.object({ date: localDateSchema });
+export type AsRunOverlayQuery = z.input<typeof asRunOverlayQuerySchema>;
+
+export const asRunOverlaySchema = z.object({
+  date: localDateSchema,
+  /** The station-local day in UTC, `[from, to)` (23–25 h around DST). */
+  from: isoTime,
+  to: isoTime,
+  /** The api's clock: plan items whose slot ends after it are `pending`. */
+  now: isoTime,
+  /** Air order (`at`); a plan item's rows stay next to it. */
+  rows: z.array(asRunOverlayRowSchema),
+});
+export type AsRunOverlay = z.infer<typeof asRunOverlaySchema>;

@@ -42,6 +42,7 @@ import {
   type PickKind,
 } from './asset-picker.tsx';
 import { DayStrip } from './day-strip.tsx';
+import { LogHistory, TimelineViewTabs, useTimelineView } from './history/history-view.tsx';
 import { type ItemAction, ItemRow, itemTitle } from './item-row.tsx';
 import { type TimelineMessageKey, type TimelineT, useTimelineT } from './messages.ts';
 import {
@@ -115,6 +116,7 @@ function Timeline() {
   const today = stationDate(now, timeZone);
   const date: LocalDate = search.date ?? today;
   const live = { now, ...useTimelineLive(stationId, date, timeZone) };
+  const [view, setView] = useTimelineView(date, today);
   const { start: dayStart, end: dayEnd } = dayBounds(date, timeZone);
 
   const log = useQuery(logDayQuery(stationId, date, timeZone));
@@ -346,6 +348,7 @@ function Timeline() {
       </header>
 
       <div className="flex flex-wrap items-center gap-3 text-sm">
+        {date <= today && <TimelineViewTabs value={view} onChange={setView} />}
         {day && (
           <Badge variant={day.status === 'published' ? 'default' : 'outline'}>
             {t(day.status === 'published' ? 'day.published' : 'day.draft')}
@@ -387,7 +390,14 @@ function Timeline() {
         />
       )}
 
-      {log.isPending ? (
+      {view === 'history' ? (
+        <LogHistory
+          stationId={stationId}
+          date={date}
+          timeZone={timeZone}
+          isToday={date === today}
+        />
+      ) : log.isPending ? (
         <ListSkeleton />
       ) : log.isError ? (
         isApiError(log.error, 'forbidden') ? (

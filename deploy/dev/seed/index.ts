@@ -20,6 +20,7 @@ import {
   runMigrations,
 } from '../../../packages/db/src/index.ts';
 import type { Actor } from '../../../packages/shared/src/index.ts';
+import { seedAsRunFixture } from './asrun-fixture.ts';
 import { seedLogFixture } from './log-fixture.ts';
 
 export const demo = {
@@ -57,10 +58,11 @@ async function seed(databaseUrl: string): Promise<void> {
     const fixture = await seedLogFixture(db, actor, stationScope, st.timezone, {
       force: process.env.LOG_FIXTURE_FORCE === '1',
     });
+    const asRun = await seedAsRunFixture(db, stationScope, st.timezone);
 
     console.log(
       `dev:seed: org "${org.slug}" (${org.id}), station "${st.slug}" (${st.id}, ${st.timezone}), ` +
-        `user ${user.email} (owner); ${fixture}.`,
+        `user ${user.email} (owner); ${fixture}; ${asRun}.`,
     );
   } finally {
     await close();
