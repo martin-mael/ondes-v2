@@ -30,7 +30,7 @@ apps/
     plugins/            # fastify plugins: db, auth, rabbit, sse, errors
     modules/<module>/   # routes.ts, service.ts, repo.ts, *.test.ts
                         # auth, orgs, stations, library, engine, asrun, rotation,
-                        # clocks, shows, log, public, jobs, alerts, cache, segues
+                        # clocks, shows, log, public, jobs, alerts, cache, segues, live
   worker/src/
     jobs/<job>/         # one folder per job type: ingest, loudness, autocue, analysis,
                         # peaks, dedupe, cache-sync (+ cache-fetch, its urgent
@@ -94,6 +94,7 @@ Every PR must pass, locally and in CI:
 - `pnpm lint` (Biome; `pnpm format` auto-fixes formatting and import order), `pnpm typecheck` and `pnpm test` (unit tests next to the code, `*.test.ts`).
 - `pnpm test:integration` when you touch db, queue, storage or engine: `*.int.test.ts` files, using the `deploy/compose.dev.yml` services.
 - Engine template changes: `pnpm test:engine` (`engine/tests/run.sh`: renders the station template for every settings combination in `engine/tests/template/combos.ts` and runs `liquidsoap --check` on each, in the Liquidsoap image pinned in `deploy/compose.dev.yml`). Needs Docker and `pnpm install`. Then `pnpm test:engine:template` (`engine/tests/template/README.md`): runs the rendered template and checks its control API and a seamless island segment. Needs Docker and `ffmpeg`.
+- Live auth end to end (`engine/tests/live-auth/README.md`): `node engine/tests/live-auth/run.ts`. Needs Docker, `ffmpeg` and the dev Postgres. Run it when you touch the live input, the harbor auth callback (`apps/api/src/modules/live`) or the Liquidsoap version.
 - Island splice regression test (`engine/tests/splice/README.md`): `pnpm test:engine:splice` (full matrix) or `pnpm test:engine:splice --quick` (FLAC cases, what CI runs). Needs Docker and `ffmpeg`. Run it when you touch islands, cue handling or the Liquidsoap version.
 - Ingest and autocue integration tests (`apps/worker/src/jobs/ingest`, `apps/worker/src/jobs/autocue`) run the worker image's ffmpeg (7.1 with libsoxr): `docker build --target ffmpeg -t ondes-ffmpeg:dev -f deploy/docker/worker.Dockerfile .` once, then `PATH=$PWD/apps/worker/test/bin:$PATH pnpm test:integration`. CI does the same.
 - Run one package's tests with `pnpm vitest run apps/api`, or typecheck one package with `pnpm --filter @ondes/api typecheck`. Web tests (`*.test.tsx`, happy-dom) are the `web` Vitest project: `pnpm vitest run --project web`.

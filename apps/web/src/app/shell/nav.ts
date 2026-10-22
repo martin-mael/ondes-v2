@@ -10,6 +10,7 @@ import {
   ListMusicIcon,
   type LucideIcon,
   MicIcon,
+  RadioTowerIcon,
   SlidersHorizontalIcon,
 } from 'lucide-react';
 import type { MessageKey } from '../i18n/messages.ts';
@@ -46,6 +47,12 @@ export const stationNav: NavItem[] = [
     label: 'shell.nav.shows',
     icon: MicIcon,
     permission: 'show:read',
+  },
+  {
+    to: '/stations/$stationId/live',
+    label: 'shell.nav.live',
+    icon: RadioTowerIcon,
+    permission: 'live:read',
   },
   {
     to: '/stations/$stationId/log',
