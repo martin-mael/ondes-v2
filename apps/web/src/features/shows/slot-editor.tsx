@@ -6,6 +6,7 @@ import {
   type Show,
   type ShowSlot,
   type SlotRule,
+  type SlotStartMode,
   type SlotType,
   type Weekday,
 } from '@ondes/shared';
@@ -48,6 +49,9 @@ interface Draft {
   /** Rerun slots (#48): which episode airs again. */
   rerunStrategy: RerunStrategy;
   rerunEpisodeId: string;
+  /** Hard or soft start (#46); a soft start's cap in seconds, empty for the default. */
+  startMode: SlotStartMode;
+  startCapS: string;
 }
 
 function draftOf(show: Show, slot: ShowSlot | undefined, today: string): Draft {
@@ -65,6 +69,18 @@ function draftOf(show: Show, slot: ShowSlot | undefined, today: string): Draft {
     durationMin: String(Math.round(durationMs / 60_000)),
     rerunStrategy: slot?.rerun?.strategy ?? 'latest_episode',
     rerunEpisodeId: (slot?.rerun?.strategy === 'episode' && slot.rerun.episodeId) || '',
+    startMode: slot?.startMode ?? 'hard',
+    startCapS: slot?.startCapMs == null ? '' : String(Math.round(slot.startCapMs / 1000)),
+  };
+}
+
+/** The start policy sent: a cap only with a soft start. */
+function startOf(draft: Draft) {
+  if (draft.startMode === 'hard') return { startMode: 'hard' as const, startCapMs: null };
+  const cap = draft.startCapS.trim();
+  return {
+    startMode: 'soft' as const,
+    startCapMs: cap === '' ? null : Math.round(Number(cap) * 1000),
   };
 }
 
@@ -165,6 +181,7 @@ export function SlotEditorDialog({
       rule: ruleOf(draft),
       durationMs: Math.round(Number(draft.durationMin) * 60_000),
       ...rerunOf(draft),
+      ...startOf(draft),
     };
     const parsed = createShowSlotSchema.safeParse(body);
     if (!parsed.success) {
@@ -372,6 +389,37 @@ export function SlotEditorDialog({
                   onChange={(e) => set('durationMin', e.target.value)}
                 />
               </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Field>
+                <FieldLabel htmlFor="slot-start-mode">{t('slot.start')}</FieldLabel>
+                <NativeSelect
+                  id="slot-start-mode"
+                  value={draft.startMode}
+                  onChange={(e) => set('startMode', e.target.value as SlotStartMode)}
+                >
+                  <NativeSelectOption value="hard">{t('slot.start.hard')}</NativeSelectOption>
+                  <NativeSelectOption value="soft">{t('slot.start.soft')}</NativeSelectOption>
+                </NativeSelect>
+              </Field>
+              {draft.startMode === 'soft' && (
+                <Field data-invalid={invalid.has('startCapMs') ? true : undefined}>
+                  <FieldLabel htmlFor="slot-start-cap">{t('slot.startCap')}</FieldLabel>
+                  <Input
+                    id="slot-start-cap"
+                    type="number"
+                    min={0}
+                    max={600}
+                    inputMode="numeric"
+                    placeholder="30"
+                    value={draft.startCapS}
+                    onChange={(e) => set('startCapS', e.target.value)}
+                  />
+                </Field>
+              )}
+              <FieldDescription className="col-span-2">
+                {t(draft.startMode === 'soft' ? 'slot.startHelp.soft' : 'slot.startHelp.hard')}
+              </FieldDescription>
             </div>
             {slot && <FieldDescription>{t('slot.detachWarning')}</FieldDescription>}
 

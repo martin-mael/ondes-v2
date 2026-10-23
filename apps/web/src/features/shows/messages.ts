@@ -148,6 +148,14 @@ const en = {
   'slot.date': 'Date',
   'slot.time': 'Time',
   'slot.duration': 'Length (min)',
+  'slot.start': 'Start',
+  'slot.start.hard': 'On time',
+  'slot.start.soft': 'After the current item',
+  'slot.startCap': 'Late by at most (s)',
+  'slot.startHelp.hard':
+    'Starts exactly on time: whatever is playing fades out under it. The music before it is planned to end on time.',
+  'slot.startHelp.soft':
+    'Lets the item playing end first, then starts, at most this late. Empty: 30 s.',
   'slot.detachWarning':
     'Episodes planned on airings this change removes are kept, but must be planned again.',
   'slot.exceptions': 'Exceptions',
@@ -428,6 +436,14 @@ const fr: Record<ShowMessageKey, string> = {
   'slot.date': 'Date',
   'slot.time': 'Heure',
   'slot.duration': 'Durée (min)',
+  'slot.start': 'Début',
+  'slot.start.hard': 'À l’heure',
+  'slot.start.soft': 'Après l’élément en cours',
+  'slot.startCap': 'Retard maximal (s)',
+  'slot.startHelp.hard':
+    'Commence pile à l’heure : ce qui passe s’efface en fondu. La musique avant est prévue pour finir à l’heure.',
+  'slot.startHelp.soft':
+    'Laisse finir l’élément en cours, puis commence, avec au plus ce retard. Vide : 30 s.',
   'slot.detachWarning':
     'Les épisodes prévus sur des diffusions que ce changement supprime sont conservés, mais à replanifier.',
   'slot.exceptions': 'Exceptions',

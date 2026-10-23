@@ -8,7 +8,9 @@ import {
   type EnginePushSegmentResult,
   type EngineQueuedRequest,
   type EngineRemoveResult,
+  type EngineSchedule,
   type EngineState,
+  type EngineUnscheduleResult,
   engineErrorSchema,
   engineEventBatchSchema,
   engineHealthSchema,
@@ -20,8 +22,10 @@ import {
   enginePushSegmentSchema,
   engineQueuedRequestSchema,
   engineRemoveResultSchema,
+  engineScheduleSchema,
   engineSkipResultSchema,
   engineStateSchema,
+  engineUnscheduleResultSchema,
 } from '@ondes/shared';
 import { z } from 'zod';
 import {
@@ -73,6 +77,14 @@ export type EngineAdapter = {
   setLive(enabled: boolean, options?: LiveGateOptions): Promise<void>;
   /** Hangs up the DJ on one harbor input (#64). False if nobody was connected there. */
   disconnectLive(input: number): Promise<boolean>;
+  /**
+   * Schedules the hard start the engine plays at `at`, on its own audio timeline (#46). Replaces
+   * the one scheduled before. `EngineUnresolvableError` if the file can't be played. Optional:
+   * test doubles may leave it out, and the feeder then only re-plans the tail.
+   */
+  schedule?(item: EngineSchedule): Promise<EngineQueuedRequest>;
+  /** Cancels the scheduled hard start, if any. */
+  unschedule?(): Promise<EngineUnscheduleResult>;
 };
 
 export type LiveGateOptions = { input?: number; sessionId?: string };
@@ -283,6 +295,23 @@ export function createEngineAdapter(options: EngineAdapterOptions): EngineAdapte
       call(engineRemoveResultSchema, {
         method: 'DELETE',
         path: ENGINE_ROUTES.queue,
+        repeatable: true,
+      }),
+
+    schedule: async (item) =>
+      call(engineQueuedRequestSchema, {
+        method: 'POST',
+        path: ENGINE_ROUTES.schedule,
+        body: command(engineScheduleSchema, item, `POST ${ENGINE_ROUTES.schedule}`),
+        timeoutMs: pushTimeoutMs,
+        // Replacing the schedule with the same item is harmless.
+        repeatable: true,
+      }),
+
+    unschedule: () =>
+      call(engineUnscheduleResultSchema, {
+        method: 'DELETE',
+        path: ENGINE_ROUTES.schedule,
         repeatable: true,
       }),
 

@@ -19,7 +19,7 @@ import type { PickCandidate, PickCategory, PlayedItem } from '../rules/index.ts'
 // do. No I/O: the same snapshot and seed always give the same day.
 
 /** Bumped when the same snapshot and seed would give a different day. Stored on `log_day`. */
-export const GENERATOR_VERSION = '1';
+export const GENERATOR_VERSION = '2';
 
 /** A library asset as the generator sees it: what the rules read, and how long it plays. */
 export interface GeneratorAsset extends PickCandidate {
@@ -66,6 +66,11 @@ export interface GeneratorOccurrence {
    * (#48); null when there is none. Always null for `live`.
    */
   episode: GeneratorEpisode | null;
+  /**
+   * How it takes the air (#46): `hard` at its start (the default), or `soft`, at most `capMs`
+   * late. Absent = hard.
+   */
+  startPolicy?: { mode: 'hard' | 'soft'; capMs: number | null };
 }
 
 /** Why an existing item survives a regeneration with its id. */
@@ -201,6 +206,24 @@ export interface AnchorContext {
   run: readonly PlannedItem[];
   /** Where the run ends as planned (the last item's start plus its duration). */
   runEndsAt: Date;
+  /** Picks under the rotation rules, for a hook that re-plans the run (#46). */
+  tools: AnchorTools;
+}
+
+/**
+ * What `beforeAnchor` may use to change the run with the rules still applying (#46).
+ * `pick`: an asset of `categoryId` for a slot at `at`, among the members `accept` lets through,
+ * picked like any slot (rotation order, rules, relaxation). The pick joins the rules' history,
+ * so later picks see it. Null when nothing is accepted. History is append-only (the picker's
+ * indexes rely on it): an item the hook drops stays in it, as if it had aired, which only makes
+ * later picks rest it a little more.
+ */
+export interface AnchorTools {
+  pick(request: {
+    categoryId: string;
+    at: Date;
+    accept: (asset: GeneratorAsset) => boolean;
+  }): { asset: GeneratorAsset; relaxedRules: RelaxedRule[] } | null;
 }
 
 /** A `vt` placeholder slot of a clock (`mode: 'placeholder'`). */

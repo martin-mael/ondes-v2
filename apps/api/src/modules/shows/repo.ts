@@ -347,6 +347,8 @@ async function toSlots(db: Executor, rows: SlotRow[]): Promise<ShowSlot[]> {
     rule: r.rule,
     durationMs: r.durationMs,
     rerun: toSlotRerun(r),
+    startMode: r.startMode,
+    startCapMs: r.startCapMs,
     exceptions: exceptions.get(r.id) ?? [],
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
@@ -414,6 +416,8 @@ export async function createSlot(
         endsOn: ruleEndDate(parsed.rule),
         durationMs,
         ...(await rerunColumns(tx, ctx.scope, showId, type, parsed.rerun)),
+        startMode: parsed.startMode ?? 'hard',
+        startCapMs: parsed.startCapMs ?? null,
       })
       .returning();
     if (!row) throw new Error('insert returned no row');
@@ -437,8 +441,18 @@ export async function updateSlot(
   return withAudit(db, ctx, async (tx, audit) => {
     const before = await slotRow(tx, ctx.scope, showId, slotId);
     const rule = parsed.rule ?? before.rule;
-    const { rerun, ...fields } = parsed;
+    const { rerun, startMode, startCapMs, ...fields } = parsed;
     const type = parsed.type ?? before.type;
+    // A cap only goes with a soft start: a slot made hard drops it.
+    const mode = startMode ?? before.startMode;
+    const startFields =
+      startMode !== undefined || startCapMs !== undefined
+        ? {
+            startMode: mode,
+            startCapMs:
+              mode === 'soft' ? (startCapMs === undefined ? before.startCapMs : startCapMs) : null,
+          }
+        : {};
     // The strategy is rewritten when it's given or the type changes; else a rerun slot keeps its.
     const rerunFields =
       rerun !== undefined || type !== before.type
@@ -449,6 +463,7 @@ export async function updateSlot(
       .set({
         ...fields,
         ...rerunFields,
+        ...startFields,
         ...(parsed.rule ? { startsOn: ruleStartDate(rule), endsOn: ruleEndDate(rule) } : {}),
       })
       .where(and(eq(showSlot.id, slotId), whereStation(showSlot, ctx.scope)))
