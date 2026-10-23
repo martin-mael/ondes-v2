@@ -1,7 +1,10 @@
 import {
   checkSegue,
+  DEFAULT_DUCK,
+  type DuckPreset,
   dbToAmplitude,
   deriveIslands,
+  duckEnvelopes,
   ENVELOPE_MAX_POINTS,
   ENVELOPE_SILENCE_DB,
   type Envelope,
@@ -183,46 +186,32 @@ export const shiftEnvelope = (envelope: Envelope, by: number): Envelope =>
 
 // --- Presets -----------------------------------------------------------------------------
 
-export interface DuckPreset {
-  depthDb: number;
-  rampMs: number;
-}
+export type { DuckPreset };
 
-/** The owner's default: A and B 8 dB under the voice, 300 ms ramps. */
+/** The owner's default first (`DEFAULT_DUCK`): A and B 8 dB under the voice, 300 ms ramps. */
 export const DUCK_PRESETS: readonly DuckPreset[] = [
-  { depthDb: -8, rampMs: 300 },
+  DEFAULT_DUCK,
   { depthDb: -12, rampMs: 300 },
   { depthDb: -6, rampMs: 500 },
 ];
 
 /**
- * Ducks A and B under the voices: A ramps down to `depthDb` over `rampMs` ending where the
- * first voice starts and holds there to its end; B is at `depthDb` until the last voice ends,
- * then ramps back to 0 dB. Without a voice nothing changes. Replaces both envelopes.
+ * Ducks A and B under the voices (`duckEnvelopes`, shared with the generator's default promo
+ * segues): A ramps down to `depthDb` over `rampMs` ending where the first voice starts and
+ * holds there to its end; B is at `depthDb` until the last voice ends, then ramps back to
+ * 0 dB. Without a voice nothing changes. Replaces both envelopes.
  */
 export function applyDuck(lanes: Lanes, media: LaneMedia, preset: DuckPreset): Lanes {
   const spans = clipsOf(lanes, media)
     .filter((c) => voiceIndex(c.key) !== null)
     .map((c) => ({ start: c.at, end: clipEnd(c) }));
   if (!spans.length) return lanes;
-  const start = Math.min(...spans.map((s) => s.start));
-  const end = Math.max(...spans.map((s) => s.end));
-  const ramp = ms(preset.rampMs);
-  const out: Envelope =
-    start < 0
-      ? [
-          { at: start - ramp, gainDb: 0 },
-          { at: start, gainDb: preset.depthDb },
-        ]
-      : [];
-  const inEnvelope: Envelope =
-    end > lanes.in.start
-      ? [
-          { at: end, gainDb: preset.depthDb },
-          { at: end + ramp, gainDb: 0 },
-        ]
-      : [];
-  return { ...lanes, out: { envelope: out }, in: { ...lanes.in, envelope: inEnvelope } };
+  const ducks = duckEnvelopes(
+    { start: Math.min(...spans.map((s) => s.start)), end: Math.max(...spans.map((s) => s.end)) },
+    lanes.in.start,
+    preset,
+  );
+  return { ...lanes, out: { envelope: ducks.out }, in: { ...lanes.in, envelope: ducks.in } };
 }
 
 /** A fades out to silence over `fadeMs`, ending at its end. */

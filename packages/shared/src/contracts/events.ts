@@ -391,7 +391,8 @@ export type AsRunRealtimeEvent = z.infer<typeof asRunRealtimeEventSchema>;
  * `(station, item, boot)`, so a durable consumer can dedupe. Not the as-run `skipped` outcome
  * (an item that aired under 5 s, #30): a passed-over item never aired and has no as-run row.
  * `reason`: `not_cached` (not in the playout cache), `unresolvable` (the engine refused the
- * file), `no_media_file` (no playout file), `dropped` (removed by a soft or hard anchor).
+ * file), `no_media_file` (no playout file), `dropped` (removed by a soft or hard anchor), `expired`
+ * (a voice track outside its asset's start and kill dates, a promo past its kill date, #60).
  */
 export const feederItemPassedOverEventSchema = z.object({
   ...envelope,
@@ -402,7 +403,7 @@ export const feederItemPassedOverEventSchema = z.object({
     /** The segment it belongs to, when a whole island chain is passed over. */
     segmentId: z.uuid().nullable(),
     plannedStart: isoTime,
-    reason: z.enum(['not_cached', 'unresolvable', 'no_media_file', 'dropped']),
+    reason: z.enum(['not_cached', 'unresolvable', 'no_media_file', 'dropped', 'expired']),
     bootId: z.string().nullable(),
   }),
 });

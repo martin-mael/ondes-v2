@@ -9,6 +9,7 @@ import {
   localDayBounds,
   logKindForSlot,
   type SlotReference,
+  slotPoolId,
   zonedParts,
 } from '@ondes/shared';
 import { expandGrid } from '../grid/index.ts';
@@ -615,11 +616,14 @@ class DayBuilder {
       case 'jingle':
       case 'vt':
       case 'fill': {
-        if (slot.kind === 'vt' && slot.mode === 'placeholder') {
+        // A placeholder, or a promo slot with a VT pool (#60): the hook's to place.
+        const poolId = slotPoolId(slot);
+        if (slot.kind === 'vt' && (slot.mode === 'placeholder' || poolId !== null)) {
           const placed = this.extensions.placeVoiceTrack?.({
             clockId: clock.id,
             slotIndex: index,
             mode: slot.mode,
+            poolId,
             at,
             previous: this.items.at(-1) ?? null,
           });

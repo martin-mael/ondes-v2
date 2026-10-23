@@ -239,6 +239,13 @@
       "when": 1792762562693,
       "tag": "20261023133602_live-switching",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1792776336868,
+      "tag": "20261023172536_promo-vts",
+      "breakpoints": true
     }
   ]
 }

@@ -91,6 +91,7 @@ const en = {
   'passedOver.unresolvable': 'Passed over: the engine refused the file',
   'passedOver.no_media_file': 'Passed over: no playout file',
   'passedOver.dropped': 'Passed over: dropped to meet an anchor',
+  'passedOver.expired': 'Passed over: outside its start and kill dates',
 
   untitled: 'Untitled',
   'segment.parts': '{count} parts',
@@ -263,6 +264,7 @@ const fr: Record<TimelineMessageKey, string> = {
   'passedOver.unresolvable': 'Écarté : le moteur a refusé le fichier',
   'passedOver.no_media_file': 'Écarté : pas de fichier de diffusion',
   'passedOver.dropped': 'Écarté pour tenir un horaire',
+  'passedOver.expired': 'Écarté : hors de ses dates de début et de fin',
 
   untitled: 'Sans titre',
   'segment.parts': '{count} parties',

@@ -559,6 +559,35 @@ describe('clocks API', () => {
     expect(promo.json().error).toBe('unknown_category');
   });
 
+  it('stores a promo slot’s VT pool (#60), checked against the station', async () => {
+    const pool = await call('programmer', 'POST', '/vt-pools', { name: 'Clock pool' });
+    expect(pool.statusCode, pool.body).toBe(201);
+    const poolId = pool.json().id as string;
+    const res = await call('programmer', 'PATCH', `/clocks/${clockId}`, {
+      version,
+      slots: [{ kind: 'vt', mode: 'promo', poolId }],
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json<ClockDetail>();
+    version = body.version;
+    expect(body.slots).toEqual([
+      { kind: 'vt', mode: 'promo', poolId, categoryId: null, label: null, durationMs: null },
+    ]);
+    expect(body.estimate.slots[0]).toEqual({ startMs: 0, durationMs: 0, source: 'default' });
+    expect(body.estimate.warnings.some((w) => w.code === 'missing_reference')).toBe(false);
+    const unknown = await call('programmer', 'PATCH', `/clocks/${clockId}`, {
+      version,
+      slots: [{ kind: 'vt', mode: 'promo', poolId: crypto.randomUUID() }],
+    });
+    expect(unknown.statusCode).toBe(400);
+    expect(unknown.json().error).toBe('unknown_pool');
+    // Deleting the pool leaves the slot without it, and a warning.
+    expect((await call('programmer', 'DELETE', `/vt-pools/${poolId}`)).statusCode).toBe(204);
+    const after = (await call('programmer', 'GET', `/clocks/${clockId}`)).json<ClockDetail>();
+    expect(after.slots[0]).not.toHaveProperty('poolId');
+    expect(after.estimate.warnings).toContainEqual({ code: 'missing_reference', slotIndex: 0 });
+  });
+
   it('lets a read-only principal read and preview, never write', async () => {
     expect((await readOnly('GET', '/clocks')).statusCode).toBe(200);
     expect((await readOnly('GET', `/clocks/${clockId}`)).statusCode).toBe(200);

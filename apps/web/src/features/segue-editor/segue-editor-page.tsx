@@ -444,6 +444,9 @@ function Editor({
       saved.segueId
         ? segueApi.update(stationId, saved.segueId, {
             ...body,
+            // Saved by a person: an `auto` segue (a generated promo's, #60) becomes theirs, and a
+            // regeneration keeps it.
+            origin: 'manual',
             ...(saved.version !== null ? { version: saved.version } : {}),
           })
         : segueApi.create(stationId, { fromItemId: a.id, toItemId: b.id, ...body }),
