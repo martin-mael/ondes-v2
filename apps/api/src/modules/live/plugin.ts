@@ -2,6 +2,10 @@ import { NotFoundError } from '@ondes/db';
 import {
   createStreamerSchema,
   liveConnectionInfoSchema,
+  liveSessionSchema,
+  liveStatusSchema,
+  putLiveOnAirSchema,
+  realtimeEventSchema,
   setStreamerPasswordSchema,
   streamerListSchema,
   streamerSchema,
@@ -15,16 +19,20 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
 import { HttpError } from '../../plugins/errors.ts';
+import { listRunningStationScopes } from '../engine/lifecycle/repo.ts';
 import { createLiveAuthHandler, type LoginFailureLimiter } from './auth.ts';
 import * as repo from './repo.ts';
-import { createLiveRevoker, type LiveEngineLookup, liveHolder } from './revoke.ts';
+import { createLiveRevoker, liveHolder } from './revoke.ts';
+import { createLiveSwitcher, type LiveSwitchEngineLookup } from './switching.ts';
 import { LIVE_AUTH_ROUTE } from './url.ts';
 
-// Live streamers API (#63), under /api/v1/stations/:stationId/live, and the internal harbor
-// auth route the station engines call.
+// Live streamers API (#63) and live switching (#64), under /api/v1/stations/:stationId/live,
+// and the internal harbor auth route the station engines call.
 // - `live:manage` (station managers) creates, edits and deletes streamers and sets passwords.
 // - `live:read` lists streamers and reads the connection info. Without `live:manage`, a user
 //   only sees the streamers linked to them, and with `live:broadcast` may reset their password.
+// - `live:read` also reads the harbor pool's status; `engine:control` puts a connected DJ on
+//   air, hands the air back to automation and hangs a DJ up (#64, ADR 0027).
 
 export type LivePluginOptions = {
   /** Host name DJs connect to. Default: the app URL's host. */
@@ -36,16 +44,22 @@ export type LivePluginOptions = {
   tokenFor?: (stationId: string) => string | undefined | Promise<string | undefined>;
   limiter?: LoginFailureLimiter;
   /**
-   * The station's engine (the lifecycle's `adapterFor`), to take a revoked streamer off air.
-   * Unset: no engines here, nothing to revoke.
+   * The station's engine (the lifecycle's `adapterFor`): live switching, and taking a revoked
+   * streamer off air. Unset: no engines here, nothing to switch or revoke.
    */
-  engineFor?: LiveEngineLookup;
+  engineFor?: LiveSwitchEngineLookup;
   /** How often expired streamers are swept off air. Default 30 s; 0 turns it off (tests). */
   sweepIntervalMs?: number;
+  /**
+   * How often each running station is checked for a DJ waiting in their live slot and for a
+   * session the engine lost (#64). Default 5 s; 0 turns it off (tests).
+   */
+  switchIntervalMs?: number;
 };
 
 const stationParams = z.object({ stationId: z.string() });
 const streamerParams = stationParams.extend({ streamerId: uuidSchema });
+const inputParams = stationParams.extend({ input: z.coerce.number().int().min(1).max(16) });
 const candidatesSchema = z.object({
   users: z.array(z.object({ id: uuidSchema, name: z.string() })),
 });
@@ -56,11 +70,25 @@ export const livePlugin = fp(
     const read = app.requirePermission('live', 'read');
     const manage = app.requirePermission('live', 'manage');
     const publicHost = options.publicHost || new URL(app.auth.config.appUrl).hostname;
+    const control = app.requirePermission('engine', 'control');
     const BASE = '/api/v1/stations/:stationId/live';
+    const rabbit = app.hasDecorator('rabbit') ? app.rabbit : undefined;
+    const switcher = createLiveSwitcher({
+      db: app.db,
+      engineFor: options.engineFor,
+      publish: rabbit ? (event) => rabbit.events.publish(event) : undefined,
+      logger: app.log,
+    });
     const revoker = createLiveRevoker({
       db: app.db,
       engineFor: options.engineFor,
       logger: app.log,
+      endSession: (scope, streamerId) =>
+        switcher.endSessionOf(
+          { actor: { type: 'system', name: 'live' }, scope },
+          streamerId,
+          'revoked',
+        ),
     });
     const ctx = (request: FastifyRequest) => ({
       actor: actorOf(request),
@@ -196,6 +224,89 @@ export const livePlugin = fp(
       },
       (request) => repo.connectionInfo(app.db, stationScopeOf(request), publicHost),
     );
+
+    r.get(
+      `${BASE}/status`,
+      { preHandler: read, schema: { params: stationParams, response: { 200: liveStatusSchema } } },
+      async (request) => {
+        const scope = stationScopeOf(request);
+        const { enabled } = await repo.connectionInfo(app.db, scope, publicHost);
+        return switcher.status(scope, enabled);
+      },
+    );
+
+    // Puts the DJ connected on an input on air (a handover if another DJ is on).
+    r.put(
+      `${BASE}/on-air`,
+      {
+        preHandler: control,
+        schema: {
+          params: stationParams,
+          body: putLiveOnAirSchema,
+          response: { 200: liveSessionSchema },
+        },
+      },
+      (request) => switcher.goLive(ctx(request), request.body.input, 'manual'),
+    );
+
+    // Back to automation: the return file, then the log at the current time.
+    r.delete(
+      `${BASE}/on-air`,
+      { preHandler: control, schema: { params: stationParams } },
+      async (request, reply) => {
+        await switcher.returnToAutomation(ctx(request));
+        return reply.code(204).send();
+      },
+    );
+
+    // Hangs up the DJ on one input of the pool.
+    r.post(
+      `${BASE}/inputs/:input/disconnect`,
+      {
+        preHandler: control,
+        schema: {
+          params: inputParams,
+          response: { 200: z.object({ disconnected: z.boolean() }) },
+        },
+      },
+      async (request) => ({
+        disconnected: await switcher.disconnect(ctx(request), request.params.input),
+      }),
+    );
+
+    if (options.engineFor && rabbit) {
+      const subscription = rabbit.subscribeEvents((raw) => {
+        const event = realtimeEventSchema.safeParse(raw);
+        if (event.success) void switcher.onEvent(event.data);
+      });
+      app.addHook('onClose', async () => {
+        await subscription.close();
+      });
+    }
+
+    const switchMs = options.switchIntervalMs ?? 5_000;
+    if (options.engineFor && switchMs > 0) {
+      let running = false;
+      const timer = setInterval(() => {
+        if (running) return;
+        running = true;
+        (async () => {
+          for (const scope of await listRunningStationScopes(app.db)) {
+            await switcher
+              .sweep(scope)
+              .catch((err: unknown) =>
+                app.log.error({ err, stationId: scope.stationId }, 'Live switching sweep failed'),
+              );
+          }
+        })()
+          .catch((err: unknown) => app.log.error({ err }, 'Live switching sweep failed'))
+          .finally(() => {
+            running = false;
+          });
+      }, switchMs);
+      timer.unref();
+      app.addHook('onClose', () => clearInterval(timer));
+    }
 
     const sweepMs = options.sweepIntervalMs ?? 30_000;
     if (options.engineFor && sweepMs > 0) {

@@ -23,6 +23,7 @@ import { createMemoryMailer } from '../../plugins/mail.ts';
 import { signUpAndLogin, TEST_AUTH_CONFIG, type TestApp } from '../auth/testing.ts';
 import { CONNECT_AUDIT_EVERY_MS, checkLiveLogin, LoginFailureLimiter } from './auth.ts';
 import { createLiveRevoker } from './revoke.ts';
+import type { LiveSwitchEngine } from './switching.ts';
 
 // Live streamers on the real app (#63): CRUD, permissions, tenant isolation, audit without
 // secrets, connection info, and the harbor auth callback against the database.
@@ -39,7 +40,10 @@ let presenterId: string;
 let showId: string;
 let otherShowId: string;
 
-/** A fake engine with a DJ connected and on air, recording live gate commands. */
+/**
+ * A fake engine with a DJ connected and on air, recording live gate commands. It doesn't report
+ * the harbor pool (an engine rendered before #64): revocation falls back to closing the gate.
+ */
 const engine = {
   live: { enabled: true, connected: true, ready: true },
   gate: [] as boolean[],
@@ -49,6 +53,9 @@ const engine = {
   async setLive(enabled: boolean) {
     this.gate.push(enabled);
     this.live.enabled = enabled;
+  },
+  async disconnectLive() {
+    return false;
   },
 };
 
@@ -63,8 +70,10 @@ async function buildTestApp(): Promise<TestApp> {
     live: {
       tokenFor: (stationId) => tokens.get(stationId),
       limiter: new LoginFailureLimiter({ max: 5, probeEveryMs: 60_000 }),
-      engineFor: async (stationId) => (stationId === scope?.stationId ? engine : undefined),
+      engineFor: async (stationId) =>
+        stationId === scope?.stationId ? (engine as unknown as LiveSwitchEngine) : undefined,
       sweepIntervalMs: 0,
+      switchIntervalMs: 0,
     },
     fastify: { logger: false },
   });
@@ -370,6 +379,7 @@ describe('streamers API', () => {
       host: 'app.test',
       port: null,
       mount: 'live',
+      mounts: ['live', 'live-2'],
       shoutcastPort: null,
     });
   });

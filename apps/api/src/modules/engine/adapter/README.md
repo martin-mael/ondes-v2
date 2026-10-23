@@ -5,7 +5,7 @@ One `StationEngine` per station:
 
 | Piece | File | Role |
 |---|---|---|
-| `EngineAdapter` | `adapter.ts` | Typed commands over `fetch`: `health`, `state`, `events(after)`, `push`, `pushSegment`, `remove`, `clear`, `skip`, `setLive`. Bearer token, per-attempt timeouts, zod-checked answers. |
+| `EngineAdapter` | `adapter.ts` | Typed commands over `fetch`: `health`, `state`, `events(after)`, `push`, `pushSegment`, `remove`, `clear`, `skip`, `setLive` (gate, input and live session, #64), `disconnectLive` (hang up one harbor input, #64). Bearer token, per-attempt timeouts, zod-checked answers. |
 | Errors | `errors.ts` | `EngineUnresolvableError` (422: file not in the playout cache, nothing queued), `EngineNotQueuedError` (404), `EngineConflictError` (409: live input disabled), `EngineUnavailableError` (timeout / unreachable), `EngineUnauthorizedError`, `EngineBadRequestError`, `EngineServerError`, `EngineProtocolError`. All extend `EngineError` with a `code`. |
 | Event ingest | `ingest.ts` | Dedupes on `(boot_id, seq)`, backfills gaps and new boots from `GET /v1/events?after=`, publishes domain events, then hands `GET /v1/state` to `onResync`. |
 | Health monitor | `health.ts` | Polls `GET /v1/health`; publishes `engine.up` (first contact, recovery, new boot) and `engine.down` (after `downAfter` failed probes). |
@@ -34,7 +34,7 @@ engines.startAll();
 
 ## Rules for callers
 
-- **Retries.** Reads, `clear` and `setLive` are retried on timeouts and 5xx. `push`, `pushSegment`,
+- **Retries.** Reads, `clear`, `setLive` and `disconnectLive` are retried on timeouts and 5xx. `push`, `pushSegment`,
   `remove` and `skip` are not: repeating them changes what airs. On an `EngineUnavailableError`
   the feeder reconciles from `state()` instead of re-sending blindly.
 - **Timeouts.** 2 s per attempt, 8 s per push (the engine resolves the file before it answers,

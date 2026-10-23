@@ -12,6 +12,8 @@ import {
   engineErrorSchema,
   engineEventBatchSchema,
   engineHealthSchema,
+  engineLiveDisconnectResultSchema,
+  engineLiveDisconnectSchema,
   engineLiveGateSchema,
   enginePushItemSchema,
   enginePushSegmentResultSchema,
@@ -63,9 +65,17 @@ export type EngineAdapter = {
   clear(): Promise<EngineRemoveResult>;
   /** Ends whatever is on air (a whole segment, if one is playing). */
   skip(): Promise<void>;
-  /** Opens or closes the live gate. `EngineConflictError` if live is disabled for the station. */
-  setLive(enabled: boolean): Promise<void>;
+  /**
+   * Opens or closes the live gate. `EngineConflictError` if live is disabled for the station.
+   * Opening may name the harbor input to put on air (default: the first ready one) and the live
+   * session the engine reports on its as-run events (#64).
+   */
+  setLive(enabled: boolean, options?: LiveGateOptions): Promise<void>;
+  /** Hangs up the DJ on one harbor input (#64). False if nobody was connected there. */
+  disconnectLive(input: number): Promise<boolean>;
 };
+
+export type LiveGateOptions = { input?: number; sessionId?: string };
 
 export type EngineAdapterOptions = {
   stationId: string;
@@ -280,13 +290,29 @@ export function createEngineAdapter(options: EngineAdapterOptions): EngineAdapte
       await call(engineSkipResultSchema, { method: 'POST', path: ENGINE_ROUTES.skip });
     },
 
-    async setLive(enabled) {
-      await call(engineLiveGateSchema, {
+    async setLive(enabled, options = {}) {
+      const body = command(
+        engineLiveGateSchema,
+        { enabled, input: options.input, session_id: options.sessionId },
+        `POST ${ENGINE_ROUTES.live}`,
+      );
+      // The engine echoes the gate (selected input, session); nothing to read back here.
+      await call(z.unknown(), { method: 'POST', path: ENGINE_ROUTES.live, body, repeatable: true });
+    },
+
+    async disconnectLive(input) {
+      const { disconnected } = await call(engineLiveDisconnectResultSchema, {
         method: 'POST',
-        path: ENGINE_ROUTES.live,
-        body: { enabled },
+        path: ENGINE_ROUTES.liveDisconnect,
+        body: command(
+          engineLiveDisconnectSchema,
+          { input },
+          `POST ${ENGINE_ROUTES.liveDisconnect}`,
+        ),
+        // Hanging up twice is harmless.
         repeatable: true,
       });
+      return disconnected;
     },
   };
 }

@@ -335,12 +335,17 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
     const livePort = rendered.settings.live.enabled
       ? await allocatePort(ex, scope, 'live', config.livePorts)
       : null;
+    const liveIcyPort =
+      rendered.settings.live.enabled && rendered.settings.live.icy
+        ? await allocatePort(ex, scope, 'live_icy', config.livePorts)
+        : null;
     const { body, specHash } = engineContainerSpec(config, {
       station: { stationId: scope.stationId },
       configVersion: rendered.version,
       script: rendered.script,
       secrets: record.secrets,
       livePort,
+      liveIcyPort,
     });
 
     // The engine says which script it runs: if it answers with another version than the

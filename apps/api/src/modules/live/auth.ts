@@ -243,7 +243,11 @@ export function createLiveAuthHandler(
       return refused;
     }
     limiter.succeed(key);
-    logger.info({ stationId, address, streamerId: result.streamerId }, 'Live login accepted');
-    return { status: 200, body: { ok: true } };
+    logger.info(
+      { stationId, address, input: parsed.data.input, streamerId: result.streamerId },
+      'Live login accepted',
+    );
+    // The engine keeps the id for the input's events and state (harbor pool, #64).
+    return { status: 200, body: { ok: true, streamer_id: result.streamerId } };
   };
 }

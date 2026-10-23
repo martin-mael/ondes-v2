@@ -6,7 +6,7 @@
  */
 
 /** Ports inside the engine container. Fixed: only the host side of live varies. */
-export const ENGINE_PORTS = { control: 7000, metrics: 9599, live: 8005 } as const;
+export const ENGINE_PORTS = { control: 7000, metrics: 9599, live: 8005, liveIcy: 8006 } as const;
 /** Where the station's playout cache is mounted, read-only (ADR 0004). */
 export const ENGINE_CACHE_MOUNT = '/cache';
 /**
@@ -109,6 +109,8 @@ export function checkEngineCreate(
 
   const allowedPorts = [
     `${ENGINE_PORTS.live}/tcp`,
+    // Harbor's Shoutcast (ICY) port, `live + 1`, when the station opens it (#64).
+    `${ENGINE_PORTS.liveIcy}/tcp`,
     ...(policy.allowLoopbackControl ? [`${ENGINE_PORTS.control}/tcp`] : []),
   ];
   if (body.ExposedPorts !== undefined) {

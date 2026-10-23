@@ -12,7 +12,15 @@ describe('stationEngineSettingsSchema', () => {
     const s = stationEngineSettingsSchema.parse(minimal);
     expect(s.control.port).toBe(7000);
     expect(s.metrics.port).toBe(9599);
-    expect(s.live).toEqual({ enabled: true, port: 8005, mount: 'live', buffer: 5, maxBuffer: 10 });
+    expect(s.live).toEqual({
+      enabled: true,
+      port: 8005,
+      mount: 'live',
+      buffer: 5,
+      maxBuffer: 10,
+      inputs: 2,
+      icy: false,
+    });
     expect(s.crossfade.duration).toBe(3);
     expect(s.processing.compressor.enabled).toBe(true);
     expect(s.processing.limiter.enabled).toBe(true);
@@ -66,6 +74,25 @@ describe('stationEngineSettingsSchema', () => {
       live: { enabled: false, port: 7000 },
     });
     expect(off.success).toBe(true);
+    // Shoutcast sources take `port + 1` (#64).
+    const icy = stationEngineSettingsSchema.safeParse({
+      ...minimal,
+      live: { port: 6999, icy: true },
+    });
+    expect(icy.success).toBe(false);
+    expect(
+      stationEngineSettingsSchema.safeParse({ ...minimal, live: { port: 6999 } }).success,
+    ).toBe(true);
+  });
+
+  it('bounds the harbor pool to 1–4 inputs (#64)', () => {
+    for (const inputs of [0, 5, 1.5])
+      expect(stationEngineSettingsSchema.safeParse({ ...minimal, live: { inputs } }).success).toBe(
+        false,
+      );
+    expect(
+      stationEngineSettingsSchema.safeParse({ ...minimal, live: { inputs: 4, icy: true } }).success,
+    ).toBe(true);
   });
 
   it('needs at least one output and a live buffer below its maximum', () => {
