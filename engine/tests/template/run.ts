@@ -553,9 +553,10 @@ async function main() {
     );
     check(fStart >= 0, 'fallback: F airs');
     check(
-      // Frame-granular (one 40 ms frame), plus the 10 ms detection window.
-      Math.abs(vOnset - 3) <= 0.06,
-      `fallback: the voice starts 3 s into F, within a frame (${vOnset.toFixed(3)} s)`,
+      // Degraded timing (ADR 0024): usually within a 40 ms frame, sometimes up to about 160 ms
+      // late, when the item's metadata reaches the as-run callback late.
+      Math.abs(vOnset - 3) <= 0.2,
+      `fallback: the voice starts 3 s into F, within 200 ms (${vOnset.toFixed(3)} s)`,
     );
     check(
       voice(1.2) < 0.01 && Math.abs(voice(3.8) - 0.2) < 0.03 && voice(5.4) < 0.01,

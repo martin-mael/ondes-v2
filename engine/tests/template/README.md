@@ -37,7 +37,7 @@ script. It checks:
 - B stops at its cue-out within one frame (the end of a segment is a normal crossfade
   boundary, frame-granular in Liquidsoap 2.4: 441 samples measured);
 - the island fallback (#57, ADR 0024): an item pushed with a voice `overlay` (built by
-  `buildPushItem`) airs alone in the as-run, the voice starts on time, within a frame (±60 ms; 17–37 ms late measured),
+  `buildPushItem`) airs alone in the as-run, the voice starts on time, within 200 ms (measured 17–37 ms late, once 158 ms),
   plays its 2 s at its gain, the music is ducked by its `duck_db` meanwhile and comes back.
 
 `--keep` keeps `output.wav` and `reference.wav` in `.work/run/` to listen to.

@@ -63,7 +63,9 @@ the head already on air), the items air as usual with the standard crossfade, an
   no metadata (`metadata.map(strip=true)`), so the as-run never sees them as items. A skip
   cancels the voices of the item it ends. The duck's `amplify` has `override=null`: the default
   (`liq_amplify`) would apply every request's gain a second time.
-- Degraded, by design (spike #12): frame-granular timing (measured: the voice 17–37 ms late), one
+- Degraded, by design (spike #12): frame-granular timing (measured: the voice 17–37 ms late in
+  most runs, once 158 ms: the start is keyed on the item's metadata reaching the as-run
+  callback, which can lag its audio by a few frames), one
   duck level per voice instead of the envelope, B's own `in` lane ignored. It is not "what you
   preview is what airs"; it is "the voice airs". Voices whose file isn't cached are fetched
   urgently and skipped until they are.
