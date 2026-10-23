@@ -1,12 +1,12 @@
 import type { LiveStatus } from '@ondes/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { HeadphonesIcon, SquareIcon } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/card';
-import { Skeleton } from '@/ui/skeleton';
 import { API_BASE, isApiError } from '../../../app/api/client.ts';
+import { ListSkeleton } from '../../../app/pending.tsx';
 import { useSse } from '../../../app/sse/sse.tsx';
 import { useAlertT } from '../../alerts/messages.ts';
 import { healthKeys, liveStatusQuery } from './api.ts';
@@ -44,7 +44,7 @@ export function LiveSourcesPanel({ stationId }: { stationId: string }) {
       </CardHeader>
       <CardContent className="text-sm">
         {query.isPending ? (
-          <Skeleton className="h-12 w-full" />
+          <ListSkeleton rows={1} className="[&>*]:h-12" />
         ) : query.data ? (
           <LiveSources stationId={stationId} status={query.data} />
         ) : (
@@ -59,6 +59,11 @@ function LiveSources({ stationId, status }: { stationId: string; status: LiveSta
   const t = useAlertT();
   const [listening, setListening] = useState<number | null>(null);
   const [failed, setFailed] = useState<number | null>(null);
+  // The DJ left (or isn't ready any more): stop, so a reconnect doesn't play without a click.
+  const listenable = status.inputs.find((i) => i.input === listening)?.ready === true;
+  useEffect(() => {
+    if (listening !== null && !listenable) setListening(null);
+  }, [listening, listenable]);
   if (!status.enabled) return <p className="text-muted-foreground">{t('live.disabled')}</p>;
   if (!status.reachable) return <p className="text-muted-foreground">{t('live.unreachable')}</p>;
   const connected = status.inputs.filter((input) => input.connected);

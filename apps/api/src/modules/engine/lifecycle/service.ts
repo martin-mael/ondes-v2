@@ -116,7 +116,10 @@ export type EngineLifecycleOptions = {
   health?: StationEngineOptions['health'];
   /** Station template source; default: read from disk. */
   template?: string;
-  /** Delay between supervisor passes. Default 15 s. */
+  /**
+   * Delay between supervisor passes. Default 5 s (#71: a crash restart is on the dashboard
+   * within about 5 s; a pass is one Docker inspect per station and one container list).
+   */
   superviseIntervalMs?: number;
   /** First retry delay for a station whose reconcile failed; doubles up to 5 min. Default 5 s. */
   retryBaseMs?: number;
@@ -135,7 +138,7 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
   const logger = options.logger ?? silentLogger;
   const guard = options.guard ?? new RestartGuard();
   const template = options.template ?? loadStationTemplate();
-  const superviseIntervalMs = options.superviseIntervalMs ?? 15_000;
+  const superviseIntervalMs = options.superviseIntervalMs ?? 5_000;
   const retryBaseMs = options.retryBaseMs ?? 5_000;
   const now = options.now ?? Date.now;
 

@@ -58,6 +58,16 @@ const en = {
   'type.log.generation_issues': 'Log generation issues',
   'type.live.slot_missed': 'Live slot missed',
 
+  // `details.i18n` of failed renders and engine restarts (#71).
+  islandRenderFailed:
+    'A voice-track transition couldn’t be rendered ({error}). It will air {when} as a plain crossfade with the voice laid over.',
+  islandRenderFailedNoTime:
+    'A voice-track transition couldn’t be rendered ({error}). It will air as a plain crossfade with the voice laid over.',
+  engineRestarted:
+    'The station engine crashed and restarted ({restarts} restarts in the last {minutes} min). The stream may have dropped for a few seconds.',
+  engineRecreated:
+    'The station engine stopped and was recreated ({restarts} restarts in the last {minutes} min). The stream may have dropped for a few seconds.',
+
   // `details.i18n` of log generation alerts (#101).
   'logRegen.issues': 'Log for {date}: {total} generation issues',
 
@@ -174,6 +184,15 @@ const fr: Record<AlertMessageKey, string> = {
   'type.live.slot_missed': 'Créneau direct manqué',
 
   'logRegen.issues': 'Conducteur du {date} : {total} problèmes de génération',
+
+  islandRenderFailed:
+    'Une transition avec voix n’a pas pu être rendue ({error}). Elle passera {when} en simple fondu enchaîné, la voix par-dessus.',
+  islandRenderFailedNoTime:
+    'Une transition avec voix n’a pas pu être rendue ({error}). Elle passera en simple fondu enchaîné, la voix par-dessus.',
+  engineRestarted:
+    'Le moteur de la station a planté et redémarré ({restarts} redémarrages ces {minutes} dernières min). Le flux a pu couper quelques secondes.',
+  engineRecreated:
+    'Le moteur de la station s’est arrêté et a été recréé ({restarts} redémarrages ces {minutes} dernières min). Le flux a pu couper quelques secondes.',
 
   'episodeMissing.ahead': '{show} passe {when} et son épisode n’a pas encore d’audio. {next}',
   'episodeMissing.fallback': '{show} passe {when} sans son épisode : {fallback} à la place.',

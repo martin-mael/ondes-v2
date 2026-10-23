@@ -116,6 +116,11 @@ export function createIslandAlerts(options: IslandAlertsOptions) {
           tailItemId: row.tailItemId,
           airsAt: row.airsAt?.toISOString() ?? null,
           error: row.error,
+          // For the web app to render in the viewer's language (ADR 0035).
+          i18n: {
+            key: 'islandRenderFailed',
+            params: { error: row.error ?? '', airsAt: row.airsAt?.toISOString() ?? null },
+          },
         },
       },
       opts,

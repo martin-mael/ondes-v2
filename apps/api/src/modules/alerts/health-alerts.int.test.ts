@@ -1,12 +1,16 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import {
   addMembership,
+  createAsset,
   createOrganization,
   createStation,
+  episodeCheck,
   island,
   islandUpdatedEvent,
   logDay,
   logItem,
+  putAssetFile,
+  recordCachePass,
   type StationScope,
   unsafeScope,
 } from '@ondes/db';
@@ -17,8 +21,13 @@ import {
   type AlertRealtimeEvent,
   alertRealtimeEventSchema,
   alertTypes,
-  type RaiseAlert,
+  type Episode,
+  localDateOf,
+  type Show,
+  type ShowSlot,
+  zonedParts,
 } from '@ondes/shared';
+import { contentKey } from '@ondes/storage';
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -170,7 +179,11 @@ describe('engine restarts (engine.restarted)', () => {
     expect(alert).toMatchObject({
       severity: 'warning',
       status: 'open',
-      details: { inWindow: 2, crashed: true },
+      details: {
+        inWindow: 2,
+        crashed: true,
+        i18n: { key: 'engineRestarted', params: { restarts: 2, minutes: 10, crashed: true } },
+      },
     });
 
     // Not stable yet with the default 30 min; with 0 it is.
@@ -272,7 +285,11 @@ describe('failed renders (island.render_failed)', () => {
     expect(open).toHaveLength(1);
     expect(open[0]).toMatchObject({
       severity: 'warning',
-      details: { islandId: failed.id, error: 'source is not a 44.1 kHz FLAC' },
+      details: {
+        islandId: failed.id,
+        error: 'source is not a 44.1 kHz FLAC',
+        i18n: { key: 'islandRenderFailed', params: { error: 'source is not a 44.1 kHz FLAC' } },
+      },
     });
 
     const [ready] = await tdb.db
@@ -319,49 +336,121 @@ describe('failed renders (island.render_failed)', () => {
   }, 30_000);
 });
 
-// Missing episodes (#47) and uncached items (#31) are raised by their own modules: their
-// conditions are tested there (shows/episode-check/episode-check.int.test.ts,
-// cache/cache.int.test.ts). Here: that what they raise reaches the fanout within 5 s, and that
-// acknowledging works on them.
-describe.each([
-  {
-    name: 'missing episode',
-    raise: (slotId: string): RaiseAlert => ({
-      type: alertTypes.episodeMissing,
-      severity: 'warning',
-      dedupeKey: `${alertTypes.episodeMissing}:${slotId}:2026-10-24`,
-      title: 'Episode missing',
-      details: {
-        slotId,
-        occurrenceDate: '2026-10-24',
-        i18n: { key: 'episodeMissing.ahead', params: { show: 'Morning', lead: '6h' } },
-      },
-    }),
-  },
-  {
-    name: 'uncached item',
-    raise: (itemId: string): RaiseAlert => ({
-      type: alertTypes.cacheItemMissing,
-      severity: 'critical',
-      dedupeKey: `${alertTypes.cacheItemMissing}:${itemId}`,
-      title: 'Log item not cached',
-      details: { logItemId: itemId },
-    }),
-  },
-])('$name', ({ raise }) => {
-  it('is visible within 5 s and can be acknowledged', async () => {
+// Missing episodes (#47) and uncached items (#31), through their own producers: the episode
+// check's pending step and the cache's alert evaluation, as their timers run them.
+describe('missing episode (show.episode_missing)', () => {
+  it('the T-6h step raises it within 5 s, and it can be acknowledged', async () => {
     const s = await newStation();
-    const since = Date.now();
-    const input = raise(randomUUID());
-    await app.alerts.raise(s.scope, input);
-    const event = await seen(s, 'alert.raised', input.type, since);
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/v1/stations/${s.scope.stationId}/alerts/${event.data.alertId}/acknowledge`,
-      headers: cookieHeader(cookie),
+    const api = async <T>(url: string, payload: object): Promise<T> => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/stations/${s.scope.stationId}${url}`,
+        headers: cookieHeader(cookie),
+        payload,
+      });
+      expect(res.statusCode, res.body).toBe(201);
+      return res.json() as T;
+    };
+    const show = await api<Show>('/shows', { name: 'Matinale', fallbackPolicy: 'latest_episode' });
+    const startsAt = new Date(Math.ceil((Date.now() + 5 * 3_600_000) / 60_000) * 60_000);
+    const slot = await api<ShowSlot>(`/shows/${show.id}/slots`, {
+      type: 'prerecorded',
+      rule: { freq: 'once', ...zonedParts(startsAt, 'Europe/Paris') },
+      durationMs: 3_600_000,
     });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ acknowledgedBy: userId, status: 'open' });
-    await seen(s, 'alert.acknowledged', input.type, since);
+    const date = localDateOf(startsAt, 'Europe/Paris');
+    const premiere = await api<Episode>(`/shows/${show.id}/episodes`, {
+      slotId: slot.id,
+      occurrenceDate: date,
+    });
+    // What the worker records when the step is due.
+    await tdb.db.insert(episodeCheck).values({
+      orgId,
+      stationId: s.scope.stationId,
+      showId: show.id,
+      slotId: slot.id,
+      occurrenceDate: date,
+      step: 't6h',
+      startsAt,
+      endsAt: new Date(startsAt.getTime() + 3_600_000),
+      episodeId: premiere.id,
+    });
+    const since = Date.now();
+    await app.episodeCheck.processPending();
+    const event = await seen(s, 'alert.raised', alertTypes.episodeMissing, since);
+    expect(event.data).toMatchObject({
+      severity: 'warning',
+      details: { i18n: { key: 'episodeMissing.ahead' } },
+    });
+    await acknowledge(s, event.data.alertId, alertTypes.episodeMissing, since);
   }, 30_000);
 });
+
+describe('uncached item (cache.item_missing)', () => {
+  it('an item airing within the hour without its file raises it within 5 s', async () => {
+    const s = await newStation();
+    const ctx = { actor: system, scope: s.scope };
+    const sha256 = randomBytes(32).toString('hex');
+    const asset = await createAsset(tdb.db, ctx, { type: 'song', title: 'Not cached' });
+    await putAssetFile(tdb.db, ctx, asset.id, {
+      role: 'playout',
+      storageKey: contentKey({ orgId, sha256, ext: 'flac' }),
+      sha256,
+      sizeBytes: 1000,
+      codec: 'flac',
+      sampleRate: 44_100,
+      flacBlockSize: 1024,
+    });
+    const now = Date.now();
+    const [day] = await tdb.db
+      .insert(logDay)
+      .values({
+        orgId,
+        stationId: s.scope.stationId,
+        localDate: '2026-12-01',
+        startsAt: new Date(now - 3_600_000),
+        endsAt: new Date(now + 3_600_000),
+      })
+      .returning();
+    if (!day) throw new Error('no day');
+    const [item] = await tdb.db
+      .insert(logItem)
+      .values({
+        orgId,
+        stationId: s.scope.stationId,
+        logDayId: day.id,
+        position: 0,
+        kind: 'song',
+        plannedStart: new Date(now + 30 * 60_000),
+        plannedDurationMs: 180_000,
+        assetId: asset.id,
+        originType: 'manual',
+      })
+      .returning();
+    await recordCachePass(tdb.db, s.scope, {
+      usedBytes: 0,
+      horizonBytes: 1000,
+      deferred: [],
+      diskLow: false,
+    });
+    const since = Date.now();
+    await app.playoutCache.evaluateAlerts(s.scope, new Date(now));
+    const event = await seen(s, 'alert.raised', alertTypes.cacheItemMissing, since);
+    expect(event.data).toMatchObject({
+      severity: 'critical',
+      dedupeKey: `${alertTypes.cacheItemMissing}:${item?.id}`,
+    });
+    await acknowledge(s, event.data.alertId, alertTypes.cacheItemMissing, since);
+  }, 30_000);
+});
+
+async function acknowledge(s: Station, alertId: string, alertType: string, since: number) {
+  const res = await app.inject({
+    method: 'POST',
+    url: `/api/v1/stations/${s.scope.stationId}/alerts/${alertId}/acknowledge`,
+    headers: cookieHeader(cookie),
+  });
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toMatchObject({ acknowledgedBy: userId, status: 'open' });
+  await seen(s, 'alert.acknowledged', alertType, since);
+}

@@ -176,6 +176,15 @@ export function createEngineAlerts(options: EngineAlertsOptions) {
               windowSeconds: event.data.windowSeconds,
               crashed: event.data.crashed,
               bootId: event.data.bootId,
+              // For the web app to render in the viewer's language (ADR 0035).
+              i18n: {
+                key: 'engineRestarted',
+                params: {
+                  restarts: event.data.inWindow,
+                  minutes: Math.round(event.data.windowSeconds / 60),
+                  crashed: event.data.crashed,
+                },
+              },
             },
           },
           opts,

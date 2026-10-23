@@ -73,7 +73,16 @@ export async function listenerHistory(
       avg: sql<number>`sum(${t.listenersSum})::float8 / sum(${t.samples})`,
     })
     .from(t)
-    .where(and(whereStation(t, scope), gte(t.bucketStart, from), lt(t.bucketStart, to)))
+    // Minute buckets only (they're kept 30 days, the range is at most a week): never a mix of
+    // minutes and the hours they were folded into.
+    .where(
+      and(
+        whereStation(t, scope),
+        sql`${t.bucketSeconds} = 60`,
+        gte(t.bucketStart, from),
+        lt(t.bucketStart, to),
+      ),
+    )
     // By position: the bin's parameters would differ from the select's to Postgres.
     .groupBy(sql`1`, sql`2`);
 

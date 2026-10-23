@@ -1,7 +1,7 @@
 import type { EngineStatusView } from '@ondes/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/card';
-import { Skeleton } from '@/ui/skeleton';
+import { ListSkeleton } from '../../../app/pending.tsx';
 import { useSse } from '../../../app/sse/sse.tsx';
 import { type AlertMessageKey, useAlertT } from '../../alerts/messages.ts';
 import { engineStatusQuery, healthKeys } from './api.ts';
@@ -60,7 +60,7 @@ export function EngineStatusPanel({ stationId }: { stationId: string }) {
       </CardHeader>
       <CardContent className="flex flex-col gap-2 text-sm">
         {query.isPending ? (
-          <Skeleton className="h-12 w-full" />
+          <ListSkeleton rows={1} className="[&>*]:h-12" />
         ) : !status || !state ? (
           <p className="text-muted-foreground">{t('engine.unavailable')}</p>
         ) : (

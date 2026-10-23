@@ -3,6 +3,7 @@ import {
   createOrganization,
   createStation,
   recordListenerSamples,
+  streamListenerStat,
   unsafeScope,
 } from '@ondes/db';
 import { createTestDatabase, type TestDatabase } from '@ondes/db/testing';
@@ -134,6 +135,18 @@ describe('listeners', () => {
       // Older than 24 h: out.
       sample(scope.stationId, '/l/mp3', new Date('2026-10-22T11:00:00Z'), 500),
     ]);
+    // An hour bucket in the range (data folded by the downsampling): never mixed in.
+    await tdb.db.insert(streamListenerStat).values({
+      stationId: scope.stationId,
+      mount: '/l/mp3',
+      bucketStart: new Date('2026-10-23T06:00:00Z'),
+      bucketSeconds: 3600,
+      samples: 240,
+      listenersSum: 240 * 999,
+      listenersMax: 999,
+      listenersMin: 999,
+      sourceSamples: 240,
+    });
     const history = listenerHistorySchema.parse(await listenerHistory(tdb.db, scope, 24, now));
     expect(history.stepSeconds).toBe(300);
     expect(history.points).toHaveLength(288);
@@ -147,6 +160,7 @@ describe('listeners', () => {
       byMount: { '/l/mp3': 15, '/l/aac': 3 },
     });
     expect(at('2026-10-22T13:00:00.000Z')?.total).toBe(7);
+    expect(at('2026-10-23T06:00:00.000Z')?.total).toBeNull();
     expect(at('2026-10-23T12:00:00.000Z')).toEqual({
       startsAt: new Date('2026-10-23T12:00:00Z'),
       total: null,

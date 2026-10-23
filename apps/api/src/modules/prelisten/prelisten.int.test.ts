@@ -21,7 +21,7 @@ let orgId: string;
 let manager: { userId: string; cookie: string };
 let viewer: { userId: string; cookie: string };
 /** What the fake engine answers, per station. */
-const engines = new Map<string, 'stream' | 'nobody' | 'down'>();
+const engines = new Map<string, 'stream' | 'nobody' | 'down' | 'endless'>();
 
 beforeAll(async () => {
   tdb = await createTestDatabase();
@@ -36,13 +36,32 @@ beforeAll(async () => {
         const mode = engines.get(stationId);
         if (!mode) return undefined;
         return {
-          async listen(input) {
+          async listen(input, signal) {
             if (mode === 'down')
               throw new EngineUnavailableError('timeout', 'timed out', {
                 stationId,
                 route: 'GET /prelisten/1',
               });
             if (mode === 'nobody' || input !== 1) return null;
+            if (mode === 'endless') {
+              // A live stream: a frame every 50 ms until the client hangs up.
+              let timer: NodeJS.Timeout | undefined;
+              const body = new ReadableStream<Uint8Array>({
+                start(controller) {
+                  timer = setInterval(() => controller.enqueue(new Uint8Array(MP3)), 50);
+                  signal?.addEventListener('abort', () => {
+                    clearInterval(timer);
+                    try {
+                      controller.close();
+                    } catch {} // Already cancelled by the reader.
+                  });
+                },
+                cancel() {
+                  clearInterval(timer);
+                },
+              });
+              return new Response(body, { headers: { 'content-type': 'audio/mpeg' } });
+            }
             return new Response(MP3, { headers: { 'content-type': 'audio/mpeg' } });
           },
         };
@@ -63,7 +82,8 @@ afterAll(async () => {
 }, 60_000);
 
 let n = 0;
-async function newStation(mode?: 'stream' | 'nobody' | 'down') {
+let lastStationId = '';
+async function newStation(mode?: 'stream' | 'nobody' | 'down' | 'endless') {
   const ctx = { actor: system, scope: unsafeScope(orgId) };
   const st = await createStation(tdb.db, ctx, {
     slug: `prelisten-${++n}`,
@@ -82,6 +102,7 @@ async function newStation(mode?: 'stream' | 'nobody' | 'down') {
     });
   }
   if (mode) engines.set(st.id, mode);
+  lastStationId = st.id;
   return (input: number, cookie = manager.cookie) =>
     app.inject({
       method: 'GET',
@@ -110,4 +131,44 @@ describe('pre-listen route', () => {
     expect((await (await newStation('down'))(1)).statusCode).toBe(503);
     expect((await (await newStation())(1)).statusCode).toBe(503);
   });
+
+  it('caps the streams open at once per member (2), released when they hang up', async () => {
+    await newStation('endless');
+    const address = await app.listen({ port: 0, host: '127.0.0.1' });
+    const url = `${address}/api/v1/stations/${lastStationId}/live/inputs/1/listen`;
+    const open = () => {
+      const controller = new AbortController();
+      const res = fetch(url, {
+        headers: cookieHeader(manager.cookie),
+        signal: controller.signal,
+      });
+      return { res, close: () => controller.abort() };
+    };
+    const a = open();
+    const b = open();
+    expect((await a.res).status).toBe(200);
+    expect((await b.res).status).toBe(200);
+    const c = open();
+    const refused = await c.res;
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toMatchObject({ error: 'too_many_streams' });
+    a.close();
+    await (await a.res).body?.cancel().catch(() => {});
+    // The server sees the hang-up shortly after.
+    let again: Response | undefined;
+    for (let i = 0; i < 40; i++) {
+      const d = open();
+      again = await d.res;
+      if (again.status === 200) {
+        d.close();
+        break;
+      }
+      await again.text();
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(again?.status).toBe(200);
+    b.close();
+    // Keep-alive sockets of this test's fetches would hold `app.close()` up.
+    app.server.closeAllConnections();
+  }, 30_000);
 });

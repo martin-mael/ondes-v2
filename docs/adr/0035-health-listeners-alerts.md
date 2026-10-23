@@ -54,10 +54,31 @@ Additive in `alertTypes`; the generator's own alerts belong to #101.
 Silence, engine down and the restart storm (#33/#35), uncached items (#31) and missing episodes
 (#47) were already raised by their producers; the dashboard only shows them.
 
+Both carry `details.i18n` (`islandRenderFailed`: `error`, `airsAt`; `engineRestarted`:
+`restarts`, `minutes`, `crashed`) like #47's missing episodes, so the web app writes them in
+French or English; title and message stay English for emails and logs.
+
 ### Visible within 5 s: events, not polling
 Every alert change publishes an `alert.*` event (#33), relayed over SSE. The alerts page and the
 dashboard panel refetch their list on each one, so an alert is on screen about a second after
-it is raised. The integration tests measure the event's arrival (under 5 s) for every type.
+it is raised. The integration tests measure the event's arrival (under 5 s) for every type,
+through each type's real producer.
+
+That is the guarantee from the raise. Before it, each producer notices the problem at its own
+pace:
+
+| Alert | Detected | From cause to raise |
+|---|---|---|
+| `engine.silence` | the engine's `blank.detect` | the station's `maxSeconds` (default 10 s) of silence, then the event: by design |
+| `engine.restarted` | lifecycle supervisor pass | up to 5 s (lowered from 15 s by this issue: a Docker inspect per station) |
+| `engine.restart_storm` | same pass | up to 5 s after the restart that trips it |
+| `island.render_failed` | `island.updated` from the renderer | immediate; the 30 s reconcile only catches a lost event |
+| `cache.item_missing` | cache alert evaluation (#31) | up to 30 s (its timer), from T−1h |
+| `show.episode_missing` | episode-check sweep (#47) | up to 15 s after its step is due (T−48h, T−6h, T−1h) |
+
+The cache and episode timers are left as they are: they warn an hour or more ahead, so 15–30 s
+of detection is not what makes them late, and shortening them multiplies their queries per
+station.
 
 ### Pre-listen through the engine's control port
 A DJ's audio exists only inside the engine (the harbor input), so the engine serves it: the
@@ -69,6 +90,9 @@ answers 404. The api proxies it (`GET …/live/inputs/:input/listen`, `live:read
 leaves the api. Rejected: a second Icecast mount per input (public by default, more Icecast
 config per station) and recording to a file for playback (latency, disk).
 
+Each stream holds an engine connection and the api proxies its bytes, so the route caps them:
+2 open at once per member, 4 per station (per api replica), 429 `too_many_streams` beyond.
+
 The encoders run only while a DJ is connected (at most four inputs), a few percent of a core.
 Liquidsoap logs that `output.harbor` is little maintained; it is used here for an internal,
 best-effort monitor only, never for listeners.
@@ -77,8 +101,12 @@ best-effort monitor only, never for listeners.
 - The dashboard reads the engine status through a new contract (`engineStatusViewSchema`)
   matching the lifecycle's `status()`; changing that shape is now a contract change.
 - Listener history is only as good as the poller: while it is off or Icecast is unreadable,
-  the graph has gaps. Several pollers (api replicas) don't skew it: buckets keep a sum and a
-  sample count, so the average stays right.
+  the graph has gaps.
+- The poller (#32) runs in every api process, without a lock. With two replicas each minute
+  bucket gets about twice the samples, but every figure read from it is a ratio or an extreme
+  (`listeners_sum / samples`, `source_samples / samples`, max, min), so the counts, the graph
+  and the uptime stay right; only the raw `samples` doubles. A lock would add a leader election
+  for no visible gain, so there is none. Revisit if a reader ever uses `samples` itself.
 - If `output.harbor` is dropped from Liquidsoap, pre-listen moves to `output.icecast` on a
   private Icecast mount; the api route and the UI stay.
 - Staging checks for each alert type are listed in the PR of #71.

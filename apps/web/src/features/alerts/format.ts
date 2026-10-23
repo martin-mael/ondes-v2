@@ -4,7 +4,7 @@ import { type AlertT, isAlertMessageKey } from './messages.ts';
 
 // How an alert reads in the viewer's language, and its times on the station's clock (never the
 // browser's). The api's title and message are English; `details.i18n` (`{ key, params }`, #47's
-// missing episodes, #101's generation issues) is rendered here instead, and known types get a
+// missing episodes, #101's generation issues, #71's renders and restarts) is rendered here instead, and known types get a
 // translated title.
 
 /** `Thu 23 Oct, 14:05` on the station's clock (time only when it is today there). */
@@ -100,6 +100,26 @@ export function alertText(
     return {
       title: t('episodeMissing.title', { show }),
       message: known ? t(i18n.key, parts).trim() : alert.message,
+    };
+  }
+  if (i18n?.key === 'islandRenderFailed') {
+    const airsAt = instantOf(i18n.params.airsAt);
+    const error = str(i18n.params.error);
+    return {
+      title: alertTypeLabel(alert.type, t),
+      message: airsAt
+        ? t('islandRenderFailed', { error, when: formatStationTime(airsAt, timeZone, locale) })
+        : t('islandRenderFailedNoTime', { error }),
+    };
+  }
+  if (i18n?.key === 'engineRestarted') {
+    const n = (v: unknown) => (typeof v === 'number' ? v : 0);
+    return {
+      title: alertTypeLabel(alert.type, t),
+      message: t(i18n.params.crashed === true ? 'engineRecreated' : 'engineRestarted', {
+        restarts: n(i18n.params.restarts),
+        minutes: n(i18n.params.minutes),
+      }),
     };
   }
   if (i18n?.key === 'logRegen.issues' && typeof i18n.params.localDate === 'string') {

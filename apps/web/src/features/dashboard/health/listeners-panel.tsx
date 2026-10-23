@@ -11,10 +11,10 @@ import {
   ChartTooltip,
   ChartTooltipContent,
 } from '@/ui/chart';
-import { Skeleton } from '@/ui/skeleton';
 import { findStation, useOrgs } from '../../../app/auth/session.ts';
 import { useI18n } from '../../../app/i18n/i18n.tsx';
 import type { Locale } from '../../../app/i18n/messages.ts';
+import { ListSkeleton } from '../../../app/pending.tsx';
 import { useAlertT } from '../../alerts/messages.ts';
 import { currentListenersQuery, listenerHistoryQuery } from './api.ts';
 
@@ -53,7 +53,7 @@ export function ListenersPanel({ stationId }: { stationId: string }) {
       </CardHeader>
       <CardContent className="flex flex-col gap-3 text-sm">
         {now.isPending ? (
-          <Skeleton className="h-12 w-full" />
+          <ListSkeleton rows={1} className="[&>*]:h-12" />
         ) : !current || current.sampledAt === null ? (
           <p className="text-muted-foreground">{t('listeners.none')}</p>
         ) : (
@@ -78,9 +78,9 @@ export function ListenersPanel({ stationId }: { stationId: string }) {
           </div>
         )}
         <div className="flex flex-col gap-1">
-          <h3 className="text-xs text-muted-foreground">{t('listeners.graph')}</h3>
+          <h3 className="text-sm text-muted-foreground">{t('listeners.graph')}</h3>
           {history.isPending ? (
-            <Skeleton className="h-40 w-full" />
+            <ListSkeleton rows={1} className="[&>*]:h-40" />
           ) : history.data && history.data.mounts.length > 0 ? (
             <ListenerChart history={history.data} timeZone={timeZone} locale={locale} />
           ) : (
