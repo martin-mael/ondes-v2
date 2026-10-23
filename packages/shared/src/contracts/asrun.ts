@@ -71,6 +71,20 @@ export const asRunTransitionSchema = z.object({
 });
 export type AsRunTransition = z.infer<typeof asRunTransitionSchema>;
 
+/**
+ * One engine request of an entry the feeder pushed (#57), as `feeder_push.parts` keeps it: what
+ * the as-run records against that request when it starts.
+ */
+export const feederPushPartSchema = z.object({
+  /** The engine `item_id`: a log item id, or `island:<hash>` for an island. */
+  itemId: z.string().min(1),
+  /** How long it plays inside the entry, in ms (a body ends at its island). Null: its own. */
+  expectedMs: z.int().nonnegative().nullable(),
+  transition: asRunTransitionSchema.nullable(),
+});
+export type FeederPushPart = z.infer<typeof feederPushPartSchema>;
+export const feederPushPartsSchema = z.array(feederPushPartSchema);
+
 export const asRunEntrySchema = z.object({
   id: uuidSchema,
   stationId: uuidSchema,

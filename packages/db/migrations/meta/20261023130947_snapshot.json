@@ -1,5 +1,5 @@
 {
-  "id": "e7016cec-b59b-405e-afd2-71e3459571af",
+  "id": "03aefa56-a273-466f-b396-0a615094dba5",
   "prevId": "60f31721-506f-492c-b653-cd01212b47db",
   "version": "7",
   "dialect": "postgresql",
@@ -2581,6 +2581,12 @@
         "parts": {
           "name": "parts",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "item_ids": {
+          "name": "item_ids",
+          "type": "uuid[]",
           "primaryKey": false,
           "notNull": false
         }

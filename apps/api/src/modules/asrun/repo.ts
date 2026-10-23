@@ -18,6 +18,7 @@ import {
   type AsRunTransition,
   asRunOutcome,
   type EngineSource,
+  feederPushPartsSchema,
   type ListAsRunQuery,
   listAsRunQuerySchema,
   uuidSchema,
@@ -220,7 +221,8 @@ async function pushedPart(
           ),
         )
     : [];
-  const part = row?.parts?.find((p) => p.itemId === input.itemId);
+  const parts = feederPushPartsSchema.safeParse(row?.parts).data;
+  const part = parts?.find((p) => p.itemId === input.itemId);
   if (part) return { transition: part.transition, expectedMs: part.expectedMs };
   const hash = input.itemId?.startsWith('island:') ? input.itemId.slice(7) : null;
   return {

@@ -292,6 +292,8 @@ export type ChainIsland = {
 export type ChainSource = {
   segmentId: string;
   steps: (ChainBody | ChainIsland)[];
+  /** The head item's own `crossInMs` override (the head may have no body of its own). */
+  crossInMs?: number | undefined;
 };
 
 /** The engine `item_id` of an island. */
@@ -363,7 +365,6 @@ export function buildPushChain(source: ChainSource, ctx: PushContext): EnginePus
     parts.push(part);
   }
   const segment: EnginePushSegment = { segment_id: source.segmentId, parts };
-  const bodies = source.steps.filter((s): s is ChainBody => s.kind === 'body');
   const first = source.steps[0];
   const last = source.steps.at(-1);
   // A fade-in only when the chain starts on a body that starts at its own cue-in; a fade-out
@@ -376,12 +377,16 @@ export function buildPushChain(source: ChainSource, ctx: PushContext): EnginePus
     const fadeOut = seconds(positionsOf(last.source).fadeOut);
     if (fadeOut !== undefined) segment.fade_out = fadeOut;
   }
-  const head = bodies[0]?.source;
-  const crossIn = head?.cueOverrides?.crossInMs ?? ctx.crossInMs;
+  const crossIn = source.crossInMs ?? ctx.crossInMs;
   if (crossIn !== undefined) segment.cross_in = crossIn / 1000;
   const crossOut = chainCrossOutMs(source);
   if (crossOut !== undefined) segment.cross_out = crossOut / 1000;
-  if (ctx.overlay?.length) segment.overlay = overlayAt(ctx.overlay, lastLengthSeconds(segment));
+  if (ctx.overlay?.length) {
+    // A chain ending on an island has no cue-out to read its length from: use the island's.
+    const lastMs = chainStepLengthsMs(source).at(-1);
+    const length = last?.kind === 'island' && lastMs != null ? lastMs / 1000 : null;
+    segment.overlay = overlayAt(ctx.overlay, length ?? lastLengthSeconds(segment));
+  }
   return segment;
 }
 

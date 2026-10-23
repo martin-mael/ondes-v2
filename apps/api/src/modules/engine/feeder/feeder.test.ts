@@ -235,11 +235,15 @@ function memoryStore(): FeederPushStore & {
 
 let store: ReturnType<typeof memoryStore> | undefined;
 let islands: FeedIslands | undefined;
+let islandsFail = false;
 
 function feeder() {
   return createStationFeeder({
     store,
-    islands: async () => islands ?? { islands: [], media: new Map() },
+    islands: async () => {
+      if (islandsFail) throw new Error('database down');
+      return islands ?? { islands: [], media: new Map() };
+    },
     scope,
     engine: async () => engine,
     load: async () => window,
@@ -272,6 +276,7 @@ const queuedIds = () => engine.queue.map((q) => q.id);
 beforeEach(() => {
   store = undefined;
   islands = undefined;
+  islandsFail = false;
   now = T0;
   engine = new SimEngine(() => now);
   fetches = [];
@@ -569,48 +574,57 @@ describe('station feeder: islands (#57)', () => {
     cueOut: m.durationSamples as number,
   });
 
-  /** A → B with a 5 s voice 3 s before A's end; the render cached or not. */
-  function withIsland(a: LogItem, b: LogItem, cached: boolean | 'none') {
+  /**
+   * Segues along `items` (A → B, B → C, …), each a 5 s voice 3 s before the end of the item
+   * it follows, A ducked under it; deriveIslands merges them when a body between is under 1 s.
+   * Returns the islands' engine ids, the renders cached or not.
+   */
+  function withIslands(items: LogItem[], cached: boolean | 'none') {
     const voice = media(voiceAsset, { durationSamples: 5 * SR });
-    const [plan] = deriveIslands([
-      {
-        segueId: randomUUID(),
-        fromItemId: a.id,
-        toItemId: b.id,
-        from: islandMedia(window.media.get(a.assetId as string) as FeedMedia),
-        to: islandMedia(window.media.get(b.assetId as string) as FeedMedia),
-        out: {
-          envelope: [
-            { at: -3.5 * SR, gainDb: 0 },
-            { at: -3 * SR, gainDb: -12 },
-          ],
-        },
-        in: { start: -SR, envelope: [] },
-        voices: [
-          {
-            assetId: voiceAsset,
-            start: -3 * SR,
-            gainDb: 0,
-            envelope: [],
-            media: islandMedia(voice),
+    const mediaOf = (i: LogItem) => islandMedia(window.media.get(i.assetId as string) as FeedMedia);
+    const plans = deriveIslands(
+      items.slice(1).map((to, i) => {
+        const from = items[i] as LogItem;
+        return {
+          segueId: randomUUID(),
+          fromItemId: from.id,
+          toItemId: to.id,
+          from: mediaOf(from),
+          to: mediaOf(to),
+          out: {
+            envelope: [
+              { at: -3.5 * SR, gainDb: 0 },
+              { at: -3 * SR, gainDb: -12 },
+            ],
           },
-        ],
-      },
-    ]);
-    if (!plan) throw new Error('no island');
-    const hash = islandHash(plan.spec);
+          in: { start: -SR, envelope: [] },
+          voices: [
+            {
+              assetId: voiceAsset,
+              start: -3 * SR,
+              gainDb: 0,
+              envelope: [],
+              media: islandMedia(voice),
+            },
+          ],
+        };
+      }),
+    );
     islands = {
-      islands: [
-        {
-          hash,
-          plan,
-          rendered:
-            cached === 'none' ? null : { islandId: randomUUID(), sha256: 'f'.repeat(64), cached },
-        },
-      ],
+      islands: plans.map((plan) => ({
+        hash: islandHash(plan.spec),
+        plan,
+        rendered:
+          cached === 'none' ? null : { islandId: randomUUID(), sha256: 'f'.repeat(64), cached },
+      })),
       media: new Map([[voiceAsset, voice]]),
     };
-    return `island:${hash}`;
+    return plans.map((plan) => `island:${islandHash(plan.spec)}`);
+  }
+
+  /** A → B with a 5 s voice 3 s before A's end; the render cached or not. */
+  function withIsland(a: LogItem, b: LogItem, cached: boolean | 'none') {
+    return withIslands([a, b], cached)[0] as string;
   }
 
   it('pushes A and B as one chain under A, and never B on its own', async () => {
@@ -683,5 +697,76 @@ describe('station feeder: islands (#57)', () => {
     expect(r.removed).toContain(b.id);
     expect(engine.queue[0]?.segment).toBe(true);
     expect(engine.queue[0]?.id).toBe(b.id);
+  });
+
+  it('keeps an island that absorbed B whole: B and C never air again', async () => {
+    store = memoryStore();
+    const items = Array.from({ length: 5 }, (_, i) => item(T0 + i * 3 * MIN));
+    // B is 4 s long: between its two islands less than a second is left, so they merge.
+    setLog(items, (i) =>
+      media(i.assetId as string, i === items[1] ? { durationSamples: 4 * SR } : {}),
+    );
+    const [a, b, c, d] = items as [LogItem, LogItem, LogItem, LogItem];
+    const [islandId, ...more] = withIslands([a, b, c], true);
+    expect(more).toEqual([]);
+    const f = feeder();
+    await f.sync();
+    const chain = engine.queue[0]?.body as EnginePushSegment;
+    expect(chain.parts.map((p) => p.item_id)).toEqual([a.id, islandId, c.id]);
+    expect(store.rows.get(`boot-1/${a.id}`)).toMatchObject({ itemIds: [a.id, b.id, c.id] });
+    expect(queuedIds()[1]).toBe(d.id);
+
+    // The island on air; then the islands go away. Neither this feeder nor one taking over
+    // pushes B or C again, and both are marked aired.
+    engine.next();
+    now += 175_000;
+    (engine.onAir as { item_id: string }).item_id = islandId as string;
+    withIslands([a, b, c], 'none');
+    await f.sync();
+    await feeder().sync();
+    const pushedAlone = engine.calls.filter(
+      (call) => call === `push ${b.id}` || call === `push ${c.id}`,
+    );
+    expect(pushedAlone).toEqual([]);
+    expect(queuedIds()[0]).toBe(d.id);
+    expect(store.rows.get(`boot-1/${b.id}`)?.aired).toBe(true);
+  });
+
+  it('starts a chain on its island when the island holds A whole', async () => {
+    const items = Array.from({ length: 4 }, (_, i) =>
+      item(T0 + i * 3 * MIN, i === 0 ? { cueOverrides: { crossInMs: 1500 } } : {}),
+    );
+    // A is 3 s long: the island starts before it does, so A has no body of its own.
+    setLog(items, (i) =>
+      media(i.assetId as string, i === items[0] ? { durationSamples: 3 * SR } : {}),
+    );
+    const [a, b] = items as [LogItem, LogItem];
+    const islandId = withIsland(a, b, true);
+    expect(islands?.islands[0]?.plan.head.hasBody).toBe(false);
+    await feeder().sync();
+    const chain = engine.queue[0]?.body as EnginePushSegment;
+    expect(engine.queue[0]?.id).toBe(a.id);
+    expect(chain.parts.map((p) => p.item_id)).toEqual([islandId, b.id]);
+    // A's own crossfade in, although A has no request.
+    expect(chain.cross_in).toBe(1.5);
+  });
+
+  it('leaves the queue alone when the islands can’t be loaded', async () => {
+    store = memoryStore();
+    const items = Array.from({ length: 4 }, (_, i) => item(T0 + i * 3 * MIN));
+    setLog(items);
+    const [a, b] = items as [LogItem, LogItem];
+    withIsland(a, b, true);
+    const f = feeder();
+    await f.sync();
+    const before = [...engine.calls];
+    islandsFail = true;
+    // The same feeder uses the islands it loaded last; a new one, with none, waits.
+    for (const fd of [f, feeder()]) {
+      const r = await fd.sync();
+      expect(r.removed).toEqual([]);
+    }
+    expect(engine.calls).toEqual(before);
+    expect(engine.queue[0]?.segment).toBe(true);
   });
 });

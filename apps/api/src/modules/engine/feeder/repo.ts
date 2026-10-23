@@ -14,6 +14,7 @@ import {
 import {
   alertTypes,
   cacheExtOf,
+  feederPushPartsSchema,
   type IslandPlan,
   type LogItem,
   type PlayoutGainStation,
@@ -229,16 +230,22 @@ export function createFeederPushStore(db: Executor, scope: StationScope): Feeder
     and(whereStation(feederPush, scope), eq(feederPush.bootId, bootId));
   return {
     async load(bootId) {
-      return db
+      const rows = await db
         .select({
           entryId: feederPush.entryId,
           fingerprint: feederPush.fingerprint,
           trimMs: feederPush.trimMs,
           aired: feederPush.aired,
           parts: feederPush.parts,
+          itemIds: feederPush.itemIds,
         })
         .from(feederPush)
         .where(where(bootId));
+      // jsonb written by another api version: parts that don't parse are as good as none.
+      return rows.map((r) => ({
+        ...r,
+        parts: feederPushPartsSchema.safeParse(r.parts).data ?? null,
+      }));
     },
 
     async save(bootId, entryId, push) {
@@ -251,6 +258,7 @@ export function createFeederPushStore(db: Executor, scope: StationScope): Feeder
           fingerprint: push.fingerprint,
           trimMs: push.trimMs,
           parts: push.parts ?? null,
+          itemIds: push.itemIds ?? null,
           pushedAt: new Date(),
         })
         .onConflictDoUpdate({
@@ -259,6 +267,7 @@ export function createFeederPushStore(db: Executor, scope: StationScope): Feeder
             fingerprint: push.fingerprint,
             trimMs: push.trimMs,
             parts: push.parts ?? null,
+            itemIds: push.itemIds ?? null,
             pushedAt: new Date(),
           },
         });

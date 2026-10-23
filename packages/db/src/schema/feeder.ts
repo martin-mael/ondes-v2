@@ -1,4 +1,4 @@
-import type { AsRunTransition } from '@ondes/shared';
+import type { FeederPushPart } from '@ondes/shared';
 import { sql } from 'drizzle-orm';
 import {
   boolean,
@@ -13,15 +13,6 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { station } from './tenancy.ts';
-
-/** One engine request of a pushed entry (#57). */
-export type FeederPushPart = {
-  /** The engine `item_id`: a log item id, or `island:<hash>` for an island. */
-  itemId: string;
-  /** How long it plays inside the entry, in ms (a body ends at its island). Null: its own. */
-  expectedMs: number | null;
-  transition: AsRunTransition | null;
-};
 
 // Log feeder (#29, ADR 0012): what the feeder pushed to a station's engine during its current
 // boot. The engine queue only reports item ids; the feeder also needs the body it pushed (a
@@ -50,6 +41,11 @@ export const feederPush = pgTable(
      * pushed: what the as-run records against each of them. Null for plain entries.
      */
     parts: jsonb('parts').$type<FeederPushPart[]>(),
+    /**
+     * Every log item an island chain covers, in play order, including items rendered whole
+     * into an island (no request of their own). Null for anything else.
+     */
+    itemIds: uuid('item_ids').array(),
   },
   (t) => [
     primaryKey({ name: 'feeder_push_pkey', columns: [t.stationId, t.bootId, t.entryId] }),

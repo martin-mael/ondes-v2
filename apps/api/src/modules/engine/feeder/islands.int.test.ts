@@ -63,10 +63,9 @@ const project = `ondes-engine-islands-it-${runId}`;
 let controlPort = 0;
 const system: Actor = { type: 'system', name: 'test' };
 const SR = 44_100;
-/** Each tone is 6 s; each item plays 5 s of it and overlaps the next by 0.5 s. */
+/** Each tone is 6 s; most items play 5 s of it and overlap the next by 0.5 s. */
 const PLAY_MS = 5_000;
 const OVERLAP_MS = 500;
-const SLOT_MS = PLAY_MS - OVERLAP_MS + 20;
 
 const compose = (...args: string[]) =>
   run('docker', ['compose', '-p', project, '-f', composeFile, ...args], {
@@ -86,9 +85,11 @@ let feeder: StationFeeder;
 let ticker: NodeJS.Timeout;
 const received: EngineRealtimeEvent[] = [];
 const pushes: (EnginePushItem | EnginePushSegment)[] = [];
-let ids: { x: string; a: string; b: string; c: string; d: string; e: string };
+let ids: Record<'x' | 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g' | 'h' | 'j' | 'k', string>;
 let voice: { assetId: string };
 let islandHashAB: string;
+let islandHashFGH: string;
+let islandHashJK: string;
 let islandFileSha: string;
 
 async function freePort(): Promise<number> {
@@ -243,7 +244,12 @@ beforeAll(async () => {
   station.start();
   await waitFor('engine up', () => station.health.status() === 'up', 120_000);
 
-  // The log: X, A, B, C, D, E, … back to back from now.
+  // The log: X, A, B, C, D, E, F, G, H, J, K, … back to back from now. G and J play 2 s and
+  // 1 s, so their islands hold them whole (ADR 0017: a body under 1 s is absorbed).
+  const playMs = (position: number) => (position === 7 ? 2_000 : position === 9 ? 1_000 : PLAY_MS);
+  const slotMs = (position: number) => playMs(position) - OVERLAP_MS + 20;
+  const startOf = (position: number) =>
+    Array.from({ length: position }, (_, i) => slotMs(i)).reduce((sum, ms) => sum + ms, 0);
   const start = Date.now() + 1_000;
   const [day] = await tdb.db
     .insert(logDay)
@@ -266,43 +272,58 @@ beforeAll(async () => {
         logDayId: day.id,
         position,
         kind: 'song' as const,
-        plannedStart: new Date(start + position * SLOT_MS),
-        plannedDurationMs: SLOT_MS,
+        plannedStart: new Date(start + startOf(position)),
+        plannedDurationMs: slotMs(position),
         assetId: a.assetId,
-        cueOverrides: { sampleRate: SR, cueOut: (PLAY_MS * SR) / 1000, crossOutMs: OVERLAP_MS },
+        cueOverrides: {
+          sampleRate: SR,
+          cueOut: (playMs(position) * SR) / 1000,
+          crossOutMs: OVERLAP_MS,
+        },
         originType: 'manual' as const,
       })),
     )
     .returning({ id: logItem.id });
-  const [x, a, b, c, d, e] = rows.map((r) => r.id) as [
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-  ];
-  ids = { x, a, b, c, d, e };
+  const [x, a, b, c, d, e, f, g, h, j, k] = rows.map((r) => r.id);
+  ids = { x, a, b, c, d, e, f, g, h, j, k } as typeof ids;
 
   // A → B: rendered and cached. C → D: left pending (the fallback).
   const ctx = { actor: system, scope };
   const ab = await createSegue(tdb.db, ctx, {
-    fromItemId: a,
-    toItemId: b,
+    fromItemId: ids.a,
+    toItemId: ids.b,
     ...lanes(voice.assetId),
   });
-  await createSegue(tdb.db, ctx, { fromItemId: c, toItemId: d, ...lanes(voice.assetId) });
-  const island = ab.sync.islands[0];
-  if (!island) throw new Error(`no island for A → B: ${JSON.stringify(ab.sync.segues)}`);
-  islandHashAB = island.hash;
-  // A stand-in render of the right length (the template test checks a real one's splice).
-  const sha256 = await placeInCache(tone(700, island.lengthSamples), 'flac');
-  islandFileSha = sha256;
-  await markIslandRendered(tdb.db, scope, {
-    hash: island.hash,
-    storageKey: islandStorageKey(scope.orgId, island.hash),
-    file: { sha256, sizeBytes: island.lengthSamples * 4 + 44 },
-  });
+  await createSegue(tdb.db, ctx, { fromItemId: ids.c, toItemId: ids.d, ...lanes(voice.assetId) });
+  // F → G → H: one island holding G whole. J → K: an island holding J whole.
+  const seg = (from: string, to: string) =>
+    createSegue(tdb.db, ctx, { fromItemId: from, toItemId: to, ...lanes(voice.assetId) });
+  await seg(ids.f, ids.g);
+  const gh = await seg(ids.g, ids.h);
+  const jk = await seg(ids.j, ids.k);
+  /** A stand-in render of the right length (the template test checks a real one's splice). */
+  const render = async (island: { hash: string; lengthSamples: number } | undefined) => {
+    if (!island) throw new Error('no island');
+    const sha256 = await placeInCache(tone(700, island.lengthSamples), 'flac');
+    await markIslandRendered(tdb.db, scope, {
+      hash: island.hash,
+      storageKey: islandStorageKey(scope.orgId, island.hash),
+      file: { sha256, sizeBytes: island.lengthSamples * 4 + 44 },
+    });
+    return sha256;
+  };
+  const abIsland = ab.sync.islands[0];
+  islandHashAB = abIsland?.hash as string;
+  islandFileSha = await render(abIsland);
+  const fgh = gh.sync.islands.find((i) => i.headItemId === ids.f);
+  if (JSON.stringify(fgh?.itemIds) !== JSON.stringify([ids.f, ids.g, ids.h]))
+    throw new Error(`F, G, H are not one island: ${JSON.stringify(fgh?.itemIds)}`);
+  islandHashFGH = fgh?.hash as string;
+  await render(fgh);
+  const jkIsland = jk.sync.islands[0];
+  if (jkIsland?.headHasBody !== false) throw new Error('J keeps a body of its own');
+  islandHashJK = jkIsland.hash;
+  await render(jkIsland);
 }, 300_000);
 
 afterAll(async () => {
@@ -360,7 +381,7 @@ describe('islands against Liquidsoap', () => {
     });
     ticker = setInterval(() => void feeder.sync().catch(() => {}), 1_000);
     await feeder.sync();
-    await waitFor('E on air', () => starts().some((s) => s.itemId === ids.e), 90_000);
+    await waitFor('K on air', () => starts().some((s) => s.itemId === ids.k), 120_000);
 
     const island = `island:${islandHashAB}`;
     const order = starts().map((s) => s.itemId);
@@ -377,6 +398,24 @@ describe('islands against Liquidsoap', () => {
     const segmentOf = (id: string) => starts().find((s) => s.itemId === id)?.segmentId;
     expect([ids.a, island, ids.b].map(segmentOf)).toEqual([ids.a, ids.a, ids.a]);
     expect([ids.c, ids.d].map(segmentOf)).toEqual([null, null]);
+    // An island holding G whole: F, the island, H, as one segment; G never airs on its own.
+    // An island holding J whole: the chain starts on the island, under J's id.
+    const fgh = `island:${islandHashFGH}`;
+    const jk = `island:${islandHashJK}`;
+    expect(order.slice(order.indexOf(ids.f), order.indexOf(ids.k) + 1)).toEqual([
+      ids.f,
+      fgh,
+      ids.h,
+      jk,
+      ids.k,
+    ]);
+    expect([ids.f, fgh, ids.h].map(segmentOf)).toEqual([ids.f, ids.f, ids.f]);
+    expect([jk, ids.k].map(segmentOf)).toEqual([ids.j, ids.j]);
+    expect(order).not.toContain(ids.g);
+    expect(order).not.toContain(ids.j);
+    expect(
+      pushes.some((p) => !('parts' in p) && [ids.g, ids.h, ids.j, ids.k].includes(p.item_id)),
+    ).toBe(false);
     // B never went out on its own; C carried the voice over its crossfade into D.
     expect(pushes.some((p) => !('parts' in p) && p.item_id === ids.b)).toBe(false);
     const c = pushes.find((p) => !('parts' in p) && p.item_id === ids.c) as EnginePushItem;
@@ -410,5 +449,5 @@ describe('islands against Liquidsoap', () => {
       rendered: false,
       voices: [{ assetId: voice.assetId, offsetMs: expect.any(Number) }],
     });
-  }, 150_000);
+  }, 180_000);
 });

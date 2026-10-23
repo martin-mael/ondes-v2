@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { FeederPushPart, StationScope } from '@ondes/db';
+import type { StationScope } from '@ondes/db';
 import {
   alertTypes,
   type EnginePushItem,
@@ -7,6 +7,7 @@ import {
   type EngineSegmentPart,
   type EngineState,
   type FeederItemPassedOverEvent,
+  type FeederPushPart,
   type LogItem,
   type LogSegmentPart,
   type PlayoutGainStation,
@@ -126,12 +127,18 @@ export type FeederPushStore = {
       trimMs: number;
       aired: boolean;
       parts?: FeederPushPart[] | null;
+      itemIds?: string[] | null;
     }[]
   >;
   save(
     bootId: string,
     entryId: string,
-    push: { fingerprint: string; trimMs: number; parts?: FeederPushPart[] | null },
+    push: {
+      fingerprint: string;
+      trimMs: number;
+      parts?: FeederPushPart[] | null;
+      itemIds?: string[] | null;
+    },
   ): Promise<void>;
   remove(bootId: string, entryIds: readonly string[]): Promise<void>;
   markAired(bootId: string, entryIds: readonly string[]): Promise<void>;
@@ -163,7 +170,13 @@ type BuiltEntry = Built & {
 };
 
 /** What the feeder remembers of an entry it pushed during this boot. */
-type PushRecord = { fingerprint: string; trimMs: number; parts?: FeederPushPart[] | null };
+type PushRecord = {
+  fingerprint: string;
+  trimMs: number;
+  parts?: FeederPushPart[] | null;
+  /** Every log item an island chain covers, absorbed ones included. */
+  itemIds?: string[] | null;
+};
 
 export class FeederNotOwnerError extends Error {}
 
@@ -349,20 +362,29 @@ export function createStationFeeder(deps: FeederDeps) {
     const headIndex = window.items.findIndex((i) => i.id === segmentId);
     const head = window.items[headIndex];
     if (!head || head.kind === 'segment') return null;
-    const record = pushed.get(segmentId)?.parts;
+    const record = pushed.get(segmentId);
     let ids: string[];
     let parts: { id: string; durationMs: number }[] | null = null;
-    if (record?.some((p) => p.itemId !== segmentId)) {
-      parts = record.map((p) => ({ id: p.itemId, durationMs: p.expectedMs ?? 0 }));
-      ids = record.map((p) => p.itemId);
+    if (record?.itemIds?.length) {
+      // Every item it covers, items rendered whole into an island included.
+      ids = record.itemIds;
+      parts = (record.parts ?? []).map((p) => ({ id: p.itemId, durationMs: p.expectedMs ?? 0 }));
     } else {
-      const onAirId = onAir?.item_id ?? '';
-      const hash = onAirId.startsWith('island:') ? onAirId.slice(7) : null;
-      const island = hash ? islands?.islands.find((i) => i.hash === hash) : undefined;
-      const until = window.items.findIndex((i) => i.id === onAirId);
-      ids = island
-        ? island.plan.itemIds
-        : window.items.slice(headIndex, Math.max(headIndex, until) + 1).map((i) => i.id);
+      // Another feeder's push, record lost: the islands from the head on, joined like a chain.
+      ids = [segmentId];
+      for (let grew = true; grew; ) {
+        grew = false;
+        const next = islands?.islands.find((i) => i.plan.head.itemId === ids.at(-1));
+        if (next && next.plan.itemIds.length > 1) {
+          ids = [...ids, ...next.plan.itemIds.slice(1)];
+          grew = true;
+        }
+      }
+      if (ids.length < 2) {
+        // No island known: at least the head up to the item on air.
+        const until = window.items.findIndex((i) => i.id === onAir?.item_id);
+        ids = window.items.slice(headIndex, Math.max(headIndex, until) + 1).map((i) => i.id);
+      }
     }
     const wanted = new Set(ids);
     const covered: LogItem[] = [];
@@ -370,8 +392,8 @@ export function createStationFeeder(deps: FeederDeps) {
       if (!wanted.has(item.id)) break;
       covered.push(item);
     }
-    if (covered.length < 2 && !parts) return null;
-    parts ??= covered.map((i) => ({ id: i.id, durationMs: i.plannedDurationMs }));
+    if (covered.length < 2) return null;
+    if (!parts?.length) parts = covered.map((i) => ({ id: i.id, durationMs: i.plannedDurationMs }));
     return { covered, parts };
   }
 
@@ -639,7 +661,18 @@ export function createStationFeeder(deps: FeederDeps) {
    * The islands of the items from a little before now to the end of the window. A failure
    * only costs the islands: every transition then airs as a plain crossfade.
    */
-  async function loadIslands(window: FeedWindow, at: number): Promise<FeedIslands | null> {
+  /** The last islands loaded: what a sync uses when loading them fails. */
+  let lastIslands: FeedIslands | null = null;
+
+  /**
+   * The islands of the items from a little before now to the end of the window. When loading
+   * fails, the last ones loaded stand in (a render they name is still the right audio: islands
+   * are content-addressed); `failed` when there are none yet.
+   */
+  async function loadIslands(
+    window: FeedWindow,
+    at: number,
+  ): Promise<FeedIslands | null | 'failed'> {
     if (!deps.islands) return null;
     const since = at - 30 * 60_000;
     const ids = window.items
@@ -649,11 +682,17 @@ export function createStationFeeder(deps: FeederDeps) {
       .map((i) => i.id);
     if (!ids.length) return null;
     try {
-      return await deps.islands(ids);
+      lastIslands = await deps.islands(ids);
+      return lastIslands;
     } catch (err) {
       logger.warn({ err, stationId: scope.stationId }, 'Loading islands failed');
-      return null;
+      return lastIslands ?? 'failed';
     }
+  }
+
+  /** The engine queue holds an island chain this boot's feeders pushed. */
+  function hasQueuedChain(state: EngineState): boolean {
+    return queuedOf(state).some((q) => (pushed.get(q.id)?.itemIds?.length ?? 0) > 1);
   }
 
   async function runOnce(): Promise<SyncResult> {
@@ -672,8 +711,18 @@ export function createStationFeeder(deps: FeederDeps) {
         from: new Date(at - lookbackMs),
         to: new Date(at + lookaheadMs + 3_600_000),
       });
-      const islands = await loadIslands(window, at);
+      const loaded = await loadIslands(window, at);
+      if (loaded === 'failed' && hasQueuedChain(state)) {
+        // Without the islands every queued chain would look changed and be torn down into
+        // crossfades: keep the queue as it is and try again next tick.
+        logger.warn({ stationId: scope.stationId }, 'Islands unavailable: queue left as it is');
+        return result;
+      }
+      const islands = loaded === 'failed' ? null : loaded;
       const chainOnAir = onAirChain(onAirId, window, islands);
+      // A chain on air airs all its items: none of them may be planned again in this boot,
+      // whether it has a request of its own (B) or was rendered whole into an island.
+      if (chainOnAir) await noteAired(chainOnAir.covered.map((i) => i.id));
       const locked = new Set([...aired, ...(chainOnAir?.covered.map((i) => i.id) ?? [])]);
       for (const id of [onAirId?.item_id, onAirId?.segment_id]) if (id) locked.add(id);
       const layout = islands
@@ -784,6 +833,7 @@ export function createStationFeeder(deps: FeederDeps) {
           fingerprint: w.fingerprint,
           trimMs: w.trimMs,
           parts: partsOf(w.built, payload),
+          itemIds: w.built.kind === 'chain' ? w.built.itemIds : null,
         };
         pushed.set(w.id, record);
         await persist('a push', (store, boot) => store.save(boot, w.id, record));

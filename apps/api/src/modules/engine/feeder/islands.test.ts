@@ -254,6 +254,25 @@ describe('layoutIslands: the fallback', () => {
     expect(layout.missingFiles).toEqual(['file-d']);
   });
 
+  it('never chains over a B that already aired in this boot', () => {
+    const [island] = islandsOf([AB()], 'cached');
+    const layout = layoutIslands(input([island as FeedIsland], { locked: new Set([ITEM.b]) }));
+    expect(layout.chains.size).toBe(0);
+    expect(layout.overlays.get(ITEM.a)?.voices).toHaveLength(1);
+  });
+
+  it('times voices after a chain that ends on its island from the island’s length', () => {
+    const [island] = islandsOf([AB()], 'cached');
+    const chain = layoutIslands(input([island as FeedIsland])).chains.get(ITEM.a);
+    const source = { ...chain?.source, steps: chain?.source.steps.slice(0, 2) } as never;
+    const body = buildPushChain(source, {
+      station,
+      overlay: [{ uri: '/cache/v.flac', start: -1, duration: 2 }],
+    });
+    const length = (island?.plan.spec.lengthSamples as number) / SR;
+    expect(body.overlay?.[0]?.at).toBeCloseTo(length - 1, 2);
+  });
+
   it('keeps an item on air or aired as it was pushed', () => {
     const [island] = islandsOf([AB()], 'cached');
     const layout = layoutIslands(input([island as FeedIsland], { locked: new Set([ITEM.a]) }));

@@ -12,6 +12,7 @@ import {
   type ChainBody,
   type ChainIsland,
   type ChainSource,
+  chainBodyRange,
   chainStepLengthsMs,
   type FeedMedia,
   islandEngineId,
@@ -43,7 +44,7 @@ export type IslandLayoutInput = {
   reason(media: FeedMedia | undefined): SkipReason | null;
   /** The engine refused this island file lately. */
   refused(sha256: string): boolean;
-  /** Items that can't head a chain: on air, or aired during this boot. */
+  /** Items no chain may cover: on air, or aired during this boot. */
   locked: ReadonlySet<string>;
   /** Engine-side cache root. */
   engineRoot?: string | undefined;
@@ -139,7 +140,8 @@ function coveredItems(
 function chainable(island: FeedIsland, items: LogItem[], input: IslandLayoutInput): boolean {
   const r = island.rendered;
   if (!r?.cached || input.refused(r.sha256)) return false;
-  if (input.locked.has(island.plan.head.itemId)) return false;
+  // Nothing that aired (or airs) in this boot airs again inside a chain: not A, not B.
+  if (items.some((item) => input.locked.has(item.id))) return false;
   return items.every((item, i) => {
     if (!MEDIA_KINDS.includes(item.kind) || !item.assetId) return false;
     const media = input.media.get(item.assetId);
@@ -204,15 +206,23 @@ function buildChain(
       steps.push({ kind: 'body', source: sourceOf(tailItem, tailMedia), from, to: null });
     }
   }
-  const source: ChainSource = { segmentId: itemIds[0] as string, steps };
+  const head = run[0]?.items[0] as LogItem;
+  // A body left with nothing to play (its cue-in at or past its join) is no part.
+  const parts = steps.filter((step) => step.kind === 'island' || chainBodyRange(step) !== null);
+  const source: ChainSource = {
+    segmentId: itemIds[0] as string,
+    steps: parts,
+    // The head item's own crossfade in, even when the island covers it whole.
+    crossInMs: head.cueOverrides?.crossInMs,
+  };
   // The engine wants two parts at least. A chain that would be its island alone (both items
   // under a second outside it) airs as the fallback instead.
-  if (steps.length < 2) return null;
+  if (parts.length < 2) return null;
   const lengths = chainStepLengthsMs(source);
   return {
     source,
     itemIds,
-    parts: steps.map((step, i) => ({
+    parts: parts.map((step, i) => ({
       id: step.kind === 'island' ? step.itemId : step.source.itemId,
       durationMs: lengths[i] ?? 0,
     })),
