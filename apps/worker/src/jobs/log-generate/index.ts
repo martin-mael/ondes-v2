@@ -5,8 +5,8 @@ import { eventPublisherFromEnv, type PublishEvent } from '../_events/asset-updat
 import { issueSummary, runLogGenerate } from './generate.ts';
 
 // `log-generate` job (#50, ADR 0026): generates consecutive days of a station's log and
-// writes them. See generate.ts. Enqueued by whoever plans days ahead (#101's regeneration
-// routes, a horizon sweep); no event triggers it.
+// writes them. See generate.ts. Enqueued by #101's regeneration routes (`POST …/log/regen`);
+// the horizon (`log-horizon`) runs it inline. No event triggers it.
 //
 // Bulk lane: days are generated well ahead of air. No explicit idempotency key: the payload
 // hash collapses duplicates, and a rerun writes the same days (deterministic).
@@ -45,6 +45,7 @@ export default defineJob(
         version: d.version,
         items: d.itemCount,
         kept: d.keptCount,
+        changed: d.changed,
       })),
       issues: issueSummary(report),
     });
