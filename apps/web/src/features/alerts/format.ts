@@ -4,7 +4,8 @@ import { type AlertT, isAlertMessageKey } from './messages.ts';
 
 // How an alert reads in the viewer's language, and its times on the station's clock (never the
 // browser's). The api's title and message are English; `details.i18n` (`{ key, params }`, #47's
-// missing episodes) is rendered here instead, and known types get a translated title.
+// missing episodes, #101's generation issues) is rendered here instead, and known types get a
+// translated title.
 
 /** `Thu 23 Oct, 14:05` on the station's clock (time only when it is today there). */
 export function formatStationTime(
@@ -22,6 +23,18 @@ export function formatStationTime(
     minute: '2-digit',
     hourCycle: 'h23',
   }).format(instant);
+}
+
+/** A station-local calendar date (`YYYY-MM-DD`): `Sat 24 Oct`, no timezone shift. */
+function formatLocalDate(date: string, locale: Locale): string {
+  const noon = new Date(`${date}T12:00:00Z`);
+  if (Number.isNaN(noon.getTime())) return date;
+  return new Intl.DateTimeFormat(locale, {
+    timeZone: 'UTC',
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  }).format(noon);
 }
 
 /** The type's label, or the raw type for one this app doesn't know yet. */
@@ -88,6 +101,11 @@ export function alertText(
       title: t('episodeMissing.title', { show }),
       message: known ? t(i18n.key, parts).trim() : alert.message,
     };
+  }
+  if (i18n?.key === 'logRegen.issues' && typeof i18n.params.localDate === 'string') {
+    const date = formatLocalDate(i18n.params.localDate, locale);
+    const total = typeof i18n.params.total === 'number' ? i18n.params.total : 0;
+    return { title: alertTypeLabel(alert.type, t), message: t('logRegen.issues', { date, total }) };
   }
   // The api's sentences are English: a French viewer gets the type's French label as title
   // (the message stays English until its producer sends `details.i18n`).

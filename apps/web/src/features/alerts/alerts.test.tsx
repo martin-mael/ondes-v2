@@ -62,16 +62,26 @@ function withRole(role: 'station_manager' | 'programmer'): Record<string, ApiRou
   return { ...signedIn(), 'GET /orgs': [200, { orgs: copy }] };
 }
 
+const generation = alert('03', {
+  type: 'log.generation_issues',
+  severity: 'warning',
+  dedupeKey: 'log.generation_issues:2026-10-24',
+  title: 'Log generation issues',
+  message: '3 issues',
+  details: { i18n: { key: 'logRegen.issues', params: { localDate: '2026-10-24', total: 3 } } },
+});
+
 describe('alerts page', () => {
   it('lists open alerts in the station’s time, with the missing-episode text rendered', async () => {
     const { screen } = renderApp(url, {
       ...withRole('programmer'),
-      [`GET ${api}`]: [200, { items: [alert('01'), episode], nextCursor: null }],
+      [`GET ${api}`]: [200, { items: [alert('01'), episode, generation], nextCursor: null }],
     });
     expect(await screen.findByRole('heading', { name: 'Alerts' })).toBeVisible();
     const items = await screen.findAllByTestId('alert-item');
-    expect(items).toHaveLength(2);
-    const [silence, missing] = items as [HTMLElement, HTMLElement];
+    expect(items).toHaveLength(3);
+    const [silence, missing, regen] = items as [HTMLElement, HTMLElement, HTMLElement];
+    expect(regen).toHaveTextContent('Log for Sat, Oct 24: 3 generation issues');
     expect(within(silence).getByText('Silence on air')).toBeVisible();
     expect(within(silence).getByText('Critical')).toBeVisible();
     expect(silence).toHaveTextContent(/Raised (\w{3} \d+ \w{3}, )?14:05/);

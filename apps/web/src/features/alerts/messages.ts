@@ -55,6 +55,11 @@ const en = {
   'type.feeder.log_empty': 'Log empty',
   'type.show.episode_missing': 'Missing episode',
   'type.island.render_failed': 'Failed render',
+  'type.log.generation_issues': 'Log generation issues',
+  'type.live.slot_missed': 'Live slot missed',
+
+  // `details.i18n` of log generation alerts (#101).
+  'logRegen.issues': 'Log for {date}: {total} generation issues',
 
   // `details.i18n` of missing-episode alerts (#47).
   'episodeMissing.ahead': '{show} airs {when} and its episode has no audio yet. {next}',
@@ -165,6 +170,10 @@ const fr: Record<AlertMessageKey, string> = {
   'type.feeder.log_empty': 'Conducteur vide',
   'type.show.episode_missing': 'Épisode manquant',
   'type.island.render_failed': 'Rendu en échec',
+  'type.log.generation_issues': 'Problèmes de génération du conducteur',
+  'type.live.slot_missed': 'Créneau direct manqué',
+
+  'logRegen.issues': 'Conducteur du {date} : {total} problèmes de génération',
 
   'episodeMissing.ahead': '{show} passe {when} et son épisode n’a pas encore d’audio. {next}',
   'episodeMissing.fallback': '{show} passe {when} sans son épisode : {fallback} à la place.',
