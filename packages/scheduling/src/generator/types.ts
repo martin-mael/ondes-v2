@@ -68,8 +68,11 @@ export interface GeneratorOccurrence {
   episode: GeneratorEpisode | null;
 }
 
-/** Why an existing item survives a regeneration with its id. */
-export type KeptReason = 'locked' | 'segue' | 'fallback';
+/**
+ * Why an existing item survives a regeneration with its id. `past` (it starts before the
+ * freeze point) and `manual` (a manual edit) are #101's regeneration policy (`regen/`).
+ */
+export type KeptReason = 'past' | 'manual' | 'locked' | 'segue' | 'fallback';
 
 /**
  * An item of the day being regenerated that is kept as it is, with its id: locked items,
