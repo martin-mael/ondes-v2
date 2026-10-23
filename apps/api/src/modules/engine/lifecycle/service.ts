@@ -437,7 +437,34 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
       await tripStorm(ex, scope, verdict.restarts, info);
       return;
     }
+    await publishRestarted(scope, restarts, verdict.restarts, dead);
     if (dead) await doReconcile(ex, scope);
+  }
+
+  /** An unasked-for restart, for the `engine.restarted` alert (#71). Best effort. */
+  async function publishRestarted(
+    scope: StationScope,
+    restarts: number,
+    inWindow: number,
+    crashed: boolean,
+  ) {
+    try {
+      await options.publish({
+        id: randomUUID(),
+        type: 'engine.restarted',
+        stationId: scope.stationId,
+        at: new Date(now()).toISOString(),
+        data: {
+          bootId: engines.get(scope.stationId)?.health.last()?.boot_id ?? null,
+          restarts,
+          inWindow: Math.max(inWindow, restarts),
+          windowSeconds: guard.windowSeconds,
+          crashed,
+        },
+      });
+    } catch (error) {
+      logger.error({ stationId: scope.stationId, err: error }, 'Publishing engine restart failed');
+    }
   }
 
   /**

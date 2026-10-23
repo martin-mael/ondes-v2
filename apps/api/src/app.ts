@@ -24,6 +24,7 @@ import { type PeaksPluginOptions, peaksPlugin } from './modules/library/peaks-pl
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { librarySearchRoutes } from './modules/library/search-routes.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
+import { listenerRoutes } from './modules/listeners/routes.ts';
 import { type LivePluginOptions, livePlugin } from './modules/live/plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
@@ -152,6 +153,8 @@ export async function buildApp(options: AppOptions) {
       : {}),
     ...options.live,
   });
+  // Listener counts for the dashboard (#71): what the Icecast poller (#32) recorded.
+  await app.register(listenerRoutes, { prefix: '/api/v1' });
   // Playout cache (#31): `app.playoutCache` for the feeder, `GET …/cache`, cache alerts.
   await app.register(cachePlugin, options.cache ?? {});
   // Safety playlist and emergency file (#34): routes, on-air source, fallback alerts.

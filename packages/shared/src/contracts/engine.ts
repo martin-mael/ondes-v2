@@ -389,3 +389,35 @@ export const engineLiveAuthRequestSchema = z.object({
   input: liveInput.optional(),
 });
 export type EngineLiveAuthRequest = z.infer<typeof engineLiveAuthRequestSchema>;
+
+/**
+ * `GET /api/v1/stations/:stationId/engine` (#35's lifecycle `status`), for the dashboard (#71).
+ * Domain shape (camelCase), unlike the engine's wire format above.
+ */
+export const engineStatusViewSchema = z.object({
+  stationId: z.string(),
+  desiredState: z.enum(['running', 'stopped']),
+  container: z
+    .object({
+      id: z.string(),
+      status: z.string(),
+      running: z.boolean(),
+      restartCount: z.int().nonnegative(),
+      configVersion: z.string().nullable(),
+    })
+    .nullable(),
+  /** The health monitor's view: `unknown` until the first probe, null when not monitored. */
+  health: z.enum(['unknown', 'up', 'down']).nullable(),
+  reportedVersion: z.string().nullable(),
+  expectedVersion: z.string(),
+  /** The engine runs an older script than its settings: a restart is due. */
+  restartPending: z.boolean(),
+  livePort: z.int().nullable(),
+  restartStorm: z.object({
+    tripped: z.boolean(),
+    since: z.string().nullable(),
+    restarts: z.int().nonnegative(),
+    windowSeconds: z.int().positive(),
+  }),
+});
+export type EngineStatusView = z.infer<typeof engineStatusViewSchema>;

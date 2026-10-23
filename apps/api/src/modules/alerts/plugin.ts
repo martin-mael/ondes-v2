@@ -10,6 +10,7 @@ import type { FastifyInstance } from 'fastify';
 import fp from 'fastify-plugin';
 import { alertEmailJob, alertEmailJobType } from './email-job.ts';
 import { createEngineAlerts, type EngineLookup } from './engine-alerts.ts';
+import { createIslandAlerts } from './island-alerts.ts';
 import { pruneSeenEvents } from './repo.ts';
 import { alertRoutes } from './routes.ts';
 import { type AlertService, createAlertService } from './service.ts';
@@ -39,6 +40,8 @@ export type AlertsPluginOptions = {
   sweepIntervalMs?: number;
   /** Reconcile engine alerts not seen for this long. Default 30 s. */
   reconcileQuietMs?: number;
+  /** An `engine.restarted` alert resolves after this long without a restart. Default 30 min. */
+  restartStableMs?: number;
   reopenWithinSeconds?: number;
   emailCooldownSeconds?: number;
   /** Durable queue name (tests use their own). Default `alerts`. */
@@ -81,8 +84,10 @@ export const alertsPlugin = fp(
       db: app.db,
       alerts,
       engineFor: options.engineFor,
+      restartStableMs: options.restartStableMs,
       logger: app.log,
     });
+    const islandAlerts = createIslandAlerts({ db: app.db, alerts, logger: app.log });
 
     let consumer: EventSubscription | undefined;
     let fanout: EventSubscription | undefined;
@@ -95,7 +100,10 @@ export const alertsPlugin = fp(
           topology,
           options.eventQueue ?? ALERTS_EVENT_QUEUE,
           realtimeEventSchema,
-          (event) => engineAlerts.handle(event),
+          async (event) => {
+            await engineAlerts.handle(event);
+            await islandAlerts.handle(event);
+          },
           {
             keyOf: (event: RealtimeEvent) => event.stationId,
             onError: (error, event) => {
@@ -140,7 +148,10 @@ export const alertsPlugin = fp(
       try {
         await alerts.escalateDue();
         await alerts.runPendingActions();
-        if (tick % reconcileEvery === 0) await engineAlerts.reconcile(options.reconcileQuietMs);
+        if (tick % reconcileEvery === 0) {
+          await engineAlerts.reconcile(options.reconcileQuietMs);
+          await islandAlerts.reconcile();
+        }
         if (tick % (reconcileEvery * 120) === 0) {
           await pruneSeenEvents(app.db, new Date(Date.now() - 24 * 3600 * 1000));
         }

@@ -39,6 +39,8 @@ export type EngineAlertsOptions = {
    * `app.engineLifecycle.adapterFor(stationId)` (any replica on the engine network).
    */
   engineFor?: EngineLookup;
+  /** An `engine.restarted` alert resolves after this long without a restart. Default 30 min. */
+  restartStableMs?: number;
   logger: Logger;
 };
 
@@ -52,6 +54,8 @@ export type EngineAlertsOptions = {
  * - `engine.blank.recovered`, `engine.booted`: resolve it (a new boot has a fresh detector,
  *   which fires again if it is still silent).
  * - `engine.down` / `engine.up`: raise / resolve `engine.down`.
+ * - `engine.restarted` (#71): raise a warning `engine.restarted`, resolved by the reconcile
+ *   once no restart came for `restartStableMs`.
  *
  * Late events are ignored rather than applied out of order: an event from an older engine boot
  * than the newest one seen, a raise older than the key's last resolve, a resolve older than
@@ -62,6 +66,7 @@ export type EngineAlertsOptions = {
 export function createEngineAlerts(options: EngineAlertsOptions) {
   const { db, alerts, logger } = options;
   const engineFor: EngineLookup = options.engineFor ?? (() => undefined);
+  const restartStableMs = options.restartStableMs ?? 30 * 60_000;
 
   async function requireEngine(stationId: string): Promise<AlertEngine> {
     const engine = await engineFor(stationId);
@@ -154,6 +159,28 @@ export function createEngineAlerts(options: EngineAlertsOptions) {
           opts,
         );
         return;
+      case 'engine.restarted':
+        await alerts.raise(
+          scope,
+          {
+            type: alertTypes.engineRestarted,
+            severity: 'warning',
+            dedupeKey: alertTypes.engineRestarted,
+            title: 'Engine restarted after a crash',
+            message: event.data.crashed
+              ? `The station engine stopped and was recreated (${event.data.inWindow} restarts in the last ${Math.round(event.data.windowSeconds / 60)} min). The stream may have dropped for a few seconds.`
+              : `The station engine crashed and restarted (${event.data.inWindow} restarts in the last ${Math.round(event.data.windowSeconds / 60)} min). The stream may have dropped for a few seconds.`,
+            details: {
+              restarts: event.data.restarts,
+              inWindow: event.data.inWindow,
+              windowSeconds: event.data.windowSeconds,
+              crashed: event.data.crashed,
+              bootId: event.data.bootId,
+            },
+          },
+          opts,
+        );
+        return;
       case 'engine.up':
         await repo.noteEngineBoot(db, scope, event.data.bootId, at);
         await alerts.resolve(scope, alertTypes.engineDown, { ...opts, reason: 'engine_up' });
@@ -175,12 +202,21 @@ export function createEngineAlerts(options: EngineAlertsOptions) {
    * `engine.silence`.
    */
   async function reconcile(quietMs = 30_000): Promise<number> {
+    let resolved = 0;
+    // A restart is a one-off: its alert closes once the engine has stayed up a while.
+    const stable = await repo.quietOpenAlerts(
+      db,
+      [alertTypes.engineRestarted],
+      new Date(Date.now() - restartStableMs),
+    );
+    for (const { scope, alert } of stable) {
+      if (await alerts.resolve(scope, alert.dedupeKey, { reason: 'stable' })) resolved++;
+    }
     const quiet = await repo.quietOpenAlerts(
       db,
       [alertTypes.silence, alertTypes.engineDown],
       new Date(Date.now() - quietMs),
     );
-    let resolved = 0;
     for (const { scope, alert } of quiet) {
       const engine = await engineFor(scope.stationId);
       if (!engine) continue;
