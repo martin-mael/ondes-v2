@@ -85,6 +85,22 @@ describe('live page', () => {
     expect(screen.getByRole('button', { name: 'New streamer' })).toBeTruthy();
   });
 
+  it('says the port is not assigned yet before the engine starts, with nothing to copy', async () => {
+    const { screen } = renderApp(
+      base,
+      as('station_manager', {
+        [`GET ${base}/streamers`]: [200, { streamers: [] }],
+        [`GET ${base}/connection`]: [200, { ...connection, port: null }],
+      }),
+    );
+    expect(await screen.findByText(/hasn’t started yet/)).toBeTruthy();
+    // Port in BUTT and Mixxx, and OBS's URL.
+    expect(screen.getAllByText('Not assigned yet')).toHaveLength(3);
+    expect(screen.queryByText(/icecast:\/\//)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy Port' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Copy Server' })).toHaveLength(2);
+  });
+
   it('creates a streamer and shows its password once', async () => {
     const created = streamer({ shows: [], anyTime: true, expiresAt: null, username: 'guest-dj' });
     const { screen, user, calls } = renderApp(

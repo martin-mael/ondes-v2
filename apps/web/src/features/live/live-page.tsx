@@ -53,9 +53,28 @@ function useCopy() {
 }
 
 /** A value DJs type in, with a copy button. */
-function Setting({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
+/** `value` null: not known yet (no port before the engine starts), shown as such, no copy. */
+function Setting({
+  label,
+  value,
+  mono = true,
+}: {
+  label: string;
+  value: string | null;
+  mono?: boolean;
+}) {
   const t = useLiveT();
   const copy = useCopy();
+  if (value === null) {
+    return (
+      <div className="flex items-center gap-2">
+        <dt className="w-32 shrink-0 text-muted-foreground">{label}</dt>
+        <dd className="min-w-0 flex-1 truncate text-muted-foreground">
+          {t('connection.notAssigned')}
+        </dd>
+      </div>
+    );
+  }
   return (
     <div className="flex items-center gap-2">
       <dt className="w-32 shrink-0 text-muted-foreground">{label}</dt>
@@ -104,7 +123,7 @@ function ConnectionSettings({
 }) {
   const user = username ?? `<${t('connection.yourUser')}>`;
   const password = `<${t('connection.yourPassword')}>`;
-  const port = info.port === null ? '…' : String(info.port);
+  const port = info.port === null ? null : String(info.port);
   const common = (
     <dl className="flex flex-col gap-1">
       <Setting label={t('connection.host')} value={info.host} />
@@ -139,7 +158,11 @@ function ConnectionSettings({
           <dl>
             <Setting
               label={t('obs.urlLabel')}
-              value={`icecast://${user}:${password}@${info.host}:${port}/${info.mount}`}
+              value={
+                port === null
+                  ? null
+                  : `icecast://${user}:${password}@${info.host}:${port}/${info.mount}`
+              }
             />
           </dl>
           <p className="text-muted-foreground">{t('obs.format')}</p>
