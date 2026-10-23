@@ -496,9 +496,11 @@ export const realtimeEventPermissions = {
   'alert.acknowledged': 'alert:read',
   'alert.resolved': 'alert:read',
   'alert.silence_settings.updated': 'alert:read',
-  // Library (#18): new assets for every reader; upload progress only for those who upload.
+  // Library (#18): new assets and upload progress for every reader. Upload progress is what
+  // `GET …/uploads` already shows readers, and presenters (`library:read` only) wait on it for
+  // the episodes (#45) and voice tracks (#59) they upload.
   'asset.ingested': 'library:read',
-  'upload.updated': 'library:write',
+  'upload.updated': 'library:read',
   'asset.updated': 'library:read',
   'asset.deleted': 'library:read',
   // As-run (#30): history and now playing, for everyone who reads the log.
