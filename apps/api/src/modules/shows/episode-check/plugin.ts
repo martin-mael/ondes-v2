@@ -3,8 +3,8 @@ import fp from 'fastify-plugin';
 import {
   type ClockMusicSource,
   type ClockResolver,
+  generatorClockMusic,
   gridClockResolver,
-  noClockMusic,
 } from './fallback.ts';
 import { createEpisodeCheckService, type EpisodeCheckService } from './service.ts';
 
@@ -18,7 +18,7 @@ declare module 'fastify' {
 export type EpisodeCheckPluginOptions = {
   /** For the `clock_music` fallback. Default: the station's clock grid (#40). */
   resolveClock?: ClockResolver;
-  /** #50's clock music, for the `clock_music` fallback. Default: none (stub). */
+  /** For the `clock_music` fallback. Default: the log generator's (#50). */
   clockMusic?: ClockMusicSource;
   /** How often pending steps are worked off. Default 15 s; 0 turns it off (tests). */
   intervalMs?: number;
@@ -40,7 +40,7 @@ export const episodeCheckPlugin = fp(
       logEvents: app.hasDecorator('rabbit') ? app.rabbit.events : undefined,
       fallback: {
         resolveClock: options.resolveClock ?? gridClockResolver(app.db),
-        clockMusic: options.clockMusic ?? noClockMusic,
+        clockMusic: options.clockMusic ?? generatorClockMusic(app.db),
       },
     });
     app.decorate('episodeCheck', service);

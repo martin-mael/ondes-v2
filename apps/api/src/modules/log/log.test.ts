@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   createSegueSchema,
+  logDayItemInputSchema,
   logItemInputSchema,
   PLAYOUT_SAMPLE_RATE,
   realtimeEventSchema,
@@ -177,6 +178,27 @@ describe('logItemInputSchema', () => {
       false,
     );
     expect(logItemInputSchema.safeParse({ kind: 'marker', plannedDurationMs: 5 }).success).toBe(
+      false,
+    );
+    // A show occurrence whose audio isn't there yet (ADR 0022), but never an anonymous one.
+    expect(
+      logItemInputSchema.safeParse({ kind: 'episode', episodeId: assetId, plannedDurationMs: 1 })
+        .success,
+    ).toBe(true);
+    expect(logItemInputSchema.safeParse({ kind: 'episode', plannedDurationMs: 1 }).success).toBe(
+      false,
+    );
+    // A bulk write may name the occurrence by its show slot instead (no episode planned).
+    const empty = { kind: 'episode', plannedDurationMs: 1 };
+    expect(
+      logDayItemInputSchema.safeParse({ ...empty, origin: { type: 'show', showSlotId: assetId } })
+        .success,
+    ).toBe(true);
+    expect(
+      logDayItemInputSchema.safeParse({ ...empty, origin: { type: 'show', showSlotId: null } })
+        .success,
+    ).toBe(false);
+    expect(logDayItemInputSchema.safeParse({ ...empty, origin: { type: 'manual' } }).success).toBe(
       false,
     );
     const part = { kind: 'song', assetId, plannedDurationMs: 1_000 };

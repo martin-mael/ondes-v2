@@ -1,7 +1,9 @@
 import {
   asset,
+  type Db,
   type Executor,
   episode,
+  fillWithClockMusic,
   type StationScope,
   show,
   station,
@@ -34,8 +36,13 @@ export interface ClockMusicSource {
   ): Promise<LogItemInput[] | null>;
 }
 
-/** Until #50 exists, clock music isn't available: the slot is left to the safety playlist. */
+/** No clock music: the slot is left to the safety playlist (tests). */
 export const noClockMusic: ClockMusicSource = { fill: async () => null };
+
+/** #50's log generator plans the music from the clock, against the log around it. */
+export function generatorClockMusic(db: Db): ClockMusicSource {
+  return { fill: (scope, request) => fillWithClockMusic(db, scope, request) };
+}
 export const noClockResolver: ClockResolver = async () => null;
 
 /** #40's grid: the clock airing at `at` in the station's own timezone (DST-aware). */
