@@ -1,10 +1,17 @@
-import type { AsRunOutcome, AsRunSource, EpisodeFallbackKind, LogItemKind } from '@ondes/shared';
+import type {
+  AsRunOutcome,
+  AsRunSource,
+  AsRunTransition,
+  EpisodeFallbackKind,
+  LogItemKind,
+} from '@ondes/shared';
 import { sql } from 'drizzle-orm';
 import {
   check,
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -61,6 +68,8 @@ export const asRunEntry = pgTable(
     plannedDurationMs: integer('planned_duration_ms'),
     /** The item aired as the fallback of a missing episode (#47): what stood in for it. */
     fallback: text('fallback').$type<EpisodeFallbackKind>(),
+    /** The segue transition it carries (#57): the island it is, or the voices over its crossfade. */
+    transition: jsonb('transition').$type<AsRunTransition>(),
     /** The api's clock when it was recorded. */
     recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
   },

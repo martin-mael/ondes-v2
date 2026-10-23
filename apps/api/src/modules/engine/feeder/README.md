@@ -7,8 +7,9 @@ Keeps each station's engine queue a few items ahead of air, following the publis
 | Piece | File | Role |
 |---|---|---|
 | Planner | `plan.ts` | Pure. Engine state + log around now → which entries to have queued, in order, with their trims; `diffQueue` compares that with the engine queue. |
-| Push bodies | `push.ts` | Pure. One log item (or segment) + its media → `POST /v1/queue` / `POST /v1/segment` body: cache path, biased cue points, fades, crossfades, gain, ICY metadata. |
-| Repo | `repo.ts` | The log around now (published days only) and, in one query, each asset's playout file, cues, loudness and cache state. `feeder_push`: what was pushed to the current boot. |
+| Push bodies | `push.ts` | Pure. One log item (or segment, or island chain) + its media → `POST /v1/queue` / `POST /v1/segment` body: cache path, biased cue points, fades, crossfades, gain, ICY metadata, voice overlay. |
+| Islands | `islands.ts` | Pure. The window's islands (#57, ADR 0024) → which air as chains (`A body, island, B body`) and which fall back to a crossfade with their voices laid over it. |
+| Repo | `repo.ts` | The log around now (published days only) and, in one query, each asset's playout file, cues, loudness and cache state. `loadFeedIslands`: the islands the window's segues call for now, their render's cache state, the voices' media. `feeder_push`: what was pushed to the current boot. |
 | Feeder | `feeder.ts` | One station: `sync()` reads the state and the log, plans, removes and pushes. Alerts, urgent fetches, `feeder.item.passed_over`. |
 | Leases | `leases.ts` | One feeder per station across replicas: a session-level advisory lock per station on one reserved connection. |
 | Service, plugin | `service.ts`, `plugin.ts` | `app.feeder`: lease rounds, the tick, fanout events → the right feeder. |
@@ -72,6 +73,23 @@ Keeps each station's engine queue a few items ahead of air, following the publis
     push an item past the ceiling.
 - **Title, artist**: the item's title, else the asset's; artists joined with `, `.
 
+## Islands (#57, ADR 0024)
+
+- Every sync re-derives the islands of the items from 30 min back on (`deriveIslandsFor`): a
+  render airs only if it has the hash the inputs give now.
+- **Chain**: render `ready` and cached, every covered item playable, the items after the head
+  `flow`. The items become one entry under the head's id, pushed as one segment
+  (`buildPushChain`): A's cue-in moved up to the FLAC grid, cue-out at the head join; the island
+  at 0 dB with no cues (`item_id` `island:<hash>`); B from the tail join; half-sample bias on
+  every cue. Consecutive islands join one chain.
+- **Fallback** otherwise: plain items and crossfade, the island's voices in the head's
+  `overlay` (start relative to A's end, own trim and gain, the music ducked to A's envelope
+  there). A voice file not cached is fetched urgently and left out meanwhile.
+- An item on air or aired in this boot never starts a chain; the chain on air keeps its pushed
+  shape (`feeder_push.parts`), so B never airs twice.
+- `feeder_push.parts`: each request's engine id, its length inside the chain and its
+  transition, for the as-run.
+
 ## Cache, alerts, as-run
 
 - **Miss at plan time**: the feeder skips the item and calls
@@ -129,3 +147,9 @@ Keeps each station's engine queue a few items ahead of air, following the publis
   - Restarts the engine and checks the log comes back.
 - `leases.int.test.ts`: two replicas compete for stations; locks are handed over on release,
   close and when a session dies.
+- `islands.test.ts`: chains and fallbacks from real derived islands; the chain's cues against
+  Liquidsoap's `ceil(out·sr) − ceil(in·sr)`.
+- `islands.int.test.ts` (integration project `engine`): a real Liquidsoap and database with
+  two VT segues, one rendered and cached (airs `A, island, B` as one segment), one pending (the
+  fallback, the voice in C's overlay); the as-run recorder then records the island's transition.
+  The splice itself (no seam) is the template test's (`pnpm test:engine:template`).

@@ -28,12 +28,16 @@ script. It checks:
 
 - the control API: health and `config_version`, 401 without the token, 422/400 on bad pushes,
   a refused segment queues nothing, queue state, remove by item id and by any part of a segment;
-- the island chain from the splice test (`engine/tests/splice`, FLAC noise, cues snapped to
-  the grid and half-sample biased) pushed as one `POST /v1/segment`: as-run reports
+- the island chain from the splice test (`engine/tests/splice`, FLAC noise), pushed as one
+  `POST /v1/segment` built by the feeder (`buildPushChain`, #57: A's off-grid cue-in snapped up,
+  every cue half-sample biased, per-part gains, the island at 0 dB): as-run reports
   `A`, `VT`, `B` in order with their `segment_id`, and the seam detector finds **no seam**
   (shift 0, residual ≤ −70 dB at both joins; about −115 dB measured);
 - `POST /v1/skip` during a segment drops its remaining parts;
 - B stops at its cue-out within one frame (the end of a segment is a normal crossfade
-  boundary, frame-granular in Liquidsoap 2.4: 441 samples measured).
+  boundary, frame-granular in Liquidsoap 2.4: 441 samples measured);
+- the island fallback (#57, ADR 0024): an item pushed with a voice `overlay` (built by
+  `buildPushItem`) airs alone in the as-run, the voice starts on time (±100 ms; 60 ms measured),
+  plays its 2 s at its gain, the music is ducked by its `duck_db` meanwhile and comes back.
 
 `--keep` keeps `output.wav` and `reference.wav` in `.work/run/` to listen to.

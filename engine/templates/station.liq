@@ -14,6 +14,7 @@
 # Source chain, highest priority first:
 #   live (input.harbor, gated by Node) > queue (segments pushed by Node)
 #   > safety playlist > emergency loop > mksafe (silence)
+# with the station crossfade and the voice overlay (the island fallback, #57) under live,
 # then: processing (compressor, limiter) > as-run > mksafe > blank.detect > outputs.
 #
 # Ports (inside the station's Docker network):
@@ -295,6 +296,72 @@ auto =
   )
 
 # ---------------------------------------------------------------------------------------
+# Voice overlay (#57, ADR 0024): the degraded path of a voice track whose island is not
+# rendered (or not cached) at air time. The transition then airs as the standard
+# crossfade, with the voices laid over it and the music ducked while they play. It is
+# frame-granular (spike #12): not "what you preview is what airs", but the voice airs.
+#
+# Node attaches the voices to the queue entry they follow (`overlay` on POST /v1/queue or
+# /v1/segment, kept against its last request). When that request goes on air (as-run
+# below), each voice is started `at` seconds later. Voices carry no metadata: they are
+# part of the transition, not an item on air, so the as-run never sees them. A skip
+# cancels the voices of the item it ends.
+#
+# Threads: harbor handlers write `voice_overlays` (push) and `voice_epoch` (skip), the
+# clock thread takes from `voice_overlays` (on air), scheduled tasks write `voice_ducks`.
+
+voice_queue = request.queue(id="voice")
+voice_overlays =
+  ref(
+    (
+      [] :
+        [
+          (
+            string
+          *
+            [
+              {
+                uri: string,
+                at: float,
+                duration: float,
+                cue_in: float?,
+                cue_out: float?,
+                amplify_db: float?,
+                duck_db: float?
+              }
+            ]
+          )
+        ]
+    )
+  )
+voice_ducks = ref([])
+voice_epoch = ref(0)
+voice_duck = ref(1.)
+
+# Lowest duck of the voices playing, reached smoothly (about 100 ms) to avoid zipper noise.
+def voice_duck_gain() =
+  target = list.fold(fun (a, d) -> if d < a then d else a end, 1., voice_ducks())
+  voice_duck := voice_duck() + (target - voice_duck()) * 0.25
+  voice_duck()
+end
+
+voices =
+  metadata.map(
+    id="voices",
+    strip=true,
+    update=false,
+    fun (_) -> [],
+    amplify(override="liq_amplify", 1., voice_queue)
+  )
+# override=null: the duck must not read liq_amplify again (each request already applied its own).
+auto =
+  add(
+    id="overlay",
+    normalize=false,
+    [amplify(id="duck", override=null, {voice_duck_gain()}, auto), voices]
+  )
+
+# ---------------------------------------------------------------------------------------
 # Live input (live_input setting). Auth: Node's webhook if configured (it checks each DJ's
 # own credentials, #63), else the shared ENGINE_LIVE_PASSWORD. The webhook carries the
 # control token like the events do. #64 extends this into a harbor pool.
@@ -424,6 +491,78 @@ radio =
   end
 
 # ---------------------------------------------------------------------------------------
+# Voice overlay scheduling (see "Voice overlay" above).
+
+def voice_annotation(k, v, unit) =
+  if
+    null.defined(v)
+  then
+    value = string.float(null.get(v)) ^ unit
+    ["#{k}=#{string.quote(value)}"]
+  else
+    []
+  end
+end
+
+# Starts one voice, unless a skip came since its item went on air. It ducks the music
+# for its `duration`.
+def start_voice(
+  epoch,
+  (
+    v :
+      {
+        uri: string,
+        at: float,
+        duration: float,
+        cue_in: float?,
+        cue_out: float?,
+        amplify_db: float?,
+        duck_db: float?
+      }
+  )
+) =
+  if
+    epoch == voice_epoch()
+  then
+    annotations =
+      [
+        ...voice_annotation("liq_cue_in", v.cue_in, ""),
+        ...voice_annotation("liq_cue_out", v.cue_out, ""),
+        ...voice_annotation("liq_amplify", v.amplify_db, " dB")
+      ]
+    voice_queue.push(
+      request.create("annotate:#{string.concat(separator=',', annotations)}:#{v.uri}")
+    )
+    duck = lin_of_dB(null.get(default=0., v.duck_db))
+    voice_ducks := [...voice_ducks(), duck]
+    ignore(
+      thread.run(delay=v.duration, fun () -> voice_ducks := list.remove(duck, voice_ducks()))
+    )
+  end
+end
+
+# The request `m` describes just went on air: start the voices kept against it.
+def schedule_voices(m) =
+  rid = if list.assoc.mem("rid", m) then m["rid"] else "" end
+  if
+    rid != "" and list.assoc.mem(rid, voice_overlays())
+  then
+    found = list.assoc(rid, voice_overlays())
+    voice_overlays := list.assoc.remove(rid, voice_overlays())
+    epoch = voice_epoch()
+    list.iter(
+      fun (v) ->
+        ignore(
+          thread.run(
+            delay=if v.at > 0. then v.at else 0. end, fun () -> start_voice(epoch, v)
+          )
+        ),
+      found
+    )
+  end
+end
+
+# ---------------------------------------------------------------------------------------
 # As-run: what actually aired, taken after every transition, right before the output.
 #
 # Keyed on metadata, not on track marks: when a crossfade override is set, Liquidsoap
@@ -492,6 +631,7 @@ def on_air(m) =
   current_started := now
   current := d
   emit("track.started", d)
+  schedule_voices(m)
 end
 
 # The callbacks go on mksafe's output (the cast sources above have no methods left); its
@@ -755,6 +895,23 @@ def enqueue(made) =
   end
 end
 
+# Keeps an entry's voice overlay against its last request, until that request goes on air.
+# Overlays of requests no longer queued (removed, cleared) are dropped here.
+def remember_voices(rs, overlay) =
+  voices = null.get(default=[], overlay)
+  if
+    not list.is_empty(voices)
+  then
+    live_rids =
+      list.map(
+        fun (r) -> string(request.id(r)),
+        [...current_segment().requests, ...pending_requests()]
+      )
+    kept = list.filter(fun (e) -> list.mem(fst(e), live_rids), voice_overlays())
+    voice_overlays := [...kept, (string(request.id(list.last(rs))), voices)]
+  end
+end
+
 # POST /v1/queue: one log item, a one-request segment.
 def handle_push(req, res) =
   if
@@ -774,7 +931,19 @@ def handle_push(req, res) =
             cross_in: float?,
             cross_out: float?,
             title: string?,
-            artist: string?
+            artist: string?,
+            overlay:
+              [
+                {
+                  uri: string,
+                  at: float,
+                  duration: float,
+                  cue_in: float?,
+                  cue_out: float?,
+                  amplify_db: float?,
+                  duck_db: float?
+                }
+              ]?
           }
       ) = req.body()
       transitions = [...into_annotations(p), ...out_annotations(p)]
@@ -784,6 +953,7 @@ def handle_push(req, res) =
       then
         fail(res, 422, problem)
       else
+        remember_voices(rs, p.overlay)
         reply(res, 201, request_json(list.hd(rs)).stringify(compact=true))
       end
     catch err do
@@ -817,7 +987,19 @@ def handle_segment(req, res) =
             fade_in: float?,
             fade_out: float?,
             cross_in: float?,
-            cross_out: float?
+            cross_out: float?,
+            overlay:
+              [
+                {
+                  uri: string,
+                  at: float,
+                  duration: float,
+                  cue_in: float?,
+                  cue_out: float?,
+                  amplify_db: float?,
+                  duck_db: float?
+                }
+              ]?
           }
       ) = req.body()
       if
@@ -842,6 +1024,7 @@ def handle_segment(req, res) =
         then
           fail(res, 422, problem)
         else
+          remember_voices(rs, s.overlay)
           reply(
             res,
             201,
@@ -904,6 +1087,8 @@ def handle_skip(req, res) =
     authorized(req, res)
   then
     if current_source() == "queue" then current_segment().aborted := true end
+    # Voices of the item that ends, not yet started, never start.
+    voice_epoch := voice_epoch() + 1
     skip = skip_on_air()
     skip()
     reply(res, 200, json.stringify({skipped=true}))
