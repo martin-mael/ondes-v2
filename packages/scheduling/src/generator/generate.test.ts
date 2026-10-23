@@ -603,6 +603,7 @@ describe('rule properties', () => {
   // Seeded runs over varied libraries, rule values, clocks and dates (DST days included).
   const DATES = ['2026-03-28', '2026-06-10', '2026-10-24', '2027-01-15'] as const;
 
+  // 32 generated days: about 11 s on a CI runner.
   it('never breaks an unbreakable rule, and records every breakable one it breaks', () => {
     for (let run = 0; run < 32; run++) {
       const seed = `property-${run}`;
@@ -651,7 +652,7 @@ describe('rule properties', () => {
         }
       }
     }
-  });
+  }, 60_000);
 
   it('relaxes rules on a library too small for them, and says so on the items', () => {
     const snapshot = fixtureSnapshot({ songs: 40 });
