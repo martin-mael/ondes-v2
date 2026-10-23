@@ -10,7 +10,7 @@ import {
 } from '../../../app/testing/render.tsx';
 import { asRunEntry, id, logItem } from '../testing.ts';
 import { dayHours } from '../time.ts';
-import { groupByHour, isOffPlan } from './model.ts';
+import { groupByHour, isOffPlan, nextPendingEndMs } from './model.ts';
 
 // Log vs as-run (#53) on the whole app with a fake api: a past day opens on what aired, hour by
 // hour in station time, with drift and what went off plan; the tabs switch back to the plan.
@@ -72,16 +72,20 @@ const rows = [
   row({
     status: 'transition',
     at: '2026-10-20T10:07:00.000Z',
-    entry: {
-      ...asRunEntry({
-        title: 'Pentes',
-        startedAt: '2026-10-20T10:07:00.000Z',
-        endedAt: '2026-10-20T10:07:12.000Z',
-        durationMs: 12_000,
-        outcome: 'complete',
-      }),
-      transition: { rendered: true, voices: [{ title: 'VT: la suite' }] },
-    } as AsRunOverlayRow['entry'],
+    entry: asRunEntry({
+      title: 'Pentes',
+      startedAt: '2026-10-20T10:07:00.000Z',
+      endedAt: '2026-10-20T10:07:12.000Z',
+      durationMs: 12_000,
+      outcome: 'complete',
+      transition: {
+        rendered: true,
+        islandId: null,
+        hash: 'spec-hash',
+        segueIds: [],
+        voices: [{ assetId: null, title: 'VT: la suite', offsetMs: 0, durationMs: 9_000 }],
+      },
+    }),
   }),
   row({
     status: 'missed',
@@ -181,10 +185,9 @@ describe('log vs as-run', () => {
     expect(within(saone).getByText('Replaced')).toBeInTheDocument();
     expect(within(saone).getByText('Its slot went to: Safety Loop (12:03:30)')).toBeInTheDocument();
     expect(within(noon).getByText('2 off plan')).toBeInTheDocument();
-    // A rendered island (#57) is the planned transition. Its voice tracks (`transition.voices`)
-    // show once #57 adds the field to the contract: until then the client's parse strips it.
+    // A rendered island (#57) is the planned transition, with its voice track.
     const island = within(noon).getByText('Transition').closest('li') as HTMLElement;
-    expect(within(island).getByText('Pentes')).toBeInTheDocument();
+    expect(within(island).getByText('Voice: VT: la suite')).toBeInTheDocument();
 
     const one = screen.getByRole('region', { name: '13:00' });
     expect(within(one).getByText('Not aired')).toBeInTheDocument();
@@ -210,6 +213,59 @@ describe('log vs as-run', () => {
     );
     history.push(`${base}/log?date=2026-10-23`);
     await waitFor(() => expect(screen.queryByRole('tab', { name: 'Plan' })).toBeNull());
+  });
+});
+
+describe('the October DST day', () => {
+  // 2025-10-26 in Paris: 25 hours, 02:00 twice (UTC+2, then UTC+1).
+  const dst = (start: string, title: string) =>
+    row({
+      status: 'aired',
+      at: start,
+      plan: plan(start, title),
+      entry: asRunEntry({ title, startedAt: start, endedAt: start, outcome: 'complete' }),
+    });
+  const first = dst('2025-10-26T00:30:00.000Z', 'Premier passage');
+  const second = dst('2025-10-26T01:30:00.000Z', 'Second passage');
+
+  it('groups the two 02:00 hours apart', () => {
+    const hours = dayHours('2025-10-26', 'Europe/Paris');
+    expect(hours).toHaveLength(25);
+    const groups = groupByHour([first, second], hours).filter((g) => g.rows.length > 0);
+    expect(groups.map((g) => g.label)).toEqual(['02:00 UTC+2', '02:00 UTC+1']);
+  });
+
+  it('shows both hours, each with its exact air time', async () => {
+    const dstOverlay: AsRunOverlay = {
+      date: '2025-10-26',
+      from: '2025-10-25T22:00:00.000Z',
+      to: '2025-10-26T23:00:00.000Z',
+      now: NOW,
+      rows: [first, second],
+    };
+    const { screen } = renderApp(
+      `${base}/log?date=2025-10-26`,
+      routes({ [`GET ${base}/asrun/overlay`]: [200, dstOverlay] }),
+    );
+    const summer = await screen.findByRole('region', { name: '02:00 UTC+2' });
+    const winter = screen.getByRole('region', { name: '02:00 UTC+1' });
+    expect(within(summer).getByText('Premier passage')).toBeInTheDocument();
+    expect(within(winter).getByText('Second passage')).toBeInTheDocument();
+    expect(within(summer).getAllByText('02:30:00').length).toBeGreaterThan(0);
+    expect(within(winter).getAllByText('02:30:00').length).toBeGreaterThan(0);
+  });
+});
+
+describe('nextPendingEndMs', () => {
+  it('is the time until the first upcoming slot ends, plus slack; null without one', () => {
+    const pending = row({
+      status: 'pending',
+      at: '2026-10-21T10:05:00.000Z',
+      plan: plan('2026-10-21T10:05:00.000Z', 'Next'),
+    });
+    // Planned 10:05:00 + 200 s = 10:08:20; the api's now is 10:01:00.
+    expect(nextPendingEndMs({ now: NOW, rows: [pending] })).toBe(440_000 + 2_000);
+    expect(nextPendingEndMs({ now: NOW, rows })).toBeNull();
   });
 });
 

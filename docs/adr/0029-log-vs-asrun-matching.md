@@ -34,17 +34,20 @@ The as-run is append-only and keeps snapshots of the plan (`planned_start`,
      `unplanned` (from the log, but no item of the current plan matches it: the day was
      regenerated or the item deleted; the entry's plan snapshot still says when it was due).
 - **A plan item with no entry** is `pending` while its slot hasn't ended (against the api's
-  clock, returned as `now`), `replaced` when off-plan audio overlapped its slot by more than
-  the as-run tolerance (2 s, `AS_RUN_TOLERANCE_MS`; a crossfade tail doesn't count), with the
-  ids of those entries in `replacedBy`, and `missed` otherwise. The feeder's reason for passing
+  clock, returned as `now`; the view refetches when the next one's slot ends), `replaced`
+  when off-plan audio overlapped its slot by more than the as-run tolerance (2 s,
+  `AS_RUN_TOLERANCE_MS`; a crossfade tail doesn't count), with the ids of those entries in
+  `replacedBy`, and `missed` otherwise. The feeder's reason for passing
   an item over (#29) is a transient event, not stored, so it isn't shown.
 - **A matched item** is `fallback` when the entry says it aired as a missing episode's fallback
   (ADR 0022), `live` for a live slot, `replaced` when the entry's asset isn't the plan's, else
   `aired`. Cut, skipped and interrupted stay the entry's `outcome` (ADR 0015), shown next to
   the status.
 - **The day is the plan's day.** Plan items are those starting in the local day (markers are
-  left out: they never air). Entries are read 3 h either side of it, so an item planned at
-  23:59 that aired at 00:01 stays with its day; off-plan entries outside the day are dropped.
+  left out: they never air). The log and the entries are read 3 h either side of it, so an item
+  planned at 23:59 that aired at 00:01 stays with its day. An entry of a neighbouring day's
+  item shows on that day only and is never off-plan here (so it can't mark this day's item
+  `replaced`); off-plan entries outside the day are dropped.
 - **Drift** is the entry's own `driftMs` (`startedAt − plannedStart` as planned when it aired),
   not recomputed against today's plan.
 - **Station time only** in the view (ADR 0009 and CLAUDE.md): times are formatted in the
@@ -56,11 +59,12 @@ The as-run is append-only and keeps snapshots of the plan (`planned_start`,
   entries: A's body (log item A), the rendered island (no log item, `transition.rendered`,
   B's title) and B's body (log item B). The bodies match by id (rule 1); the island is rule 3.
   When the island isn't ready, A and B air as normal items and A's entry carries
-  `transition.rendered = false`: nothing changes for matching. `AsRunEntry.transition` comes
-  with #57's contract; until then the overlay reads it defensively and the web view shows the
-  voices once the field is in the contract. The older `segment` log items still match by their
-  segment or part ids (rule 1): a segment counts as aired as soon as any part did, and parts
-  never get rows of their own when nothing aired.
+  `transition.rendered = false`: nothing changes for matching. `AsRunEntry.transition` is
+  #57's contract, copied here byte for byte so both branches merge cleanly; the api fills it
+  once #57's recorder and column land. The older `segment` log items still match by their
+  segment or part ids (rule 1). A segment reported as one item covers its parts. A segment
+  whose parts aired one by one reports each part that didn't (`missed`, `replaced` or
+  `pending`); a segment nothing aired for is one row.
 - **Live (#64).** Expected: one `source = live` entry per session (connect to disconnect), with
   `liveSessionId`. A live entry per metadata change also works (each takes the slot it
   overlaps). Extra fields (DJ name, show) would only add to what the row shows.

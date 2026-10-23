@@ -42,6 +42,35 @@ export function asRunOutcome(playedMs: number, expectedMs: number | null): AsRun
   return playedMs < AS_RUN_SKIP_MS ? 'skipped' : 'cut';
 }
 
+/** A voice of a transition (a VT, a promo) as it was pushed to air (#57). */
+export const asRunVoiceSchema = z.object({
+  assetId: uuidSchema.nullable(),
+  title: z.string().nullable(),
+  /** Where it starts, in ms after the entry carrying the transition went on air. */
+  offsetMs: z.int().nonnegative(),
+  durationMs: z.int().nonnegative(),
+});
+export type AsRunVoice = z.infer<typeof asRunVoiceSchema>;
+
+/**
+ * The segue transition an entry carries (#57, ADR 0024), as the feeder pushed it:
+ * - `rendered: true`: the entry is the island itself (spliced between A's body and B's body);
+ * - `rendered: false`: the island wasn't ready, the entry is the item before the transition and
+ *   the voices were laid over its crossfade into the next one (degraded mode).
+ * Whether a voice really aired follows from the entry's end: one that starts after the entry
+ * left the air early didn't.
+ */
+export const asRunTransitionSchema = z.object({
+  rendered: z.boolean(),
+  /** Null when no rendered island exists (degraded mode). */
+  islandId: uuidSchema.nullable(),
+  /** The island spec's hash (ADR 0017). */
+  hash: z.string(),
+  segueIds: z.array(uuidSchema),
+  voices: z.array(asRunVoiceSchema),
+});
+export type AsRunTransition = z.infer<typeof asRunTransitionSchema>;
+
 export const asRunEntrySchema = z.object({
   id: uuidSchema,
   stationId: uuidSchema,
@@ -77,6 +106,11 @@ export const asRunEntrySchema = z.object({
    * Optional so older api versions' payloads still parse.
    */
   fallback: episodeFallbackKindSchema.nullable().optional(),
+  /**
+   * The segue transition this entry carries (#57): the island it is, or the voices laid over
+   * its crossfade out. Optional so older api versions' payloads still parse.
+   */
+  transition: asRunTransitionSchema.nullable().optional(),
   /** Engine boot and event sequence of the start, for tracing. */
   bootId: z.string(),
   seq: z.int().positive(),

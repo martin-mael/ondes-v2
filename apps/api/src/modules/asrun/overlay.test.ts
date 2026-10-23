@@ -139,7 +139,7 @@ describe('buildOverlay', () => {
     expect(overlay([slot], [stray]).map((r) => r.status)).toEqual(['missed', 'unplanned']);
   });
 
-  it('island parts match their part; the segment is aired once any part aired', () => {
+  it('island parts match their part', () => {
     const seg = item('10:00:00', { kind: 'segment', assetId: null, asset: null });
     const p1 = { ...item('10:00:00'), segmentId: seg.id };
     const p2 = { ...item('10:03:00'), segmentId: seg.id };
@@ -147,8 +147,9 @@ describe('buildOverlay', () => {
     const { parts: _2, ...part2 } = p2;
     seg.parts = [part1, part2];
     const e1 = ended('10:00:00', '10:03:00', { logItemId: p1.id, segmentId: seg.id });
-    const rows = overlay([seg], [e1]);
-    expect(rows).toHaveLength(1);
+    const e2 = ended('10:03:00', '10:06:00', { logItemId: p2.id, segmentId: seg.id });
+    const rows = overlay([seg], [e1, e2]);
+    expect(rows).toHaveLength(2);
     expect(rows[0]?.plan).toMatchObject({ logItemId: p1.id, segmentId: seg.id });
   });
 
@@ -162,11 +163,10 @@ describe('buildOverlay', () => {
     const a = item('10:00:00');
     const b = item('10:03:00');
     const ea = ended('10:00:00', '10:02:50', { logItemId: a.id });
-    // #57's `transition` isn't in the contract yet: set it as the recorder will.
-    const island = {
-      ...ended('10:02:50', '10:03:10', { title: 'B' }),
-      transition: { rendered: true, voices: [{ title: 'VT' }] },
-    } as AsRunEntry;
+    const island = ended('10:02:50', '10:03:10', {
+      title: 'B',
+      transition: { rendered: true, islandId: null, hash: 'h', segueIds: [], voices: [] },
+    });
     const eb = ended('10:03:10', '10:06:00', { logItemId: b.id });
     const rows = overlay([a, b], [ea, island, eb]);
     expect(rows.map((r) => r.status)).toEqual(['aired', 'transition', 'aired']);
@@ -191,6 +191,58 @@ describe('buildOverlay', () => {
     const nextDayStray = ended('22:10:00', '22:12:00', { source: 'safety' });
     const rows = overlay([late], [e, nextDayStray], Date.parse(at('23:00:00')));
     expect(rows.map((r) => r.status)).toEqual(['aired']);
+  });
+
+  it("the previous day's item aired after midnight shows there, not as off-plan here", () => {
+    // Planned 23:59:50 local the day before, aired from 00:01: today's first item never aired.
+    const yesterday = { ...item('00:00:00'), plannedStart: '2026-10-20T21:59:50.000Z' };
+    yesterday.plannedDurationMs = 5_000;
+    const first = item('00:00:00', { plannedStart: '2026-10-20T22:00:30.000Z' });
+    const late = entry('00:00:00', {
+      logItemId: yesterday.id,
+      startedAt: '2026-10-20T22:01:00.000Z',
+      endedAt: '2026-10-20T22:04:00.000Z',
+      outcome: 'complete',
+    });
+    const rows = overlay([yesterday, first], [late]);
+    expect(rows.map((r) => [r.status, r.plan?.logItemId])).toEqual([['missed', first.id]]);
+    expect(rows[0]?.replacedBy).toEqual([]);
+  });
+
+  it("the next day's item aired before midnight shows there, not as off-plan here", () => {
+    const last = item('21:50:00');
+    // Planned 00:00:30 local the next day, started early at 23:58 local.
+    const tomorrow = { ...item('00:00:00'), plannedStart: '2026-10-21T22:00:30.000Z' };
+    const early = ended('21:58:00', '22:01:00', { logItemId: tomorrow.id });
+    const rows = overlay([last, tomorrow], [early], Date.parse(at('23:00:00')));
+    expect(rows.map((r) => [r.status, r.plan?.logItemId])).toEqual([['missed', last.id]]);
+    // And on the next day, the early entry is its item's airing.
+    const next = buildOverlay({
+      items: [last, tomorrow],
+      entries: [early],
+      from: TO,
+      to: TO + 24 * 3_600_000,
+      now: TO + 3_600_000,
+    });
+    expect(next.map((r) => [r.status, r.plan?.logItemId])).toEqual([['aired', tomorrow.id]]);
+  });
+
+  it('a segment whose parts aired one by one reports the parts that did not', () => {
+    const seg = item('10:00:00', { kind: 'segment', assetId: null, asset: null });
+    const { parts: _1, ...p1 } = { ...item('10:00:00'), segmentId: seg.id };
+    const { parts: _2, ...p2 } = { ...item('10:03:00'), segmentId: seg.id };
+    seg.parts = [p1, p2];
+    const e1 = ended('10:00:00', '10:03:00', { logItemId: p1.id, segmentId: seg.id });
+    const safety = ended('10:03:00', '10:06:00', { source: 'safety' });
+    expect(overlay([seg], [e1]).map((r) => [r.status, r.plan?.logItemId])).toEqual([
+      ['aired', p1.id],
+      ['missed', p2.id],
+    ]);
+    expect(overlay([seg], [e1, safety]).map((r) => r.status)).toEqual([
+      'aired',
+      'safety',
+      'replaced',
+    ]);
   });
 
   it('ignores markers and items of other days, and sorts by air time', () => {

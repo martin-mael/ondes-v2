@@ -1,4 +1,4 @@
-import type { AsRunOverlayRow, AsRunOverlayStatus } from '@ondes/shared';
+import type { AsRunOverlay, AsRunOverlayRow, AsRunOverlayStatus } from '@ondes/shared';
 import type { HourSlot } from '../time.ts';
 
 // What the log vs as-run view (#53) derives from the overlay rows. Pure, tested without
@@ -64,6 +64,23 @@ export function groupByHour(
     }
   }
   return groups;
+}
+
+/** Slack after a slot ends before asking the api again (its as-run may still be arriving). */
+const PENDING_SLACK_MS = 2_000;
+
+/**
+ * How long from the overlay's `now` until the first upcoming item's slot ends (plus a little
+ * slack), when the overlay should be fetched again; null when nothing is upcoming.
+ */
+export function nextPendingEndMs(overlay: Pick<AsRunOverlay, 'rows' | 'now'>): number | null {
+  let next: number | null = null;
+  for (const row of overlay.rows) {
+    if (row.status !== 'pending' || !row.plan) continue;
+    const end = Date.parse(row.plan.plannedStart) + row.plan.plannedDurationMs;
+    if (next === null || end < next) next = end;
+  }
+  return next === null ? null : Math.max(0, next - Date.parse(overlay.now)) + PENDING_SLACK_MS;
 }
 
 /** The accent colour of a row's status strip. */

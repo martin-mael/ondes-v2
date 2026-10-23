@@ -37,7 +37,11 @@ export async function getAsRunOverlay(
     .from(station)
     .where(eq(station.id, scope.stationId));
   const { startsAt: from, endsAt: to } = localDayBounds(date, row?.timezone ?? 'UTC');
-  const log = await getLogRange(db, scope, { from: from.toISOString(), to: to.toISOString() });
+  // The neighbouring days' items too: their entries around midnight are theirs, not off-plan.
+  const log = await getLogRange(db, scope, {
+    from: new Date(from.getTime() - AIR_MARGIN_MS).toISOString(),
+    to: new Date(to.getTime() + AIR_MARGIN_MS).toISOString(),
+  });
   const entries = await db
     .select()
     .from(asRunEntry)

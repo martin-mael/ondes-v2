@@ -1,6 +1,6 @@
 import type { AsRunEntry, AsRunOverlayRow, LocalDate } from '@ondes/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Card, CardContent } from '@/ui/card';
@@ -12,7 +12,14 @@ import { useSseEvent } from '../../../app/sse/sse.tsx';
 import { dayHours, formatClock, formatDuration, formatSigned } from '../time.ts';
 import { overlayKey, overlayQuery } from './api.ts';
 import { type HistoryT, useHistoryT } from './messages.ts';
-import { DRIFT_WARN_MS, groupByHour, type HistoryHour, isOffPlan, statusTone } from './model.ts';
+import {
+  DRIFT_WARN_MS,
+  groupByHour,
+  type HistoryHour,
+  isOffPlan,
+  nextPendingEndMs,
+  statusTone,
+} from './model.ts';
 
 // Log vs as-run (#53): a past (or the current) station-local day as it really aired, laid over
 // its plan, hour by hour: exact air times in station time, drift, and what went off plan
@@ -79,6 +86,18 @@ export function LogHistory({
   useSseEvent('asrun.started', refresh);
   useSseEvent('asrun.ended', refresh);
   useSseEvent('log.updated', refresh);
+
+  // An upcoming item turns "not aired" when its slot ends, which no event announces: refetch
+  // then (the api decides, on its clock). A refetch shows no loader.
+  const nextEnd = isToday && overlay.data ? nextPendingEndMs(overlay.data) : null;
+  useEffect(() => {
+    if (nextEnd === null) return;
+    const timer = setTimeout(
+      () => void queryClient.invalidateQueries({ queryKey: [...overlayKey(stationId), date] }),
+      nextEnd,
+    );
+    return () => clearTimeout(timer);
+  }, [nextEnd, queryClient, stationId, date]);
 
   if (overlay.isPending) return <ListSkeleton />;
   if (overlay.isError) {
@@ -187,14 +206,11 @@ function HistoryRow({
   const showStatus = row.status !== 'aired' || row.repeat;
   return (
     <li
-      className={`relative grid grid-cols-[5.5rem_4.5rem_minmax(0,1fr)] items-start gap-x-3 gap-y-1 py-2 pr-3 pl-4 text-sm sm:grid-cols-[5.5rem_4.5rem_minmax(0,1fr)_7rem] ${
+      className={`relative grid overflow-hidden rounded-[4px] grid-cols-[5.5rem_4.5rem_minmax(0,1fr)] items-start gap-x-3 gap-y-1 py-2 pr-3 pl-4 text-sm sm:grid-cols-[5.5rem_4.5rem_minmax(0,1fr)_7rem] ${
         row.status === 'pending' ? 'text-muted-foreground' : ''
       }`}
     >
-      <span
-        aria-hidden
-        className={`absolute inset-y-0 left-0 w-1 rounded-[4px] ${statusTone(row)}`}
-      />
+      <span aria-hidden className={`absolute inset-y-0 left-0 w-1 ${statusTone(row)}`} />
       <span className="tabular-nums" title={t('col.aired')}>
         {entry ? (
           <>
@@ -273,11 +289,8 @@ function RowNote({
       .map((e) => `${entryTitle(t, e)} (${formatClock(e.startedAt, timeZone)})`);
     note = t('replacedBy', { what: what.join(', ') });
   } else if (row.status === 'transition' && entry) {
-    // The voices of a rendered island (#57's `transition`; read defensively until it lands).
-    const voices =
-      (entry as { transition?: { voices?: { title: string | null }[] } | null }).transition
-        ?.voices ?? [];
-    const titles = voices.flatMap((v) => (v.title ? [v.title] : []));
+    // The voices of a rendered island (#57).
+    const titles = (entry.transition?.voices ?? []).flatMap((v) => (v.title ? [v.title] : []));
     if (titles.length > 0) note = t('voices', { titles: titles.join(', ') });
   } else if (row.status === 'unplanned' && entry?.plannedStart) {
     note = t('wasPlanned', { time: formatClock(entry.plannedStart, timeZone) });

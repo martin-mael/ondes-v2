@@ -15,12 +15,9 @@ const en = {
   'hour.aired': '{count} aired',
   'hour.issues': '{count} off plan',
   'hour.drift': 'drift up to {drift}',
-  'hour.empty': 'Nothing planned or aired in this hour.',
 
   'col.aired': 'Aired',
   'col.planned': 'Planned',
-  'col.item': 'Item',
-  'col.length': 'Played / planned',
 
   'status.aired': 'Aired',
   'status.replaced': 'Replaced',
@@ -50,8 +47,6 @@ const en = {
   untitled: 'Untitled',
   liveDj: 'Live',
   drift: '{drift} vs plan',
-  'drift.late': 'late',
-  'drift.early': 'early',
   forbidden: 'You can’t see what aired on this station.',
 };
 
@@ -68,12 +63,9 @@ const fr: Record<HistoryMessageKey, string> = {
   'hour.aired': '{count} diffusés',
   'hour.issues': '{count} hors conducteur',
   'hour.drift': 'décalage jusqu’à {drift}',
-  'hour.empty': 'Rien de prévu ni de diffusé dans cette heure.',
 
   'col.aired': 'Diffusé',
   'col.planned': 'Prévu',
-  'col.item': 'Élément',
-  'col.length': 'Joué / prévu',
 
   'status.aired': 'Diffusé',
   'status.replaced': 'Remplacé',
@@ -103,8 +95,6 @@ const fr: Record<HistoryMessageKey, string> = {
   untitled: 'Sans titre',
   liveDj: 'Direct',
   drift: '{drift} par rapport au conducteur',
-  'drift.late': 'en retard',
-  'drift.early': 'en avance',
   forbidden: 'Vous ne pouvez pas voir ce qui est passé sur cette station.',
 };
 
