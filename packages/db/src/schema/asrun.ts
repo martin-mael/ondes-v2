@@ -1,4 +1,10 @@
-import type { AsRunOutcome, AsRunSource, EpisodeFallbackKind, LogItemKind } from '@ondes/shared';
+import type {
+  AsRunOutcome,
+  AsRunSource,
+  AsRunTransition,
+  EpisodeFallbackKind,
+  LogItemKind,
+} from '@ondes/shared';
 import { sql } from 'drizzle-orm';
 import {
   boolean,
@@ -6,6 +12,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -70,6 +77,8 @@ export const asRunEntry = pgTable(
     showId: uuid('show_id'),
     episodeNumber: integer('episode_number'),
     rerun: boolean('rerun').notNull().default(false),
+    /** The segue transition it carries (#57): the island it is, or the voices over its crossfade. */
+    transition: jsonb('transition').$type<AsRunTransition>(),
     /** The api's clock when it was recorded. */
     recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
   },

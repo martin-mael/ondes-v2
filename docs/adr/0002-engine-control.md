@@ -38,8 +38,8 @@ All under `/v1`, JSON bodies, schemas in `packages/shared/src/contracts/engine.t
 | `GET /v1/health` | – | `{status, boot_id, version}` |
 | `GET /v1/state` | – | `{boot_id, station_id, version, uptime, seq, on_air, queue[], live: {enabled, connected, ready}, blank, output_db}` |
 | `GET /v1/events?after=<seq>` | – | event log after `seq` (last 1000 kept) |
-| `POST /v1/queue` | `{item_id, uri, cue_in?, cue_out?, fade_in?, fade_out?, amplify_db?, cross_in?, cross_out?, title?, artist?}` | `201 {rid, item_id, uri, status}`, `422` if the file can't be resolved, `400` on a bad body |
-| `POST /v1/segment` | `{segment_id, parts: [{item_id, uri, cue_in?, cue_out?, amplify_db?, title?, artist?}] (2–16), fade_in?, fade_out?, cross_in?, cross_out?}` | `201 {segment_id, requests[]}`, `422` if any part can't be resolved (nothing queued), `400` on a bad body. Added by #28, served by #27. |
+| `POST /v1/queue` | `{item_id, uri, cue_in?, cue_out?, fade_in?, fade_out?, amplify_db?, cross_in?, cross_out?, title?, artist?, overlay?}` | `201 {rid, item_id, uri, status}`, `422` if the file can't be resolved, `400` on a bad body |
+| `POST /v1/segment` | `{segment_id, parts: [{item_id, uri, cue_in?, cue_out?, amplify_db?, title?, artist?}] (2–16), fade_in?, fade_out?, cross_in?, cross_out?, overlay?}` | `201 {segment_id, requests[]}`, `422` if any part can't be resolved (nothing queued), `400` on a bad body. Added by #28, served by #27. `overlay` (#57, ADR 0024): voices laid over the transition out of the entry, `[{uri, at, duration, cue_in?, cue_out?, amplify_db?, duck_db?}]`, the island fallback. |
 | `DELETE /v1/queue/:id` | – | `{removed}` (requests): every queued entry whose `item_id` or `segment_id` is `id`. Naming one part of a segment removes the whole segment. `404` if none |
 | `DELETE /v1/queue` | – | `{removed}` (clears the queue) |
 | `POST /v1/skip` | – | `{skipped}`: ends whatever is on air (a whole segment, if one plays) |
@@ -70,7 +70,7 @@ The template turns push fields into `annotate:` metadata (values quoted with `st
 
 **Crossfade overlap = min(outgoing `cross_out`, incoming `cross_in`).** Set both to the planned overlap. **0 on both = an abrupt cut, but not a sample-exact one:** the `crossfade` operator is frame-granular, and spike #12 measured up to ~443 samples lost at such a boundary. **Never use it for island joins.** Unset means the station default (`ENGINE_CROSS_DURATION`).
 
-**Island chains (#54) are pushed as one merged segment**, never as separate queue items. The segment is `A body → island → B body`, built with `sequence(merge=true, [...requests, source.fail()])`, with `liq_amplify` applied per request inside it, cue-ins on the playout copy's 1024-sample grid, and cue points biased by half a sample. The station crossfade then sees the chain as one track. See `engine/spikes/splice/RESULTS.md`; the push API for segments is designed in #29 and #57.
+**Island chains (#54) are pushed as one merged segment**, never as separate queue items. The segment is `A body → island → B body`, built with `sequence(merge=true, [...requests, source.fail()])`, with `liq_amplify` applied per request inside it, cue-ins on the playout copy's 1024-sample grid, and cue points biased by half a sample. The station crossfade then sees the chain as one track. See `engine/spikes/splice/RESULTS.md`; the push API for segments is designed in #29 and #57 (ADR 0024: what the feeder pushes, and the voice-overlay fallback).
 
 **Don't use `liq_cross_duration`.** In 2.4.6 it sets both ends of the track at once, and it decouples the track's metadata from its track mark: the mark comes at the start of the transition with empty metadata, and the metadata only arrives once the track's audio starts. The audio is right (no dead air), but anything keyed on `on_track` loses the item id. Use the start/end keys.
 

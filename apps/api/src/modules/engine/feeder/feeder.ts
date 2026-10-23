@@ -4,8 +4,10 @@ import {
   alertTypes,
   type EnginePushItem,
   type EnginePushSegment,
+  type EngineSegmentPart,
   type EngineState,
   type FeederItemPassedOverEvent,
+  type FeederPushPart,
   type LogItem,
   type LogSegmentPart,
   type PlayoutGainStation,
@@ -15,6 +17,7 @@ import {
 import type { EngineAdapter } from '../adapter/adapter.ts';
 import { EngineNotQueuedError, EngineUnresolvableError } from '../adapter/errors.ts';
 import { type Logger, silentLogger } from '../adapter/logger.ts';
+import { type FeedChain, type FeedOverlay, type IslandLayout, layoutIslands } from './islands.ts';
 import {
   DEFAULT_PLAN_OPTIONS,
   diffQueue,
@@ -28,8 +31,11 @@ import {
   type SkipReason,
 } from './plan.ts';
 import {
+  buildPushChain,
   buildPushItem,
   buildPushSegment,
+  type ChainSource,
+  chainCrossOutMs,
   crossOutMsOf,
   type FeedMedia,
   type PushSource,
@@ -37,7 +43,7 @@ import {
   type SegmentSource,
   segmentCrossOutMs,
 } from './push.ts';
-import type { FeedWindow } from './repo.ts';
+import type { FeedIslands, FeedWindow } from './repo.ts';
 
 /**
  * Just-in-time feeder of one station (#29, ADR 0002/0003): keeps the engine queue a few items
@@ -79,6 +85,11 @@ export type FeederDeps = {
   engine(): Promise<FeederEngine | undefined>;
   /** The log around now and its media (repo.ts `loadFeedWindow`). */
   load(range: { from: Date; to: Date }): Promise<FeedWindow>;
+  /**
+   * The islands the segues of these items call for now, with their render's cache state
+   * (repo.ts `loadFeedIslands`, #57). Without it every transition airs as a plain crossfade.
+   */
+  islands?(itemIds: readonly string[]): Promise<FeedIslands>;
   cache: {
     requestUrgentFetch(scope: StationScope, assetFileId: string): Promise<void>;
     requestSync(scope: StationScope): Promise<void>;
@@ -109,13 +120,25 @@ export type FeederDeps = {
 
 /** Persisted record of the entries pushed to one engine boot. */
 export type FeederPushStore = {
-  load(
-    bootId: string,
-  ): Promise<{ entryId: string; fingerprint: string; trimMs: number; aired: boolean }[]>;
+  load(bootId: string): Promise<
+    {
+      entryId: string;
+      fingerprint: string;
+      trimMs: number;
+      aired: boolean;
+      parts?: FeederPushPart[] | null;
+      itemIds?: string[] | null;
+    }[]
+  >;
   save(
     bootId: string,
     entryId: string,
-    push: { fingerprint: string; trimMs: number },
+    push: {
+      fingerprint: string;
+      trimMs: number;
+      parts?: FeederPushPart[] | null;
+      itemIds?: string[] | null;
+    },
   ): Promise<void>;
   remove(bootId: string, entryIds: readonly string[]): Promise<void>;
   markAired(bootId: string, entryIds: readonly string[]): Promise<void>;
@@ -129,11 +152,30 @@ export type SyncResult = {
   pushed: string[];
 };
 
-type Built = {
-  source: PushSource | SegmentSource;
-  isSegment: boolean;
+type Built =
+  | { kind: 'item'; source: PushSource }
+  | { kind: 'segment'; source: SegmentSource }
+  | { kind: 'chain'; source: ChainSource; chain: FeedChain }
+  /** The island chain on air, as it was pushed: never pushed again, only planned around. */
+  | { kind: 'on_air_chain'; source: null };
+
+type BuiltEntry = Built & {
   /** Asset files it plays, for urgent fetches and 422s. */
   fileIds: string[];
+  /** Voices over its transition out (island fallback, #57). */
+  overlay: FeedOverlay | null;
+  crossOutMs: number | undefined;
+  /** The log items it covers (more than one for an island chain). */
+  itemIds: string[];
+};
+
+/** What the feeder remembers of an entry it pushed during this boot. */
+type PushRecord = {
+  fingerprint: string;
+  trimMs: number;
+  parts?: FeederPushPart[] | null;
+  /** Every log item an island chain covers, absorbed ones included. */
+  itemIds?: string[] | null;
 };
 
 export class FeederNotOwnerError extends Error {}
@@ -153,7 +195,7 @@ export function createStationFeeder(deps: FeederDeps) {
 
   /** What this feeder pushed during the current boot: body fingerprint and trim. */
   let bootId: string | null = null;
-  const pushed = new Map<string, { fingerprint: string; trimMs: number }>();
+  const pushed = new Map<string, PushRecord>();
   /** Log items (and segments) that went on air during this boot. */
   const aired = new Set<string>();
   /** Items planned but passed over, until a later item airs (then `feeder.item.passed_over`). */
@@ -198,7 +240,10 @@ export function createStationFeeder(deps: FeederDeps) {
   }
 
   async function noteAired(ids: (string | null | undefined)[]) {
-    const fresh = ids.filter((id): id is string => !!id && !aired.has(id));
+    // An island's engine id (`island:<hash>`) is no log item.
+    const fresh = ids.filter(
+      (id): id is string => !!id && !id.startsWith('island:') && !aired.has(id),
+    );
     if (!fresh.length) return;
     for (const id of fresh) aired.add(id);
     await persist('what aired', (store, boot) => store.markAired(boot, fresh));
@@ -224,71 +269,241 @@ export function createStationFeeder(deps: FeederDeps) {
     return { itemId: p.id, title: p.title, cueOverrides: p.cueOverrides, media };
   }
 
-  /** The planner's view of each item, and what pushing it takes. */
-  function toEntries(window: FeedWindow) {
-    const entries: FeedEntry[] = [];
-    const built = new Map<string, Built>();
-    for (const item of window.items) {
-      let unplayable: SkipReason | null = null;
-      let flexMs = 0;
-      if (item.kind === 'segment') {
-        const parts: PushSource[] = [];
-        for (const part of item.parts) {
-          const media = part.assetId ? window.media.get(part.assetId) : undefined;
-          unplayable ??= mediaReason(media);
-          if (media) parts.push(partSource(part, media));
-        }
-        if (item.parts.length < 2) unplayable ??= 'no_media_file';
-        built.set(item.id, {
-          source: { segmentId: item.id, cueOverrides: item.cueOverrides, parts },
-          isSegment: true,
-          fileIds: parts.map((p) => p.media.fileId),
-        });
-      } else if (isMediaKind(item.kind)) {
-        const media = item.assetId ? window.media.get(item.assetId) : undefined;
-        unplayable = mediaReason(media);
-        if (media) {
-          const source = partSource(item, media);
-          built.set(item.id, { source, isSegment: false, fileIds: [media.fileId] });
-          if (isFlexibleKind(item.kind)) {
-            const length = Math.min(item.plannedDurationMs, playLengthMs(source) ?? Infinity);
-            flexMs = Math.max(0, length - minKeepMs);
-          }
+  /** The planner's view of an item that plays one asset or a log segment; null otherwise. */
+  function plainEntry(item: LogItem, window: FeedWindow, layout: IslandLayout | null) {
+    let unplayable: SkipReason | null = null;
+    let flexMs = 0;
+    let b: BuiltEntry | null = null;
+    const overlay = layout?.overlays.get(item.id) ?? null;
+    if (item.kind === 'segment') {
+      const parts: PushSource[] = [];
+      for (const part of item.parts) {
+        const media = part.assetId ? window.media.get(part.assetId) : undefined;
+        unplayable ??= mediaReason(media);
+        if (media) parts.push(partSource(part, media));
+      }
+      if (item.parts.length < 2) unplayable ??= 'no_media_file';
+      const source = { segmentId: item.id, cueOverrides: item.cueOverrides, parts };
+      b = {
+        kind: 'segment',
+        source,
+        fileIds: parts.map((p) => p.media.fileId),
+        overlay,
+        crossOutMs: segmentCrossOutMs(source),
+        itemIds: [item.id],
+      };
+    } else if (isMediaKind(item.kind)) {
+      const media = item.assetId ? window.media.get(item.assetId) : undefined;
+      unplayable = mediaReason(media);
+      if (media) {
+        const source = partSource(item, media);
+        b = {
+          kind: 'item',
+          source,
+          fileIds: [media.fileId],
+          overlay,
+          crossOutMs: crossOutMsOf(source),
+          itemIds: [item.id],
+        };
+        if (isFlexibleKind(item.kind)) {
+          const length = Math.min(item.plannedDurationMs, playLengthMs(source) ?? Infinity);
+          flexMs = Math.max(0, length - minKeepMs);
         }
       }
-      entries.push({
-        id: item.id,
-        kind: item.kind,
-        plannedStartMs: Date.parse(item.plannedStart),
-        slotMs: item.plannedDurationMs,
-        timing: item.timing,
-        anchorAtMs: item.anchorAt ? Date.parse(item.anchorAt) : null,
-        capMs: item.capMs,
-        parts: item.parts.map((p) => ({ id: p.id, durationMs: p.plannedDurationMs })),
-        unplayable,
-        flexMs,
-      });
+    }
+    const entry: FeedEntry = {
+      id: item.id,
+      kind: item.kind,
+      plannedStartMs: Date.parse(item.plannedStart),
+      slotMs: item.plannedDurationMs,
+      timing: item.timing,
+      anchorAtMs: item.anchorAt ? Date.parse(item.anchorAt) : null,
+      capMs: item.capMs,
+      parts: item.parts.map((p) => ({ id: p.id, durationMs: p.plannedDurationMs })),
+      unplayable,
+      flexMs,
+    };
+    return { entry, built: b };
+  }
+
+  /**
+   * One entry for log items that air as one island chain (#57): at the head's time and anchor,
+   * over the slots of every item it covers. Never trimmed: its joins are planned to the sample.
+   */
+  function chainEntry(covered: LogItem[], parts: { id: string; durationMs: number }[]): FeedEntry {
+    const head = covered[0] as LogItem;
+    return {
+      id: head.id,
+      kind: 'segment',
+      plannedStartMs: Date.parse(head.plannedStart),
+      slotMs: covered.reduce((sum, i) => sum + i.plannedDurationMs, 0),
+      timing: head.timing,
+      anchorAtMs: head.anchorAt ? Date.parse(head.anchorAt) : null,
+      capMs: head.capMs,
+      parts,
+      unplayable: null,
+      flexMs: 0,
+    };
+  }
+
+  /**
+   * The island chain on air, if any: the items it covers and its parts, as pushed. It keeps
+   * that shape whatever the islands say now (an edit can't reshape what is airing). Without
+   * our record of the push (another feeder's, lost), its items are guessed from the island on
+   * air or from the head to the item on air, so none of them is pushed a second time.
+   */
+  function onAirChain(
+    onAir: EngineState['on_air'] | null,
+    window: FeedWindow,
+    islands: FeedIslands | null,
+  ): { covered: LogItem[]; parts: { id: string; durationMs: number }[] } | null {
+    const segmentId = onAir?.segment_id;
+    if (!segmentId) return null;
+    const headIndex = window.items.findIndex((i) => i.id === segmentId);
+    const head = window.items[headIndex];
+    if (!head || head.kind === 'segment') return null;
+    const record = pushed.get(segmentId);
+    let ids: string[];
+    let parts: { id: string; durationMs: number }[] | null = null;
+    if (record?.itemIds?.length) {
+      // Every item it covers, items rendered whole into an island included.
+      ids = record.itemIds;
+      parts = (record.parts ?? []).map((p) => ({ id: p.itemId, durationMs: p.expectedMs ?? 0 }));
+    } else {
+      // Another feeder's push, record lost: the islands from the head on, joined like a chain.
+      ids = [segmentId];
+      for (let grew = true; grew; ) {
+        grew = false;
+        const next = islands?.islands.find((i) => i.plan.head.itemId === ids.at(-1));
+        if (next && next.plan.itemIds.length > 1) {
+          ids = [...ids, ...next.plan.itemIds.slice(1)];
+          grew = true;
+        }
+      }
+      if (ids.length < 2) {
+        // No island known: at least the head up to the item on air.
+        const until = window.items.findIndex((i) => i.id === onAir?.item_id);
+        ids = window.items.slice(headIndex, Math.max(headIndex, until) + 1).map((i) => i.id);
+      }
+    }
+    const wanted = new Set(ids);
+    const covered: LogItem[] = [];
+    for (const item of window.items.slice(headIndex)) {
+      if (!wanted.has(item.id)) break;
+      covered.push(item);
+    }
+    if (covered.length < 2) return null;
+    if (!parts?.length) parts = covered.map((i) => ({ id: i.id, durationMs: i.plannedDurationMs }));
+    return { covered, parts };
+  }
+
+  /** The planner's view of each item, and what pushing it takes. */
+  function toEntries(
+    window: FeedWindow,
+    layout: IslandLayout | null,
+    onAir: ReturnType<typeof onAirChain>,
+  ) {
+    const entries: FeedEntry[] = [];
+    const built = new Map<string, BuiltEntry>();
+    const byId = new Map(window.items.map((i) => [i.id, i]));
+    const inChain = new Set<string>();
+    const mediaOf = (item: LogItem | undefined) =>
+      item?.assetId ? window.media.get(item.assetId) : undefined;
+    const tailCrossOut = (item: LogItem | undefined) => {
+      const media = mediaOf(item);
+      return item && media ? crossOutMsOf(partSource(item, media)) : undefined;
+    };
+    for (const item of window.items) {
+      if (inChain.has(item.id)) continue;
+      if (onAir && item.id === onAir.covered[0]?.id) {
+        for (const i of onAir.covered) inChain.add(i.id);
+        entries.push(chainEntry(onAir.covered, onAir.parts));
+        built.set(item.id, {
+          kind: 'on_air_chain',
+          source: null,
+          fileIds: [],
+          overlay: null,
+          crossOutMs: tailCrossOut(onAir.covered.at(-1)),
+          itemIds: onAir.covered.map((i) => i.id),
+        });
+        continue;
+      }
+      const chain = layout?.chains.get(item.id);
+      if (chain) {
+        const covered = chain.itemIds.map((id) => byId.get(id) as LogItem);
+        for (const i of covered) inChain.add(i.id);
+        entries.push(chainEntry(covered, chain.parts));
+        built.set(item.id, {
+          kind: 'chain',
+          source: chain.source,
+          chain,
+          fileIds: chain.fileIds,
+          overlay: layout?.overlays.get(chain.itemIds.at(-1) as string) ?? null,
+          crossOutMs: chainCrossOutMs(chain.source),
+          itemIds: chain.itemIds,
+        });
+        continue;
+      }
+      const { entry, built: b } = plainEntry(item, window, layout);
+      entries.push(entry);
+      if (b) built.set(item.id, b);
     }
     return { entries, built };
   }
 
   function body(
-    b: Built,
+    b: BuiltEntry,
     station: PlayoutGainStation,
     crossInMs: number | undefined,
     trimMs: number,
   ): EnginePushItem | EnginePushSegment {
-    const ctx = { station, crossInMs, trimMs, engineRoot: opts.engineRoot };
-    return b.isSegment
-      ? buildPushSegment(b.source as SegmentSource, ctx)
-      : buildPushItem(b.source as PushSource, ctx);
+    const ctx = {
+      station,
+      crossInMs,
+      trimMs,
+      engineRoot: opts.engineRoot,
+      overlay: b.overlay?.voices,
+    };
+    switch (b.kind) {
+      case 'chain':
+        return buildPushChain(b.source, ctx);
+      case 'segment':
+        return buildPushSegment(b.source, ctx);
+      case 'item':
+        return buildPushItem(b.source, ctx);
+      case 'on_air_chain':
+        throw new Error('the island chain on air is never pushed');
+    }
   }
 
-  function crossOut(b: Built | undefined): number | undefined {
-    if (!b) return undefined;
-    return b.isSegment
-      ? segmentCrossOutMs(b.source as SegmentSource)
-      : crossOutMsOf(b.source as PushSource);
+  /**
+   * What the as-run needs to know about a push (store `parts`): each part's length inside an
+   * island chain and the transitions it carries. Null for a plain entry.
+   */
+  function partsOf(
+    b: BuiltEntry,
+    payload: EnginePushItem | EnginePushSegment,
+  ): FeederPushPart[] | null {
+    const lengths =
+      b.kind === 'chain' ? new Map(b.chain.parts.map((p) => [p.id, p.durationMs])) : null;
+    if (!lengths && !b.overlay) return null;
+    const requests: EngineSegmentPart[] = 'parts' in payload ? payload.parts : [payload];
+    const overlay = b.overlay
+      ? {
+          ...b.overlay.transition,
+          voices: b.overlay.transition.voices.map((v, i) => ({
+            ...v,
+            offsetMs: Math.round((payload.overlay?.[i]?.at ?? 0) * 1000),
+          })),
+        }
+      : null;
+    return requests.map((r, i) => ({
+      itemId: r.item_id,
+      expectedMs: lengths?.get(r.item_id) ?? null,
+      transition:
+        (b.kind === 'chain' ? b.chain.transitions.get(r.item_id) : undefined) ??
+        (i === requests.length - 1 ? overlay : null),
+    }));
   }
 
   /** The engine queue, segment parts collapsed, with what we know we pushed. */
@@ -310,15 +525,21 @@ export function createStationFeeder(deps: FeederDeps) {
     }
   }
 
-  async function requestFetches(plan: FeedPlan, built: Map<string, Built>) {
+  async function requestFetches(
+    plan: FeedPlan,
+    built: Map<string, BuiltEntry>,
+    extra: readonly string[],
+  ) {
+    const fileIds = new Set(extra);
     for (const { entry, reason } of plan.skipped) {
       if (reason !== 'not_cached' && reason !== 'unresolvable') continue;
-      for (const fileId of built.get(entry.id)?.fileIds ?? []) {
-        if (!cooldown(`fetch:${fileId}`)) continue;
-        await deps.cache.requestUrgentFetch(scope, fileId).catch((err: unknown) => {
-          logger.warn({ err, stationId: scope.stationId, fileId }, 'Urgent cache fetch failed');
-        });
-      }
+      for (const fileId of built.get(entry.id)?.fileIds ?? []) fileIds.add(fileId);
+    }
+    for (const fileId of fileIds) {
+      if (!cooldown(`fetch:${fileId}`)) continue;
+      await deps.cache.requestUrgentFetch(scope, fileId).catch((err: unknown) => {
+        logger.warn({ err, stationId: scope.stationId, fileId }, 'Urgent cache fetch failed');
+      });
     }
   }
 
@@ -390,7 +611,12 @@ export function createStationFeeder(deps: FeederDeps) {
   }
 
   /** `feeder.item.passed_over` for passed-over items once a later item is on air. */
-  async function reportSkips(plan: FeedPlan, entries: FeedEntry[], items: Map<string, LogItem>) {
+  async function reportSkips(
+    plan: FeedPlan,
+    entries: FeedEntry[],
+    items: Map<string, LogItem>,
+    built: Map<string, BuiltEntry>,
+  ) {
     for (const { entry, reason } of plan.skipped) {
       const item = items.get(entry.id);
       if (item && !pendingSkips.has(entry.id)) pendingSkips.set(entry.id, { reason, item });
@@ -406,7 +632,8 @@ export function createStationFeeder(deps: FeederDeps) {
       pendingSkips.delete(id);
       if (aired.has(id) || reported.has(id) || !deps.publish) continue;
       reported.add(id);
-      const ids = item.kind === 'segment' ? item.parts.map((p) => p.id) : [id];
+      const ids =
+        item.kind === 'segment' ? item.parts.map((p) => p.id) : (built.get(id)?.itemIds ?? [id]);
       for (const itemId of ids) {
         await deps
           .publish({
@@ -430,6 +657,44 @@ export function createStationFeeder(deps: FeederDeps) {
     }
   }
 
+  /**
+   * The islands of the items from a little before now to the end of the window. A failure
+   * only costs the islands: every transition then airs as a plain crossfade.
+   */
+  /** The last islands loaded: what a sync uses when loading them fails. */
+  let lastIslands: FeedIslands | null = null;
+
+  /**
+   * The islands of the items from a little before now to the end of the window. When loading
+   * fails, the last ones loaded stand in (a render they name is still the right audio: islands
+   * are content-addressed); `failed` when there are none yet.
+   */
+  async function loadIslands(
+    window: FeedWindow,
+    at: number,
+  ): Promise<FeedIslands | null | 'failed'> {
+    if (!deps.islands) return null;
+    const since = at - 30 * 60_000;
+    const ids = window.items
+      .filter(
+        (i) => isMediaKind(i.kind) && Date.parse(i.plannedStart) + i.plannedDurationMs > since,
+      )
+      .map((i) => i.id);
+    if (!ids.length) return null;
+    try {
+      lastIslands = await deps.islands(ids);
+      return lastIslands;
+    } catch (err) {
+      logger.warn({ err, stationId: scope.stationId }, 'Loading islands failed');
+      return lastIslands ?? 'failed';
+    }
+  }
+
+  /** The engine queue holds an island chain this boot's feeders pushed. */
+  function hasQueuedChain(state: EngineState): boolean {
+    return queuedOf(state).some((q) => (pushed.get(q.id)?.itemIds?.length ?? 0) > 1);
+  }
+
   async function runOnce(): Promise<SyncResult> {
     const result: SyncResult = { plan: null, removed: [], pushed: [] };
     const engine = await deps.engine();
@@ -446,7 +711,33 @@ export function createStationFeeder(deps: FeederDeps) {
         from: new Date(at - lookbackMs),
         to: new Date(at + lookaheadMs + 3_600_000),
       });
-      const { entries, built } = toEntries(window);
+      const loaded = await loadIslands(window, at);
+      if (loaded === 'failed' && hasQueuedChain(state)) {
+        // Without the islands every queued chain would look changed and be torn down into
+        // crossfades: keep the queue as it is and try again next tick.
+        logger.warn({ stationId: scope.stationId }, 'Islands unavailable: queue left as it is');
+        return result;
+      }
+      const islands = loaded === 'failed' ? null : loaded;
+      const chainOnAir = onAirChain(onAirId, window, islands);
+      // A chain on air airs all its items: none of them may be planned again in this boot,
+      // whether it has a request of its own (B) or was rendered whole into an island.
+      if (chainOnAir) await noteAired(chainOnAir.covered.map((i) => i.id));
+      const locked = new Set([...aired, ...(chainOnAir?.covered.map((i) => i.id) ?? [])]);
+      for (const id of [onAirId?.item_id, onAirId?.segment_id]) if (id) locked.add(id);
+      const layout = islands
+        ? layoutIslands({
+            items: window.items,
+            media: window.media,
+            islands: islands.islands,
+            islandMedia: islands.media,
+            reason: mediaReason,
+            refused: (sha) => (unresolvable.get(`island:${sha}`) ?? 0) > now(),
+            locked,
+            engineRoot: opts.engineRoot,
+          })
+        : null;
+      const { entries, built } = toEntries(window, layout, chainOnAir);
       const items = new Map(window.items.map((i) => [i.id, i]));
       const onAirKey = onAirId ? (onAirId.segment_id ?? onAirId.item_id ?? null) : null;
       const plan = planFeed({
@@ -470,11 +761,11 @@ export function createStationFeeder(deps: FeederDeps) {
       let previousCross =
         plan.onAirIndex === null
           ? undefined
-          : crossOut(built.get(entries[plan.onAirIndex]?.id ?? ''));
+          : built.get(entries[plan.onAirIndex]?.id ?? '')?.crossOutMs;
       const wanted = plan.wanted.map((w: PlannedEntry) => {
-        const b = built.get(w.entry.id) as Built;
+        const b = built.get(w.entry.id) as BuiltEntry;
         const crossInMs = previousCross;
-        previousCross = crossOut(b);
+        previousCross = b.crossOutMs;
         return {
           id: w.entry.id,
           trimMs: w.trimMs,
@@ -511,7 +802,7 @@ export function createStationFeeder(deps: FeederDeps) {
         await assertOwner();
         const payload = body(w.built, window.station, w.crossInMs, w.trimMs);
         try {
-          if (w.built.isSegment) await engine.pushSegment(payload as EnginePushSegment);
+          if ('parts' in payload) await engine.pushSegment(payload);
           else await engine.push(payload as EnginePushItem);
         } catch (error) {
           if (!(error instanceof EngineUnresolvableError)) throw error;
@@ -523,6 +814,13 @@ export function createStationFeeder(deps: FeederDeps) {
           );
           for (const fileId of w.built.fileIds)
             unresolvable.set(fileId, now() + unresolvableRetryMs);
+          // An island file the engine can't read: its transition airs as the fallback.
+          if (w.built.kind === 'chain') {
+            for (const step of w.built.source.steps) {
+              if (step.kind === 'island')
+                unresolvable.set(`island:${step.sha256}`, now() + unresolvableRetryMs);
+            }
+          }
           if (cooldown('sync')) {
             await deps.cache.requestSync(scope).catch((err: unknown) => {
               logger.warn({ err, stationId: scope.stationId }, 'Cache sync request failed');
@@ -531,16 +829,21 @@ export function createStationFeeder(deps: FeederDeps) {
           refused = true;
           break;
         }
-        const record = { fingerprint: w.fingerprint, trimMs: w.trimMs };
+        const record = {
+          fingerprint: w.fingerprint,
+          trimMs: w.trimMs,
+          parts: partsOf(w.built, payload),
+          itemIds: w.built.kind === 'chain' ? w.built.itemIds : null,
+        };
         pushed.set(w.id, record);
         await persist('a push', (store, boot) => store.save(boot, w.id, record));
         result.pushed.push(w.id);
       }
       if (refused) continue;
 
-      await requestFetches(plan, built);
+      await requestFetches(plan, built, layout?.missingFiles ?? []);
       await updateAlerts(plan, state, items);
-      await reportSkips(plan, entries, items);
+      await reportSkips(plan, entries, items, built);
       if (plan.late.length) {
         logger.info(
           { stationId: scope.stationId, late: plan.late },

@@ -4,6 +4,7 @@ import {
   assetFile,
   type Executor,
   episode,
+  feederPush,
   logItem,
   logItemFallback,
   type StationScope,
@@ -15,8 +16,10 @@ import {
   type AsRunEntry,
   type AsRunList,
   type AsRunSource,
+  type AsRunTransition,
   asRunOutcome,
   type EngineSource,
+  feederPushPartsSchema,
   type ListAsRunQuery,
   listAsRunQuerySchema,
   uuidSchema,
@@ -56,6 +59,7 @@ export function toEntry(row: Row): AsRunEntry {
       row.episodeId && row.showId && row.episodeNumber !== null
         ? { id: row.episodeId, showId: row.showId, number: row.episodeNumber, rerun: row.rerun }
         : null,
+    transition: row.transition,
     bootId: row.bootId,
     seq: row.seq,
     recordedAt: row.recordedAt.toISOString(),
@@ -253,6 +257,40 @@ async function markAired(db: Executor, scope: StationScope, entry: Row) {
     .where(and(whereStation(episode, scope), eq(episode.id, entry.episodeId)));
 }
 
+/**
+ * What the feeder pushed for this request (#57, `feeder_push.parts`): the transition it carries
+ * (the island it is, or the voices over its crossfade) and how long it was meant to play inside
+ * an island chain (a body ends at its island). Without the record (another feeder's, pruned), an
+ * island still says which one it is through its engine id (`island:<hash>`).
+ */
+async function pushedPart(
+  db: Executor,
+  scope: StationScope,
+  input: Pick<StartInput, 'bootId' | 'itemId' | 'segmentId'>,
+): Promise<{ transition: AsRunTransition | null; expectedMs: number | null }> {
+  const entryId = asUuid(input.segmentId) ?? asUuid(input.itemId);
+  const [row] = entryId
+    ? await db
+        .select({ parts: feederPush.parts })
+        .from(feederPush)
+        .where(
+          and(
+            whereStation(feederPush, scope),
+            eq(feederPush.bootId, input.bootId),
+            eq(feederPush.entryId, entryId),
+          ),
+        )
+    : [];
+  const parts = feederPushPartsSchema.safeParse(row?.parts).data;
+  const part = parts?.find((p) => p.itemId === input.itemId);
+  if (part) return { transition: part.transition, expectedMs: part.expectedMs };
+  const hash = input.itemId?.startsWith('island:') ? input.itemId.slice(7) : null;
+  return {
+    transition: hash ? { rendered: true, islandId: null, hash, segueIds: [], voices: [] } : null,
+    expectedMs: null,
+  };
+}
+
 async function byEventId(db: Executor, scope: StationScope, eventId: string) {
   const [row] = await db
     .select()
@@ -269,6 +307,7 @@ export async function recordStart(
 ): Promise<Recorded | null> {
   const resolved = await resolveItem(db, scope, input);
   const source = asRunSourceOf(input.source);
+  const pushed = source === 'log' ? await pushedPart(db, scope, input) : null;
   const [row] = await db
     .insert(asRunEntry)
     .values({
@@ -280,6 +319,9 @@ export async function recordStart(
       rid: input.rid,
       source,
       ...resolved,
+      // A body of an island chain is planned to its island, not to the log item's own end.
+      plannedDurationMs: pushed?.expectedMs ?? resolved.plannedDurationMs,
+      transition: pushed?.transition ?? null,
       liveSessionId: source === 'live' ? asUuid(input.liveSessionId ?? null) : null,
       startedAt: input.at,
     })

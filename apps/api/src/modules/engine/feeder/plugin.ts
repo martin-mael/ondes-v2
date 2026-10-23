@@ -3,7 +3,12 @@ import fp from 'fastify-plugin';
 import { listRunningStationScopes } from '../lifecycle/repo.ts';
 import type { FeederOptions } from './feeder.ts';
 import { createFeederLeases } from './leases.ts';
-import { createFeederPushStore, loadFeedWindow, openFeederAlerts } from './repo.ts';
+import {
+  createFeederPushStore,
+  loadFeedIslands,
+  loadFeedWindow,
+  openFeederAlerts,
+} from './repo.ts';
 import { createFeederService, type FeederService } from './service.ts';
 
 declare module 'fastify' {
@@ -37,6 +42,7 @@ export const feederPlugin = fp(
       depsFor: (scope) => ({
         engine: () => app.engineLifecycle.adapterFor(scope.stationId),
         load: (range) => loadFeedWindow(app.db, scope, range),
+        islands: (itemIds) => loadFeedIslands(app.db, scope, itemIds),
         store: createFeederPushStore(app.db, scope),
         cache: app.playoutCache,
         alerts: {

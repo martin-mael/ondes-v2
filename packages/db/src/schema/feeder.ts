@@ -1,9 +1,11 @@
+import type { FeederPushPart } from '@ondes/shared';
 import { sql } from 'drizzle-orm';
 import {
   boolean,
   check,
   foreignKey,
   integer,
+  jsonb,
   pgTable,
   primaryKey,
   text,
@@ -34,6 +36,16 @@ export const feederPush = pgTable(
     /** Went on air during this boot (the feeder never pushes it again in that boot). */
     aired: boolean('aired').notNull().default(false),
     pushedAt: timestamp('pushed_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * The engine requests of an island chain or of an item carrying a voice overlay (#57), as
+     * pushed: what the as-run records against each of them. Null for plain entries.
+     */
+    parts: jsonb('parts').$type<FeederPushPart[]>(),
+    /**
+     * Every log item an island chain covers, in play order, including items rendered whole
+     * into an island (no request of their own). Null for anything else.
+     */
+    itemIds: uuid('item_ids').array(),
   },
   (t) => [
     primaryKey({ name: 'feeder_push_pkey', columns: [t.stationId, t.bootId, t.entryId] }),

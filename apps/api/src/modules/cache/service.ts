@@ -124,7 +124,9 @@ export function createPlayoutCache(options: PlayoutCacheOptions): PlayoutCache {
     const ready = {
       sha256s: readySha,
       itemIds: new Set(
-        items.filter((i) => i.sha256 && readySha.has(i.sha256)).map((i) => i.logItemId),
+        items
+          .filter((i) => !i.transition && i.sha256 && readySha.has(i.sha256))
+          .map((i) => i.logItemId),
       ),
     };
     const openKeys = new Set(open.map((o) => o.dedupeKey));

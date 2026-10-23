@@ -23,6 +23,7 @@ import { alert } from '../schema/alerts.ts';
 import { playoutCacheFile, stationCache } from '../schema/cache.ts';
 import { assetFile } from '../schema/library.ts';
 import { logDay, logItem } from '../schema/log.ts';
+import { island, segue } from '../schema/segues.ts';
 import { station } from '../schema/tenancy.ts';
 import { type StationScope, whereStation } from '../tenant.ts';
 
@@ -39,6 +40,11 @@ export type CacheHorizonItem = {
   ext: string | null;
   sizeBytes: number | null;
   storageKey: string | null;
+  /**
+   * A file of the segue transition out of the item (#57): its island render or a voice. Kept
+   * like the item's own file, but not counted in readiness (the item is, once).
+   */
+  transition?: boolean;
 };
 
 /** Longest item the horizon query looks back for (an item that started before `from`). */
@@ -46,8 +52,9 @@ const MAX_ITEM_MS = 24 * 3_600_000;
 
 /**
  * Log items overlapping [from, to) that play an asset, in air order, with the asset's playout
- * file. Segment items are containers: their parts carry the files. Island renders (#57) are
- * not modelled yet; when they are, they join here as more files of the segment.
+ * file. Segment items are containers: their parts carry the files. A segue transition out of an
+ * item adds the files it airs with that item (#57): its island's render (`ready`), and its
+ * voices' playout copies, which the fallback lays over the crossfade when the island can't air.
  */
 export async function listCacheHorizon(
   db: Executor,
@@ -84,10 +91,111 @@ export async function listCacheHorizon(
       ),
     )
     .orderBy(asc(logItem.plannedStart), asc(logItem.position));
-  return rows.map((r) => ({
+  const items: CacheHorizonItem[] = rows.map((r) => ({
     ...r,
     ext: r.storageKey ? cacheExtOf(r.storageKey) : null,
   }));
+  const transitions = await listTransitionFiles(db, scope, items);
+  if (!transitions.length) return items;
+  // A transition's files come right after the item they air with.
+  const after = new Map<string, CacheHorizonItem[]>();
+  for (const t of transitions) after.set(t.logItemId, [...(after.get(t.logItemId) ?? []), t]);
+  return items.flatMap((it) => {
+    const extra = after.get(it.logItemId);
+    after.delete(it.logItemId);
+    return extra ? [it, ...extra] : [it];
+  });
+}
+
+/** Island renders and voice files of the segues out of `items`, as horizon items of their A. */
+async function listTransitionFiles(
+  db: Executor,
+  scope: StationScope,
+  items: readonly CacheHorizonItem[],
+): Promise<CacheHorizonItem[]> {
+  const byId = new Map(items.map((it) => [it.logItemId, it]));
+  if (!byId.size) return [];
+  const ids = [...byId.keys()];
+  const [islands, segues] = await Promise.all([
+    db
+      .select({
+        headItemId: island.headItemId,
+        sha256: island.fileSha256,
+        sizeBytes: island.fileSizeBytes,
+        storageKey: island.storageKey,
+      })
+      .from(island)
+      .where(
+        and(
+          whereStation(island, scope),
+          inArray(island.headItemId, ids),
+          eq(island.status, 'ready'),
+          isNotNull(island.fileSha256),
+        ),
+      ),
+    db
+      .select({ fromItemId: segue.fromItemId, voices: segue.voices })
+      .from(segue)
+      .where(
+        and(whereStation(segue, scope), inArray(segue.fromItemId, ids), eq(segue.status, 'ready')),
+      ),
+  ]);
+  const voiceAssets = [...new Set(segues.flatMap((s) => s.voices.map((v) => v.assetId)))];
+  const voiceFiles = voiceAssets.length
+    ? await db
+        .select({
+          assetId: assetFile.assetId,
+          assetFileId: assetFile.id,
+          sha256: assetFile.sha256,
+          sizeBytes: assetFile.sizeBytes,
+          storageKey: assetFile.storageKey,
+        })
+        .from(assetFile)
+        .where(
+          and(
+            whereStation(assetFile, scope),
+            inArray(assetFile.assetId, voiceAssets),
+            eq(assetFile.role, 'playout'),
+          ),
+        )
+    : [];
+  const fileOf = new Map(voiceFiles.map((f) => [f.assetId, f]));
+  const out: CacheHorizonItem[] = [];
+  for (const i of islands) {
+    const head = byId.get(i.headItemId);
+    if (!head || !i.sha256 || i.sizeBytes === null || !i.storageKey) continue;
+    out.push({
+      logItemId: head.logItemId,
+      airAt: head.airAt,
+      durationMs: head.durationMs,
+      assetFileId: null,
+      sha256: i.sha256,
+      ext: 'flac',
+      sizeBytes: i.sizeBytes,
+      storageKey: i.storageKey,
+      transition: true,
+    });
+  }
+  for (const s of segues) {
+    const head = s.fromItemId ? byId.get(s.fromItemId) : undefined;
+    if (!head) continue;
+    for (const v of s.voices) {
+      const f = fileOf.get(v.assetId);
+      if (!f) continue;
+      out.push({
+        logItemId: head.logItemId,
+        airAt: head.airAt,
+        durationMs: head.durationMs,
+        assetFileId: f.assetFileId,
+        sha256: f.sha256,
+        ext: cacheExtOf(f.storageKey),
+        sizeBytes: f.sizeBytes,
+        storageKey: f.storageKey,
+        transition: true,
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -466,7 +574,7 @@ export function computeCacheReadiness(
   const from = range.from.getTime();
   const to = range.to.getTime();
   const inWindow = items.filter(
-    (i) => i.airAt.getTime() < to && i.airAt.getTime() + i.durationMs > from,
+    (i) => !i.transition && i.airAt.getTime() < to && i.airAt.getTime() + i.durationMs > from,
   );
   const missing: CacheReadiness['missing'] = [];
   let totalMs = 0;

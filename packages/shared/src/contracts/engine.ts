@@ -82,11 +82,37 @@ const transitionFields = {
 };
 
 /**
+ * A voice laid over the transition out of a queue entry (#57, ADR 0024): the degraded path of a
+ * voice track whose island isn't rendered or cached at air time. The engine starts it `at`
+ * seconds after the entry's last request goes on air, ducks the music to `duck_db` for
+ * `duration` seconds, and reports nothing for it (it is part of the transition, not an item).
+ * A skip of the entry cancels its voices that haven't started.
+ */
+export const engineOverlayVoiceSchema = z.object({
+  uri: z.string().min(1),
+  /** Seconds after the entry's last request goes on air. */
+  at: z.number().min(0),
+  /** How long the voice plays and the music stays ducked, in seconds. */
+  duration: z.number().positive(),
+  cue_in: seconds.optional(),
+  cue_out: seconds.optional(),
+  amplify_db: z.number().min(-60).max(24).optional(),
+  /** Music gain while the voice plays, in dB (0 = no duck). */
+  duck_db: z.number().min(-60).max(0).optional(),
+});
+export type EngineOverlayVoice = z.infer<typeof engineOverlayVoiceSchema>;
+
+const overlayField = {
+  /** Voices over the transition out of this entry (the island fallback). Up to 8. */
+  overlay: z.array(engineOverlayVoiceSchema).max(8).optional(),
+};
+
+/**
  * `POST /v1/queue`: append one log item to the engine queue.
  * The engine resolves the file before answering, so a 201 means it is playable.
  */
 export const enginePushItemSchema = z
-  .object({ ...requestFields, ...transitionFields })
+  .object({ ...requestFields, ...transitionFields, ...overlayField })
   .refine(cueOrder, cueOrderError);
 export type EnginePushItem = z.infer<typeof enginePushItemSchema>;
 
@@ -107,6 +133,7 @@ export const enginePushSegmentSchema = z.object({
   segment_id: engineId,
   parts: z.array(engineSegmentPartSchema).min(2).max(16),
   ...transitionFields,
+  ...overlayField,
 });
 export type EnginePushSegment = z.infer<typeof enginePushSegmentSchema>;
 

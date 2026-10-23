@@ -117,7 +117,7 @@ Every PR must pass, locally and in CI:
   | Integration (core) | `apps/api`, `packages`, `deploy/compose.dev.yml`, `deploy/dev` |
   | Integration (engine) | same as core, plus everything that triggers the engine jobs |
   | Integration (worker) | `apps/worker`, `apps/api/src/modules/library`, `packages`, `deploy/docker/worker.Dockerfile`, `deploy/compose.dev.yml`, `deploy/dev` |
-  | Engine templates, Engine island splice | `engine`, `apps/api/src/modules/engine/config`, `packages/shared`, `deploy/compose.dev.yml` |
+  | Engine templates, Engine island splice | `engine`, `apps/api/src/modules/engine/config`, `apps/api/src/modules/engine/feeder/push.ts`, `apps/worker/src/jobs/island-render`, `packages/shared`, `deploy/compose.dev.yml` |
 
   Changes to `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.nvmrc`, `tsconfig.base.json` or `ci.yml` run every job. Skipped jobs report as skipped, not pending: **branch protection on `main` should require only the `CI ok` check** (never the individual jobs), which fails when any job failed or was cancelled. The repo has no branch protection rule yet. When you add a job, add it to `CI ok`'s `needs`; when you add a test folder, check the filters in the `changes` job cover it.
 - `images.yml` builds the production images on PRs only when their build inputs change (`deploy/docker`, any `package.json`, the lockfile, the workspace file, `.dockerignore`, `images.yml` itself) and pushes them to GHCR from `main`, where it runs on every commit. It isn't a required check.
