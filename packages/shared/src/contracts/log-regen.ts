@@ -24,8 +24,8 @@ export const LOG_HORIZON_DEFAULT_DAYS = 14;
 export const LOG_HORIZON_MAX_DAYS = 56;
 /** A dry-run is computed by the api while the request waits: one week at most. */
 export const LOG_REGEN_PREVIEW_MAX_DAYS = 7;
-/** Applying regenerates at most this many days per request (in jobs of 14). */
-export const LOG_REGEN_MAX_DAYS = LOG_HORIZON_MAX_DAYS;
+/** Applying covers what a preview showed: the same range at most. */
+export const LOG_REGEN_MAX_DAYS = LOG_REGEN_PREVIEW_MAX_DAYS;
 
 // --- Settings ------------------------------------------------------------------------------
 
@@ -74,14 +74,15 @@ export const logRegenPreviewRequestSchema = z
 export type LogRegenPreviewRequest = z.infer<typeof logRegenPreviewRequestSchema>;
 
 /**
- * `POST …/log/regen`: regenerate the range (worker jobs; `log.updated` cause `generate` when
- * they're written). `expectedVersions` (from a preview) refuses with 409 when a day changed
- * since: its value is the day's version, or null for a day that didn't exist.
+ * `POST …/log/regen`: regenerate the range a preview showed (a worker job; `log.updated` cause
+ * `generate` once written). `expectedVersions` comes from that preview and names every date of
+ * the range: the day's version, or null for a day that didn't exist. A day that changed since
+ * refuses with 409, a date missing from it with 422.
  */
 export const logRegenRequestSchema = z
   .object({
     ...rangeShape,
-    expectedVersions: z.record(localDateSchema, z.int().min(1).nullable()).optional(),
+    expectedVersions: z.record(localDateSchema, z.int().min(1).nullable()),
   })
   .superRefine(checkRange(LOG_REGEN_MAX_DAYS));
 export type LogRegenRequest = z.infer<typeof logRegenRequestSchema>;
@@ -187,23 +188,16 @@ export type LogRegenPreviewResponse = z.infer<typeof logRegenPreviewResponseSche
 
 // --- Events and jobs -----------------------------------------------------------------------
 
-/** What changed in a station's schedule (`schedule.changed`). */
+/** What changed in a station's schedule (from the audit log, `@ondes/db` `SCHEDULE_ACTIONS`). */
 export const scheduleAreaSchema = z.enum([
   'clocks',
   'grid',
   'categories',
   'rules',
   'shows',
-  'horizon',
+  'library',
 ]);
 export type ScheduleArea = z.infer<typeof scheduleAreaSchema>;
-
-export const scheduleChangedDataSchema = z.object({
-  orgId: uuidSchema,
-  areas: z.array(scheduleAreaSchema).min(1),
-  /** First local date the change can affect; null: from today. */
-  from: localDateSchema.nullable(),
-});
 
 /** At most this many issues per day ride on `log.generated`; `issueCounts` has them all. */
 export const LOG_GENERATED_MAX_ISSUES = 50;
@@ -225,21 +219,13 @@ export const logGeneratedDataSchema = z.object({
 export type LogGeneratedData = z.infer<typeof logGeneratedDataSchema>;
 
 /**
- * `log-horizon` (worker, `bulk` lane): brings a station's generated horizon up to date. With
- * `change`, it first records a schedule change (debounced, ADR 0030). Then it generates the
- * horizon's missing days and, once a recorded change is due, regenerates from its first date.
+ * `log-horizon` (worker, `bulk` lane): brings a station's generated horizon up to date: it
+ * generates the horizon's missing days and, once a recorded schedule change is due (debounced,
+ * ADR 0030), regenerates from its first date.
  */
 export const LOG_HORIZON_JOB = 'log-horizon';
 export const logHorizonJobPayloadSchema = z.object({
   orgId: uuidSchema,
   stationId: uuidSchema,
-  change: z
-    .object({
-      eventId: z.uuid(),
-      at: isoTime,
-      areas: z.array(scheduleAreaSchema).min(1),
-      from: localDateSchema.nullable(),
-    })
-    .optional(),
 });
 export type LogHorizonJobPayload = z.infer<typeof logHorizonJobPayloadSchema>;

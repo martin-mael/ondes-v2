@@ -70,7 +70,7 @@ import { logItemPin } from '../schema/regen.ts';
 import { category, categoryMember, rotationRules } from '../schema/rotation.ts';
 import { segue } from '../schema/segues.ts';
 import { episode, show, showSlot, showSlotException } from '../schema/shows.ts';
-import { station } from '../schema/tenancy.ts';
+import { auditLog, station } from '../schema/tenancy.ts';
 import { type StationScope, whereStation } from '../tenant.ts';
 import { resolveRerun } from './reruns.ts';
 
@@ -761,7 +761,7 @@ async function keepMarks(
   policy: KeepPolicy = {},
 ) {
   const ids = items.map((i) => i.id);
-  const [segueEnds, marks] = ids.length
+  const [segueEnds, marks, moves] = ids.length
     ? await Promise.all([
         db
           .select({ from: segue.fromItemId, to: segue.toItemId })
@@ -778,8 +778,23 @@ async function keepMarks(
           .where(
             and(whereStation(logItemFallback, scope), inArray(logItemFallback.logItemId, ids)),
           ),
+        // Generated items moved by hand (#101): the move's audit row is the record of it.
+        policy.manual
+          ? db
+              .selectDistinct({ itemId: auditLog.entityId })
+              .from(auditLog)
+              .where(
+                and(
+                  eq(auditLog.stationId, scope.stationId),
+                  eq(auditLog.entityType, 'log_item'),
+                  eq(auditLog.action, 'log_item.move'),
+                  inArray(auditLog.entityId, ids),
+                ),
+              )
+          : Promise.resolve([]),
       ])
-    : [[], []];
+    : [[], [], []];
+  const moved = new Set(moves.map((m) => m.itemId));
   const inSegue = new Set(segueEnds.flatMap((s) => [s.from, s.to]).filter((x) => x !== null));
   const markSlot = new Map(marks.map((m) => [m.itemId, m.slotId]));
   const reasonsOf = (item: (typeof items)[number]): KeptReason[] =>
@@ -790,6 +805,7 @@ async function keepMarks(
         locked: item.locked,
         inSegue: inSegue.has(item.id),
         hasFallbackMark: markSlot.has(item.id),
+        movedByHand: moved.has(item.id),
       },
       policy,
     );

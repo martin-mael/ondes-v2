@@ -12,7 +12,7 @@ export const REGEN_FREEZE_MS = 60 * 60_000;
 export interface KeepPolicy {
   /** Items starting before this stay (aired, on air, or already with the feeder). */
   frozenUntil?: Date | null;
-  /** Keep manual edits (`origin: manual`). */
+  /** Keep hand edits: manual items (`origin: manual`) and generated items moved by hand. */
   manual?: boolean;
 }
 
@@ -25,6 +25,8 @@ export interface KeepCandidate {
   inSegue: boolean;
   /** Carries a missing-episode fallback mark (ADR 0022). */
   hasFallbackMark: boolean;
+  /** Moved by hand (a `log_item.move`): it keeps its origin, but where it is was a choice. */
+  movedByHand?: boolean;
 }
 
 /** Why `item` survives a regeneration under `policy`, most telling first; empty: it may go. */
@@ -36,11 +38,11 @@ export function keepReasons(item: KeepCandidate, policy: KeepPolicy = {}): KeptR
   if (item.locked) reasons.push('locked');
   if (item.inSegue) reasons.push('segue');
   if (item.hasFallbackMark) reasons.push('fallback');
-  if (policy.manual && item.originType === 'manual') reasons.push('manual');
+  if (policy.manual && (item.originType === 'manual' || item.movedByHand)) reasons.push('manual');
   return reasons;
 }
 
-/** The regeneration policy at `now`: freeze the next hour, keep manual edits. */
+/** The regeneration policy at `now`: freeze the next hour, keep hand edits. */
 export function regenPolicy(
   now: Date,
   freezeMs = REGEN_FREEZE_MS,

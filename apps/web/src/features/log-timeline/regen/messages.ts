@@ -8,7 +8,7 @@ const en = {
   open: 'Regenerate',
   title: 'Regenerate the log',
   description:
-    'Plans the days again from the clocks, the grid and the shows. Locked items, manual edits and everything in the next hour stay as they are.',
+    'Plans the days again from the clocks, the grid and the shows. Locked items, items added, replaced or moved by hand, and everything in the next hour stay as they are. A slot whose item was deleted is filled again.',
   from: 'From',
   to: 'To',
   preview: 'Preview changes',
@@ -57,7 +57,7 @@ const fr: Record<RegenMessageKey, string> = {
   open: 'Régénérer',
   title: 'Régénérer le conducteur',
   description:
-    'Planifie à nouveau les jours à partir des horloges, de la grille et des émissions. Les éléments verrouillés, les modifications manuelles et tout ce qui passe dans l’heure restent tels quels.',
+    'Planifie à nouveau les jours à partir des horloges, de la grille et des émissions. Les éléments verrouillés, ceux ajoutés, remplacés ou déplacés à la main, et tout ce qui passe dans l’heure restent tels quels. Un créneau dont l’élément a été supprimé est de nouveau rempli.',
   from: 'Du',
   to: 'Au',
   preview: 'Voir les changements',

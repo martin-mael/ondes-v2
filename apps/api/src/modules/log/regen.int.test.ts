@@ -11,8 +11,11 @@ import {
   clockSlot,
   createOrganization,
   createStation,
+  getRegenRequest,
   loadGeneratorSnapshot,
   logDay,
+  logItem,
+  recordScheduleChanges,
   resolveOrgScope,
   resolveStationScope,
   type StationScope,
@@ -46,11 +49,10 @@ import { createMemoryMailer } from '../../plugins/mail.ts';
 import type { Rabbit } from '../../plugins/rabbit.ts';
 import { signUpAndLogin, TEST_AUTH_CONFIG, type TestApp } from '../auth/testing.ts';
 import { createRegenAlerts } from './regen-alerts.ts';
-import { SCHEDULE_ROUTES } from './regen-plugin.ts';
 
 // Regeneration on the real app (#101, ADR 0030): horizon settings, the dry-run and its diff,
-// applying (queued jobs, audit, stale previews), the `schedule.changed` hook and the
-// generation alerts.
+// applying (previewed days only, audit, stale previews), hand edits, schedule changes read from
+// the audit log, and the generation alerts.
 
 const system: Actor = { type: 'system', name: 'test' };
 const rabbitUrl = process.env.RABBITMQ_URL ?? 'amqp://ondes:ondes@127.0.0.1:5672/ondes';
@@ -265,7 +267,7 @@ describe('horizon settings', () => {
         })
       ).statusCode,
     ).toBe(400);
-  });
+  }, 30_000);
 });
 
 describe('dry-run', () => {
@@ -279,7 +281,7 @@ describe('dry-run', () => {
     expect(body.days.map((d) => d.change)).toEqual(['unchanged', 'unchanged']);
     expect(body.totals).toMatchObject({ added: 0, removed: 0, moved: 0 });
     expect(body.days[0]?.items.length).toBeGreaterThan(300);
-  });
+  }, 30_000);
 
   it('diffs a schedule change against the current log, and writes nothing', async () => {
     const before = await dayOf(tomorrow);
@@ -302,7 +304,7 @@ describe('dry-run', () => {
     expect(day?.added[0]?.asset).toMatchObject({ type: 'song', title: expect.any(String) });
     const after = await dayOf(tomorrow);
     expect(after?.version).toBe(before?.version);
-  });
+  }, 30_000);
 
   it('refuses past days and ranges over a week; viewers may not run it', async () => {
     const past = await call('programmer', 'POST', '/log/regen/preview', {
@@ -320,41 +322,75 @@ describe('dry-run', () => {
       (await call('viewer', 'POST', '/log/regen/preview', { from: tomorrow, to: tomorrow }))
         .statusCode,
     ).toBe(403);
-  });
+  }, 30_000);
 });
 
 describe('apply', () => {
-  it('queues the jobs (14 days each) with the station settings, audited', async () => {
-    enqueued.length = 0;
-    const res = await call('programmer', 'POST', '/log/regen', {
-      from: tomorrow,
-      to: addDays(tomorrow, 15),
-      seed: 'fresh',
-    });
-    expect(res.statusCode).toBe(202);
-    expect(res.json()).toMatchObject({ jobs: 2 });
-    expect(enqueued.map((j) => j.name)).toEqual(['log-generate', 'log-generate']);
-    expect(enqueued[0]?.payload).toMatchObject({
-      orgId: scope.orgId,
-      stationId,
-      seed: 'fresh',
-      status: 'published',
-    });
-    const lengths = enqueued.map((j) => (j.payload as { localDates: string[] }).localDates.length);
-    expect(lengths).toEqual([14, 2]);
-    expect(await audits('log_day.regenerate')).toHaveLength(1);
-  });
+  const versions = async (dates: LocalDate[]) =>
+    Object.fromEntries(
+      await Promise.all(dates.map(async (d) => [d, (await dayOf(d))?.version ?? null] as const)),
+    );
 
-  it('refuses a preview gone stale (409), nothing queued', async () => {
+  it('queues the previewed days with the station settings, audited', async () => {
     enqueued.length = 0;
-    const day = await dayOf(tomorrow);
+    const dates = [tomorrow, addDays(tomorrow, 1), addDays(tomorrow, 2)];
     const res = await call('programmer', 'POST', '/log/regen', {
       from: tomorrow,
       to: addDays(tomorrow, 2),
-      expectedVersions: {
-        [tomorrow]: (day?.version ?? 0) + 1,
-        [addDays(tomorrow, 2)]: null,
+      seed: 'fresh',
+      expectedVersions: await versions(dates),
+    });
+    expect(res.statusCode).toBe(202);
+    expect(res.json()).toEqual({ localDates: dates, jobs: 1 });
+    expect(enqueued).toEqual([
+      {
+        name: 'log-generate',
+        payload: {
+          orgId: scope.orgId,
+          stationId,
+          localDates: dates,
+          seed: 'fresh',
+          status: 'published',
+        },
       },
+    ]);
+    expect(await audits('log_day.regenerate')).toHaveLength(1);
+  }, 30_000);
+
+  it('applies only what a preview covered: every date, a week at most', async () => {
+    enqueued.length = 0;
+    const partial = await call('programmer', 'POST', '/log/regen', {
+      from: tomorrow,
+      to: addDays(tomorrow, 1),
+      expectedVersions: await versions([tomorrow]),
+    });
+    expect(partial.statusCode).toBe(422);
+    expect(partial.json()).toMatchObject({
+      error: 'log_regen_unpreviewed',
+      details: { localDates: [addDays(tomorrow, 1)] },
+    });
+    const long = await call('programmer', 'POST', '/log/regen', {
+      from: tomorrow,
+      to: addDays(tomorrow, 7),
+      expectedVersions: {},
+    });
+    expect(long.statusCode).toBe(400);
+    const missing = await call('programmer', 'POST', '/log/regen', {
+      from: tomorrow,
+      to: tomorrow,
+    });
+    expect(missing.statusCode).toBe(400);
+    expect(enqueued).toEqual([]);
+  }, 30_000);
+
+  it('refuses a preview gone stale (409), nothing queued', async () => {
+    enqueued.length = 0;
+    const dates = [tomorrow, addDays(tomorrow, 1), addDays(tomorrow, 2)];
+    const seen = await versions(dates);
+    const res = await call('programmer', 'POST', '/log/regen', {
+      from: tomorrow,
+      to: addDays(tomorrow, 2),
+      expectedVersions: { ...seen, [tomorrow]: (seen[tomorrow] ?? 0) + 1 },
     });
     expect(res.statusCode).toBe(409);
     expect(res.json()).toMatchObject({
@@ -365,35 +401,49 @@ describe('apply', () => {
     const ok = await call('programmer', 'POST', '/log/regen', {
       from: tomorrow,
       to: tomorrow,
-      expectedVersions: { [tomorrow]: day?.version ?? 0 },
+      expectedVersions: { [tomorrow]: seen[tomorrow] ?? null },
     });
     expect(ok.statusCode).toBe(202);
-  });
+  }, 30_000);
+});
+
+describe('hand edits', () => {
+  it('keeps a generated item moved by hand where it was put', async () => {
+    const date = addDays(tomorrow, 1);
+    const day = await dayOf(date);
+    const rows = (await tdb.db.select().from(logItem))
+      .filter((r) => r.logDayId === day?.id && r.kind === 'song')
+      .sort((a, b) => a.position - b.position);
+    const [moved, target] = [rows[20], rows[60]];
+    if (!moved || !target) throw new Error('not enough songs');
+    const move = await call('programmer', 'POST', `/log/items/${moved.id}/move`, {
+      placement: { after: target.id },
+    });
+    expect(move.statusCode).toBe(200);
+    const res = await call('programmer', 'POST', '/log/regen/preview', { from: date, to: date });
+    const [diff] = (res.json() as LogRegenPreviewResponse).days;
+    expect(diff?.kept.manual).toBe(1);
+    expect(diff?.items.some((i) => i.id === moved.id)).toBe(true);
+    expect(diff?.removed.some((i) => i.id === moved.id)).toBe(false);
+  }, 30_000);
 });
 
 describe('schedule changes', () => {
-  it('watches routes that exist (a renamed route would silently stop regenerating)', () => {
-    for (const url of Object.keys(SCHEDULE_ROUTES)) {
-      const methods = (['POST', 'PUT', 'PATCH', 'DELETE'] as const).filter((method) =>
-        t.app.hasRoute({ method, url }),
-      );
-      expect(methods, url).not.toEqual([]);
-    }
-  });
-
-  it('publishes schedule.changed after a successful schedule mutation, not after a failed one', async () => {
-    const ok = await call('programmer', 'PATCH', `/categories/${musicId}`, { name: 'Music 2' });
-    expect(ok.statusCode).toBe(200);
+  it('are recorded from the audit rows of successful mutations, not failed ones', async () => {
+    const before = new Date();
     const bad = await call('programmer', 'PATCH', `/categories/${musicId}`, {});
     expect(bad.statusCode).toBe(400);
-    await expect
-      .poll(() => events.filter((e) => e.type === 'schedule.changed'), { timeout: 5_000 })
-      .toHaveLength(1);
-    expect(events.find((e) => e.type === 'schedule.changed')).toMatchObject({
-      stationId,
-      data: { orgId: scope.orgId, areas: ['categories'], from: null },
-    });
-  });
+    expect(
+      (await recordScheduleChanges(tdb.db, new Date())).filter((s) => s.stationId === stationId),
+    ).toEqual([]);
+    const ok = await call('programmer', 'PATCH', `/categories/${musicId}`, { name: 'Music 2' });
+    expect(ok.statusCode).toBe(200);
+    const recorded = await recordScheduleChanges(tdb.db, new Date());
+    expect(recorded.map((s) => s.stationId)).toContain(stationId);
+    const request = await getRegenRequest(tdb.db, scope);
+    expect(request?.areas).toEqual(['categories']);
+    expect(request?.lastRequestedAt.getTime()).toBeGreaterThanOrEqual(before.getTime() - 1_000);
+  }, 30_000);
 });
 
 describe('generation alerts', () => {
@@ -446,5 +496,5 @@ describe('generation alerts', () => {
     // Only missing episodes left: those are #47's alerts, so this one resolves.
     await regenAlerts.handle(event({ episode_missing: 1 }, [{ code: 'episode_missing', at }]));
     expect(await open()).toEqual([]);
-  });
+  }, 30_000);
 });

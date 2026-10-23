@@ -1,5 +1,5 @@
 {
-  "id": "509f8497-34b5-4c4f-8b28-ddc6330de3db",
+  "id": "d6a96394-23d3-46c6-bfa5-b2e207b66627",
   "prevId": "ce2f970b-3d59-4791-a55c-bd169496f9aa",
   "version": "7",
   "dialect": "postgresql",
@@ -5741,6 +5741,68 @@
           ],
           "columnsTo": [
             "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "log_item_pin_station_org_fk": {
+          "name": "log_item_pin_station_org_fk",
+          "tableFrom": "log_item_pin",
+          "tableTo": "station",
+          "columnsFrom": [
+            "station_id",
+            "org_id"
+          ],
+          "columnsTo": [
+            "id",
+            "org_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.log_regen_cursor": {
+      "name": "log_regen_cursor",
+      "schema": "",
+      "columns": {
+        "station_id": {
+          "name": "station_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "org_id": {
+          "name": "org_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "seen_until": {
+          "name": "seen_until",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "log_regen_cursor_station_org_fk": {
+          "name": "log_regen_cursor_station_org_fk",
+          "tableFrom": "log_regen_cursor",
+          "tableTo": "station",
+          "columnsFrom": [
+            "station_id",
+            "org_id"
+          ],
+          "columnsTo": [
+            "id",
+            "org_id"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"

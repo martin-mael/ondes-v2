@@ -6,6 +6,12 @@ CREATE TABLE "log_item_pin" (
 	"settled_start" timestamp (3) with time zone NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "log_regen_cursor" (
+	"station_id" uuid PRIMARY KEY NOT NULL,
+	"org_id" uuid NOT NULL,
+	"seen_until" timestamp (3) with time zone NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "log_regen_request" (
 	"station_id" uuid PRIMARY KEY NOT NULL,
 	"org_id" uuid NOT NULL,
@@ -27,6 +33,8 @@ CREATE TABLE "log_regen_setting" (
 );
 --> statement-breakpoint
 ALTER TABLE "log_item_pin" ADD CONSTRAINT "log_item_pin_item_fk" FOREIGN KEY ("log_item_id") REFERENCES "public"."log_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "log_item_pin" ADD CONSTRAINT "log_item_pin_station_org_fk" FOREIGN KEY ("station_id","org_id") REFERENCES "public"."station"("id","org_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "log_regen_cursor" ADD CONSTRAINT "log_regen_cursor_station_org_fk" FOREIGN KEY ("station_id","org_id") REFERENCES "public"."station"("id","org_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "log_regen_request" ADD CONSTRAINT "log_regen_request_station_org_fk" FOREIGN KEY ("station_id","org_id") REFERENCES "public"."station"("id","org_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "log_regen_setting" ADD CONSTRAINT "log_regen_setting_station_org_fk" FOREIGN KEY ("station_id","org_id") REFERENCES "public"."station"("id","org_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "log_item_pin_station" ON "log_item_pin" USING btree ("station_id");--> statement-breakpoint

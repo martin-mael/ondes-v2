@@ -1,4 +1,4 @@
-import { earlierFrom, regenDueAt } from '@ondes/scheduling';
+import { REGEN_DEBOUNCE_MS, REGEN_MAX_WAIT_MS, regenDueAt } from '@ondes/scheduling';
 import {
   LOG_REGEN_DEFAULT_SETTINGS,
   type LocalDate,
@@ -10,9 +10,9 @@ import { and, eq, inArray, lte, sql } from 'drizzle-orm';
 import { type MutationContext, withAudit } from '../audit.ts';
 import type { Db, Executor } from '../client.ts';
 import { logDay } from '../schema/log.ts';
-import { logRegenRequest, logRegenSetting } from '../schema/regen.ts';
+import { logRegenCursor, logRegenRequest, logRegenSetting } from '../schema/regen.ts';
 import { station } from '../schema/tenancy.ts';
-import { type StationScope, whereStation } from '../tenant.ts';
+import { resolveStationScope, type StationScope, whereStation } from '../tenant.ts';
 
 // Log regeneration (#101, ADR 0030) queries: a station's horizon settings, the debounced
 // regeneration requests schedule changes leave, and the horizon sweep. The regeneration itself
@@ -76,39 +76,139 @@ export interface RegenRequest {
 
 /**
  * Records a schedule change: creates the station's pending request, or pushes it back
- * (`regenDueAt`: debounced, capped) and widens it. Changes arriving out of order keep the
- * latest `lastRequestedAt`. Returns the request as it now stands.
+ * (debounced, capped: `regenDueAt`'s rule, in SQL) and widens it (areas, the earliest from date,
+ * null meaning today). One upsert, so concurrent first changes merge instead of overwriting
+ * each other. Changes arriving out of order keep the latest `lastRequestedAt`.
  */
 export async function recordRegenRequest(
-  db: Db,
+  db: Executor,
   scope: StationScope,
-  change: { at: Date; areas: readonly ScheduleArea[]; from: LocalDate | null },
+  change: { at: Date; firstAt?: Date; areas: readonly ScheduleArea[]; from: LocalDate | null },
 ): Promise<RegenRequest> {
-  return db.transaction(async (tx) => {
-    const [existing] = await tx
-      .select()
-      .from(logRegenRequest)
-      .where(whereStation(logRegenRequest, scope))
-      .for('update');
-    const first = existing
-      ? new Date(Math.min(existing.firstRequestedAt.getTime(), change.at.getTime()))
-      : change.at;
-    const last = existing
-      ? new Date(Math.max(existing.lastRequestedAt.getTime(), change.at.getTime()))
-      : change.at;
-    const next = {
-      fromDate: existing ? earlierFrom(existing.fromDate, change.from) : change.from,
-      areas: [...new Set([...(existing?.areas ?? []), ...change.areas])].sort(),
-      firstRequestedAt: first,
-      lastRequestedAt: last,
-      dueAt: regenDueAt({ firstRequestedAt: first, lastRequestedAt: last }),
-    };
-    await tx
-      .insert(logRegenRequest)
-      .values({ stationId: scope.stationId, orgId: scope.orgId, ...next })
-      .onConflictDoUpdate({ target: logRegenRequest.stationId, set: next });
-    return next;
-  });
+  const first = change.firstAt ?? change.at;
+  const values = {
+    stationId: scope.stationId,
+    orgId: scope.orgId,
+    fromDate: change.from,
+    areas: [...new Set(change.areas)].sort(),
+    firstRequestedAt: first,
+    lastRequestedAt: change.at,
+    dueAt: regenDueAt({ firstRequestedAt: first, lastRequestedAt: change.at }),
+  };
+  const t = logRegenRequest;
+  const firstAt = sql`least(${t.firstRequestedAt}, excluded.first_requested_at)`;
+  const lastAt = sql`greatest(${t.lastRequestedAt}, excluded.last_requested_at)`;
+  const [row] = await db
+    .insert(t)
+    .values(values)
+    .onConflictDoUpdate({
+      target: t.stationId,
+      set: {
+        fromDate: sql`case when ${t.fromDate} is null or excluded.from_date is null then null
+          else least(${t.fromDate}, excluded.from_date) end`,
+        areas: sql`array(select distinct a from unnest(${t.areas} || excluded.areas) a order by a)`,
+        firstRequestedAt: firstAt,
+        lastRequestedAt: lastAt,
+        dueAt: sql`least(${lastAt} + make_interval(secs => ${REGEN_DEBOUNCE_MS / 1000}),
+          ${firstAt} + make_interval(secs => ${REGEN_MAX_WAIT_MS / 1000}))`,
+      },
+    })
+    .returning();
+  if (!row) throw new Error('regen request upsert returned nothing');
+  return {
+    fromDate: row.fromDate,
+    areas: row.areas,
+    firstRequestedAt: row.firstRequestedAt,
+    lastRequestedAt: row.lastRequestedAt,
+    dueAt: row.dueAt,
+  };
+}
+
+/**
+ * Audit actions that change what the generator plans (ADR 0030). Every api mutation writes its
+ * audit row in its own transaction, so a change found here can't be lost to a failed publish
+ * or a crash after the commit, deletes included. Library edits count: category membership
+ * follows tags and asset fields (ADR 0013), and the rules read titles and artists.
+ */
+export const SCHEDULE_ACTIONS: Readonly<Record<string, ScheduleArea>> = {
+  'clock.update': 'clocks',
+  'clock.delete': 'clocks',
+  'clock_grid.update': 'grid',
+  'clock_grid_override.create': 'grid',
+  'clock_grid_override.update': 'grid',
+  'clock_grid_override.delete': 'grid',
+  'daypart.create': 'grid',
+  'daypart.update': 'grid',
+  'daypart.delete': 'grid',
+  'category.update': 'categories',
+  'category.delete': 'categories',
+  'rotation_rules.update': 'rules',
+  'show.update': 'shows',
+  'show.delete': 'shows',
+  'show_slot.create': 'shows',
+  'show_slot.update': 'shows',
+  'show_slot.delete': 'shows',
+  'show_slot.exception.put': 'shows',
+  'show_slot.exception.delete': 'shows',
+  'episode.create': 'shows',
+  'episode.update': 'shows',
+  'episode.delete': 'shows',
+  'asset.create': 'library',
+  'asset.update': 'library',
+  'asset.delete': 'library',
+  'asset.tag': 'library',
+};
+
+/** How far back a station without a cursor (or a long-idle one) looks for changes. */
+const CHANGE_LOOKBACK = '1 day';
+
+/**
+ * The schedule changes recorded in the audit log since each station's last handled change
+ * (`log_regen_cursor`, moved on by `clearRegenRequest`), turned into regeneration requests.
+ * Stations whose pending request already covers their latest change are skipped. A system
+ * sweep across tenants (the api's horizon sweep); each station is recorded in its own scope.
+ */
+export async function recordScheduleChanges(db: Db, now: Date): Promise<StationScope[]> {
+  const at = now.toISOString();
+  const actions = sql.join(
+    Object.keys(SCHEDULE_ACTIONS).map((x) => sql`${x}`),
+    sql`, `,
+  );
+  const rows = await db.execute<{
+    org_id: string;
+    station_id: string;
+    first_at: string;
+    last_at: string;
+    actions: string[];
+  }>(sql`
+    select a.org_id, a.station_id, min(a.ms)::text as first_at, max(a.ms)::text as last_at,
+      array_agg(distinct a.action) as actions
+    -- Milliseconds, like the request and cursor times (JS dates): a change is never seen twice.
+    from (
+      select org_id, station_id, action, date_trunc('milliseconds', at) as ms
+      from audit_log
+      where action in (${actions})
+        and at > ${at}::timestamptz - ${CHANGE_LOOKBACK}::interval
+        and at <= ${at}::timestamptz
+    ) a
+    join station s on s.id = a.station_id and s.org_id = a.org_id
+    left join log_regen_cursor c on c.station_id = a.station_id
+    left join log_regen_request q on q.station_id = a.station_id
+    where a.ms > coalesce(q.last_requested_at, c.seen_until, '-infinity'::timestamptz)
+    group by a.org_id, a.station_id
+  `);
+  const recorded: StationScope[] = [];
+  for (const r of rows) {
+    const scope = await resolveStationScope(db, r.org_id, r.station_id);
+    await recordRegenRequest(db, scope, {
+      at: new Date(r.last_at),
+      firstAt: new Date(r.first_at),
+      areas: r.actions.flatMap((a) => (SCHEDULE_ACTIONS[a] ? [SCHEDULE_ACTIONS[a]] : [])),
+      from: null,
+    });
+    recorded.push(scope);
+  }
+  return recorded;
 }
 
 /** The station's pending request, if any (due or not). */
@@ -132,20 +232,30 @@ export async function getRegenRequest(
  * `lastRequestedAt` moved): that one waits for its own turn.
  */
 export async function clearRegenRequest(
-  db: Executor,
+  db: Db,
   scope: StationScope,
   lastRequestedAt: Date,
 ): Promise<boolean> {
-  const deleted = await db
-    .delete(logRegenRequest)
-    .where(
-      and(
-        whereStation(logRegenRequest, scope),
-        eq(logRegenRequest.lastRequestedAt, lastRequestedAt),
-      ),
-    )
-    .returning({ stationId: logRegenRequest.stationId });
-  return deleted.length > 0;
+  return db.transaction(async (tx) => {
+    const deleted = await tx
+      .delete(logRegenRequest)
+      .where(
+        and(
+          whereStation(logRegenRequest, scope),
+          eq(logRegenRequest.lastRequestedAt, lastRequestedAt),
+        ),
+      )
+      .returning({ stationId: logRegenRequest.stationId });
+    // Changes up to it are handled: the change sweep looks past it from now on.
+    await tx
+      .insert(logRegenCursor)
+      .values({ stationId: scope.stationId, orgId: scope.orgId, seenUntil: lastRequestedAt })
+      .onConflictDoUpdate({
+        target: logRegenCursor.stationId,
+        set: { seenUntil: sql`greatest(${logRegenCursor.seenUntil}, excluded.seen_until)` },
+      });
+    return deleted.length > 0;
+  });
 }
 
 /** The dates among `dates` that have a log day. */

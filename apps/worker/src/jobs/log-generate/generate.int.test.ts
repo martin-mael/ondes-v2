@@ -281,6 +281,30 @@ describe('log-generate job', () => {
     expect(events.slice(eventsBefore).map((e) => e.type)).toEqual(['log.generated']);
   });
 
+  it('announces the days it wrote when a later day fails, then fails (#101)', async () => {
+    const eventsBefore = events.length;
+    let calls = 0;
+    const failing: typeof writeGeneratedDay = async (db, ctx, day, options) => {
+      if (++calls === 2) throw new StaleGeneratorSnapshotError(day.localDate, ['test']);
+      return writeGeneratedDay(db, ctx, day, options);
+    };
+    await expect(
+      runLogGenerate({ ...deps(), writeDay: failing }, scope, {
+        localDates: ['2026-11-06', '2026-11-07'],
+        status: 'draft',
+      }),
+    ).rejects.toThrow(StaleGeneratorSnapshotError);
+    const sent = events.slice(eventsBefore);
+    expect(sent.map((e) => e.type)).toEqual(['log.updated', 'log.generated']);
+    const updated = sent[0];
+    expect(updated?.type === 'log.updated' && updated.data.days.map((d) => d.localDate)).toContain(
+      '2026-11-06',
+    );
+    expect(sent[1]?.type === 'log.generated' && sent[1].data.days.map((d) => d.localDate)).toEqual([
+      '2026-11-06',
+    ]);
+  }, 60_000);
+
   it('keeps locked items, segue ends and fallback marks with their ids on regeneration', async () => {
     const { rows } = await items(DATE);
     const songs = rows.filter((r) => r.kind === 'song');

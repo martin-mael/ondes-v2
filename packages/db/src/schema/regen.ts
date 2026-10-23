@@ -73,6 +73,27 @@ export const logRegenRequest = pgTable(
 );
 
 /**
+ * How far a station's schedule changes are handled: audit rows of schedule actions after
+ * `seen_until` are new changes (`recordScheduleChanges`). Moved on when a regeneration clears
+ * its request.
+ */
+export const logRegenCursor = pgTable(
+  'log_regen_cursor',
+  {
+    stationId: uuid('station_id').primaryKey(),
+    orgId: uuid('org_id').notNull(),
+    seenUntil: ms('seen_until').notNull(),
+  },
+  (t) => [
+    foreignKey({
+      name: 'log_regen_cursor_station_org_fk',
+      columns: [t.stationId, t.orgId],
+      foreignColumns: [station.id, station.orgId],
+    }).onDelete('cascade'),
+  ],
+);
+
+/**
  * Where the last regeneration planned a kept item (`start`) and where retiming put it
  * (`settled_start`), so the next one plans around the same time while the item hasn't moved
  * (`@ondes/scheduling` `keptStart`). Goes with its item.
@@ -91,6 +112,11 @@ export const logItemPin = pgTable(
       name: 'log_item_pin_item_fk',
       columns: [t.logItemId],
       foreignColumns: [logItem.id],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'log_item_pin_station_org_fk',
+      columns: [t.stationId, t.orgId],
+      foreignColumns: [station.id, station.orgId],
     }).onDelete('cascade'),
     index('log_item_pin_station').on(t.stationId),
   ],

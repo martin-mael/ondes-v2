@@ -324,7 +324,7 @@ function ItemList<T>({
   if (items.length === 0) return null;
   return (
     <div className="flex flex-col gap-1">
-      <h4 className="text-xs font-medium text-muted-foreground">
+      <h4 className="text-sm font-medium text-muted-foreground">
         {title} ({items.length})
       </h4>
       <ul className="flex flex-col gap-0.5 text-sm">

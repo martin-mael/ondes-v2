@@ -1,73 +1,21 @@
-import { randomUUID } from 'node:crypto';
-import { stationsDueForHorizon } from '@ondes/db';
+import { recordScheduleChanges, stationsDueForHorizon } from '@ondes/db';
 import { consumeEventsDurable, type EventSubscription } from '@ondes/queue';
-import { type RealtimeEvent, realtimeEventSchema, type ScheduleArea } from '@ondes/shared';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { type RealtimeEvent, realtimeEventSchema } from '@ondes/shared';
+import type { FastifyInstance } from 'fastify';
 import fp from 'fastify-plugin';
 import { createRegenAlerts } from './regen-alerts.ts';
 import { regenRoutes } from './regen-routes.ts';
 import { type ExtensionsBuilder, logHorizonJob } from './regen-service.ts';
 
-// Log regeneration (#101, ADR 0030), api side. Two plugins:
-// - `scheduleChangesPlugin` (registered before the modules' routes): after a successful
-//   schedule mutation, publishes `schedule.changed`. The worker's `log-horizon` trigger
-//   records it and regenerates the horizon, debounced. One hook over the route table rather
-//   than a call in every module: clocks, the grid, categories, rules and shows don't need to
-//   know about regeneration.
-// - `regenPlugin`: the regeneration routes, the horizon sweep (every 30 s, enqueues a
-//   `log-horizon` pass for each station with a missing day or a due change) and the
-//   `log.generated` → `log.generation_issues` alerts consumer (durable queue).
-
-/** Successful mutations of these routes change what the generator plans. */
-export const SCHEDULE_ROUTES: Readonly<Record<string, ScheduleArea>> = {
-  '/api/v1/stations/:stationId/clocks/:clockId': 'clocks',
-  '/api/v1/stations/:stationId/clock-grid': 'grid',
-  '/api/v1/stations/:stationId/clock-grid/dayparts': 'grid',
-  '/api/v1/stations/:stationId/clock-grid/dayparts/:daypartId': 'grid',
-  '/api/v1/stations/:stationId/clock-grid/overrides': 'grid',
-  '/api/v1/stations/:stationId/clock-grid/overrides/:overrideId': 'grid',
-  '/api/v1/stations/:stationId/categories/:categoryId': 'categories',
-  '/api/v1/stations/:stationId/rotation/rules': 'rules',
-  '/api/v1/stations/:stationId/shows/:showId': 'shows',
-  '/api/v1/stations/:stationId/shows/:showId/slots': 'shows',
-  '/api/v1/stations/:stationId/shows/:showId/slots/:slotId': 'shows',
-  '/api/v1/stations/:stationId/shows/:showId/slots/:slotId/exceptions/:date': 'shows',
-  '/api/v1/stations/:stationId/shows/:showId/episodes': 'shows',
-  '/api/v1/stations/:stationId/shows/:showId/episodes/:episodeId': 'shows',
-  '/api/v1/stations/:stationId/shows/:showId/episodes/:episodeId/reruns': 'shows',
-};
-
-const MUTATIONS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-
-/** The schedule area a finished request changed, if any. */
-export function scheduleAreaOf(request: FastifyRequest, statusCode: number): ScheduleArea | null {
-  if (!MUTATIONS.has(request.method) || statusCode < 200 || statusCode >= 300) return null;
-  const url = request.routeOptions.url;
-  return (url && SCHEDULE_ROUTES[url]) || null;
-}
-
-export const scheduleChangesPlugin = fp(
-  async (app: FastifyInstance) => {
-    app.addHook('onResponse', async (request, reply) => {
-      const area = scheduleAreaOf(request, reply.statusCode);
-      const scope = request.scope;
-      if (!area || !scope || !('stationId' in scope) || !app.hasDecorator('rabbit')) return;
-      const event: RealtimeEvent = {
-        id: randomUUID(),
-        stationId: scope.stationId,
-        at: new Date().toISOString(),
-        type: 'schedule.changed',
-        data: { orgId: scope.orgId, areas: [area], from: null },
-      };
-      try {
-        await app.rabbit.events.publish(realtimeEventSchema.parse(event));
-      } catch (err) {
-        request.log.error({ err, area }, 'schedule.changed publish failed');
-      }
-    });
-  },
-  { name: 'schedule-changes', dependencies: ['auth'] },
-);
+// Log regeneration (#101, ADR 0030), api side: the regeneration routes, the horizon sweep and
+// the `log.generated` → `log.generation_issues` alerts consumer (durable queue).
+//
+// The sweep, every 30 s:
+// 1. records schedule changes from the audit log (`recordScheduleChanges`). Every mutation writes
+//    its audit row in its own transaction, so no change depends on a best-effort publish, and
+//    clocks, the grid, rotation, shows and the library don't have to know about regeneration;
+// 2. enqueues a `log-horizon` pass (RabbitMQ) for each station with a missing horizon day or a
+//    change that is due (debounced).
 
 /** Name of the durable event queue the generation alerts are raised from (ADR 0006). */
 export const REGEN_EVENT_QUEUE = 'log-regen';
@@ -99,7 +47,9 @@ export const regenPlugin = fp(
         if (running) return;
         running = true;
         (async () => {
-          const stations = await stationsDueForHorizon(app.db, options.now?.() ?? new Date());
+          const now = options.now?.() ?? new Date();
+          await recordScheduleChanges(app.db, now);
+          const stations = await stationsDueForHorizon(app.db, now);
           for (const s of stations) {
             await rabbit.jobs.enqueue(logHorizonJob, s, s);
           }

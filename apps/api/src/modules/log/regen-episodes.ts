@@ -8,8 +8,24 @@ import type { LogEventSink } from './routes.ts';
 // Late episode audio (ADR 0026's follow-up, wired by #101): when an episode gets its asset,
 // the empty items the generator planned for it that haven't started take it
 // (`attachEpisodeAudio`, which retimes their days), and `log.updated` says so.
+//
+// Runs after the episode update committed. A failure here doesn't fail the update: it's
+// logged, and the regeneration the episode change sets off (its audit row, ADR 0030) plans the
+// audio in anyway.
 
 export async function attachEpisodeAudioAndAnnounce(
+  deps: { db: Db; sink: LogEventSink | undefined; log: FastifyBaseLogger },
+  ctx: { actor: Actor; scope: StationScope },
+  episodeId: string,
+): Promise<void> {
+  try {
+    await attachAndAnnounce(deps, ctx, episodeId);
+  } catch (err) {
+    deps.log.error({ err, episodeId }, 'attaching late episode audio failed');
+  }
+}
+
+async function attachAndAnnounce(
   deps: { db: Db; sink: LogEventSink | undefined; log: FastifyBaseLogger },
   ctx: { actor: Actor; scope: StationScope },
   episodeId: string,

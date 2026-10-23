@@ -11,7 +11,7 @@ import {
   logItemSchema,
   logUpdateCauseSchema,
 } from './log.ts';
-import { logGeneratedDataSchema, scheduleChangedDataSchema } from './log-regen.ts';
+import { logGeneratedDataSchema } from './log-regen.ts';
 import {
   islandStatusSchema,
   segueChangeSchema,
@@ -225,16 +225,6 @@ export const logItemChangedEventSchema = z.object({
 });
 
 /**
- * Regeneration (#101): a station's schedule changed (clocks, grid, categories, rules, show
- * slots, horizon). The worker's `log-horizon` trigger records it and regenerates, debounced.
- */
-export const scheduleChangedEventSchema = z.object({
-  ...envelope,
-  type: z.literal('schedule.changed'),
-  data: scheduleChangedDataSchema,
-});
-
-/**
  * The generator wrote (or found unchanged) these days, with what it couldn't do. The api turns
  * the issues into `log.generation_issues` alerts (durable queue). Follows the `log.updated`.
  */
@@ -247,7 +237,6 @@ export const logGeneratedEventSchema = z.object({
 export const logRealtimeEventSchema = z.discriminatedUnion('type', [
   logUpdatedEventSchema,
   logItemChangedEventSchema,
-  scheduleChangedEventSchema,
   logGeneratedEventSchema,
 ]);
 export type LogRealtimeEvent = z.infer<typeof logRealtimeEventSchema>;
@@ -563,7 +552,6 @@ export const realtimeEventPermissions = {
   // Log (#100): the timeline refetches the changed range.
   'log.updated': 'log:read',
   'log.item.changed': 'log:read',
-  'schedule.changed': 'log:read',
   'log.generated': 'log:read',
   // Alerts (#33): the dashboard and alert list.
   'alert.raised': 'alert:read',

@@ -4,15 +4,14 @@ import { LOG_HORIZON_JOB, logHorizonJobPayloadSchema } from '@ondes/shared';
 import { eventPublisherFromEnv, type PublishEvent } from '../_events/asset-updated.ts';
 import { issueSummary } from '../log-generate/generate.ts';
 import { runLogHorizon } from './horizon.ts';
-import { logHorizonTrigger } from './trigger.ts';
 
 // `log-horizon` job (#101, ADR 0030): keeps a station's log generated over its horizon and
-// regenerates it, debounced, after schedule changes. See horizon.ts. Enqueued by the trigger
-// below (one per `schedule.changed`) and by the api's horizon sweep (`modules/log/regen-plugin`,
-// every 30 s, for stations with a missing day or a due change).
+// regenerates it, debounced, after schedule changes. See horizon.ts. Enqueued by the api's
+// horizon sweep (`modules/log/regen-plugin`, every 30 s, for stations with a missing day or a
+// due change), which records the changes from the audit log first.
 //
-// Bulk lane. The sweep's passes keep the default key (payload hash): duplicates collapse while
-// one is in flight, and a later pass runs again.
+// Bulk lane. Default key (payload hash): duplicates collapse while one is in flight, and a
+// later pass runs again.
 
 let deps: Promise<{ db: Db; publish: PublishEvent | undefined }> | undefined;
 
@@ -27,8 +26,6 @@ async function depsFromEnv(env = process.env) {
 
 const log = (entry: Record<string, unknown>) => console.log(JSON.stringify(entry));
 
-export const triggers = [logHorizonTrigger];
-
 export default defineJob(
   LOG_HORIZON_JOB,
   logHorizonJobPayloadSchema,
@@ -39,7 +36,7 @@ export default defineJob(
     });
     const { db, publish } = await deps;
     const scope = await resolveStationScope(db, payload.orgId, payload.stationId);
-    const report = await runLogHorizon({ db, publish, log }, scope, payload);
+    const report = await runLogHorizon({ db, publish, log }, scope);
     if (!report || (report.missing.length === 0 && report.regenerated.length === 0)) return;
     log({
       level: 'info',

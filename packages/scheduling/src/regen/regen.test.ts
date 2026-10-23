@@ -155,6 +155,8 @@ describe('keepReasons', () => {
     ]);
     expect(keepReasons({ ...item, originType: 'manual' })).toEqual([]);
     expect(keepReasons({ ...item, originType: 'manual' }, { manual: true })).toEqual(['manual']);
+    expect(keepReasons({ ...item, movedByHand: true })).toEqual([]);
+    expect(keepReasons({ ...item, movedByHand: true }, { manual: true })).toEqual(['manual']);
   });
 
   it('plans a kept item around its pin while it sits where the pin says', () => {

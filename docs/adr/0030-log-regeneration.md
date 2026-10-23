@@ -25,11 +25,21 @@ stale check) both call, so they can't disagree:
   covers what aired, what is on air, and the feeder's 45 min lookahead (#29). Today can be
   regenerated: the morning stays, the afternoon is planned again. Days before today are
   refused (422).
-- **`manual`**: the item is a manual edit (`origin: manual`: inserted or replaced by hand,
-  #100).
+- **`manual`**: a hand edit. That is an item inserted or replaced by hand (`origin: manual`,
+  #100), or a generated item moved by hand. A move keeps the item's origin, since the as-run
+  matching (#53) reads it. Its `log_item.move` audit row is the record that its place was a
+  choice, so the loader looks it up there; no column needed.
 
-Moving a generated item doesn't make it manual (its origin stays), and deleting one leaves no
-trace, so a regeneration can bring it back. To keep a moved item, lock it.
+**Deleting is not kept, on purpose.** A deleted generated item leaves its clock slot, show
+occurrence or marker in the plan, and the next regeneration fills it again:
+- an hour with a hole would run short, and the safety playlist would play the gap;
+- what a deleted show occurrence or marker comes from is the schedule, and the schedule is
+  where to drop it (a slot exception, #44).
+- To make a choice stick in the log, replace the item (manual) or lock what's around it.
+
+The regenerate dialog says so in its description, so nobody is surprised. Tombstones that
+leave a slot empty would need the generator to skip slots (ADR 0026's builder). That's a
+follow-up if the owner wants it.
 
 ### Kept flow items are pinned (`log_item_pin`)
 A kept `flow` item follows the items before it. The generator plans around it at its stored
@@ -71,35 +81,44 @@ The writer no longer uses `withAudit` (which insists on an audit row); it writes
   `runLogGenerate` inline, 14 consecutive days per run (`consecutiveChunks`).
 - **The nightly extension is the same pass.** At local midnight a new date enters the horizon
   without a log, so the station is due.
-- **The sweep lives in the api** (`regenPlugin`, every 30 s): `stationsDueForHorizon` lists the
-  stations that have a clock grid and either a missing horizon day or a due change. The api
+- **The sweep lives in the api** (`regenPlugin`, every 30 s). It records schedule changes
+  (below), then `stationsDueForHorizon` lists the stations that have a clock grid and either a
+  missing horizon day or a due change. The api
   enqueues a `log-horizon` pass for each, keyed on the payload hash, so concurrent replicas
   collapse while one pass is in flight. The worker's own timers live in its `main.ts`, which
   job folders don't edit; the api already runs several sweeps (alerts, episode check).
   - A station without a clock grid gets nothing: no empty days full of `no_clock`.
 
-### Automatic regeneration, debounced, over RabbitMQ
-- **Detecting changes.** `scheduleChangesPlugin`, registered before the modules' routes, adds
-  one `onResponse` hook: a successful `POST/PUT/PATCH/DELETE` on a route of `SCHEDULE_ROUTES`
-  publishes `schedule.changed` with its area. The routes are clock updates, the clock grid,
-  category updates, rotation rules, shows, their slots, exceptions, episodes and reruns.
-  - One table rather than a call in each module: clocks, the grid, rotation and shows don't
-    have to know about regeneration, and parallel work on them doesn't collide with it.
-  - An integration test checks that every route in the table exists, so a renamed route
-    fails a test instead of silently stopping regeneration.
-  - Creating a clock or a category changes nothing until it's used, so they're not in the
-    table.
-- **Recording them.** The worker's `log-horizon` folder declares a trigger on `schedule.changed`
-  (durable queue `worker.log-horizon`, ADR 0006). Each event enqueues a pass with the change,
-  keyed `log-horizon:change:<eventId>` (a redelivery records it once). The pass upserts the
-  station's `log_regen_request`: the earliest `from_date` (null: today), the areas, the first
-  and last change times.
+### Automatic regeneration, debounced
+- **Detecting changes from the audit log.** Every api mutation writes its `audit_log` row in its
+  own transaction. So the sweep reads schedule changes from there (`recordScheduleChanges`,
+  `SCHEDULE_ACTIONS`):
+  - clock updates and deletes;
+  - the clock grid, dayparts and overrides;
+  - category updates and deletes, rotation rules;
+  - shows, slots, slot exceptions, episodes and reruns;
+  - the library: asset create, update, delete and tags. Category membership follows tags and
+    asset fields (ADR 0013), and the rules read titles and artists.
+- **Why not a publish after the response.** A first version published a `schedule.changed`
+  event from an `onResponse` hook. A failed publish, or a crash between the commit and the
+  publish, lost the change. Reading the audit row can't lose it, deletes included. It also
+  keeps the change out of every module: none of them has to know about regeneration.
+- **What's new** is what's after the station's cursor (`log_regen_cursor.seen_until`), or after
+  its pending request's last change. The cursor moves to a request's last change when a
+  regeneration clears it.
+  - Times are compared in milliseconds, like the request's: a change is never seen twice.
+  - Stations without a cursor look back one day.
+  - A transaction that commits after a regeneration that started later could slip behind the
+    cursor; a mutation transaction is far shorter than the debounce.
+- **Recording them.** The sweep upserts the station's `log_regen_request` in one statement:
+  the earliest `from_date` (null: today), the areas, the first and last change times, and the
+  due time. Concurrent first changes merge instead of overwriting each other.
 - **Debounce.** The request is due 30 s after the last change, and no later than 5 min after
   the first (`regenDueAt`), so a programmer editing a clock for ten minutes gets a
   regeneration every five, then one 30 s after they stop. Until then, passes leave it alone.
-  The sweep picks it up once due. After regenerating, the pass deletes the request only if no
-  change came in meanwhile (`last_requested_at` unchanged). A newer change waits for its own
-  turn.
+  The sweep picks it up once due and enqueues a `log-horizon` pass (RabbitMQ). After
+  regenerating, the pass deletes the request only if no change came in meanwhile
+  (`last_requested_at` unchanged), and moves the cursor. A newer change waits for its own turn.
 - A schedule change regenerates every future horizon day, not just the ones it affects.
   Picks are seeded per slot (ADR 0026), so unaffected parts come back the same and the no-op
   check skips unchanged days.
@@ -118,14 +137,30 @@ The writer no longer uses `withAudit` (which insists on an audit row); it writes
 - The response has each day's change (`new`, `changed`, `unchanged`, the last meaning the write
   would be a no-op), the four lists, the kept counts, the hypothetical day itself and the
   generator's issues, plus the freeze point.
-- **Applying** (`POST …/log/regen`, 202): checks the range, audits `log_day.regenerate`, and
-  enqueues `log-generate` jobs (14 days each) with the station's new-day status. A preview's
-  `expectedVersions` makes it refuse with 409 when a day changed since. The jobs publish
-  `log.updated` as usual.
+- **Applying** (`POST …/log/regen`, 202) applies what a preview showed:
+  - the same 7 days at most;
+  - `expectedVersions` from the preview, required for every date (422 otherwise; 409 when a
+    day changed since).
+  - It audits `log_day.regenerate` and enqueues a `log-generate` job with the station's
+    new-day status. The job publishes `log.updated` as usual.
+  - Bulk regeneration without a review is the horizon's job, not the API's.
 - The extension points the worker uses (#46's `beforeAnchor`, #60's `placeVoiceTrack`) are a
   builder, `(loaded, scope) => GeneratorExtensions`. `runLogGenerate` takes it as
   `deps.extensions` and the api's `regenPlugin` as `extensions`, so a preview plans like the
   job.
+
+### History reads what aired
+The snapshot's history is as-run before `now` and planned items after (ADR 0026), and that is
+intended: the rules should space songs against what really aired. A regeneration later in the
+day can therefore pick differently for the following days if something aired off plan. Those
+aren't the same inputs. When everything aired as planned, the history is the same and so is
+the day.
+
+### A failing day doesn't swallow the events
+`log-generate` writes days one transaction each. If a later day fails (a stale snapshot, a
+database error), the days already written are announced (`log.updated`, `log.generated`)
+before the error goes up for the retry. Otherwise the retry would find them unchanged and
+announce nothing, and the timeline, the feeder and the alerts would stay stale.
 
 ### Issues become alerts
 After writing, `log-generate` publishes `log.generated`: every day it went through, `changed`
@@ -150,9 +185,9 @@ of up to 7 days, "Preview changes", the diff per day in station time, then "Rege
 preview not applied counts as unsaved work. A stale preview is refused and the dialog says so.
 
 ## Consequences
-- New: `log_regen_setting`, `log_regen_request`, `log_item_pin`. `contracts/log-regen.ts` holds
-  settings, requests, the diff, `schedule.changed`, `log.generated` and the `log-horizon`
-  payload. Also new: alert type `log.generation_issues`, `@ondes/scheduling` `regen/`,
+- New: `log_regen_setting`, `log_regen_request`, `log_regen_cursor`, `log_item_pin`.
+  `contracts/log-regen.ts` holds settings, requests, the diff, `log.generated` and the
+  `log-horizon` payload. Also new: alert type `log.generation_issues`, `@ondes/scheduling` `regen/`,
   `@ondes/db` `repos/log-regen.ts`, the `log-horizon` job, and the api's `regen-*` files under
   `modules/log`.
 - `KeptReason` gains `past` and `manual`.
@@ -161,10 +196,10 @@ preview not applied counts as unsaved work. A stale preview is refused and the d
 - `runLogGenerate` always applies the regeneration policy, takes `extensions`, and publishes
   `log.updated` only for changed days.
 - Every `log-generate` run now keeps the next hour. Rewriting what aired was never right.
-- Two horizon passes for one station can overlap (a change's pass and the sweep's). The
+- Two horizon passes for one station can overlap (sweeps on two api replicas). The
   writes are row-locked and stale-checked, and the no-op check makes the second one cheap, so
   the only cost is duplicated work.
 - Follow-ups:
   - a settings screen for the horizon (the API is there);
   - regenerating only the days a change can affect (from an exception's date, for example);
-  - tombstones, so a deleted generated item stays deleted.
+  - tombstones that leave a deleted item's slot empty, if wanted (needs the generator).

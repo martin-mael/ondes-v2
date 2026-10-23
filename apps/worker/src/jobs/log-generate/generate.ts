@@ -52,6 +52,8 @@ export interface LogGenerateDeps {
     loaded: LoadedSnapshot,
     scope: StationScope,
   ) => GeneratorExtensions | Promise<GeneratorExtensions>;
+  /** Writes one day. Default `writeGeneratedDay` (tests make it fail mid-run). */
+  writeDay?: typeof writeGeneratedDay;
 }
 
 export interface LogGenerateReport {
@@ -79,20 +81,30 @@ export async function runLogGenerate(
     ...(payload.seed ? { seed: payload.seed } : {}),
     ...(extensions ? { extensions } : {}),
   });
+  const write = deps.writeDay ?? writeGeneratedDay;
   const days: WrittenDay[] = [];
-  for (const day of generated) {
-    days.push(
-      await writeGeneratedDay(deps.db, { actor: ACTOR, scope }, day, {
-        status: payload.status,
-        keep,
-      }),
-    );
+  // Each day commits on its own. If a later one fails, what was written is announced before
+  // the error goes up: the retry finds those days unchanged and would announce nothing.
+  const announceWritten = async () => {
+    const changed = days.filter((d) => d.changed);
+    if (changed.length) {
+      await announce(deps.publish, logUpdated(scope.stationId, changed), deps.log);
+    }
+    if (days.length) {
+      await announce(deps.publish, logGenerated(scope, days, generated), deps.log);
+    }
+  };
+  try {
+    for (const day of generated) {
+      days.push(
+        await write(deps.db, { actor: ACTOR, scope }, day, { status: payload.status, keep }),
+      );
+    }
+  } catch (error) {
+    await announceWritten();
+    throw error;
   }
-  const changed = days.filter((d) => d.changed);
-  if (changed.length) await announce(deps.publish, logUpdated(scope.stationId, changed), deps.log);
-  if (days.length) {
-    await announce(deps.publish, logGenerated(scope, days, generated), deps.log);
-  }
+  await announceWritten();
   return {
     days,
     issues: generated.map((d) => ({ localDate: d.localDate, issues: d.issues })),

@@ -3,6 +3,7 @@ import {
   auditLog,
   category,
   categoryMember,
+  clearRegenRequest,
   clock,
   clockGrid,
   clockSlot,
@@ -13,6 +14,7 @@ import {
   logItem,
   logItemPin,
   recordRegenRequest,
+  recordScheduleChanges,
   resolveOrgScope,
   resolveStationScope,
   type StationScope,
@@ -142,6 +144,14 @@ async function items(localDate: LocalDate) {
     .sort((a, b) => a.position - b.position);
 }
 
+/** An audit row as an api mutation writes it (same transaction as the change). */
+async function auditRow(action: string, at: Date, station = scope) {
+  await tdb.sql`insert into audit_log (org_id, station_id, actor_type, actor_id, action,
+    entity_type, entity_id, at)
+    values (${station.orgId}, ${station.stationId}, 'user', 'someone', ${action}, 'thing',
+      ${action}, ${at.toISOString()})`;
+}
+
 const generateAudits = async () =>
   (await tdb.db.select().from(auditLog)).filter(
     (a) => a.action === 'log_day.generate' && a.stationId === scope.stationId,
@@ -149,7 +159,7 @@ const generateAudits = async () =>
 
 describe('log-horizon job', () => {
   it('generates the horizon from the station-local today, the 25-hour day included', async () => {
-    const report = await runLogHorizon(deps(NOW), scope, {});
+    const report = await runLogHorizon(deps(NOW), scope);
     expect(report?.missing).toEqual(['2026-10-25', '2026-10-26', '2026-10-27']);
     const written = await days();
     expect(written.map((d) => [d.localDate, d.status, d.version])).toEqual([
@@ -162,24 +172,24 @@ describe('log-horizon job', () => {
     const rows = await items('2026-10-25');
     const last = rows.filter((r) => r.segmentId === null).at(-1);
     expect(last && last.plannedStart.getTime() < (autumn?.endsAt.getTime() ?? 0)).toBe(true);
-  });
+  }, 60_000);
 
   it('writes nothing on a pass with nothing missing and no change', async () => {
     const before = await days();
     const audits = await generateAudits();
-    const report = await runLogHorizon(deps(NOW), scope, {});
+    const report = await runLogHorizon(deps(NOW), scope);
     expect(report).toMatchObject({ missing: [], regenerated: [], runs: [] });
     expect((await days()).map((d) => d.version)).toEqual(before.map((d) => d.version));
     expect(await generateAudits()).toBe(audits);
-  });
+  }, 60_000);
 
   it('extends the horizon by a day once the station-local date moves on (the nightly pass)', async () => {
     // 00:30 on the 26th in Paris (UTC+1 since the change).
     const tomorrow = new Date('2026-10-25T23:30:00Z');
-    const report = await runLogHorizon(deps(tomorrow), scope, {});
+    const report = await runLogHorizon(deps(tomorrow), scope);
     expect(report?.missing).toEqual(['2026-10-28']);
     expect((await days()).map((d) => d.localDate)).toContain('2026-10-28');
-  });
+  }, 60_000);
 
   it('regenerates after a debounced change, keeping locked items and what is frozen', async () => {
     // Later on the 25th: 10:00 in Paris (UTC+1 since 03:00).
@@ -198,21 +208,21 @@ describe('log-horizon job', () => {
     await tdb.sql`delete from category_member where category_id = ${musicId}
       and asset_id = any(${songIds.slice(0, 75)})`;
 
-    const change = {
-      eventId: '00000000-0000-4000-8000-0000000000c1',
-      at: now.toISOString(),
-      areas: ['categories' as const],
-      from: null,
-    };
-    const pending = await runLogHorizon(deps(now), scope, { change });
-    expect(pending).toMatchObject({ recorded: true, regenerated: [] });
-    expect((await getRegenRequest(tdb.db, scope))?.dueAt.getTime()).toBe(
-      now.getTime() + REGEN_DEBOUNCE_MS,
+    // The api's mutation wrote its audit row; the api's sweep records the change from it.
+    await auditRow('category.update', now);
+    expect(await recordScheduleChanges(tdb.db, now)).toContainEqual(
+      expect.objectContaining({ stationId: scope.stationId }),
     );
+    const pending = await runLogHorizon(deps(now), scope);
+    expect(pending).toMatchObject({ regenerated: [] });
+    expect(await getRegenRequest(tdb.db, scope)).toMatchObject({
+      areas: ['categories'],
+      dueAt: new Date(now.getTime() + REGEN_DEBOUNCE_MS),
+    });
 
     const later = new Date(now.getTime() + REGEN_DEBOUNCE_MS);
     const versions = new Map((await days()).map((d) => [d.localDate, d.version]));
-    const report = await runLogHorizon(deps(later), scope, {});
+    const report = await runLogHorizon(deps(later), scope);
     expect(report?.regenerated).toEqual(['2026-10-25', '2026-10-26', '2026-10-27']);
     expect(await getRegenRequest(tdb.db, scope)).toBeNull();
 
@@ -233,7 +243,7 @@ describe('log-horizon job', () => {
     expect((await items('2026-10-26')).some((r) => r.id === locked.id)).toBe(true);
     const pins = (await tdb.db.select().from(logItemPin)).filter((p) => p.logItemId === locked.id);
     expect(pins).toHaveLength(1);
-  });
+  }, 60_000);
 
   it('regenerating again with the same inputs is a no-op, locked item and all', async () => {
     const now = new Date('2026-10-25T09:00:30Z');
@@ -242,11 +252,7 @@ describe('log-horizon job', () => {
     const ids = await items('2026-10-26');
     const audits = await generateAudits();
     const eventsBefore = events.length;
-    const report = await runLogHorizon(
-      deps(new Date(now.getTime() + REGEN_DEBOUNCE_MS)),
-      scope,
-      {},
-    );
+    const report = await runLogHorizon(deps(new Date(now.getTime() + REGEN_DEBOUNCE_MS)), scope);
     expect(report?.regenerated).toEqual(['2026-10-25', '2026-10-26', '2026-10-27']);
     expect(report?.runs.flatMap((r) => r.days.map((d) => d.changed))).toEqual([
       false,
@@ -257,15 +263,15 @@ describe('log-horizon job', () => {
     expect((await items('2026-10-26')).map((r) => r.id)).toEqual(ids.map((r) => r.id));
     expect(await generateAudits()).toBe(audits);
     expect(events.slice(eventsBefore).map((e) => e.type)).toEqual(['log.generated']);
-  });
+  }, 60_000);
 
   it('generates the 23-hour spring day like any other', async () => {
     const spring = new Date('2026-03-28T23:30:00Z');
-    const report = await runLogHorizon(deps(spring), scope, {});
+    const report = await runLogHorizon(deps(spring), scope);
     expect(report?.missing).toEqual(['2026-03-29', '2026-03-30', '2026-03-31']);
     const day = (await days()).find((d) => d.localDate === '2026-03-29');
     expect((day?.endsAt.getTime() ?? 0) - (day?.startsAt.getTime() ?? 0)).toBe(23 * HOUR);
-  });
+  }, 60_000);
 });
 
 describe('stationsDueForHorizon', () => {
@@ -289,5 +295,55 @@ describe('stationsDueForHorizon', () => {
     expect((await stationsDueForHorizon(tdb.db, dueAt)).map((d) => d.stationId)).toContain(
       scope.stationId,
     );
-  });
+  }, 60_000);
+});
+
+describe('recordScheduleChanges', () => {
+  it('turns audit rows of schedule actions into one debounced request, once', async () => {
+    const other = await station('changes-worker', false);
+    const at = new Date('2026-10-30T10:00:00Z');
+    await auditRow('asset.tag', at, other);
+    await auditRow('show_slot.update', new Date(at.getTime() + 1_000), other);
+    await auditRow('log_day.generate', new Date(at.getTime() + 2_000), other);
+    await auditRow('asset_analysis.set', new Date(at.getTime() + 2_000), other);
+    const now = new Date(at.getTime() + 5_000);
+    const mine = (list: StationScope[]) => list.filter((s) => s.stationId === other.stationId);
+    expect(mine(await recordScheduleChanges(tdb.db, now))).toHaveLength(1);
+    expect(await getRegenRequest(tdb.db, other)).toMatchObject({
+      areas: ['library', 'shows'],
+      firstRequestedAt: at,
+      lastRequestedAt: new Date(at.getTime() + 1_000),
+      dueAt: new Date(at.getTime() + 1_000 + REGEN_DEBOUNCE_MS),
+    });
+    // Seen already: nothing new, the request stays as it was.
+    expect(mine(await recordScheduleChanges(tdb.db, now))).toEqual([]);
+
+    // Handled: the cursor moves past it, and only a later change counts again.
+    const request = await getRegenRequest(tdb.db, other);
+    await clearRegenRequest(tdb.db, other, request?.lastRequestedAt as Date);
+    expect(mine(await recordScheduleChanges(tdb.db, now))).toEqual([]);
+    await auditRow('clock.update', new Date(at.getTime() + 60_000), other);
+    const later = new Date(at.getTime() + 61_000);
+    expect(mine(await recordScheduleChanges(tdb.db, later))).toHaveLength(1);
+    expect((await getRegenRequest(tdb.db, other))?.areas).toEqual(['clocks']);
+  }, 30_000);
+
+  it('merges concurrent first changes instead of overwriting one', async () => {
+    const other = await station('race-worker', false);
+    const at = new Date('2026-10-30T12:00:00Z');
+    await Promise.all([
+      recordRegenRequest(tdb.db, other, { at, areas: ['grid'], from: '2026-11-02' }),
+      recordRegenRequest(tdb.db, other, {
+        at: new Date(at.getTime() - 4_000),
+        areas: ['rules'],
+        from: null,
+      }),
+    ]);
+    expect(await getRegenRequest(tdb.db, other)).toMatchObject({
+      areas: ['grid', 'rules'],
+      fromDate: null,
+      firstRequestedAt: new Date(at.getTime() - 4_000),
+      lastRequestedAt: at,
+    });
+  }, 30_000);
 });

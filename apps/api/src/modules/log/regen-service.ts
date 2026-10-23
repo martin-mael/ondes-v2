@@ -171,9 +171,9 @@ export async function previewRegen(
 }
 
 /**
- * Applies a regeneration: checks the range and the versions a preview saw, audits the request
- * (`log_day.regenerate`), then queues one `log-generate` job per 14 days. The jobs write the
- * days (`log_day.generate`) and publish `log.updated` (cause `generate`).
+ * Applies a previewed regeneration: checks the range and the versions the preview saw, audits
+ * the request (`log_day.regenerate`), then queues a `log-generate` job. The job writes the days
+ * (`log_day.generate`) and publishes `log.updated` (cause `generate`).
  */
 export async function applyRegen(
   deps: RegenServiceDeps & { jobs: JobPublisher },
@@ -184,16 +184,20 @@ export async function applyRegen(
   const { scope } = ctx;
   await checkRange(deps.db, scope, request.from, now);
   const dates = dateRange(request.from, request.to);
-  if (request.expectedVersions) {
-    const existing = await existingLogDays(deps.db, scope, dates);
-    const changed = Object.entries(request.expectedVersions).filter(
-      ([date, version]) => (existing.get(date)?.version ?? null) !== version,
-    );
-    if (changed.length) {
-      throw new HttpError(409, 'log_regen_stale', 'The log changed since the preview', {
-        localDates: changed.map(([date]) => date),
-      });
-    }
+  const unseen = dates.filter((date) => !(date in request.expectedVersions));
+  if (unseen.length) {
+    throw new HttpError(422, 'log_regen_unpreviewed', 'Preview these days before regenerating', {
+      localDates: unseen,
+    });
+  }
+  const existing = await existingLogDays(deps.db, scope, dates);
+  const changed = dates.filter(
+    (date) => (existing.get(date)?.version ?? null) !== request.expectedVersions[date],
+  );
+  if (changed.length) {
+    throw new HttpError(409, 'log_regen_stale', 'The log changed since the preview', {
+      localDates: changed,
+    });
   }
   const settings = await getRegenSettings(deps.db, scope);
   await withAudit(deps.db, ctx, async (_tx, audit) => {

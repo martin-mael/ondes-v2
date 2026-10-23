@@ -3,12 +3,11 @@ import {
   existingLogDays,
   getRegenRequest,
   getRegenSettings,
-  recordRegenRequest,
   type StationScope,
   stationTimezone,
 } from '@ondes/db';
 import { consecutiveChunks, horizonDates, horizonWork } from '@ondes/scheduling';
-import { LOG_GENERATE_MAX_DAYS, type LocalDate, type LogHorizonJobPayload } from '@ondes/shared';
+import { LOG_GENERATE_MAX_DAYS, type LocalDate } from '@ondes/shared';
 import {
   type LogGenerateDeps,
   type LogGenerateReport,
@@ -16,16 +15,14 @@ import {
 } from '../log-generate/generate.ts';
 
 // One `log-horizon` pass for a station (#101, ADR 0030):
-// 1. with `change`, record the schedule change (debounced: it's due 30 s after the last
-//    change, 5 min after the first at most);
-// 2. generate the horizon's days that have no log yet (the nightly extension: a new day
+// 1. generate the horizon's days that have no log yet (the nightly extension: a new day
 //    enters the horizon at local midnight);
-// 3. once a recorded change is due, regenerate the horizon from its first date on, then clear
-//    it (unless another change came in meanwhile).
-// The api's sweep enqueues a pass for every station that needs one; the trigger, one per change.
+// 2. once a recorded schedule change is due (the api's sweep records them from the audit log,
+//    debounced: 30 s after the last change, 5 min after the first at most), regenerate the
+//    horizon from its first date on, then clear it (unless another change came in meanwhile).
+// The api's sweep enqueues a pass for every station that needs one.
 
 export interface LogHorizonReport {
-  recorded: boolean;
   missing: LocalDate[];
   regenerated: LocalDate[];
   runs: LogGenerateReport[];
@@ -34,16 +31,8 @@ export interface LogHorizonReport {
 export async function runLogHorizon(
   deps: LogGenerateDeps,
   scope: StationScope,
-  payload: Pick<LogHorizonJobPayload, 'change'>,
 ): Promise<LogHorizonReport | null> {
   const now = deps.now?.() ?? new Date();
-  if (payload.change) {
-    await recordRegenRequest(deps.db, scope, {
-      at: new Date(payload.change.at),
-      areas: payload.change.areas,
-      from: payload.change.from,
-    });
-  }
   const timeZone = await stationTimezone(deps.db, scope);
   if (!timeZone) return null;
   const settings = await getRegenSettings(deps.db, scope);
@@ -69,7 +58,6 @@ export async function runLogHorizon(
   }
   if (due) await clearRegenRequest(deps.db, scope, due.lastRequestedAt);
   return {
-    recorded: payload.change !== undefined,
     missing: work.missing,
     regenerated: work.regenerate,
     runs,

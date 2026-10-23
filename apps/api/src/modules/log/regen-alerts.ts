@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
-import { type Db, resolveStationScope, type StationScope, stationTimezone } from '@ondes/db';
+import {
+  alert,
+  type Db,
+  resolveStationScope,
+  type StationScope,
+  stationTimezone,
+  whereStation,
+} from '@ondes/db';
 import { alertedIssues, generationAlertKey } from '@ondes/scheduling';
 import {
   alertTypes,
@@ -8,8 +15,8 @@ import {
   localDateOf,
   type RealtimeEvent,
 } from '@ondes/shared';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
-import { listAlerts } from '../alerts/repo.ts';
 import type { AlertService } from '../alerts/service.ts';
 
 // The generator's issues as alerts (#101, ADR 0030; ADR 0026 left it to the caller): one
@@ -86,21 +93,24 @@ export function createRegenAlerts(deps: RegenAlertsDeps) {
     );
   }
 
-  /** Resolves the station's alerts for days that are over. */
+  /** Resolves the station's alerts for days that are over, however many there are. */
   async function resolvePast(scope: StationScope) {
     const timeZone = await stationTimezone(deps.db, scope);
     if (!timeZone) return;
     const today = localDateOf(now(), timeZone);
-    const open = await listAlerts(deps.db, scope, {
-      status: 'open',
-      type: alertTypes.logGenerationIssues,
-      limit: 200,
-    });
-    for (const alert of open.items) {
-      const date = alert.details.localDate;
-      if (typeof date === 'string' && date < today) {
-        await deps.alerts.resolve(scope, alert.dedupeKey, { reason: 'day_over' });
-      }
+    const open = await deps.db
+      .select({ dedupeKey: alert.dedupeKey })
+      .from(alert)
+      .where(
+        and(
+          whereStation(alert, scope),
+          eq(alert.type, alertTypes.logGenerationIssues),
+          isNull(alert.resolvedAt),
+          sql`${alert.details}->>'localDate' < ${today}`,
+        ),
+      );
+    for (const row of open) {
+      await deps.alerts.resolve(scope, row.dedupeKey, { reason: 'day_over' });
     }
   }
 
