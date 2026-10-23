@@ -197,15 +197,36 @@ export interface ResolvedPromoPlacement extends PromoPlacementPlan {
   plannedAt: Date;
 }
 
-const sameItem = (planned: PlannedItem, item: GeneratedItem) =>
+/**
+ * Back-timing (#46) may move an item's `start` earlier when it drops an elastic fill before it,
+ * so A is matched by origin and asset, at the start nearest to where it was planned (within
+ * {@link MATCH_WINDOW_MS}: the same clock slot an hour away is another item).
+ */
+const MATCH_WINDOW_MS = 10 * 60_000;
+
+const sameSlot = (planned: PlannedItem, item: GeneratedItem) =>
   item.keptId === null &&
   item.assetId === planned.assetId &&
-  item.start.getTime() === planned.start.getTime() &&
   item.origin.type === planned.origin.type &&
   (planned.origin.type !== 'clock' ||
     (item.origin.type === 'clock' &&
       item.origin.clockId === planned.origin.clockId &&
       item.origin.slotIndex === planned.origin.slotIndex));
+
+function findPlanned(items: readonly GeneratedItem[], planned: PlannedItem): number {
+  let best = -1;
+  let bestGap = MATCH_WINDOW_MS;
+  for (const [i, item] of items.entries()) {
+    if (!sameSlot(planned, item)) continue;
+    const gap = Math.abs(item.start.getTime() - planned.start.getTime());
+    if (gap <= bestGap) {
+      best = i;
+      bestGap = gap;
+      if (gap === 0) break;
+    }
+  }
+  return best;
+}
 
 /**
  * Pairs the day's placements with the generated items: A is the item planned as `after`, B the
@@ -221,7 +242,7 @@ export function resolvePromoPlacements(
   const issues: PromoIssue[] = [];
   for (const p of placements) {
     if (p.at.getTime() < from || p.at.getTime() >= to) continue;
-    const fromPosition = day.items.findIndex((item) => sameItem(p.after, item));
+    const fromPosition = findPlanned(day.items, p.after);
     const b = fromPosition >= 0 ? day.items[fromPosition + 1] : undefined;
     if (!b || b.kind !== SONG || !b.assetId || b.segmentId !== null) {
       issues.push({

@@ -52,7 +52,7 @@ generator's (`null`: reported `vt_placeholder`). For a pool slot the hook:
    the run is planned as if it weren't there. It records the placement instead.
 
 After each day, `resolvePromoPlacements` pairs the placements with the generated items: A by
-origin, start and asset, B as the next top-level item, which must be a song too. The worker job
+origin and asset at the nearest start within 10 minutes (back-timing, #46, may move it), B as the next top-level item, which must be a song too. The worker job
 writes them `pending` (`writePromoPlacements`, audited `log_day.promos`) right after the day.
 Placements that can't be made are reported, not errors: `no_song_before`, `transition_taken`,
 `no_eligible_promo`, `no_song_after`, counted in the job log as `promo_*`.

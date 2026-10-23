@@ -312,3 +312,29 @@ describe('the placeVoiceTrack hook in the generator', () => {
     expect(placer.placements).toHaveLength(10);
   });
 });
+
+describe('resolvePromoPlacements after back-timing', () => {
+  it('still finds A when its start moved (a fill before it was removed)', () => {
+    const snap = fixtureSnapshot({ songs: 600, clocks: [promoClock()] });
+    const placer = createPromoPlacer(snapshot([promo(1)]), { seed: snap.stationId });
+    const day = generateDay(snap, DATE, {
+      extensions: { placeVoiceTrack: placer.placeVoiceTrack },
+    });
+    const before = resolvePromoPlacements(day, placer.placements).placed;
+    // Every item 30 s earlier than planned, as after a removed fill.
+    const moved = {
+      ...day,
+      items: day.items.map((i) => ({ ...i, start: new Date(i.start.getTime() - 30_000) })),
+    };
+    const after = resolvePromoPlacements(moved, placer.placements).placed;
+    expect(after.map((p) => p.fromPosition)).toEqual(before.map((p) => p.fromPosition));
+    // The same slot an hour away is another item: no match.
+    const far = {
+      ...day,
+      items: day.items.map((i) => ({ ...i, start: new Date(i.start.getTime() - 3_600_000) })),
+    };
+    expect(resolvePromoPlacements(far, placer.placements).placed.length).toBeLessThan(
+      before.length,
+    );
+  });
+});
