@@ -65,9 +65,13 @@ The as-run is append-only and keeps snapshots of the plan (`planned_start`,
   segment or part ids (rule 1). A segment reported as one item covers its parts. A segment
   whose parts aired one by one reports each part that didn't (`missed`, `replaced` or
   `pending`); a segment nothing aired for is one row.
-- **Live (#64).** Expected: one `source = live` entry per session (connect to disconnect), with
-  `liveSessionId`. A live entry per metadata change also works (each takes the slot it
-  overlaps). Extra fields (DJ name, show) would only add to what the row shows.
+- **Live (#64, ADR 0027).** One `source = live` entry per live session and input, with
+  `liveSessionId`: from when the gate put the DJ on air (not the connection) until the next item
+  took the air, return jingle included. DJ metadata updates don't add entries; a handover does
+  (a new session), and both entries take the same live slot (live slots get no `repeat`). The
+  DJ's name and why the session ended (`live_session.end_reason`) come from #64's
+  `live_session` table, joined on `liveSessionId`: a follow-up once #64 is merged, with no
+  change to the matching.
 
 ## Consequences
 - The contract adds `asRunOverlay*` schemas to `contracts/asrun.ts` (additive).
