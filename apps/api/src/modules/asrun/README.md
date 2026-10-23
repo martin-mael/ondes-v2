@@ -57,6 +57,13 @@ regulators can ask years later, see `docs/research/07-compliance-royalties-loggi
 - `from` + `to` (≤ 31 days), or `date`: the station-local day (23–25 h around DST);
 - `assetId`, `source`; `order=asc|desc`; `limit` (≤ 500), `cursor` (`nextCursor`).
 
+`GET /api/v1/stations/:stationId/asrun/overlay?date` (`log:read`, #53): the station-local day's
+plan with what aired laid over it, one row per entry plus one per plan item that never aired:
+`aired`, `replaced`, `fallback`, `missed`, `pending`, `live`, `safety`, `emergency`,
+`unplanned`, `transition` (`asRunOverlaySchema`). Matching (`overlay.ts`, pure): by log item id,
+live entries by the live slot they overlap, rendered islands (#57) as the transition between
+their items, the rest off-plan. Decisions: ADR 0029.
+
 ## For later consumers (`index.ts`)
 - `lastAiredByAsset(db, scope, assetIds, before)`, `lastAiredByArtist(db, scope, artists, since, before)` (#38);
 - `getOnAir(db, scope)` (#74);
