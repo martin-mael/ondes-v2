@@ -303,12 +303,15 @@ auto =
 #
 # Node attaches the voices to the queue entry they follow (`overlay` on POST /v1/queue or
 # /v1/segment, kept against its last request). When that request goes on air (as-run
-# below), each voice is started `at` seconds later. Voices carry no metadata: they are
+# below), each voice's file is resolved right away, off the clock thread, and the voice
+# starts `at` seconds later in stream time (the clock's own, checked every frame: wall-clock
+# timers drift from the audio by the output's latency). Voices carry no metadata: they are
 # part of the transition, not an item on air, so the as-run never sees them. A skip
 # cancels the voices of the item it ends.
 #
-# Threads: harbor handlers write `voice_overlays` (push) and `voice_epoch` (skip), the
-# clock thread takes from `voice_overlays` (on air), scheduled tasks write `voice_ducks`.
+# Threads: harbor handlers write `voice_overlays` (push) and `voice_epoch` (skip); the
+# clock thread takes from `voice_overlays` (on air) and alone writes `voice_due` and
+# `voice_ducks`; a resolver task only fills its own voice's `request` (or `failed`).
 
 voice_queue = request.queue(id="voice")
 voice_overlays =
@@ -334,13 +337,17 @@ voice_overlays =
         ]
     )
   )
-voice_ducks = ref([])
 voice_epoch = ref(0)
+# Voices waiting for their (stream) time, and for their file to be resolved.
+voice_due = ref([])
+# (end, gain) of the voices playing, in stream time.
+voice_ducks = ref([])
 voice_duck = ref(1.)
 
 # Lowest duck of the voices playing, reached smoothly (about 100 ms) to avoid zipper noise.
 def voice_duck_gain() =
-  target = list.fold(fun (a, d) -> if d < a then d else a end, 1., voice_ducks())
+  target =
+    list.fold(fun (a, d) -> if snd(d) < a then snd(d) else a end, 1., voice_ducks())
   voice_duck := voice_duck() + (target - voice_duck()) * 0.25
   voice_duck()
 end
@@ -354,12 +361,47 @@ voices =
     amplify(override="liq_amplify", 1., voice_queue)
   )
 # override=null: the duck must not read liq_amplify again (each request already applied its own).
-auto =
+overlay =
   add(
     id="overlay",
     normalize=false,
     [amplify(id="duck", override=null, {voice_duck_gain()}, auto), voices]
   )
+
+# Every frame: start the voices that are due and resolved (a voice whose file is still
+# resolving waits for it), drop the cancelled and failed ones, end the ducks that are over.
+# A voice is pushed one frame early: the queue starts it on the next frame (measured).
+overlay.on_frame(
+  synchronous=true,
+  fun () ->
+    begin
+      now = overlay.time() + settings.frame.duration()
+      voice_ducks := list.filter(fun (d) -> fst(d) > now, voice_ducks())
+      def settled(v) =
+        v.failed() or v.epoch != voice_epoch() or (v.due <= now and null.defined(v.request()))
+      end
+      list.iter(
+        fun (v) ->
+          if
+            null.defined(v.request())
+          then
+            r = null.get(v.request())
+            if
+              v.epoch == voice_epoch() and not v.failed()
+            then
+              voice_queue.push(r)
+              voice_ducks := [...voice_ducks(), (now + v.duration, v.duck)]
+            else
+              request.destroy(r)
+            end
+          end,
+        list.filter(settled, voice_due())
+      )
+      voice_due := list.filter(fun (v) -> not settled(v), voice_due())
+    end
+)
+
+auto = overlay
 
 # ---------------------------------------------------------------------------------------
 # Live input (live_input setting). Auth: Node's webhook if configured (it checks each DJ's
@@ -504,10 +546,8 @@ def voice_annotation(k, v, unit) =
   end
 end
 
-# Starts one voice, unless a skip came since its item went on air. It ducks the music
-# for its `duration`.
-def start_voice(
-  epoch,
+# Resolves one voice's file, off the clock thread, so opening it never holds the audio up.
+def prepare_voice(
   (
     v :
       {
@@ -519,29 +559,29 @@ def start_voice(
         amplify_db: float?,
         duck_db: float?
       }
-  )
+  ),
+  entry
 ) =
+  annotations =
+    [
+      ...voice_annotation("liq_cue_in", v.cue_in, ""),
+      ...voice_annotation("liq_cue_out", v.cue_out, ""),
+      ...voice_annotation("liq_amplify", v.amplify_db, " dB")
+    ]
+  r = request.create("annotate:#{string.concat(separator=',', annotations)}:#{v.uri}")
   if
-    epoch == voice_epoch()
+    request.resolve(timeout=5., r)
   then
-    annotations =
-      [
-        ...voice_annotation("liq_cue_in", v.cue_in, ""),
-        ...voice_annotation("liq_cue_out", v.cue_out, ""),
-        ...voice_annotation("liq_amplify", v.amplify_db, " dB")
-      ]
-    voice_queue.push(
-      request.create("annotate:#{string.concat(separator=',', annotations)}:#{v.uri}")
-    )
-    duck = lin_of_dB(null.get(default=0., v.duck_db))
-    voice_ducks := [...voice_ducks(), duck]
-    ignore(
-      thread.run(delay=v.duration, fun () -> voice_ducks := list.remove(duck, voice_ducks()))
-    )
+    entry.request := r
+  else
+    log.important(label="voices", "Cannot resolve voice #{v.uri}")
+    request.destroy(r)
+    entry.failed := true
   end
 end
 
-# The request `m` describes just went on air: start the voices kept against it.
+# The request `m` describes just went on air (clock thread): the voices kept against it are
+# due `at` seconds from now, in stream time; their files are resolved meanwhile.
 def schedule_voices(m) =
   rid = if list.assoc.mem("rid", m) then m["rid"] else "" end
   if
@@ -550,13 +590,22 @@ def schedule_voices(m) =
     found = list.assoc(rid, voice_overlays())
     voice_overlays := list.assoc.remove(rid, voice_overlays())
     epoch = voice_epoch()
+    t0 = overlay.time()
     list.iter(
       fun (v) ->
-        ignore(
-          thread.run(
-            delay=if v.at > 0. then v.at else 0. end, fun () -> start_voice(epoch, v)
-          )
-        ),
+        begin
+          entry =
+            {
+              due=t0 + (if v.at > 0. then v.at else 0. end),
+              epoch=epoch,
+              duration=v.duration,
+              duck=lin_of_dB(null.get(default=0., v.duck_db)),
+              request=ref((null : request?)),
+              failed=ref(false)
+            }
+          voice_due := [...voice_due(), entry]
+          ignore(thread.run(fast=false, fun () -> prepare_voice(v, entry)))
+        end,
       found
     )
   end

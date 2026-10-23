@@ -527,14 +527,22 @@ async function main() {
       if (amplitudeAt(output, 220, i, win) > 0.03) fStart = i;
       else if (fStart >= 0) break;
     }
+    // F starts from silence: its first loud sample is its onset, to the sample.
+    for (let i = Math.max(0, fStart - win); i < fStart + win; i++) {
+      if (Math.abs(output[i] ?? 0) > 0.02) {
+        fStart = i;
+        break;
+      }
+    }
     const at = (seconds: number) => fStart + Math.round(seconds * SAMPLE_RATE);
     const span = Math.round(0.5 * SAMPLE_RATE);
     const music = (t: number) => amplitudeAt(output, 220, at(t), span);
     const voice = (t: number) => amplitudeAt(output, 1000, at(t), span);
     // The voice's onset: first 10 ms window past half its level.
     let vOnset = -1;
-    for (let i = at(2); i < at(4.5); i += Math.round(0.01 * SAMPLE_RATE)) {
-      if (amplitudeAt(output, 1000, i, Math.round(0.01 * SAMPLE_RATE)) > 0.1) {
+    const step = Math.round(0.005 * SAMPLE_RATE);
+    for (let i = at(2); i < at(4.5); i += step) {
+      if (amplitudeAt(output, 1000, i, 2 * step) > 0.1) {
         vOnset = (i - fStart) / SAMPLE_RATE;
         break;
       }
@@ -545,8 +553,9 @@ async function main() {
     );
     check(fStart >= 0, 'fallback: F airs');
     check(
-      Math.abs(vOnset - 3) <= 0.1,
-      `fallback: the voice starts 3 s into F, give or take 100 ms (${vOnset.toFixed(3)} s)`,
+      // Frame-granular (one 40 ms frame), plus the 10 ms detection window.
+      Math.abs(vOnset - 3) <= 0.06,
+      `fallback: the voice starts 3 s into F, within a frame (${vOnset.toFixed(3)} s)`,
     );
     check(
       voice(1.2) < 0.01 && Math.abs(voice(3.8) - 0.2) < 0.03 && voice(5.4) < 0.01,

@@ -52,13 +52,18 @@ the head already on air), the items air as usual with the standard crossfade, an
 - The feeder computes them from the derived spec: a voice's start on the segue axis (0 = A's
   end), plus the length of A as pushed; the duck is A's envelope at the voice's start (B's after
   A's end), floored at −40 dB.
-- The template keeps the overlay against the entry's last request and starts each voice when
-  that request goes on air (the as-run callback), on a separate `request.queue` mixed after the
-  crossfade: `add([amplify(duck, auto), voices])`. The duck ramps over about 100 ms. Voices carry
+- The template keeps the overlay against the entry's last request. When that request goes on
+  air (the as-run callback), each voice's file is resolved right away, off the clock thread, and
+  the voice is due `at` seconds later **in stream time** (`overlay.time()`, checked every frame):
+  wall-clock timers were 110–180 ms late against the audio. It is pushed one frame early, since
+  the queue starts a pushed request on the next frame. Voices play on a separate `request.queue`
+  mixed after the crossfade: `add([amplify(duck, auto), voices])`. The duck ramps over about
+  100 ms. Only the clock thread writes the due list and the ducks (no mutex in Liquidsoap 2.4);
+  a resolver task only fills its own voice's request. Voices carry
   no metadata (`metadata.map(strip=true)`), so the as-run never sees them as items. A skip
   cancels the voices of the item it ends. The duck's `amplify` has `override=null`: the default
   (`liq_amplify`) would apply every request's gain a second time.
-- Degraded, by design (spike #12): frame-granular timing (measured: the voice 60 ms late), one
+- Degraded, by design (spike #12): frame-granular timing (measured: the voice 17–37 ms late), one
   duck level per voice instead of the envelope, B's own `in` lane ignored. It is not "what you
   preview is what airs"; it is "the voice airs". Voices whose file isn't cached are fetched
   urgently and skipped until they are.
