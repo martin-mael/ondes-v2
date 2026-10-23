@@ -329,6 +329,46 @@ describe('library page', () => {
     }
   });
 
+  it('edits the asset’s tags in the drawer, and asks before closing with unsaved tags', async () => {
+    let put: unknown;
+    const { screen, user, history } = renderApp(
+      `/stations/${stationId}/library?asset=${ids[0]}`,
+      routes('programmer', {
+        [`PUT /stations/${stationId}/assets/${ids[0]}/tags`]: (body) => {
+          put = body;
+          return [200, { tags: [] }];
+        },
+      }),
+    );
+    const tags = await screen.findByRole('region', { name: 'Tags' });
+    await user.click(within(tags).getByRole('button', { name: 'Edit tags' }));
+    // The current set, editable.
+    const first = within(tags).getByRole('combobox', { name: 'Tags: Value' });
+    expect(first).toHaveValue('house');
+    await user.click(within(tags).getByRole('button', { name: 'Add a tag' }));
+    const values = within(tags).getAllByRole('combobox', { name: 'Tags: Value' });
+    await user.type(values[1] as HTMLElement, 'french touch');
+    const keys = within(tags).getAllByRole('combobox', { name: 'Tags: Tags' });
+    await user.selectOptions(keys[1] as HTMLElement, 'style');
+
+    await user.keyboard('{Escape}');
+    const ask = await screen.findByRole('dialog', { name: 'Leave without saving?' });
+    await user.click(within(ask).getByRole('button', { name: 'Stay' }));
+    expect(history.location.search).toContain(`asset=${ids[0]}`);
+
+    await user.click(within(tags).getByRole('button', { name: 'Save tags' }));
+    await waitFor(() =>
+      expect(put).toEqual({
+        tags: [
+          { key: 'genre', value: 'house' },
+          { key: 'style', value: 'french touch' },
+        ],
+      }),
+    );
+    expect(await screen.findByText('Tags saved.')).toBeInTheDocument();
+    expect(await within(tags).findByRole('button', { name: 'Edit tags' })).toBeInTheDocument();
+  });
+
   it('shows the cue points when no slot replaces them', async () => {
     const { screen } = renderApp(
       `/stations/${stationId}/library?asset=${ids[0]}`,
@@ -336,6 +376,8 @@ describe('library page', () => {
     );
     const cues = await screen.findByRole('region', { name: 'Cue points' });
     expect(cues).toHaveTextContent('0:01.000auto');
+    // Read-only for a presenter: no tag editing.
+    expect(screen.queryByRole('button', { name: 'Edit tags' })).toBeNull();
     expect(cues).toHaveTextContent('0:10.000manual');
   });
 

@@ -234,7 +234,7 @@ function BulkDialog({
 
 // --- Tags --------------------------------------------------------------------------------
 
-interface TagRow {
+export interface TagRow {
   key: TagKey;
   value: string;
 }
@@ -300,14 +300,17 @@ function TagsForm({
   );
 }
 
-function TagRows({
+export function TagRows({
   label,
+  hideLegend = false,
   rows,
   onChange,
   listId,
   t,
 }: {
   label: string;
+  /** The legend for screen readers only (a heading already names the rows). */
+  hideLegend?: boolean;
   rows: TagRow[];
   onChange: (rows: TagRow[]) => void;
   listId: string;
@@ -317,7 +320,7 @@ function TagRows({
     onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   return (
     <fieldset className="flex flex-col gap-2">
-      <legend className="mb-1 font-medium">{label}</legend>
+      <legend className={hideLegend ? 'sr-only' : 'mb-1 font-medium'}>{label}</legend>
       {rows.map((row, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: rows have no identity of their own.
         <div key={i} className="flex gap-2">
