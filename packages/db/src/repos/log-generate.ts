@@ -82,7 +82,9 @@ const OLDER_MARGIN_MS = 30 * DAY;
 /**
  * The episode a rerun occurrence plays again (#48). The default plays the show's latest
  * episode with audio that already went out (the `latest_episode` strategy, the same rule as
- * #47's fallback); the integration passes #48's resolver once its slot fields exist.
+ * #47's fallback). Once #48's slot fields are on main, the integration passes its resolver:
+ * `(db, scope, o) => resolveRerun(db, scope, { slotId: o.slotId, occurrenceDate: o.date })`
+ * (`packages/db/src/repos/reruns.ts`), which honours `rerun_strategy` / `rerun_episode_id`.
  */
 export type RerunResolver = (
   db: Executor,
@@ -447,7 +449,7 @@ async function loadOccurrences(
   }));
   const expanded = expandSlots(slots, range, timeZone);
   const premieres = await premieresOf(db, scope, expanded);
-  const rerun = options.rerun ?? latestAiredEpisode;
+  const rerun = options.rerun ?? latestEpisodeRerun;
   const out: GeneratorOccurrence[] = [];
   for (const o of expanded) {
     let episodeRow: EpisodeRow | null = null;
@@ -523,7 +525,7 @@ async function episodeById(db: Executor, scope: StationScope, id: string) {
  * The default rerun: the show's highest-numbered episode with audio that already went out
  * (aired, unscheduled, or premiered on an earlier date), like #47's `latest_episode` fallback.
  */
-export const latestAiredEpisode: RerunResolver = async (db, scope, occurrence) => {
+export const latestEpisodeRerun: RerunResolver = async (db, scope, occurrence) => {
   const [row] = await db
     .select({ episodeId: episode.id })
     .from(episode)
