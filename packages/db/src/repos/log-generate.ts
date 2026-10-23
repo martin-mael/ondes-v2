@@ -59,6 +59,7 @@ import { clock, clockGrid, clockGridCell, clockGridOverride, clockSlot } from '.
 import { logItemFallback } from '../schema/episode-check.ts';
 import { asset, assetAnalysis, assetCues, assetTag, tag } from '../schema/library.ts';
 import { logDay, logItem } from '../schema/log.ts';
+import { promoPlacement } from '../schema/promos.ts';
 import { category, categoryMember, rotationRules } from '../schema/rotation.ts';
 import { segue } from '../schema/segues.ts';
 import { episode, show, showSlot, showSlotException } from '../schema/shows.ts';
@@ -324,7 +325,7 @@ function toSlot(row: typeof clockSlot.$inferSelect): ClockSlot {
     ...(['category', 'jingle', 'fill', 'vt'].includes(row.kind)
       ? { categoryId: row.categoryId }
       : {}),
-    ...(row.kind === 'vt' ? { mode: row.vtMode } : {}),
+    ...(row.kind === 'vt' ? { mode: row.vtMode, poolId: row.poolId } : {}),
     ...(row.kind === 'marker'
       ? { timing: row.timing, offsetMs: row.offsetMs, capMs: row.capMs }
       : {}),
@@ -654,7 +655,8 @@ async function previousEnd(db: Executor, scope: StationScope, dayStart: Date) {
 
 /**
  * The items of the days being regenerated that survive with their ids: locked ones, both ends
- * of every segue (new ids would detach it, ADR 0017), those with a fallback mark (ADR 0022).
+ * of every segue (new ids would detach it, ADR 0017) but a promo's untouched default segue
+ * (ADR 0032), those with a fallback mark (ADR 0022).
  * A kept segment keeps its parts.
  */
 async function loadKept(
@@ -707,6 +709,11 @@ async function keepMarks(
             and(
               whereStation(segue, scope),
               or(inArray(segue.fromItemId, ids), inArray(segue.toItemId, ids)),
+              // A promo's default segue (#60, ADR 0032) doesn't pin its songs: regenerating
+              // places the promos again. Edited in the segue editor, it is `manual` and does.
+              sql`not (${segue.origin} = 'auto' and exists (
+                select 1 from ${promoPlacement} where ${promoPlacement.segueId} = ${segue.id}
+              ))`,
             ),
           ),
         db

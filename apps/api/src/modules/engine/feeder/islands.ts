@@ -6,6 +6,7 @@ import {
   type LogItem,
   PLAYOUT_SAMPLE_RATE,
   playoutPath,
+  validThroughout,
 } from '@ondes/shared';
 import type { SkipReason } from './plan.ts';
 import {
@@ -48,6 +49,8 @@ export type IslandLayoutInput = {
   locked: ReadonlySet<string>;
   /** Engine-side cache root. */
   engineRoot?: string | undefined;
+  /** The feeder's clock: a voice is checked against its validity from then on (#60). */
+  nowMs?: number | undefined;
 };
 
 export type FeedChain = {
@@ -106,6 +109,12 @@ export function layoutIslands(input: IslandLayoutInput): IslandLayout {
   };
 
   for (const island of sorted) {
+    // A voice that may not air then (a promo past its kill date, #60): the transition airs as
+    // a plain crossfade, without the island or its overlay.
+    if (voiceOutOfValidity(island, input, index)) {
+      flush();
+      continue;
+    }
     const items = coveredItems(island, input, index);
     if (items && chainable(island, items, input)) {
       const last = run.at(-1);
@@ -229,6 +238,29 @@ function buildChain(
     transitions,
     fileIds: [...fileIds],
   };
+}
+
+/**
+ * Whether a voice of the island would air outside its asset's validity. It airs around the
+ * transition: from one voice length before the head item's planned end (or now, if later) to one
+ * after it, the same margin the generator checks promos with.
+ */
+function voiceOutOfValidity(
+  island: FeedIsland,
+  input: IslandLayoutInput,
+  index: ReadonlyMap<string, number>,
+): boolean {
+  const head = input.items[index.get(island.plan.head.itemId) ?? -1];
+  if (!head) return false;
+  const at = Math.max(
+    input.nowMs ?? -Infinity,
+    Date.parse(head.plannedStart) + head.plannedDurationMs,
+  );
+  return voicesOf(island, input).some(({ source, media }) => {
+    if (!media?.validity) return false;
+    const length = samplesToMs(source.to - source.from);
+    return !validThroughout(media.validity, new Date(at - length), new Date(at + length));
+  });
 }
 
 /** The island's sources that aren't one of its log items: its voices. */

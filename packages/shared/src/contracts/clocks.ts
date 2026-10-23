@@ -80,8 +80,13 @@ export const vtSlotSchema = z.object({
   kind: z.literal('vt'),
   ...slotBase,
   mode: vtSlotModeSchema.default('placeholder'),
-  /** `promo` only: the promo VT pool. */
+  /** `promo` only, without `poolId`: a category of `vt` assets, picked like music. */
   categoryId: ref,
+  /**
+   * `promo` only: the VT pool (#60) whose promos the generator voices over the transition
+   * between the songs around the slot. Takes precedence over `categoryId`.
+   */
+  poolId: ref,
 });
 export const jingleSlotSchema = z.object({
   kind: z.literal('jingle'),
@@ -123,10 +128,15 @@ export function slotCategoryId(slot: ClockSlot): string | null {
     case 'fill':
       return slot.categoryId;
     case 'vt':
-      return slot.mode === 'promo' ? slot.categoryId : null;
+      return slot.mode === 'promo' && slot.poolId === null ? slot.categoryId : null;
     default:
       return null;
   }
+}
+
+/** The VT pool a `promo` slot draws from (#60), if any. */
+export function slotPoolId(slot: ClockSlot): string | null {
+  return slot.kind === 'vt' && slot.mode === 'promo' ? slot.poolId : null;
 }
 
 /** The asset type a slot's category should hold; `null` when any type goes. */
@@ -290,6 +300,8 @@ export function estimateClock(
     if (slot.kind === 'vt' && slot.mode === 'placeholder') {
       return { durationMs: VT_PLACEHOLDER_MS, source: 'default' };
     }
+    // A pool's promo is voiced over a transition (#60): it takes no time of its own.
+    if (slotPoolId(slot) !== null) return { durationMs: 0, source: 'default' };
     if (ref?.exists && ref.durationMs !== null) {
       return {
         durationMs: Math.round(ref.durationMs),

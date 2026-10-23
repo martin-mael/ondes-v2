@@ -76,6 +76,8 @@ export async function loadMedia(
       artists: asset.artists,
       normalizeLoudness: asset.normalizeLoudness,
       gainOverrideDb: asset.gainOverrideDb,
+      startAt: asset.startAt,
+      killAt: asset.killAt,
       fileId: assetFile.id,
       sha256: assetFile.sha256,
       storageKey: assetFile.storageKey,
@@ -138,6 +140,7 @@ export async function loadMedia(
       cached: r.cachedSha !== null,
       title: r.title,
       artists: r.artists,
+      validity: { startAt: r.startAt, killAt: r.killAt },
       cues:
         r.cueSampleRate === null
           ? null
