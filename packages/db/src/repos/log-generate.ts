@@ -64,6 +64,7 @@ import { segue } from '../schema/segues.ts';
 import { episode, show, showSlot, showSlotException } from '../schema/shows.ts';
 import { station } from '../schema/tenancy.ts';
 import { type StationScope, whereStation } from '../tenant.ts';
+import { resolveRerun } from './reruns.ts';
 
 // Log generator (#50, ADR 0026) queries, for the worker's `log-generate` job and the api's
 // clock-music fallback: everything a station's days depend on, loaded into the pure
@@ -81,11 +82,8 @@ const OLDER_MARGIN_MS = 30 * DAY;
 // --- Snapshot ------------------------------------------------------------------------------
 
 /**
- * The episode a rerun occurrence plays again (#48). The default plays the show's latest
- * episode with audio that already went out (the `latest_episode` strategy, the same rule as
- * #47's fallback). Once #48's slot fields are on main, the integration passes its resolver:
- * `(db, scope, o) => resolveRerun(db, scope, { slotId: o.slotId, occurrenceDate: o.date, startsAt: o.startsAt })`
- * (`packages/db/src/repos/reruns.ts`), which honours `rerun_strategy` / `rerun_episode_id`.
+ * The episode a rerun occurrence plays again (#48). The default, `slotRerun`, follows the
+ * slot's `rerun_strategy` / `rerun_episode_id` through #48's `resolveRerun`.
  */
 export type RerunResolver = (
   db: Executor,
@@ -452,7 +450,7 @@ async function loadOccurrences(
   }));
   const expanded = expandSlots(slots, range, timeZone);
   const premieres = await premieresOf(db, scope, expanded);
-  const rerun = options.rerun ?? latestEpisodeRerun;
+  const rerun = options.rerun ?? slotRerun;
   const out: GeneratorOccurrence[] = [];
   for (const o of expanded) {
     let episodeRow: EpisodeRow | null = null;
@@ -524,31 +522,9 @@ async function episodeById(db: Executor, scope: StationScope, id: string) {
   return row ?? null;
 }
 
-/**
- * The default rerun: the show's highest-numbered episode with audio that has already aired by
- * the occurrence's start: `aired` before it, or `ready` with its premiere on an earlier local
- * date. The same rule as #48's `latestAiredEpisode` (`latest_episode` strategy).
- */
-export const latestEpisodeRerun: RerunResolver = async (db, scope, occurrence) => {
-  const [row] = await db
-    .select({ episodeId: episode.id })
-    .from(episode)
-    .innerJoin(asset, eq(asset.id, episode.assetId))
-    .where(
-      and(
-        whereStation(episode, scope),
-        eq(episode.showId, occurrence.showId),
-        isNotNull(episode.assetId),
-        or(
-          and(eq(episode.status, 'aired'), lt(episode.airedAt, occurrence.startsAt)),
-          and(eq(episode.status, 'ready'), lt(episode.occurrenceDate, occurrence.date)),
-        ),
-      ),
-    )
-    .orderBy(desc(episode.number))
-    .limit(1);
-  return row ?? null;
-};
+/** The default rerun: the slot's own strategy (#48, `packages/db/src/repos/reruns.ts`). */
+export const slotRerun: RerunResolver = (db, scope, o) =>
+  resolveRerun(db, scope, { slotId: o.slotId, occurrenceDate: o.date, startsAt: o.startsAt });
 
 function longestRuleMs(rules: RotationRule[], categories: Map<string, GeneratorCategory>): number {
   let max = 0;

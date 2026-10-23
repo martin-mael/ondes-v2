@@ -218,18 +218,15 @@ Which items a user may keep, dry-runs and diffs are #101's. It can pass its own 
   Sizing them exactly is #46's.
 
 ### Reruns (#48)
-The loader takes a `RerunResolver`. The default (`latestEpisodeRerun`) plays the show's latest
-episode with audio that has aired by the occurrence's start (`aired` before it, or `ready` with
-an earlier premiere): #48's `latest_episode` rule. #48 (PR
-#166) adds `resolveRerun` in `packages/db/src/repos/reruns.ts`, which reads the slot's
-`rerun_strategy` / `rerun_episode_id`. Once both are on main, the default becomes
-`(db, scope, o) => resolveRerun(db, scope, { slotId: o.slotId, occurrenceDate: o.date,
-startsAt: o.startsAt })`. A rerun is planned like a premiere,
+The loader takes a `RerunResolver`. The default (`slotRerun`) calls #48's `resolveRerun`
+(`packages/db/src/repos/reruns.ts`), which reads the slot's `rerun_strategy` /
+`rerun_episode_id` and picks an episode with audio that has aired by the occurrence's start
+(ADR 0028). A rerun is planned like a premiere,
 with the episode it plays again, and gets no fallback mark.
 
 ## Consequences
 - New: `contracts/log-generate.ts` (job payload), `@ondes/db` `loadGeneratorSnapshot`,
-  `writeGeneratedDay`, `fillWithClockMusic`, `attachEpisodeAudio`, `latestEpisodeRerun`;
+  `writeGeneratedDay`, `fillWithClockMusic`, `attachEpisodeAudio`, `slotRerun`;
   `@ondes/scheduling` `generateDay`, `generateDays`, `planClockMusic`, `settleOccurrences`,
   `retime`.
 - `pickForSlot` gets `explain: false`. Its default behaviour is unchanged.
@@ -237,5 +234,4 @@ with the episode it plays again, and gets no fallback mark.
 - Follow-ups:
   - the api's episode update calls `attachEpisodeAudio`;
   - a horizon sweep, or #101, enqueues `log-generate`;
-  - #101 raises alerts from `issues`;
-  - #48's resolver replaces `latestEpisodeRerun` for rerun slots that name an episode.
+  - #101 raises alerts from `issues`.
