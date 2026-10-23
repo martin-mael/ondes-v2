@@ -288,10 +288,13 @@ function RowNote({
       .filter((e): e is AsRunEntry => !!e)
       .map((e) => `${entryTitle(t, e)} (${formatClock(e.startedAt, timeZone)})`);
     note = t('replacedBy', { what: what.join(', ') });
-  } else if (row.status === 'transition' && entry) {
-    // The voices of a rendered island (#57).
-    const titles = (entry.transition?.voices ?? []).flatMap((v) => (v.title ? [v.title] : []));
-    if (titles.length > 0) note = t('voices', { titles: titles.join(', ') });
+  } else if (entry?.transition) {
+    // The voices of a transition (#57): the island itself, or laid over this item's crossfade
+    // when the island wasn't ready.
+    const titles = entry.transition.voices.flatMap((v) => (v.title ? [v.title] : []));
+    if (titles.length > 0) {
+      note = t(entry.transition.rendered ? 'voices' : 'voicesOver', { titles: titles.join(', ') });
+    }
   } else if (row.status === 'unplanned' && entry?.plannedStart) {
     note = t('wasPlanned', { time: formatClock(entry.plannedStart, timeZone) });
   }

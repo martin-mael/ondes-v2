@@ -60,6 +60,13 @@ const rows = [
       durationMs: 196_000,
       outcome: 'complete',
       driftMs: 4_000,
+      transition: {
+        rendered: false,
+        islandId: null,
+        hash: 'spec-hash-2',
+        segueIds: [],
+        voices: [{ assetId: null, title: 'VT: midi', offsetMs: 190_000, durationMs: 6_000 }],
+      },
     }),
   }),
   row({ status: 'safety', at: safety.startedAt, entry: safety }),
@@ -176,6 +183,10 @@ describe('log vs as-run', () => {
     expect(within(fourviere).getByText('→ 12:03:20')).toBeInTheDocument();
     expect(within(fourviere).getByText('12:00:00')).toBeInTheDocument();
     expect(within(fourviere).getByText('+4 s')).toBeInTheDocument();
+    // Island not ready (#57): the voice went over this item's crossfade.
+    expect(
+      within(fourviere).getByText('Voice over the crossfade (island not ready): VT: midi'),
+    ).toBeInTheDocument();
     // Plain aired rows carry no status badge.
     expect(within(fourviere).queryByText('Aired')).not.toBeInTheDocument();
 

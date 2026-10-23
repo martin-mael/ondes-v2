@@ -42,6 +42,7 @@ const en = {
 
   plannedAs: 'Planned: {title}',
   voices: 'Voice: {titles}',
+  voicesOver: 'Voice over the crossfade (island not ready): {titles}',
   replacedBy: 'Its slot went to: {what}',
   wasPlanned: 'Was planned at {time} (log changed since)',
   untitled: 'Untitled',
@@ -90,6 +91,7 @@ const fr: Record<HistoryMessageKey, string> = {
 
   plannedAs: 'Prévu : {title}',
   voices: 'Voix : {titles}',
+  voicesOver: 'Voix sur le fondu (îlot pas prêt) : {titles}',
   replacedBy: 'Son créneau est allé à : {what}',
   wasPlanned: 'Prévu à {time} (conducteur modifié depuis)',
   untitled: 'Sans titre',
