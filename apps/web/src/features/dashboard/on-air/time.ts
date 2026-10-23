@@ -1,3 +1,5 @@
+import type { OnAir, OnAirHardEvent, OnAirNextItem } from '@ondes/shared';
+
 // Time arithmetic of the on-air widget (#70, ADR 0034). Pure, so the 1 s budget is tested
 // without rendering. Every instant is in ms on the api's clock, which is the engine's.
 
@@ -53,3 +55,49 @@ export function progressOf(startedAt: number, durationMs: number | null, now: nu
 
 /** Seconds left until `at` (ceil: `0:01` shows during the last second), never negative. */
 export const countdown = (at: number, now: number) => Math.max(0, Math.ceil((at - now) / 1000));
+
+/**
+ * The soonest instant after the snapshot was taken at which it changes with no event to say
+ * so: the show block ends, or the next fixed event is due. Null when neither comes.
+ */
+export function nextBoundary(s: OnAir): number | null {
+  const at = Date.parse(s.at);
+  const instants = [s.show?.endsAt, s.nextHardEvent?.at]
+    .filter((v): v is string => typeof v === 'string')
+    .map(Date.parse)
+    .filter((t) => t > at);
+  return instants.length ? Math.min(...instants) : null;
+}
+
+/**
+ * The snapshot's next items, still right while the item on air overruns. The api chained them
+ * from the later of the item's expected end and its own time; every second past both pushes
+ * the `flow` items further, up to the first anchored one (it keeps its time, ADR 0003). A
+ * marker among them moves with them, and with it the next event.
+ */
+export function withOverrun(
+  s: OnAir,
+  now: number,
+): { next: OnAirNextItem[]; nextHardEvent: OnAirHardEvent | null } {
+  const unchanged = { next: s.next, nextHardEvent: s.nextHardEvent };
+  const current = s.current;
+  if (current?.source !== 'log' || current.durationMs == null) return unchanged;
+  const expectedEnd = Date.parse(current.startedAt) + current.durationMs;
+  const lag = now - Math.max(expectedEnd, Date.parse(s.at));
+  if (lag <= 0) return unchanged;
+  let anchored = false;
+  const next = s.next.map((item) => {
+    anchored ||= item.timing !== 'flow';
+    if (anchored) return item;
+    return {
+      ...item,
+      estimatedStart: new Date(Date.parse(item.estimatedStart) + lag).toISOString(),
+    };
+  });
+  const event = s.nextHardEvent;
+  const moved = event?.logItemId ? next.find((i) => i.logItemId === event.logItemId) : undefined;
+  return {
+    next,
+    nextHardEvent: event && moved ? { ...event, at: moved.estimatedStart } : event,
+  };
+}

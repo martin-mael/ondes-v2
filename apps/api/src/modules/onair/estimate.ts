@@ -1,4 +1,4 @@
-import type { LogItem, OnAirHardEvent, OnAirNextItem } from '@ondes/shared';
+import type { LogItem, LogSegmentPart, OnAirHardEvent, OnAirNextItem } from '@ondes/shared';
 
 // Next items and the next hard event (#70, ADR 0034). Pure: the log around now, what is on
 // air and the time in, estimates out.
@@ -22,18 +22,32 @@ export interface AiringItem {
 
 export interface Estimate {
   next: OnAirNextItem[];
-  /** The first `hard`/`soft` start or marker after what is on air. */
+  /** The first `hard`/`soft` start or marker after what is on air (segment parts included). */
   hardEvent: OnAirHardEvent | null;
 }
 
-/** Where the item on air sits in `items` (play order), and its planned start. */
+type Unit = Pick<
+  LogSegmentPart,
+  'id' | 'kind' | 'timing' | 'title' | 'asset' | 'plannedStart' | 'plannedDurationMs' | 'anchorAt'
+>;
+
+/**
+ * What comes after the item on air, in play order, and the planned span of the item on air.
+ * When it is a segment part (an island chain: A's body, the island, B's body), the parts after
+ * it come first, then the items after the segment.
+ */
 function locate(items: readonly LogItem[], airing: AiringItem) {
   for (const [index, item] of items.entries()) {
-    if (item.id === airing.logItemId) return { index, plannedStart: ms(item.plannedStart) };
-    const part = item.parts.find((p) => p.id === airing.logItemId);
-    if (part) return { index, plannedStart: ms(part.plannedStart) };
+    const after = items.slice(index + 1);
+    if (item.id === airing.logItemId) return { onAir: item as Unit, upcoming: after as Unit[] };
+    const partIndex = item.parts.findIndex((p) => p.id === airing.logItemId);
+    const part = item.parts[partIndex];
+    if (part) {
+      return { onAir: part, upcoming: [...item.parts.slice(partIndex + 1), ...after] as Unit[] };
+    }
+    // The engine reported the whole segment as one item.
     if (airing.segmentId && item.id === airing.segmentId) {
-      return { index, plannedStart: ms(item.plannedStart) };
+      return { onAir: item as Unit, upcoming: after as Unit[] };
     }
   }
   return null;
@@ -46,13 +60,13 @@ export function estimateNext(
   count: number,
 ): Estimate {
   const found = airing ? locate(items, airing) : null;
-  let upcoming: readonly LogItem[];
+  let upcoming: readonly Unit[];
   let drift = 0;
   if (found && airing) {
-    const onAir = items[found.index] as LogItem;
-    upcoming = items.slice(found.index + 1);
-    const plannedEnd = ms(onAir.plannedStart) + onAir.plannedDurationMs;
-    drift = Math.max(airing.startedAt - found.plannedStart, now - plannedEnd);
+    upcoming = found.upcoming;
+    const plannedStart = ms(found.onAir.plannedStart);
+    const plannedEnd = plannedStart + found.onAir.plannedDurationMs;
+    drift = Math.max(airing.startedAt - plannedStart, now - plannedEnd);
   } else {
     // Off the log (live, safety): the plan from now on.
     upcoming = items.filter((item) => ms(item.plannedStart) >= now);
@@ -86,7 +100,8 @@ export function estimateNext(
       (item.timing === 'hard' || item.timing === 'soft' || item.kind === 'marker')
     ) {
       hardEvent = {
-        kind: item.kind === 'marker' ? 'marker' : 'hard_start',
+        kind:
+          item.kind === 'marker' ? 'marker' : item.timing === 'soft' ? 'soft_start' : 'hard_start',
         at: new Date(start).toISOString(),
         title: item.title ?? item.asset?.title ?? null,
         logItemId: item.id,

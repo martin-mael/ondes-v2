@@ -101,6 +101,34 @@ describe('estimateNext', () => {
     expect(starts(early)).toEqual([iso(anchor)]);
   });
 
+  it('lists the parts after the one on air, then the items after the segment', () => {
+    // An island chain: A's body, the island, B's body. A's body is on air.
+    const body = item(0, 170_000);
+    const island = item(170_000, 12_000, { kind: 'segment', title: 'Island' });
+    const b = item(182_000, 200_000, { timing: 'flow', title: 'B' });
+    const segment = item(0, 382_000, { kind: 'segment', parts: [body, island, b] });
+    const after = item(382_000, 60_000, { kind: 'marker', title: 'Top' });
+    const r = estimateNext(
+      [segment, after],
+      { logItemId: body.id, segmentId: segment.id, startedAt: T0 + 1_000 },
+      T0 + 2_000,
+      5,
+    );
+    expect(r.next.map((i) => i.title)).toEqual(['Island', 'B', 'Top']);
+    expect(starts(r)).toEqual([iso(T0 + 171_000), iso(T0 + 183_000), iso(T0 + 383_000)]);
+    expect(r.hardEvent).toMatchObject({ kind: 'marker', title: 'Top' });
+  });
+
+  it('labels a soft start as such', () => {
+    const anchor = T0 + 200_000;
+    const log = [
+      item(0, 180_000),
+      item(200_000, 60_000, { timing: 'soft', anchorAt: iso(anchor) }),
+    ];
+    const r = estimateNext(log, null, T0 - 1, 5);
+    expect(r.hardEvent).toMatchObject({ kind: 'soft_start', at: iso(anchor) });
+  });
+
   it('finds the item on air among a segment’s parts', () => {
     const part = item(0, 90_000, { segmentId: null });
     const segment = item(0, 180_000, { kind: 'segment', parts: [part] });

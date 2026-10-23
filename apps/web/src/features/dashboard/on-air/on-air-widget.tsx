@@ -15,7 +15,7 @@ import { findStation, useOrgs } from '../../../app/auth/session.ts';
 import { useI18n } from '../../../app/i18n/i18n.tsx';
 import { ListSkeleton } from '../../../app/pending.tsx';
 import { type OnAirMessageKey, type OnAirT, useOnAirT } from './messages.ts';
-import { countdown, formatDuration, progressOf } from './time.ts';
+import { countdown, formatDuration, progressOf, withOverrun } from './time.ts';
 import { useEngineNow, useOnAir } from './use-on-air.ts';
 
 // On air (#70): the station clock, the mode, the item on air with its progress and cue
@@ -25,7 +25,8 @@ import { useEngineNow, useOnAir } from './use-on-air.ts';
 export function OnAirWidget({ stationId }: { stationId: string }) {
   const t = useOnAirT();
   const { locale } = useI18n();
-  const timeZone = findStation(useOrgs(), stationId)?.station.timezone ?? 'UTC';
+  // The station's zone only: no other zone stands in while it is unknown.
+  const timeZone = findStation(useOrgs(), stationId)?.station.timezone;
   const query = useOnAir(stationId);
   const snapshot = query.data;
   const anchors = [snapshot?.current?.startedAt, snapshot?.nextHardEvent?.at]
@@ -34,6 +35,7 @@ export function OnAirWidget({ stationId }: { stationId: string }) {
   const now = useEngineNow(anchors);
   const clock = (ms: number) =>
     new Date(ms).toLocaleTimeString(locale, { timeZone, hour12: false });
+  const ahead = snapshot && now !== null ? withOverrun(snapshot, now) : snapshot;
 
   return (
     <Card>
@@ -48,22 +50,22 @@ export function OnAirWidget({ stationId }: { stationId: string }) {
             dateTime={now === null ? undefined : new Date(now).toISOString()}
             data-testid="station-clock"
           >
-            {now === null ? '--:--:--' : clock(now)}
+            {now === null || !timeZone ? '--:--:--' : clock(now)}
           </time>
           <p className="text-xs text-muted-foreground">
-            {t('stationTime', { timezone: timeZone })}
+            {t('stationTime', { timezone: timeZone ?? '' })}
           </p>
         </div>
-        {snapshot ? (
+        {snapshot && ahead && timeZone ? (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
             <NowPlaying t={t} snapshot={snapshot} now={now} className="lg:col-span-2" />
             <div className="flex flex-col gap-6">
               <ShowBlock t={t} show={snapshot.show} clock={clock} />
-              <NextEvent t={t} event={snapshot.nextHardEvent} now={now} clock={clock} />
+              <NextEvent t={t} event={ahead.nextHardEvent} now={now} clock={clock} />
             </div>
-            <UpNext t={t} items={snapshot.next} clock={clock} className="lg:col-span-3" />
+            <UpNext t={t} items={ahead.next} clock={clock} className="lg:col-span-3" />
           </div>
-        ) : query.isError ? (
+        ) : query.isError && timeZone ? (
           <p className="text-sm text-destructive">{t('error')}</p>
         ) : (
           <ListSkeleton rows={5} />
@@ -352,7 +354,10 @@ function UpNext({
               >
                 {clock(Date.parse(item.estimatedStart))}
               </time>
-              <Badge variant="outline" className="hidden shrink-0 sm:inline-flex">
+              <Badge
+                variant="outline"
+                className="shrink-0 px-1.5 text-[0.65rem] sm:px-2 sm:text-xs"
+              >
                 {t(`kind.${item.kind}` as OnAirMessageKey)}
               </Badge>
               <span className="min-w-0 flex-1 truncate">

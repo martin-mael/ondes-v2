@@ -1,14 +1,14 @@
-import type { OnAir, StreamEventType } from '@ondes/shared';
+import type { StreamEventType } from '@ondes/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
-import { useSse, useSseEvent, useSseStatus } from '../../../app/sse/sse.tsx';
+import { useClockOffset, useSse, useSseStatus } from '../../../app/sse/sse.tsx';
 import { onAirKey, onAirQuery } from './api.ts';
-import { nextTickAt } from './time.ts';
+import { nextBoundary, nextTickAt } from './time.ts';
 
 // Keeps the on-air snapshot current and the counters on the engine's time (#70, ADR 0034).
-// No polling: the snapshot is refetched on the events that change it, on a reconnect (events
-// were missed), and once at the instants it said something changes (a show ends, the next
-// fixed event is due), where no event may come.
+// No polling: the snapshot is refetched on the events that change it, whenever the stream
+// (re)opens (events may have been missed), and once at the instants it said something changes
+// (a show ends, the next fixed event is due), where no event may come.
 
 /** The events after which the snapshot is stale. */
 const REFRESH_ON: ReadonlySet<StreamEventType> = new Set<StreamEventType>([
@@ -23,7 +23,13 @@ const REFRESH_ON: ReadonlySet<StreamEventType> = new Set<StreamEventType>([
   'live.session.started',
   'live.session.ended',
   'feeder.item.passed_over',
+  // Cue edits (intro/outro markers) and the station's own settings (its timezone).
+  'asset.updated',
+  'station.updated',
 ]);
+
+/** Events come in bursts (`log.item.changed` per item of an edit): one refetch per burst. */
+export const REFRESH_DEBOUNCE_MS = 250;
 
 /** Past the instants the snapshot names, so the api sees the change too. */
 const BOUNDARY_SLACK_MS = 1_500;
@@ -31,19 +37,27 @@ const BOUNDARY_SLACK_MS = 1_500;
 export function useOnAir(stationId: string) {
   const query = useQuery(onAirQuery(stationId));
   const queryClient = useQueryClient();
-  const refresh = () => void queryClient.invalidateQueries({ queryKey: onAirKey(stationId) });
+  const pending = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const refresh = () => {
+    clearTimeout(pending.current);
+    pending.current = setTimeout(
+      () => void queryClient.invalidateQueries({ queryKey: onAirKey(stationId) }),
+      REFRESH_DEBOUNCE_MS,
+    );
+  };
+  useEffect(() => () => clearTimeout(pending.current), []);
 
   useSse((event) => {
     if (REFRESH_ON.has(event.type)) refresh();
   });
 
+  // Every time the stream opens, the first included: an event that came before it (a cold load
+  // racing the snapshot) or during a drop was missed.
   const status = useSseStatus();
-  const opened = useRef(false);
   const previous = useRef(status);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `refresh` is stable in effect.
   useEffect(() => {
-    if (status === 'open' && previous.current !== 'open' && opened.current) refresh();
-    if (status === 'open') opened.current = true;
+    if (status === 'open' && previous.current !== 'open') refresh();
     previous.current = status;
   }, [status]);
 
@@ -62,24 +76,13 @@ export function useOnAir(stationId: string) {
   return query;
 }
 
-/** The soonest instant after the snapshot's own at which it changes without an event. */
-function nextBoundary(s: OnAir): number | null {
-  const at = Date.parse(s.at);
-  const instants = [s.show?.endsAt, s.nextHardEvent?.at]
-    .filter((v): v is string => typeof v === 'string')
-    .map(Date.parse)
-    .filter((t) => t > at);
-  return instants.length ? Math.min(...instants) : null;
-}
-
 /**
- * The api's time in ms (the engine's: same host clock, ADR 0034), from the offset of the last
- * `server.clock` event, re-rendered at the next whole second of any of `anchors`. `null` until
- * the stream gave the first `server.clock`.
+ * The api's time in ms (the engine's: same host clock, ADR 0034), from the open stream's
+ * `server.clock` offset, re-rendered at the next whole second of any of `anchors`. `null`
+ * until the stream has given its first `server.clock`.
  */
 export function useEngineNow(anchors: readonly number[]): number | null {
-  const [offset, setOffset] = useState<number | null>(null);
-  useSseEvent('server.clock', (event) => setOffset(Date.parse(event.at) - Date.now()));
+  const offset = useClockOffset();
   const [now, setNow] = useState<number | null>(null);
   const key = anchors.join(',');
   // biome-ignore lint/correctness/useExhaustiveDependencies: `key` stands for `anchors`.
@@ -95,5 +98,6 @@ export function useEngineNow(anchors: readonly number[]): number | null {
     tick();
     return () => clearTimeout(timer);
   }, [offset, key]);
-  return offset === null ? null : now;
+  // The first render after mount: no tick yet, but the offset is known.
+  return offset === null ? null : (now ?? Date.now() + offset);
 }

@@ -68,7 +68,7 @@ export type OnAirNextItem = z.infer<typeof onAirNextItemSchema>;
 
 /** The next fixed point in time: a show starting, a hard or soft start, a marker. */
 export const onAirHardEventSchema = z.object({
-  kind: z.enum(['show', 'hard_start', 'marker']),
+  kind: z.enum(['show', 'hard_start', 'soft_start', 'marker']),
   at: isoTime,
   /** The show's name, or the log item's title. */
   title: z.string().nullable(),

@@ -143,13 +143,10 @@ describe('on-air widget', () => {
   }, 10_000);
 
   it('shows the DJ in live mode and refetches when the as-run moves', async () => {
-    let calls = 0;
+    let live = false;
     const routes = {
       ...signedIn(),
-      [route]: () => {
-        calls++;
-        return [200, calls === 1 ? snapshot(serverNow()) : liveSnapshot()] as [number, OnAir];
-      },
+      [route]: () => [200, live ? liveSnapshot() : snapshot(serverNow())] as [number, OnAir],
     };
     const liveSnapshot = () =>
       snapshot(serverNow(), {
@@ -171,6 +168,7 @@ describe('on-air widget', () => {
     const source = await connect();
     expect(await screen.findByTestId('on-air-mode')).toHaveTextContent('Automation');
 
+    live = true;
     act(() =>
       source.emit({
         id: '0b9e3c84-6f1d-5a51-9a1e-3f0a4c7d2e11',
@@ -188,6 +186,50 @@ describe('on-air widget', () => {
     await waitFor(() => expect(screen.getByTestId('on-air-mode')).toHaveTextContent('Live: Nova'));
     expect(screen.getByTestId('on-air-title')).toHaveTextContent('Live from the studio');
     expect(screen.queryByTestId('on-air-remaining')).not.toBeInTheDocument();
+  });
+
+  it('shows the clock at once when mounted after the stream synced', async () => {
+    const { screen, history } = renderApp(`/stations/${stationId}/live`, {
+      ...signedIn(),
+      [route]: [200, snapshot(serverNow())],
+    });
+    await connect();
+    act(() => history.push(url));
+    const clock = await screen.findByTestId('station-clock');
+    // Not on the next `server.clock` (10 s later): the stream's offset is already known.
+    expect(clock).not.toHaveTextContent('--:--:--');
+    expect(Math.abs(Date.parse(clock.getAttribute('datetime') ?? '') - serverNow())).toBeLessThan(
+      1_000,
+    );
+  });
+
+  it('refetches once per burst of events, and when the stream opens', async () => {
+    let calls = 0;
+    const { screen } = renderApp(url, {
+      ...signedIn(),
+      [route]: () => {
+        calls++;
+        return [200, snapshot(serverNow())];
+      },
+    });
+    const source = await connect();
+    await screen.findByTestId('on-air-title');
+    // The snapshot, then the refetch for the stream opening.
+    await waitFor(() => expect(calls).toBe(2));
+    act(() => {
+      for (let i = 0; i < 5; i++) {
+        source.emit({
+          id: `0b9e3c84-6f1d-5a51-9a1e-3f0a4c7d2e2${i}`,
+          stationId,
+          at: iso(serverNow()),
+          type: 'log.updated',
+          data: { from: iso(serverNow()), to: iso(serverNow() + 1), days: [], cause: 'edit' },
+        });
+      }
+    });
+    await waitFor(() => expect(calls).toBe(3));
+    await new Promise((r) => setTimeout(r, 400));
+    expect(calls).toBe(3);
   });
 
   it('says so when nothing is on air', async () => {

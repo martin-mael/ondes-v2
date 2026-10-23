@@ -169,7 +169,10 @@ async function liveDjName(
   const [row] = await db
     .select({ name: streamer.displayName })
     .from(liveSession)
-    .innerJoin(streamer, eq(streamer.id, liveSession.streamerId))
+    .innerJoin(
+      streamer,
+      and(eq(streamer.id, liveSession.streamerId), whereStation(streamer, scope)),
+    )
     .where(
       and(
         whereStation(liveSession, scope),
