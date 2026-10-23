@@ -8,6 +8,7 @@ import {
   type GeneratorEpisode,
   type GeneratorOccurrence,
   type GeneratorSnapshot,
+  itemLengthMs,
   type KeptItem,
   type KeptReason,
   type PlayedItem,
@@ -149,7 +150,8 @@ export async function loadGeneratorSnapshot(
         startsAt: logDay.startsAt,
       })
       .from(logDay)
-      .where(and(whereStation(logDay, scope), inArray(logDay.localDate, [...dates]))),
+      .where(and(whereStation(logDay, scope), inArray(logDay.localDate, [...dates])))
+      .orderBy(asc(logDay.localDate)),
   ]);
   const byId = new Map(library.map((a) => [a.id, a]));
   const categories = await loadCategories(db, scope, library, from);
@@ -251,20 +253,17 @@ async function loadLibrary(db: Executor, scope: StationScope): Promise<Generator
   const extras = new Map(extra.map((e) => [e.id, e]));
   return base.map((a) => {
     const e = extras.get(a.id);
-    const sr = e?.sampleRate ?? null;
-    const ms = (samples: number | null | undefined) =>
-      sr && samples != null ? Math.round((samples * 1000) / sr) : null;
-    const cueIn = ms(e?.cueIn) ?? 0;
-    const cueOut = ms(e?.cueOut);
-    const crossStart = ms(e?.crossStartNext);
     return {
       ...a,
       album: e?.album ?? null,
       bpm: e?.bpm ?? null,
       energy: e?.energy ?? null,
-      // Like the feeder (ADR 0002): the effective play range, and the natural overlap.
-      playMs: cueOut !== null && cueOut > cueIn ? cueOut - cueIn : null,
-      overlapMs: cueOut !== null && crossStart !== null ? Math.max(0, cueOut - crossStart) : 0,
+      ...playRange({
+        sampleRate: e?.sampleRate ?? null,
+        cueIn: e?.cueIn ?? null,
+        cueOut: e?.cueOut ?? null,
+        crossStartNext: e?.crossStartNext ?? null,
+      }),
     };
   });
 }
@@ -282,7 +281,7 @@ async function loadCategories(
   at: Date,
 ): Promise<Map<string, GeneratorCategory>> {
   const [rows, entries] = await Promise.all([
-    db.select().from(category).where(whereStation(category, scope)),
+    db.select().from(category).where(whereStation(category, scope)).orderBy(asc(category.id)),
     db
       .select({
         categoryId: categoryMember.categoryId,
@@ -339,7 +338,8 @@ async function loadClocks(db: Executor, scope: StationScope): Promise<Map<string
     db
       .select({ id: clock.id, targetDurationMs: clock.targetDurationMs })
       .from(clock)
-      .where(whereStation(clock, scope)),
+      .where(whereStation(clock, scope))
+      .orderBy(asc(clock.id)),
     db
       .select()
       .from(clockSlot)
@@ -365,7 +365,8 @@ async function loadGrid(db: Executor, scope: StationScope) {
         clockId: clockGridCell.clockId,
       })
       .from(clockGridCell)
-      .where(whereStation(clockGridCell, scope)),
+      .where(whereStation(clockGridCell, scope))
+      .orderBy(asc(clockGridCell.weekday), asc(clockGridCell.hour)),
     db
       .select({
         id: clockGridOverride.id,
@@ -376,7 +377,8 @@ async function loadGrid(db: Executor, scope: StationScope) {
         clockId: clockGridOverride.clockId,
       })
       .from(clockGridOverride)
-      .where(whereStation(clockGridOverride, scope)),
+      .where(whereStation(clockGridOverride, scope))
+      .orderBy(asc(clockGridOverride.startsOn), asc(clockGridOverride.id)),
   ]);
   return { defaultClockId: header?.defaultClockId ?? null, cells, overrides };
 }
@@ -416,7 +418,8 @@ async function loadOccurrences(
         sql`${showSlot.startsOn} <= ${lastDate}`,
         or(isNull(showSlot.endsOn), gte(showSlot.endsOn, firstDate)),
       ),
-    );
+    )
+    .orderBy(asc(showSlot.id));
   if (rows.length === 0) return [];
   const exceptions = await db
     .select()
@@ -607,6 +610,7 @@ async function loadHistory(
               lt(asRunEntry.startedAt, now < to ? now : to),
             ),
           )
+          .orderBy(asc(asRunEntry.startedAt), asc(asRunEntry.id))
       : [],
     to > now
       ? db
@@ -627,6 +631,7 @@ async function loadHistory(
               lt(logItem.plannedStart, to),
             ),
           )
+          .orderBy(asc(logItem.plannedStart), asc(logItem.id))
       : [],
   ]);
   return [
@@ -691,32 +696,12 @@ async function loadKept(
     .where(and(whereStation(logItem, scope), inArray(logItem.logDayId, dayIds)))
     .orderBy(asc(logItem.logDayId), asc(logItem.position));
   if (items.length === 0) return out;
-  const ids = items.map((i) => i.id);
-  const [segueEnds, marks] = await Promise.all([
-    db
-      .select({ from: segue.fromItemId, to: segue.toItemId })
-      .from(segue)
-      .where(
-        and(
-          whereStation(segue, scope),
-          or(inArray(segue.fromItemId, ids), inArray(segue.toItemId, ids)),
-        ),
-      ),
-    db
-      .select({ itemId: logItemFallback.logItemId, slotId: logItemFallback.slotId })
-      .from(logItemFallback)
-      .where(and(whereStation(logItemFallback, scope), inArray(logItemFallback.logItemId, ids))),
-  ]);
-  const inSegue = new Set(segueEnds.flatMap((s) => [s.from, s.to]).filter((x) => x !== null));
-  const markSlot = new Map(marks.map((m) => [m.itemId, m.slotId]));
+  const { reasonsOf, markSlot } = await keepMarks(db, scope, items);
   const dateOf = new Map(days.map((d) => [d.id, d.localDate]));
   const keptHeads = new Set<string>();
   for (const item of items) {
     if (item.segmentId !== null) continue;
-    const reasons: KeptReason[] = [];
-    if (item.locked) reasons.push('locked');
-    if (inSegue.has(item.id)) reasons.push('segue');
-    if (markSlot.has(item.id)) reasons.push('fallback');
+    const reasons = reasonsOf(item);
     if (reasons.length === 0) continue;
     keptHeads.add(item.id);
     const list = out.get(dateOf.get(item.logDayId) as LocalDate) ?? [];
@@ -728,6 +713,56 @@ async function loadKept(
     out.set(dateOf.get(item.logDayId) as LocalDate, list);
   }
   return out;
+}
+
+/** Why each of these items must survive a regeneration (none: it may be rewritten). */
+async function keepMarks(
+  db: Executor,
+  scope: StationScope,
+  items: { id: string; locked: boolean }[],
+) {
+  const ids = items.map((i) => i.id);
+  const [segueEnds, marks] = ids.length
+    ? await Promise.all([
+        db
+          .select({ from: segue.fromItemId, to: segue.toItemId })
+          .from(segue)
+          .where(
+            and(
+              whereStation(segue, scope),
+              or(inArray(segue.fromItemId, ids), inArray(segue.toItemId, ids)),
+            ),
+          ),
+        db
+          .select({ itemId: logItemFallback.logItemId, slotId: logItemFallback.slotId })
+          .from(logItemFallback)
+          .where(
+            and(whereStation(logItemFallback, scope), inArray(logItemFallback.logItemId, ids)),
+          ),
+      ])
+    : [[], []];
+  const inSegue = new Set(segueEnds.flatMap((s) => [s.from, s.to]).filter((x) => x !== null));
+  const markSlot = new Map(marks.map((m) => [m.itemId, m.slotId]));
+  const reasonsOf = (item: { id: string; locked: boolean }): KeptReason[] => {
+    const reasons: KeptReason[] = [];
+    if (item.locked) reasons.push('locked');
+    if (inSegue.has(item.id)) reasons.push('segue');
+    if (markSlot.has(item.id)) reasons.push('fallback');
+    return reasons;
+  };
+  return { reasonsOf, markSlot };
+}
+
+/**
+ * The day changed since its snapshot was loaded: an item became kept (locked, a segue end, a
+ * fallback mark) or a kept one went away. Thrown before anything is written; the job's retry
+ * loads a fresh snapshot.
+ */
+export class StaleGeneratorSnapshotError extends Error {
+  constructor(localDate: LocalDate, ids: string[]) {
+    super(`log day ${localDate} changed since its snapshot was loaded (items ${ids.join(', ')})`);
+    this.name = 'StaleGeneratorSnapshotError';
+  }
 }
 
 function keptOf(
@@ -813,6 +848,30 @@ export async function writeGeneratedDay(
       throw new Error(`log day ${generated.localDate} doesn't start where the generator planned`);
     }
     const keptIds = generated.items.flatMap((i) => (i.keptId ? [i.keptId] : []));
+    // Lock the day's items, then check the kept set is still the snapshot's. The row locks hold
+    // off a concurrent lock, segue or fallback mark on them (their writes, and foreign keys to
+    // them, wait for this transaction), so nothing can become kept between the check and the
+    // delete.
+    const current = await tx
+      .select({ id: logItem.id, locked: logItem.locked, segmentId: logItem.segmentId })
+      .from(logItem)
+      .where(and(whereStation(logItem, scope), eq(logItem.logDayId, day.id)))
+      .orderBy(asc(logItem.position))
+      .for('update');
+    const { reasonsOf } = await keepMarks(tx, scope, current);
+    const wanted = new Set(keptIds);
+    const heads = new Set(
+      current.filter((r) => r.segmentId === null && reasonsOf(r).length > 0).map((r) => r.id),
+    );
+    const nowKept = current.filter(
+      (r) => heads.has(r.id) || (r.segmentId !== null && heads.has(r.segmentId)),
+    );
+    const present = new Set(current.map((r) => r.id));
+    const stale = [
+      ...nowKept.filter((r) => !wanted.has(r.id)).map((r) => r.id),
+      ...keptIds.filter((id) => !present.has(id)),
+    ];
+    if (stale.length) throw new StaleGeneratorSnapshotError(generated.localDate, stale);
     await tx
       .delete(logItem)
       .where(
@@ -935,8 +994,7 @@ async function lockOrCreateDay(
       .for('update');
   const [existing] = await find();
   if (existing) return { ...existing, created: false };
-  // A concurrent insert of the same day: take it.
-  await tx
+  const inserted = await tx
     .insert(logDay)
     .values({
       orgId: scope.orgId,
@@ -946,10 +1004,12 @@ async function lockOrCreateDay(
       endsAt: generated.endsAt,
       status,
     })
-    .onConflictDoNothing({ target: [logDay.stationId, logDay.localDate] });
+    .onConflictDoNothing({ target: [logDay.stationId, logDay.localDate] })
+    .returning({ id: logDay.id });
+  // Nothing inserted: a concurrent insert of the same day won, so it's an existing day.
   const [day] = await find();
   if (!day) throw new Error(`log day ${generated.localDate} could not be created`);
-  return { ...day, created: true };
+  return { ...day, created: inserted.length > 0 };
 }
 
 /** The next day's first item measures its conflict against this day's end (like the api). */
@@ -1031,9 +1091,11 @@ export async function attachEpisodeAudio(
       });
       return [];
     }
+    // The item takes the episode's own length (like the generator's), then the day is retimed.
+    const length = await episodeLengthMs(tx, scope, ep.assetId);
     const updated = await tx
       .update(logItem)
-      .set({ assetId: ep.assetId })
+      .set({ assetId: ep.assetId, ...(length !== null ? { plannedDurationMs: length } : {}) })
       .where(
         and(
           whereStation(logItem, scope),
@@ -1045,6 +1107,11 @@ export async function attachEpisodeAudio(
       )
       .returning({ id: logItem.id, logDayId: logItem.logDayId });
     const dayIds = [...new Set(updated.map((u) => u.logDayId))];
+    const touched = new Map<string, { logDayId: string; localDate: LocalDate; version: number }>();
+    for (const dayId of dayIds) {
+      const following = await retimeDay(tx, scope, dayId);
+      if (following) touched.set(following.logDayId, following);
+    }
     const days = dayIds.length
       ? await tx
           .update(logDay)
@@ -1052,6 +1119,7 @@ export async function attachEpisodeAudio(
           .where(and(whereStation(logDay, scope), inArray(logDay.id, dayIds)))
           .returning({ logDayId: logDay.id, localDate: logDay.localDate, version: logDay.version })
       : [];
+    for (const d of days) touched.set(d.logDayId, d);
     await audit({
       action: 'log_item.attach_episode',
       entity: { type: 'episode', id: episodeId },
@@ -1060,8 +1128,99 @@ export async function attachEpisodeAudio(
         assetId: { from: null, to: ep.assetId },
       },
     });
-    return days;
+    return [...touched.values()];
   });
+}
+
+/** An episode asset's log length (`itemLengthMs`, from its cues or file length), or null. */
+async function episodeLengthMs(tx: Tx, scope: StationScope, assetId: string) {
+  const [row] = await tx
+    .select({
+      durationMs: asset.durationMs,
+      sampleRate: assetCues.sampleRate,
+      cueIn: assetCues.cueIn,
+      cueOut: assetCues.cueOut,
+      crossStartNext: assetCues.crossStartNext,
+    })
+    .from(asset)
+    .leftJoin(assetCues, eq(assetCues.assetId, asset.id))
+    .where(and(whereStation(asset, scope), eq(asset.id, assetId)));
+  if (!row) return null;
+  const { playMs, overlapMs } = playRange(row);
+  if (playMs === null && row.durationMs === null) return null;
+  return itemLengthMs({ playMs, overlapMs, durationMs: row.durationMs } as GeneratorAsset);
+}
+
+/** The effective play range and natural overlap from cues, like the feeder (ADR 0002). */
+function playRange(c: {
+  sampleRate: number | null;
+  cueIn: number | null;
+  cueOut: number | null;
+  crossStartNext: number | null;
+}) {
+  const ms = (samples: number | null) =>
+    c.sampleRate && samples != null ? Math.round((samples * 1000) / c.sampleRate) : null;
+  const cueIn = ms(c.cueIn) ?? 0;
+  const cueOut = ms(c.cueOut);
+  const crossStart = ms(c.crossStartNext);
+  return {
+    playMs: cueOut !== null && cueOut > cueIn ? cueOut - cueIn : null,
+    overlapMs: cueOut !== null && crossStart !== null ? Math.max(0, cueOut - crossStart) : 0,
+  };
+}
+
+/**
+ * Recomputes a day's planned starts and conflicts after an edit (`retime`, like the log
+ * repository after every write), then the following day's first-item conflict. Returns the
+ * following day if it changed.
+ */
+async function retimeDay(tx: Tx, scope: StationScope, logDayId: string) {
+  const [day] = await tx
+    .select()
+    .from(logDay)
+    .where(and(whereStation(logDay, scope), eq(logDay.id, logDayId)))
+    .for('update');
+  if (!day) return null;
+  const rows = await tx
+    .select()
+    .from(logItem)
+    .where(and(whereStation(logItem, scope), eq(logItem.logDayId, logDayId)))
+    .orderBy(asc(logItem.position));
+  const timed = retime(
+    rows.map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      plannedDurationMs: r.plannedDurationMs,
+      timing: r.timing,
+      anchorAt: r.anchorAt,
+      segmentId: r.segmentId,
+      crossOutMs: r.cueOverrides?.crossOutMs ?? null,
+    })),
+    day.startsAt,
+    await previousEnd(tx, scope, day.startsAt),
+  );
+  let end: Date | null = null;
+  for (const [i, row] of rows.entries()) {
+    const t = timed[i];
+    if (!t) continue;
+    if (row.segmentId === null) end = new Date(t.plannedStart.getTime() + t.plannedDurationMs);
+    const changed =
+      t.plannedStart.getTime() !== row.plannedStart.getTime() ||
+      t.plannedDurationMs !== row.plannedDurationMs ||
+      (t.conflict?.kind ?? null) !== row.conflictKind ||
+      (t.conflict?.ms ?? null) !== row.conflictMs;
+    if (!changed) continue;
+    await tx
+      .update(logItem)
+      .set({
+        plannedStart: t.plannedStart,
+        plannedDurationMs: t.plannedDurationMs,
+        conflictKind: t.conflict?.kind ?? null,
+        conflictMs: t.conflict?.ms ?? null,
+      })
+      .where(and(whereStation(logItem, scope), eq(logItem.id, row.id)));
+  }
+  return refreshFollowing(tx, scope, day.endsAt, end);
 }
 
 // --- Clock music (missing-episode fallback) ------------------------------------------------

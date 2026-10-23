@@ -1,5 +1,6 @@
 import {
   addDays,
+  type ClockSlot,
   clockSlotSchema,
   DEFAULT_ROTATION_RULES,
   LOG_TRANSITION_MS,
@@ -329,6 +330,83 @@ describe('the grid', () => {
     expect(first.conflict).toEqual({ kind: 'gap', ms: 6 * HOUR });
   });
 
+  it('leaves an hour without a clock empty, even with a clock that has no marker', () => {
+    // Every hour painted with a markerless clock, except Friday 10:00 (12 June 2026 is a Friday).
+    const plain = { ...hourClock(), slots: hourClock().slots.filter((s) => s.kind !== 'marker') };
+    const cells = [1, 2, 3, 4, 5, 6, 7].flatMap((weekday) =>
+      Array.from({ length: 24 }, (_, hour) => ({ weekday, hour, clockId: plain.id })).filter(
+        (c) => !(c.weekday === 5 && c.hour === 10),
+      ),
+    );
+    const date = '2026-06-12';
+    const day = generateDay(
+      fixtureSnapshot({ clocks: [plain], grid: { defaultClockId: null, cells, overrides: [] } }),
+      date,
+    );
+    const ten = zonedInstant(date, '10:00', FIXTURE_TZ);
+    const eleven = zonedInstant(date, '11:00', FIXTURE_TZ);
+    expect(day.issues.filter((i) => i.code === 'no_clock').map((i) => i.at)).toEqual([
+      expect.any(Date),
+    ]);
+    expect(top(day).filter((i) => i.plannedStart >= ten && i.plannedStart < eleven)).toEqual([]);
+    const next = top(day).find((i) => i.plannedStart >= eleven) as GeneratedItem;
+    expect(next).toMatchObject({ timing: 'not_before', anchorAt: eleven, plannedStart: eleven });
+    expect(next.conflict?.kind).toBe('gap');
+    // Before the hole, music runs up to about 10:00.
+    const before = top(day)
+      .filter((i) => i.plannedStart < ten)
+      .at(-1) as GeneratedItem;
+    expect(before.plannedStart.getTime() + before.plannedDurationMs).toBeGreaterThan(
+      ten.getTime() - 5 * MINUTE,
+    );
+  });
+
+  it('a show from the night before: music waits for its end with a markerless clock too', () => {
+    const plain = { ...hourClock(), slots: hourClock().slots.filter((s) => s.kind !== 'marker') };
+    const o = occurrence({
+      date: addDays(DATE, -1),
+      startsAt: zonedInstant(addDays(DATE, -1), '23:00', FIXTURE_TZ),
+      durationMs: 2 * HOUR,
+      type: 'live',
+    });
+    const day = generateDay(fixtureSnapshot({ clocks: [plain], occurrences: [o] }), DATE);
+    const first = top(day)[0] as GeneratedItem;
+    const one = zonedInstant(DATE, '01:00', FIXTURE_TZ);
+    expect(first).toMatchObject({ timing: 'not_before', anchorAt: one, plannedStart: one });
+  });
+
+  it('a hard marker cuts the song before it (ADR 0003): the overrun is recorded on the marker', () => {
+    const c = {
+      id: '00000000-0000-7000-8c10-000000000003',
+      targetDurationMs: HOUR,
+      slots: [
+        clockSlotSchema.parse({ kind: 'category', categoryId: CATEGORY_IDS.current }),
+        clockSlotSchema.parse({ kind: 'marker', offsetMs: 3 * MINUTE, timing: 'hard' }),
+        ...Array.from({ length: 18 }, () =>
+          clockSlotSchema.parse({ kind: 'category', categoryId: CATEGORY_IDS.current }),
+        ),
+      ],
+    };
+    const snapshot = fixtureSnapshot({
+      clocks: [c],
+      grid: { defaultClockId: c.id, cells: [], overrides: [] },
+    });
+    const day = generateDay(snapshot, DATE);
+    const markers = day.items.filter((i) => i.kind === 'marker');
+    expect(markers).toHaveLength(24);
+    for (const m of markers) {
+      const before = day.items[m.position - 1] as GeneratedItem;
+      const after = day.items[m.position + 1] as GeneratedItem;
+      const end = before.plannedStart.getTime() + before.plannedDurationMs;
+      const anchor = (m.anchorAt as Date).getTime();
+      // The song after the marker starts at the anchor: the engine cuts the one on air there.
+      expect(after.plannedStart.getTime()).toBe(anchor);
+      if (end > anchor) expect(m.conflict).toEqual({ kind: 'overrun', ms: end - anchor });
+      else if (end < anchor) expect(m.conflict).toEqual({ kind: 'gap', ms: anchor - end });
+    }
+    expect(markers.some((m) => m.conflict?.kind === 'overrun')).toBe(true);
+  });
+
   it('reports a clock the snapshot lacks', () => {
     const day = generateDay(
       fixtureSnapshot({
@@ -522,13 +600,17 @@ function checkRules(snapshot: GeneratorSnapshot, days: GeneratedDay[], minutes: 
 }
 
 describe('rule properties', () => {
+  // Seeded runs over varied libraries, rule values, clocks and dates (DST days included).
+  const DATES = ['2026-03-28', '2026-06-10', '2026-10-24', '2027-01-15'] as const;
+
   it('never breaks an unbreakable rule, and records every breakable one it breaks', () => {
-    for (let run = 0; run < 6; run++) {
+    for (let run = 0; run < 32; run++) {
       const seed = `property-${run}`;
-      const songs = 150 + Math.floor(randomFor(seed, 'songs') * 400);
-      const minutes = 20 + Math.floor(randomFor(seed, 'minutes') * 40);
+      const r = (key: string) => randomFor(seed, key);
+      const songs = 120 + Math.floor(r('songs') * 600);
+      const minutes = 15 + Math.floor(r('minutes') * 50);
       const rules = [
-        ...DEFAULT_ROTATION_RULES.filter((r) => r.kind !== 'artist_separation'),
+        ...DEFAULT_ROTATION_RULES.filter((x) => x.kind !== 'artist_separation'),
         rule({
           id: 'artist-hard',
           enabled: true,
@@ -537,13 +619,37 @@ describe('rule properties', () => {
           kind: 'artist_separation',
           unit: 'minutes',
           value: minutes,
-          includeFeatured: true,
+          includeFeatured: r('featured') < 0.5,
         }),
       ];
-      const snapshot = fixtureSnapshot({ songs, rules, seed });
-      const days = generateDays(snapshot, [DATE, addDays(DATE, 1)], { seed });
+      // A clock of 8 to 20 music slots, with or without a top-of-hour marker.
+      const base = hourClock();
+      const music = base.slots.filter((x) => x.kind === 'category');
+      const count = 8 + Math.floor(r('slots') * 13);
+      const clock = {
+        ...base,
+        slots: [
+          ...(r('marker') < 0.5 ? base.slots.slice(0, 2) : base.slots.slice(1, 2)),
+          ...Array.from({ length: count }, (_, i) => music[i % music.length] as ClockSlot),
+        ],
+      };
+      const date = DATES[run % DATES.length] as string;
+      const snapshot = fixtureSnapshot({ songs, rules, seed, clocks: [clock] });
+      const days = generateDays(snapshot, [date, addDays(date, 1)], { seed });
       checkRules(snapshot, days, minutes);
-      for (const day of days) asInputs(day);
+      for (const day of days) {
+        asInputs(day);
+        // Every planned item lies inside its day, in play order.
+        const items = top(day);
+        expect(
+          items.every((i) => i.plannedStart >= day.startsAt && i.plannedStart < day.endsAt),
+        ).toBe(true);
+        for (let i = 1; i < items.length; i++) {
+          expect((items[i] as GeneratedItem).plannedStart.getTime()).toBeGreaterThanOrEqual(
+            (items[i - 1] as GeneratedItem).plannedStart.getTime(),
+          );
+        }
+      }
     }
   });
 

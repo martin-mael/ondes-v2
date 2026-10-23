@@ -230,6 +230,11 @@ class DayBuilder {
   private runStart = 0;
   /** Where the last planned item ends, as planned. */
   private cursor: number;
+  /**
+   * Set when the cursor jumped over a hole (an hour without a clock, a show from the night
+   * before): the next planned item waits for that time instead of sliding into the hole.
+   */
+  private waitUntil: number | null = null;
   private readonly seed: string;
   private readonly extensions: GeneratorExtensions;
   private readonly startsAt: Date;
@@ -274,6 +279,8 @@ class DayBuilder {
       // previous block overran into it) is placed anyway: retiming reports the overrun.
       if (block.start > this.cursor) this.fillWindow(this.cursor, block.start);
       for (const item of block.items) this.place(item);
+      // A block without items (a show from the night before) is a hole in this day's items.
+      if (block.items.length === 0) this.skipTo(block.end);
       this.cursor = Math.max(this.cursor, block.end);
     }
     if (this.cursor < dayEndMs) this.fillWindow(this.cursor, dayEndMs);
@@ -406,16 +413,27 @@ class DayBuilder {
 
   // --- Placing -------------------------------------------------------------------------------
 
-  /** Appends an item. A `flow` item that would start after the cursor waits for its time. */
+  /** Moves the cursor over a hole to `at`: the next item will wait for that time. */
+  private skipTo(at: number) {
+    if (at <= this.cursor) return;
+    this.cursor = at;
+    this.waitUntil = at;
+  }
+
+  /**
+   * Appends an item. A new `flow` item after a hole, or one meant to start after the cursor,
+   * waits for its time (`not_before`) instead of sliding into the hole.
+   */
   private place(item: PlannedItem) {
     let placed = item;
-    if (
-      placed.timing === 'flow' &&
-      placed.keptId === null &&
-      placed.start.getTime() > this.cursor
-    ) {
-      placed = { ...placed, timing: 'not_before', anchorAt: placed.start };
+    if (placed.timing === 'flow' && placed.keptId === null && placed.segmentId === null) {
+      const wait = Math.max(this.waitUntil ?? 0, placed.start.getTime());
+      if (this.waitUntil !== null || wait > this.cursor) {
+        const at = new Date(Math.max(wait, this.cursor));
+        placed = { ...placed, timing: 'not_before', anchorAt: at, start: at };
+      }
     }
+    if (placed.segmentId === null) this.waitUntil = null;
     if (placed.timing !== 'flow' && placed.segmentId === null) {
       const before = this.extensions.beforeAnchor;
       if (before) {
@@ -534,6 +552,8 @@ class DayBuilder {
     const { slots } = clock;
     const ends = this.offsets(clock);
     const skipBefore = Math.max(0, from - start);
+    // An hour without a clock before this one left the cursor behind: jump the hole.
+    this.skipTo(Math.max(start, from));
     const anchorOf = (slot: ClockSlot) => (slot.kind === 'marker' ? start + slot.offsetMs : null);
     /** The next marker anchor after slot `i` inside the instance, or its end. */
     const nextAnchor = (i: number) => {

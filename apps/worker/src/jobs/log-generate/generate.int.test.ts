@@ -11,17 +11,21 @@ import {
   createStation,
   episode,
   fillWithClockMusic,
+  loadGeneratorSnapshot,
   logDay,
   logItem,
   logItemFallback,
   resolveOrgScope,
   resolveStationScope,
+  StaleGeneratorSnapshotError,
   type StationScope,
   segue,
   show,
   showSlot,
+  writeGeneratedDay,
 } from '@ondes/db';
 import { createTestDatabase, type TestDatabase } from '@ondes/db/testing';
+import { type GeneratedDay, generateDays } from '@ondes/scheduling';
 import {
   type Actor,
   type LocalDate,
@@ -365,8 +369,14 @@ describe('log-generate job', () => {
       new Date('2026-11-01T00:00:00Z'),
     );
     expect(days.map((d) => d.localDate)).toEqual(['2026-11-05']);
-    row = (await items('2026-11-05')).rows.find((r) => r.kind === 'episode');
-    expect(row?.assetId).toBe(audio?.id);
+    const after = (await items('2026-11-05')).rows;
+    row = after.find((r) => r.kind === 'episode');
+    // It takes the episode's own length, and the day is retimed: the minute left before 13:00
+    // shows as a gap on the next (anchored) item.
+    expect(row).toMatchObject({ assetId: audio?.id, plannedDurationMs: HOUR - 60_000 + 20 });
+    const next = after[(row?.position ?? 0) + 1];
+    expect(next?.plannedStart).toEqual(zonedInstant('2026-11-05', '13:00', TZ));
+    expect(next).toMatchObject({ conflictKind: 'gap', conflictMs: 60_000 - 20 });
   });
   it('plans a rerun with the latest episode that aired before it (#48 rule)', async () => {
     const date: LocalDate = '2026-11-08';
@@ -421,5 +431,25 @@ describe('log-generate job', () => {
       timing: 'hard',
       plannedStart: zonedInstant(date, '21:00', TZ),
     });
+  });
+  it('refuses to write over an item that became kept after the snapshot was loaded', async () => {
+    const date: LocalDate = '2026-11-10';
+    await runLogGenerate(deps(), scope, { localDates: [date], status: 'draft' });
+    const loaded = await loadGeneratorSnapshot(tdb.db, scope, {
+      dates: [date],
+      now: new Date('2026-11-01T00:00:00Z'),
+    });
+    if (!loaded) throw new Error('no snapshot');
+    const [day] = generateDays(loaded.snapshot, [date], { seed: 'late-lock' });
+    // Someone locks an item while the day is being generated.
+    const song = (await items(date)).rows.find((r) => r.kind === 'song');
+    await tdb.sql`update log_item set locked = true where id = ${song?.id as string}`;
+    await expect(
+      writeGeneratedDay(tdb.db, { actor: ACTOR, scope }, day as GeneratedDay),
+    ).rejects.toBeInstanceOf(StaleGeneratorSnapshotError);
+    expect((await items(date)).rows.find((r) => r.id === song?.id)?.locked).toBe(true);
+    // The job's retry loads a fresh snapshot and keeps it.
+    await runLogGenerate(deps(), scope, { localDates: [date], seed: 'late-lock', status: 'draft' });
+    expect((await items(date)).rows.find((r) => r.id === song?.id)?.locked).toBe(true);
   });
 });

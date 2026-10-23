@@ -40,11 +40,27 @@ a week in under 10 s for a 20k-track library.
   Then it bumps the version, stores `seed` and `generator_version`, and refreshes the next
   day's first-item conflict. Every new item is parsed with `logDayItemInputSchema` first (the
   bulk-write contract: `logItemInputSchema`'s rules plus origin and relaxed rules).
+- **The snapshot can go stale.** It is loaded once per job, outside any transaction. Each day's
+  write therefore locks the day's items (`FOR UPDATE`) and checks that the kept set is still
+  the snapshot's before deleting anything.
+  - If an item became kept since the load (locked, a segue end, a fallback mark), or a kept
+    one went away, the write throws `StaleGeneratorSnapshotError` and writes nothing.
+  - The queue's retry then loads a fresh snapshot.
+  - The row locks also hold off a concurrent lock, segue or mark on those items until the
+    write commits: their writes, and the foreign keys pointing at the items, wait for it.
 - **The `log-generate` worker job** (`apps/worker/src/jobs/log-generate`, bulk lane) takes 1–14
   consecutive dates. It loads one snapshot for all of them, generates them in order, writes
   each, and publishes one `log.updated` (cause `generate`). No event triggers it: #101's
   routes, or a horizon sweep, enqueue it. New days are `draft` unless the payload says
   `published`. Existing days keep their status.
+- **Idempotency.** The job keeps the queue's default key: `log-generate:<sha256 of the
+  payload>`, deduplicated while a job with the same key is in flight. That is a content hash,
+  as CLAUDE.md asks, and the job is idempotent: the same snapshot and seed write the same
+  items.
+  - An explicit key would make the job run once ever for its key (`idempotency: 'once'`), so
+    a later regeneration of the same days after an edit would be dropped.
+  - A snapshot hash or day versions can only be computed by loading the snapshot, which the
+    enqueuer doesn't do.
 - `@ondes/db` now depends on `@ondes/scheduling` (pure, depends only on `@ondes/shared`), for
   `resolveCategory`, `expandSlots` and `retime`. The worker has no query builder, so its
   queries live in `@ondes/db`, as for #47.
@@ -78,6 +94,15 @@ a week in under 10 s for a 20k-track library.
    the next marker are skipped.
    - An item goes in before an anchor when it ends by then, or overruns it by less than the
      gap it would leave. The residual, at most half an item, is #46's to absorb.
+   - Past an anchor, planning follows the log's timing model (ADR 0003, `retime`): a `hard`
+     or `soft` item starts at its anchor and the items after it follow from there. When the
+     run before it overran, the engine cuts the item on air at the anchor (hard), or the
+     feeder drops what's queued (soft). Retiming records the overrun as the anchored item's
+     `conflict`.
+     - The generator's cursor follows the same rule, so it never disagrees with the planned
+       starts that get written.
+     - Keeping the later end instead would plan the rest of the clock from a time the log
+       doesn't use, and leave it short.
    - A clock whose slots run out before its end repeats its music slots and reports
      `underfilled_clock`.
 
@@ -108,9 +133,12 @@ days' items are now planned history, and the rules pick around them. That is wan
 ### Relaxation
 The rules engine's ladder (ADR 0016) is used as is. Each item stores the rules relaxed for it
 in `relaxed_rules`. A slot no candidate can fill (an empty category, unbreakable rules) is left
-out and reported `unfilled_slot` with the picker's reason. Property tests check, over random
-libraries and rule sets, that an unbreakable separation is never broken and that every broken
-song rest is recorded on the item.
+out and reported `unfilled_slot` with the picker's reason. Property tests check, over 32 seeded
+runs, that an unbreakable separation is never broken and that every broken song rest is
+recorded on the item. They also check that items stay in their day, in order, and meet the
+bulk-write contract. The runs vary the library (120–720 songs), the separation and its featured
+artists, and the clock (8–20 music slots, with or without a top-of-hour marker). Their dates
+include the DST weekends.
 
 **Picker fast path.** `pickForSlot` gains `explain: false`, which the generator uses:
 - it checks candidates in rotation order only until the pick is found. With `search_depth`
@@ -127,8 +155,8 @@ song rest is recorded on the item.
 All of it is exact: `quick-pick.test.ts` checks that both modes give the same pick, `relaxed`
 and `unfilled` on random snapshots. Measured on a 20k-track library (three categories of 5k,
 7k and 8k songs, 90 % with an older airing), a week took about 2 s on a loaded shared machine.
-Before the fast path it took over 30 s. `generate.bench.test.ts` runs it with the unit tests
-and enforces the 10 s budget with `ONDES_BENCH=1`.
+Before the fast path it took over 30 s. `generate.bench.test.ts` runs it with the unit tests,
+in CI too, logs the time and enforces the 10 s budget.
 
 ### Never fail, report
 `GeneratedDay.issues`:
@@ -138,9 +166,9 @@ and enforces the 10 s budget with `ONDES_BENCH=1`.
 - `episode_missing`, `occurrence_dropped`, `occurrence_overlap`;
 - `vt_placeholder`.
 
-None of them stops the day. After a hole (an hour without a clock), the next item doesn't slide
-into it: a `flow` item that would start after the previous one ends becomes `not_before` its
-time. The feeder holds it and the safety source plays meanwhile (ADR 0012). The job logs the
+None of them stops the day. After a hole (an hour without a clock, or a show from the night
+before), the cursor jumps to the end of the hole and the next item doesn't slide into it: a
+`flow` item becomes `not_before` the hole's end. The feeder holds it and the safety source plays meanwhile (ADR 0012). The job logs the
 counts. Turning them into dashboard alerts is left to the caller (#101).
 
 ### Missing episodes (ADR 0022)
@@ -151,8 +179,12 @@ counts. Turning them into dashboard alerts is left to the caller (#101).
 - The generator doesn't plan fallbacks itself: whether audio arrives is only known close to
   air time.
 - **Late audio:** `attachEpisodeAudio(db, ctx, episodeId)` puts an episode's new asset into the
-  empty items planned for it that haven't started, and returns the touched days. The api's
-  episode update should call it and publish `log.updated`. That wiring is a follow-up.
+  empty items planned for it that haven't started.
+  - Each item takes the episode's own length, as the generator would give it.
+  - The day is retimed, and so is the next day's first-item conflict, like the log repository
+    after every edit. A shorter episode shows as a gap on the next anchored item.
+  - It returns the touched days. The api's episode update should call it and publish
+    `log.updated`; that wiring is a follow-up.
 - **Clock music:** `fillWithClockMusic` (`@ondes/db`) loads the day around the slot and plans
   `[start, start + duration)` from one clock with `planClockMusic`. It is #47's
   `ClockMusicSource`, now the plugin's default (`generatorClockMusic`).
