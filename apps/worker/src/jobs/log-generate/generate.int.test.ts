@@ -107,22 +107,20 @@ beforeAll(async () => {
     ])
     .returning({ id: category.id });
   if (!music || !ids) throw new Error('no categories');
-  await tdb.db
-    .insert(categoryMember)
-    .values([
-      ...songIds.map((assetId) => ({
-        ...base(),
-        categoryId: music.id,
-        assetId,
-        mode: 'include' as const,
-      })),
-      ...jingles.map((j) => ({
-        ...base(),
-        categoryId: ids.id,
-        assetId: j.id,
-        mode: 'include' as const,
-      })),
-    ]);
+  await tdb.db.insert(categoryMember).values([
+    ...songIds.map((assetId) => ({
+      ...base(),
+      categoryId: music.id,
+      assetId,
+      mode: 'include' as const,
+    })),
+    ...jingles.map((j) => ({
+      ...base(),
+      categoryId: ids.id,
+      assetId: j.id,
+      mode: 'include' as const,
+    })),
+  ]);
 
   const [c] = await tdb.db
     .insert(clock)
@@ -246,7 +244,10 @@ describe('log-generate job', () => {
       (a) => a.action === 'log_day.generate' && a.entityId === day?.id,
     );
     expect(audits).toHaveLength(1);
-    expect(audits[0]).toMatchObject({ actorType: 'system', actorId: ACTOR.type === 'system' ? ACTOR.name : null });
+    expect(audits[0]).toMatchObject({
+      actorType: 'system',
+      actorId: ACTOR.type === 'system' ? ACTOR.name : null,
+    });
   });
 
   it('is deterministic: regenerating with the same seed writes the same items', async () => {

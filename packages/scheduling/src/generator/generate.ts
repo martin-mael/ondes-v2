@@ -87,7 +87,10 @@ export function planClockMusic(
     [...snapshot.history],
     { seed: options.seed ?? `${snapshot.stationId}:${request.startsAt.toISOString()}`, ...options },
   );
-  return builder.fillRange(request.startsAt.getTime(), request.startsAt.getTime() + request.durationMs);
+  return builder.fillRange(
+    request.startsAt.getTime(),
+    request.startsAt.getTime() + request.durationMs,
+  );
 }
 
 /**

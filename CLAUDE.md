@@ -55,7 +55,8 @@ packages/
   storage/                 # S3-compatible abstraction
   queue/                   # RabbitMQ job framework
   scheduling/              # pure, side-effect-free: rules engine, category picker,
-                           # clock expansion, log generator, back-timing
+                           # clock expansion, log generator (generator/), log timing
+                           # (log/: retime), back-timing
 engine/
   templates/               # Liquidsoap script templates (pinned 2.4.x)
   tests/                   # engine fixtures, seam/timing tests
