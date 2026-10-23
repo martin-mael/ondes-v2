@@ -17,10 +17,12 @@ import type { JobPublisher } from '@ondes/queue';
 import {
   type Actor,
   defaultPromoLanes,
+  PLAYOUT_SAMPLE_RATE,
   type PlacementMedia,
   type PromoPlacementStatus,
+  promoValidOnAir,
+  promoVoiceMs,
   type SegueMedia,
-  validThroughout,
 } from '@ondes/shared';
 import { and, eq, gte, inArray, isNotNull, or } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
@@ -56,18 +58,23 @@ export type PlacementSyncResult = { placed: number; dropped: number; seguesDelet
 
 type PlacementRow = typeof promoPlacement.$inferSelect;
 
-/** Re-checks the placements of these log days (all of them when `logDayIds` is omitted). */
+/**
+ * Re-checks the coming placements of these log days, or of one promo. Only transitions still
+ * ahead (`plannedAt >= now`): what aired, or should have, is history, and a past day edited or
+ * regenerated after a promo's kill date keeps its record.
+ */
 export async function syncPromoPlacements(
   deps: PlacementDeps,
   scope: StationScope,
-  filter: { logDayIds: string[] } | { promoId: string; from: Date },
+  filter: { logDayIds: string[] } | { promoId: string },
+  now = new Date(),
 ): Promise<PlacementSyncResult> {
   const where =
     'logDayIds' in filter
       ? filter.logDayIds.length
         ? inArray(promoPlacement.logDayId, filter.logDayIds)
         : undefined
-      : and(eq(promoPlacement.promoId, filter.promoId), gte(promoPlacement.plannedAt, filter.from));
+      : eq(promoPlacement.promoId, filter.promoId);
   const result: PlacementSyncResult = { placed: 0, dropped: 0, seguesDeleted: 0 };
   if (!where) return result;
   const rows = await deps.db
@@ -77,6 +84,7 @@ export async function syncPromoPlacements(
       and(
         whereStation(promoPlacement, scope),
         where,
+        gte(promoPlacement.plannedAt, now),
         or(
           inArray(promoPlacement.status, ['pending', 'placed']),
           isNotNull(promoPlacement.segueId),
@@ -117,10 +125,15 @@ export async function syncPromoPlacements(
   return result;
 }
 
-/** Why each placement's promo can't air there any more, or null. */
+/**
+ * Why each placement's promo can't air there any more, or null. Validity is checked over the
+ * voice's air window (`promoValidOnAir`, the generator's own check): exactly, from its segue's
+ * voice lane, once it has one; else wherever the default segue may put it.
+ */
 async function eligibilityOf(db: Db, scope: StationScope, rows: PlacementRow[]) {
   const promoIds = [...new Set(rows.map((r) => r.promoId))];
-  const [promos, members] = await Promise.all([
+  const segueIds = rows.flatMap((r) => (r.segueId ? [r.segueId] : []));
+  const [promos, members, segues] = await Promise.all([
     db
       .select({
         id: promo.id,
@@ -128,26 +141,40 @@ async function eligibilityOf(db: Db, scope: StationScope, rows: PlacementRow[]) 
         startAt: asset.startAt,
         killAt: asset.killAt,
         durationMs: asset.durationMs,
+        sampleRate: assetCues.sampleRate,
+        cueIn: assetCues.cueIn,
+        cueOut: assetCues.cueOut,
       })
       .from(promo)
       .innerJoin(asset, eq(asset.id, promo.assetId))
+      .leftJoin(assetCues, eq(assetCues.assetId, promo.assetId))
       .where(and(whereStation(promo, scope), inArray(promo.id, promoIds))),
     db
       .select({ poolId: vtPoolMember.poolId, promoId: vtPoolMember.promoId })
       .from(vtPoolMember)
       .where(and(whereStation(vtPoolMember, scope), inArray(vtPoolMember.promoId, promoIds))),
+    segueIds.length
+      ? db
+          .select({ id: segue.id, voices: segue.voices })
+          .from(segue)
+          .where(and(whereStation(segue, scope), inArray(segue.id, segueIds)))
+      : [],
   ]);
   const byId = new Map(promos.map((p) => [p.id, p]));
+  const voicesBySegue = new Map(segues.map((s) => [s.id, s.voices]));
   const inPool = new Set(members.map((m) => `${m.poolId}:${m.promoId}`));
   return (row: PlacementRow): string | null => {
     const p = byId.get(row.promoId);
     if (!p) return 'the promo was deleted';
     if (!p.enabled) return 'the promo was disabled';
     if (row.poolId && !inPool.has(`${row.poolId}:${row.promoId}`)) return 'the promo left the pool';
-    const margin = p.durationMs ?? 0;
-    const from = new Date(row.plannedAt.getTime() - margin);
-    const to = new Date(row.plannedAt.getTime() + margin);
-    if (!validThroughout(p, from, to)) return 'outside the promo’s start and kill dates';
+    const voice = row.segueId
+      ? voicesBySegue.get(row.segueId)?.find((v) => v.assetId === row.assetId)
+      : undefined;
+    const startMs = voice ? (voice.start * 1000) / PLAYOUT_SAMPLE_RATE : undefined;
+    if (!promoValidOnAir(p, row.plannedAt, promoVoiceMs(p), startMs)) {
+      return 'outside the promo’s start and kill dates';
+    }
     if (row.fromItemId === null || row.toItemId === null) return 'its songs were replaced';
     return null;
   };
@@ -332,23 +359,28 @@ function placementMedia(media: SegueMedia, markers: Markers | undefined): Placem
 }
 
 /**
- * Before a promo is deleted: its coming placements are dropped and their generated segues
- * deleted, so nothing of it is left to air (its placements then go with it).
+ * Before a promo or a pool is deleted: their coming placements are dropped and their generated
+ * segues deleted, so nothing of them is left to air (a deleted pool sets its placements' pool to
+ * null, and the re-check could no longer tell they came from it).
  */
-export async function retirePromo(
+export async function retirePlacements(
   deps: PlacementDeps,
   scope: StationScope,
-  promoId: string,
+  of: { promoId: string } | { poolId: string },
   now = new Date(),
 ): Promise<PlacementSyncResult> {
   const ctx = { actor: PROMOS_ACTOR, scope };
+  const [match, reason] =
+    'promoId' in of
+      ? [eq(promoPlacement.promoId, of.promoId), 'the promo was deleted']
+      : [eq(promoPlacement.poolId, of.poolId), 'the pool was deleted'];
   const rows = await deps.db
     .select()
     .from(promoPlacement)
     .where(
       and(
         whereStation(promoPlacement, scope),
-        eq(promoPlacement.promoId, promoId),
+        match,
         gte(promoPlacement.plannedAt, now),
         or(
           inArray(promoPlacement.status, ['pending', 'placed']),
@@ -359,7 +391,7 @@ export async function retirePromo(
   const result: PlacementSyncResult = { placed: 0, dropped: 0, seguesDeleted: 0 };
   for (const row of rows) {
     if (row.status !== 'dropped') {
-      await setStatus(deps.db, ctx, row, 'dropped', 'the promo was deleted');
+      await setStatus(deps.db, ctx, row, 'dropped', reason);
       result.dropped++;
     }
     if (await deleteGeneratedSegue(deps, ctx, row)) result.seguesDeleted++;

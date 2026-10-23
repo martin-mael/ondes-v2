@@ -117,3 +117,37 @@ describe('defaultPromoLanes', () => {
     }
   });
 });
+
+describe('defaultPromoLanes: bounds and B’s duck (review)', () => {
+  it('keeps the voice within 30 s of A’s end, whatever the outro', () => {
+    // A 60 s outro (crossfade 30 s): the voice would start a minute early; 30 s at most.
+    const lanes = defaultPromoLanes(
+      songA({ outroStart: s(119), crossStartNext: s(149) }),
+      songB(),
+      voice(10),
+    );
+    expect(lanes.voices[0]?.start).toBe(-s(30));
+    // A long intro and a short voice: it would start 56 s after A's end; 30 s at most.
+    const late = defaultPromoLanes(songA(), songB({ introEnd: s(61) }), voice(4));
+    expect(late.voices[0]?.start).toBe(s(30));
+  });
+
+  it('without an outro marker, the voice starts at B’s natural start', () => {
+    const lanes = defaultPromoLanes(songA({ crossStartNext: s(175) }), songB(), voice(10));
+    expect(lanes.voices[0]?.start).toBe(-s(4));
+  });
+
+  it('ducks B only from where the voice comes in, like A', () => {
+    // A short voice over a long intro: B (natural start −3 s) plays alone first, then ducks.
+    const lanes = defaultPromoLanes(
+      songA({ outroStart: s(167), crossStartNext: s(176) }),
+      songB({ introEnd: s(9) }),
+      voice(4),
+    );
+    const start = lanes.voices[0]?.start ?? 0;
+    expect(lanes.in.start).toBeLessThan(start);
+    expect(envelopeGainAt(lanes.in.envelope, lanes.in.start)).toBe(1);
+    expect(envelopeGainAt(lanes.in.envelope, start)).toBeCloseTo(10 ** (-8 / 20));
+    expect(envelopeGainAt(lanes.in.envelope, start + s(4) + s(0.3))).toBe(1);
+  });
+});

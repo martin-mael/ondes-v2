@@ -10,7 +10,7 @@ import {
 } from '@ondes/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleAlertIcon, InfoIcon, PlusIcon, Trash2Icon } from 'lucide-react';
-import { type FormEvent, useEffect, useState } from 'react';
+import { type FormEvent, useState } from 'react';
 import { Alert, AlertDescription } from '@/ui/alert';
 import { Button } from '@/ui/button';
 import { Checkbox } from '@/ui/checkbox';
@@ -24,6 +24,7 @@ import {
 } from '@/ui/dialog';
 import { Field, FieldDescription, FieldError, FieldLabel, FieldLegend, FieldSet } from '@/ui/field';
 import { Input } from '@/ui/input';
+import { Label } from '@/ui/label';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { isApiError } from '../../app/api/client.ts';
 import { DelayedSpinner } from '../../app/pending.tsx';
@@ -94,16 +95,19 @@ function draftOf(promo: Promo | undefined, timezone: string): Draft {
 const comparable = (d: Draft) =>
   JSON.stringify({ ...d, dayparts: d.dayparts.map(({ key: _, ...p }) => p) });
 
-/** A station-local date and time as an instant; null when both are empty, 'invalid' if one is. */
-function instant(date: string, time: string, timezone: string): Date | null | 'invalid' {
+/**
+ * A station-local date and time as an instant; null when both are empty, 'partial' when only one
+ * is filled (work in progress: left out of the save, never refused).
+ */
+function instant(date: string, time: string, timezone: string): Date | null | 'partial' {
   if (!date && !time) return null;
-  if (!date || !time) return 'invalid';
+  if (!date || !time) return 'partial';
   return zonedInstant(date as LocalDate, time as LocalTime, timezone);
 }
 
-type Errors = Partial<
-  Record<'asset' | 'startAt' | 'killAt' | 'eventAt' | 'weight' | 'maxPlaysPerDay', string>
->;
+const isPartial = (date: string, time: string) => !date !== !time;
+
+type Errors = Partial<Record<'asset' | 'killAt' | 'weight' | 'maxPlaysPerDay', string>>;
 
 export function PromoDialog({
   stationId,
@@ -136,16 +140,20 @@ export function PromoDialog({
     open && comparable(draft) !== comparable(draftOf(base, timezone)),
   );
 
-  // A fresh draft each time the dialog opens (not when the list refetches meanwhile).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on open and on another promo only.
-  useEffect(() => {
-    if (!open) return;
-    setBase(promo);
-    setDraft(draftOf(promo, timezone));
-    setErrors({});
-    setFormError(null);
-    setConflict(false);
-  }, [open, promo?.id, timezone]);
+  // A fresh draft each time the dialog opens, or opens on another promo (not when the list
+  // refetches meanwhile): state adjusted while rendering, when what it is open for changes.
+  const openFor = open ? (promo?.id ?? 'new') : null;
+  const [shownFor, setShownFor] = useState<string | null>(null);
+  if (openFor !== shownFor) {
+    setShownFor(openFor);
+    if (openFor !== null) {
+      setBase(promo);
+      setDraft(draftOf(promo, timezone));
+      setErrors({});
+      setFormError(null);
+      setConflict(false);
+    }
+  }
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
@@ -162,9 +170,6 @@ export function PromoDialog({
     const startAt = instant(draft.startDate, draft.startTime, timezone);
     const killAt = instant(draft.killDate, draft.killTime, timezone);
     const eventAt = instant(draft.eventDate, draft.eventTime, timezone);
-    if (startAt === 'invalid') next.startAt = t('form.dateInvalid');
-    if (killAt === 'invalid') next.killAt = t('form.dateInvalid');
-    if (eventAt === 'invalid') next.eventAt = t('form.dateInvalid');
     if (startAt instanceof Date && killAt instanceof Date && killAt <= startAt) {
       next.killAt = t('form.killBeforeStart');
     }
@@ -178,7 +183,10 @@ export function PromoDialog({
     }
     setErrors(next);
     if (Object.keys(next).length || !draft.asset) return;
-    const iso = (d: Date | null | 'invalid') => (d instanceof Date ? d.toISOString() : null);
+    const iso = (d: Date | null | 'partial') => (d instanceof Date ? d.toISOString() : null);
+    // A half-filled date isn't sent: an edit keeps the saved one, a new promo has none yet.
+    const dateField = <K extends string>(key: K, d: Date | null | 'partial') =>
+      d === 'partial' ? {} : ({ [key]: iso(d) } as Record<K, string | null>);
     // A daypart without days is work in progress: left out, not refused.
     const dayparts: PromoDaypart[] = draft.dayparts
       .filter((d) => d.weekdays.length > 0)
@@ -190,14 +198,14 @@ export function PromoDialog({
     const fields = {
       showId: draft.showId || null,
       eventName: draft.eventName.trim() || null,
-      eventAt: iso(eventAt),
+      ...dateField('eventAt', eventAt),
       weight,
       maxPlaysPerDay: max,
       dayparts,
       poolIds: draft.poolIds,
       enabled: draft.enabled,
-      startAt: iso(startAt),
-      killAt: iso(killAt),
+      ...dateField('startAt', startAt),
+      ...dateField('killAt', killAt),
     };
     setFormError(null);
     setConflict(false);
@@ -286,7 +294,9 @@ export function PromoDialog({
                 label={t('form.startAt')}
                 date={draft.startDate}
                 time={draft.startTime}
-                error={errors.startAt}
+                partial={
+                  isPartial(draft.startDate, draft.startTime) ? t('form.datePartial') : undefined
+                }
                 help={t('form.dateHelp')}
                 onDate={(v) => set('startDate', v)}
                 onTime={(v) => set('startTime', v)}
@@ -297,6 +307,9 @@ export function PromoDialog({
                 date={draft.killDate}
                 time={draft.killTime}
                 error={errors.killAt}
+                partial={
+                  isPartial(draft.killDate, draft.killTime) ? t('form.datePartial') : undefined
+                }
                 help={t('form.dateHelp')}
                 onDate={(v) => set('killDate', v)}
                 onTime={(v) => set('killTime', v)}
@@ -334,7 +347,9 @@ export function PromoDialog({
                 label={t('form.eventAt')}
                 date={draft.eventDate}
                 time={draft.eventTime}
-                error={errors.eventAt}
+                partial={
+                  isPartial(draft.eventDate, draft.eventTime) ? t('form.datePartial') : undefined
+                }
                 onDate={(v) => set('eventDate', v)}
                 onTime={(v) => set('eventTime', v)}
               />
@@ -393,9 +408,9 @@ export function PromoDialog({
               ) : (
                 <div className="flex max-h-40 flex-col gap-2 overflow-y-auto">
                   {poolList.map((p) => (
-                    // biome-ignore lint/a11y/noLabelWithoutControl: Base UI's checkbox renders the control.
-                    <label key={p.id} className="flex cursor-pointer items-center gap-2">
+                    <div key={p.id} className="flex items-center gap-2">
                       <Checkbox
+                        id={`promo-pool-${p.id}`}
                         checked={draft.poolIds.includes(p.id)}
                         onCheckedChange={(on) =>
                           set(
@@ -406,8 +421,10 @@ export function PromoDialog({
                           )
                         }
                       />
-                      {p.name}
-                    </label>
+                      <Label htmlFor={`promo-pool-${p.id}`} className="font-normal">
+                        {p.name}
+                      </Label>
+                    </div>
                   ))}
                 </div>
               )}
@@ -456,11 +473,16 @@ export function PromoDialog({
               </Button>
             </FieldSet>
 
-            {/* biome-ignore lint/a11y/noLabelWithoutControl: Base UI's checkbox renders the control. */}
-            <label className="flex cursor-pointer items-center gap-2">
-              <Checkbox checked={draft.enabled} onCheckedChange={(on) => set('enabled', on)} />
-              {t('form.enabled')}
-            </label>
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="promo-enabled"
+                checked={draft.enabled}
+                onCheckedChange={(on) => set('enabled', on)}
+              />
+              <Label htmlFor="promo-enabled" className="font-normal">
+                {t('form.enabled')}
+              </Label>
+            </div>
 
             <DialogFooter>
               <Button type="submit" disabled={pending}>
@@ -490,6 +512,8 @@ function DateTime(props: {
   date: string;
   time: string;
   error?: string | undefined;
+  /** A calm note: only one of date and time is filled, so it isn't saved yet. */
+  partial?: string | undefined;
   help?: string;
   onDate(value: string): void;
   onTime(value: string): void;
@@ -514,6 +538,7 @@ function DateTime(props: {
         />
       </div>
       {props.help && <FieldDescription>{props.help}</FieldDescription>}
+      {props.partial && <p className="text-sm text-muted-foreground">{props.partial}</p>}
       <FieldError errors={props.error ? [{ message: props.error }] : undefined} />
     </Field>
   );

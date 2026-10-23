@@ -79,6 +79,59 @@ export function validThroughout(
   return true;
 }
 
+/**
+ * How far from its transition (A's end) a promo's voice may start, either way. The default
+ * segue keeps it there (`defaultPromoLanes`); a check that doesn't know the segue's own lanes
+ * yet (the generator, a placement without its segue) assumes the voice anywhere within it.
+ */
+export const PROMO_MAX_LEAD_MS = 30_000;
+
+/**
+ * When a promo's voice is on air around a transition at `transitionAt`: exactly, from
+ * `voiceStartMs` (its start on the segue axis, ms, 0 = A's end), or, without it, every time the
+ * default segue could put it ({@link PROMO_MAX_LEAD_MS} either side, plus its length). The one
+ * window the generator, the api's re-check and the feeder test validity against (ADR 0032).
+ */
+export function promoAirWindow(
+  transitionAt: Date,
+  voiceMs: number,
+  voiceStartMs?: number,
+): { from: Date; to: Date } {
+  const t = transitionAt.getTime();
+  if (voiceStartMs !== undefined) {
+    return { from: new Date(t + voiceStartMs), to: new Date(t + voiceStartMs + voiceMs) };
+  }
+  return { from: new Date(t - PROMO_MAX_LEAD_MS), to: new Date(t + PROMO_MAX_LEAD_MS + voiceMs) };
+}
+
+/** Whether a promo with this validity may air over a transition at `transitionAt`. */
+export function promoValidOnAir(
+  validity: { startAt: Date | null; killAt: Date | null },
+  transitionAt: Date,
+  voiceMs: number,
+  voiceStartMs?: number,
+): boolean {
+  const { from, to } = promoAirWindow(transitionAt, voiceMs, voiceStartMs);
+  return validThroughout(validity, from, to);
+}
+
+/**
+ * A voice's play length in ms: its cues (cue-out − cue-in, at the cues' rate), else the asset's
+ * length, else 30 s. The same for every check.
+ */
+export function promoVoiceMs(asset: {
+  durationMs: number | null;
+  sampleRate: number | null;
+  cueIn: number | null;
+  cueOut: number | null;
+}): number {
+  if (asset.sampleRate && asset.cueOut !== null) {
+    const length = asset.cueOut - (asset.cueIn ?? 0);
+    if (length > 0) return Math.round((length * 1000) / asset.sampleRate);
+  }
+  return asset.durationMs ?? 30_000;
+}
+
 // --- VT pools ------------------------------------------------------------------------------
 
 export const vtPoolSchema = z.object({
@@ -267,8 +320,14 @@ export const promoPlaySchema = z.object({
 });
 export type PromoPlay = z.infer<typeof promoPlaySchema>;
 
+/** The longest range `GET …/promos/:id/plays` answers, in days. */
+export const PROMO_PLAYS_MAX_DAYS = 92;
+
 export const promoPlaysQuerySchema = z.object({
-  /** Station-local dates, inclusive. Default: the last 7 days to 7 days ahead. */
+  /**
+   * Station-local dates, inclusive, at most {@link PROMO_PLAYS_MAX_DAYS} days. Default: the last
+   * 7 days to 7 days ahead.
+   */
   from: localDateSchema.optional(),
   to: localDateSchema.optional(),
 });

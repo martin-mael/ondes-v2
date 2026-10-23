@@ -34,16 +34,24 @@ two guarantees: an expired promo never airs, and plays per promo are visible.
 - **Clock slots**: `clock_slot.pool_id` (additive, `set null`). A `vt` slot in `promo` mode with a
   `poolId` asks for a pool's promo; `categoryId` (picking a `vt` asset like music, a standalone
   item) stays as the older alternative. A pool slot takes no time in the clock's estimate.
+- Tenancy: the promo, its pool memberships and placements reach their station's asset, pools,
+  promos and log days through composite (id, org, station) foreign keys. The optional references
+  that are set null when their target goes (`promo.show_id`, `promo_placement.pool_id`,
+  `clock_slot.pool_id`) are single-column, like `clock_slot.category_id` / `asset_id` (#39): a
+  composite key can't `set null` without nulling the tenant columns, and drizzle can't declare
+  Postgres' `set null (column)`. The repositories check those references are in the station on
+  write (the promo and clock routes answer 422 / 400 otherwise), and the generator only reads pools
+  of the station it generates.
 - Permissions: `voice_track:read` / `voice_track:write`. No new resource.
 
 ### Placement: the generator's hook, then a segue
 **In the generator (`@ondes/scheduling` `createPromoPlacer`, pure).** The generator now calls
 `placeVoiceTrack` for promo slots with a pool too, and passes the `poolId`. Placeholders stay the
 generator's (`null`: reported `vt_placeholder`). For a pool slot the hook:
-1. needs a song just before the slot (A), not kept by the regeneration (it may carry a segue), and
-   no other promo on that transition;
-2. keeps the pool's promos that are enabled, valid from one voice length before the transition to
-   one after it, inside one of their dayparts (station wall clock: on DST nights the repeated hour
+1. needs a song just before the slot (A), not kept by the regeneration (it may carry a segue), no
+   other promo on that transition, and a music slot after it in the clock (B);
+2. keeps the pool's promos that are enabled, valid over every time the default segue could voice
+   them (below), inside one of their dayparts (station wall clock: on DST nights the repeated hour
    counts twice, the skipped one never), and under their daily cap (station-local day);
 3. picks the lowest `(plays that day + 1) / weight`, then the least recently placed, then a seeded
    draw (`randomFor(seed, pool, time, promo)`): plays spread in proportion to weight, and the same
@@ -51,11 +59,15 @@ generator's (`null`: reported `vt_placeholder`). For a pool slot the hook:
 4. **returns no items.** A promo is a segue voice lane (ADR 0017): it takes no time of its own, and
    the run is planned as if it weren't there. It records the placement instead.
 
-After each day, `resolvePromoPlacements` pairs the placements with the generated items: A by
+After each day, `placer.resolve(day)` (`resolvePromoPlacements`) pairs the placements with the generated items: A by
 origin and asset at the nearest start within 10 minutes (back-timing, #46, may move it), B as the next top-level item, which must be a song too. The worker job
 writes them `pending` (`writePromoPlacements`, audited `log_day.promos`) right after the day.
 Placements that can't be made are reported, not errors: `no_song_before`, `transition_taken`,
-`no_eligible_promo`, `no_song_after`, counted in the job log as `promo_*`.
+`no_eligible_promo`, `no_song_after`, counted in the job log as `promo_*`. A play counts against
+caps and in rotation once the hook accepts it; one the day then rejects (B isn't a song after all)
+is given back, so it doesn't burn the cap for the days after. Within the same day, the clock check
+in step 1 turns most of those down before a play is counted; the rare rest (a marker skipped
+slots) may hold a slot of the cap until the day ends.
 
 Plays that count against caps and rotation are the placements of the days around the ones being
 generated (a week back), and those of the generated days a regeneration keeps.
@@ -68,16 +80,29 @@ the named days gets its segue from the segues module's own `createSegue` (A and 
 writes; the worker has no segues module. A placement whose media aren't there yet waits for the
 next event (also on `asset.ingested` of the promo).
 
+### One air window for every validity check
+`@ondes/shared` `promoAirWindow` / `promoValidOnAir` (contracts/promos.ts) is the one window the
+generator, the api's re-check and the feeder test a promo's validity against, with one voice
+length (`promoVoiceMs`: its cues, else the asset's length):
+- with the voice's place on the segue axis (a segue exists: the api's re-check, the feeder), exactly
+  when it airs;
+- without it (the generator, a placement before its segue), every time the default segue may put
+  it: `PROMO_MAX_LEAD_MS` (30 s) either side of the transition, plus its length. The default segue
+  keeps the voice within that bound, so a promo the generator placed is never dropped later for its
+  dates unless they changed.
+
 ### The default segue: from cue markers, ducked (`@ondes/shared` `defaultPromoLanes`)
 On the segue axis (0 = A's end), "hitting the post":
 1. B's natural start is A's `crossStartNext` (0 without it);
-2. the voice starts with A's outro (`outroStart`), or at B's natural start if earlier;
+2. the voice starts with A's outro (`outroStart`), or at B's natural start if earlier, or without
+   an outro marker; never more than 30 s from A's end either way (the air window above);
 3. B starts so that its intro (`introEnd`) ends with the voice: the voice covers A's outro and B's
    intro, and B's vocals come in as it ends (without an intro marker, B starts as it ends);
 4. B never starts before its natural start: a short voice moves later instead. A voice longer than
    the instrumental parts delays B;
-5. A and B duck 8 dB under the voice with 300 ms ramps (the owner's default, the segue editor's
-   first preset). The duck itself (`duckEnvelopes`) is now shared by the generator and the editor's
+5. A and B duck 8 dB under the voice with 300 ms ramps, both ramping down to where the voice comes
+   in (B starting before the voice plays at full level until then), B back up once it ends (the
+   owner's default, the segue editor's first preset). The duck itself (`duckEnvelopes`) is now shared by the generator and the editor's
    "duck" preset.
 
 Markers only, deterministic. **No AI or ML, not even opt-in** (the owner's rule). #61 refines this
@@ -99,13 +124,17 @@ segue (audited). Once a person saves the segue in the editor it becomes `manual`
 At every step:
 - **Generator:** a promo is placed only if valid around the transition (above).
 - **Api re-check:** a promo edit (disabled, new dates, out of a pool), a library edit of its asset
-  (`asset.updated`), and every `log.updated` re-check its coming placements: one that can't air any
-  more is dropped and its generated segue deleted. Deleting a promo retires its coming placements
-  first. A `manual` segue is never deleted: it is a person's work.
+  (`asset.updated`), and every `log.updated` re-check its coming placements, those whose transition
+  is still ahead: one that can't air any more is dropped and its generated segue deleted. A past
+  transition is history, and an edit of a past day after a kill date leaves it alone. Deleting a
+  promo or a pool retires its coming placements first (a deleted pool's placements lose their
+  pool, so the re-check alone couldn't tell). A `manual` segue is never deleted: it is a person's
+  work.
 - **Feeder (`apps/api/src/modules/engine/feeder`):** the last word, at push time, whatever the log
   says (an edited segue, a kill date moved after planning, a log running late). `FeedMedia` carries
-  the asset's validity. An island or a fallback overlay with a voice outside its validity, from one
-  voice length before the transition (or now, if later) to one after it, is left out: the
+  the asset's validity. An island or a fallback overlay with a voice outside its validity over its
+  exact air window (its place on the segue axis, from the head item's planned end or now, if
+  later) is left out: the
   transition airs as a plain crossfade. A standalone `vt` item outside its validity is skipped,
   reported `expired` (`feeder.item.passed_over`, an additive reason).
 

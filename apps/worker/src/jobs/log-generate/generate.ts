@@ -14,7 +14,6 @@ import {
   type GeneratorIssue,
   generateDays,
   type PromoIssue,
-  resolvePromoPlacements,
 } from '@ondes/scheduling';
 import {
   type Actor,
@@ -66,7 +65,7 @@ export async function runLogGenerate(
       timeZone: loaded.snapshot.timeZone,
       dates: payload.localDates,
     }),
-    { seed: payload.seed ?? scope.stationId },
+    { seed: payload.seed ?? scope.stationId, clocks: loaded.snapshot.clocks },
   );
   const generated = generateDays(loaded.snapshot, payload.localDates, {
     ...(payload.seed ? { seed: payload.seed } : {}),
@@ -79,7 +78,7 @@ export async function runLogGenerate(
       status: payload.status,
     });
     days.push(written);
-    const resolved = resolvePromoPlacements(day, promos.placements);
+    const resolved = promos.resolve(day);
     promoIssues.push(...resolved.issues);
     await writePromoPlacements(
       deps.db,

@@ -6,7 +6,7 @@ import {
   type LogItem,
   PLAYOUT_SAMPLE_RATE,
   playoutPath,
-  validThroughout,
+  promoValidOnAir,
 } from '@ondes/shared';
 import type { SkipReason } from './plan.ts';
 import {
@@ -241,9 +241,10 @@ function buildChain(
 }
 
 /**
- * Whether a voice of the island would air outside its asset's validity. It airs around the
- * transition: from one voice length before the head item's planned end (or now, if later) to one
- * after it, the same margin the generator checks promos with.
+ * Whether a voice of the island would air outside its asset's validity (`promoValidOnAir`, the
+ * generator's and the api's check). Each voice airs at its own place on the segue axis (0 = the
+ * head item's end, as the fallback overlay times it), from the head's planned end, or now if
+ * the log runs late.
  */
 function voiceOutOfValidity(
   island: FeedIsland,
@@ -252,14 +253,22 @@ function voiceOutOfValidity(
 ): boolean {
   const head = input.items[index.get(island.plan.head.itemId) ?? -1];
   if (!head) return false;
-  const at = Math.max(
-    input.nowMs ?? -Infinity,
-    Date.parse(head.plannedStart) + head.plannedDurationMs,
+  const transition = new Date(
+    Math.max(input.nowMs ?? -Infinity, Date.parse(head.plannedStart) + head.plannedDurationMs),
   );
+  const { files, spec } = island.plan;
+  const a = spec.sources.find(
+    (s) => s.at === 0 && files[s.sha256]?.assetId === island.plan.head.assetId,
+  );
+  const aEnd = a ? a.to - a.from : 0;
   return voicesOf(island, input).some(({ source, media }) => {
     if (!media?.validity) return false;
-    const length = samplesToMs(source.to - source.from);
-    return !validThroughout(media.validity, new Date(at - length), new Date(at + length));
+    return !promoValidOnAir(
+      media.validity,
+      transition,
+      samplesToMs(source.to - source.from),
+      ((source.at - aEnd) * 1000) / PLAYOUT_SAMPLE_RATE,
+    );
   });
 }
 

@@ -18,13 +18,14 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
 import type { EventSink } from '../segues/events.ts';
-import { retirePromo, syncPromoPlacements } from './placements.ts';
+import { retirePlacements, syncPromoPlacements } from './placements.ts';
 import * as repo from './repo.ts';
 
 // Promo VTs and VT pools (#60), under /api/v1/stations/:stationId/{promos,vt-pools}. Reads need
 // `voice_track:read`, edits `voice_track:write`; every edit writes an audit row. A promo edit
-// re-checks its coming placements right away: one that can't air any more (disabled, expired,
-// out of the pool) is dropped and its generated segue deleted.
+// (pools included) re-checks its coming placements right away: one that can't air any more
+// (disabled, expired, out of the pool) is dropped and its generated segue deleted. Deleting a
+// promo or a pool retires its coming placements first.
 
 const stationParams = z.object({ stationId: z.string() });
 const poolParams = stationParams.extend({ poolId: uuidSchema });
@@ -81,7 +82,11 @@ export async function promosRoutes(app: FastifyInstance, options: PromosRoutesOp
     '/stations/:stationId/vt-pools/:poolId',
     { preHandler: write, schema: { params: poolParams } },
     async (request, reply) => {
-      await repo.deletePool(app.db, ctx(request), request.params.poolId);
+      const c = ctx(request);
+      // 404 before touching placements; then nothing of the pool is left to air.
+      await repo.getPool(app.db, c.scope, request.params.poolId);
+      await retirePlacements(deps(request), c.scope, { poolId: request.params.poolId });
+      await repo.deletePool(app.db, c, request.params.poolId);
       return reply.code(204).send();
     },
   );
@@ -142,10 +147,7 @@ export async function promosRoutes(app: FastifyInstance, options: PromosRoutesOp
     async (request) => {
       const c = ctx(request);
       await repo.updatePromo(app.db, c, request.params.promoId, request.body);
-      await syncPromoPlacements(deps(request), c.scope, {
-        promoId: request.params.promoId,
-        from: new Date(),
-      });
+      await syncPromoPlacements(deps(request), c.scope, { promoId: request.params.promoId });
       // Read after the re-check: its planned count reflects what was dropped.
       return repo.getPromo(app.db, c.scope, request.params.promoId);
     },
@@ -158,7 +160,7 @@ export async function promosRoutes(app: FastifyInstance, options: PromosRoutesOp
       const c = ctx(request);
       // 404 before touching placements.
       await repo.getPromo(app.db, c.scope, request.params.promoId);
-      await retirePromo(deps(request), c.scope, request.params.promoId);
+      await retirePlacements(deps(request), c.scope, { promoId: request.params.promoId });
       await repo.deletePromo(app.db, c, request.params.promoId);
       return reply.code(204).send();
     },

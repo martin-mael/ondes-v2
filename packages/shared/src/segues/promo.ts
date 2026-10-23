@@ -1,4 +1,5 @@
 import { PLAYOUT_SAMPLE_RATE } from '../contracts/library.ts';
+import { PROMO_MAX_LEAD_MS } from '../contracts/promos.ts';
 import {
   type Envelope,
   SEGUE_MAX_OFFSET_SAMPLES,
@@ -25,10 +26,11 @@ export const DEFAULT_DUCK: DuckPreset = { depthDb: -8, rampMs: 300 };
 const samplesOfMs = (ms: number) => Math.round((ms * PLAYOUT_SAMPLE_RATE) / 1000);
 
 /**
- * A's and B's envelopes ducking under voices that play over `[start, end)`: A ramps down to
- * `depthDb` over `rampMs`, ending where the voices start, and holds there; B plays at `depthDb`
- * until they end, then ramps back to 0 dB. A gets no envelope when the voices start after its
- * end, B none when they end before it starts.
+ * A's and B's envelopes ducking under voices that play over `[start, end)`. Both ramp down to
+ * `depthDb` over `rampMs`, ending where the voices start, and hold there; B ramps back to 0 dB
+ * over `rampMs` once they end (A has ended by then, or plays on ducked). So B starting before the
+ * voices plays at full level until they come in, and one starting under them comes in ducked.
+ * A gets no envelope when the voices start after its end, B none when they end before it starts.
  */
 export function duckEnvelopes(
   span: { start: number; end: number },
@@ -47,6 +49,12 @@ export function duckEnvelopes(
     in:
       span.end > inStart
         ? [
+            ...(span.start > inStart
+              ? [
+                  { at: span.start - ramp, gainDb: 0 },
+                  { at: span.start, gainDb: preset.depthDb },
+                ]
+              : []),
             { at: span.end, gainDb: preset.depthDb },
             { at: span.end + ramp, gainDb: 0 },
           ]
@@ -84,15 +92,17 @@ const clamp = (at: number) =>
 /**
  * The default segue for a voice between A and B ("hitting the post"):
  * 1. B's natural start is A's `crossStartNext` (0, A's end, without it).
- * 2. The voice starts with A's outro (`outroStart`), or at B's natural start if that is earlier
- *    or A has no outro marker.
+ * 2. The voice starts with A's outro (`outroStart`), or at B's natural start if that is earlier;
+ *    without an outro marker, at B's natural start.
  * 3. B starts so that its intro (`introEnd`) ends with the voice: the voice talks over A's
  *    outro and B's intro and B's vocals come in as it ends. Without an intro marker, B starts as
  *    the voice ends.
  * 4. B never starts before its natural start: a short voice moves later instead, so it still
  *    ends at B's intro end. A long one delays B (a pause in the music under the voice).
  * 5. A and B duck under the voice ({@link DEFAULT_DUCK}).
- * The voice never starts before A does. Everything stays within the segue's ±10 minutes.
+ * The voice never starts before A does, and starts within {@link PROMO_MAX_LEAD_MS} of A's end
+ * either way: the window the validity checks assume before the segue exists (ADR 0032). A voice
+ * whose outro or intro would place it further keeps to that bound.
  */
 export function defaultPromoLanes(
   a: PlacementMedia,
@@ -102,15 +112,17 @@ export function defaultPromoLanes(
 ): PromoLanes {
   const aStart = a.cueIn - a.cueOut;
   const natural = inside(a.crossStartNext, a) ? a.crossStartNext - a.cueOut : 0;
-  const outro = inside(a.outroStart, a) ? a.outroStart - a.cueOut : 0;
+  const outro = inside(a.outroStart, a) ? a.outroStart - a.cueOut : null;
   const intro = inside(b.introEnd, b) ? b.introEnd - b.cueIn : 0;
   const length = voice.cueOut - voice.cueIn;
+  const lead = samplesOfMs(PROMO_MAX_LEAD_MS);
+  const bounded = (at: number) => Math.max(aStart, -lead, Math.min(lead, at));
 
-  let start = Math.max(aStart, Math.min(outro, natural));
+  let start = bounded(outro === null ? natural : Math.min(outro, natural));
   let inStart = start + length - intro;
   if (inStart < natural) {
     inStart = natural;
-    start = Math.max(aStart, inStart + intro - length);
+    start = bounded(inStart + intro - length);
   }
   start = clamp(start);
   inStart = clamp(inStart);

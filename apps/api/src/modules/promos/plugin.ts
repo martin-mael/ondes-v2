@@ -69,7 +69,7 @@ export function createPromoEventHandler(deps: {
       .from(promo)
       .where(and(eq(promo.assetId, event.data.assetId), eq(promo.stationId, scope.stationId)));
     if (!found) return null;
-    return syncPromoPlacements(deps, scope, { promoId: found.id, from: new Date() });
+    return syncPromoPlacements(deps, scope, { promoId: found.id });
   };
 }
 

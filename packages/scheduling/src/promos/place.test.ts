@@ -338,3 +338,74 @@ describe('resolvePromoPlacements after back-timing', () => {
     );
   });
 });
+
+describe('validity over the voice’s air window, and plays counted once accepted (review)', () => {
+  it('turns down a promo the default segue could voice before its start', () => {
+    // Starts 10:00:00; the slot falls at 10:00:20; a 12 s voice may start 30 s early.
+    const placer = createPromoPlacer(
+      snapshot([promo(1, { startAt: at('10:00'), playMs: 12_000 })]),
+      { seed: 's' },
+    );
+    const when = new Date(at('10:00').getTime() + 20_000);
+    placer.placeVoiceTrack({
+      clockId: HOUR_CLOCK_ID,
+      slotIndex: 3,
+      mode: 'promo',
+      poolId: POOL,
+      at: when,
+      previous: song(new Date(when.getTime() - 200_000)),
+    });
+    expect(placer.placements).toHaveLength(0);
+    ask(placer, '10:01');
+    expect(placer.placements).toHaveLength(1);
+  });
+
+  it('turns down a slot the clock doesn’t follow with music, without counting a play', () => {
+    const clocks = new Map([
+      [
+        HOUR_CLOCK_ID,
+        {
+          slots: [
+            slot({ kind: 'category', categoryId: CATEGORY_IDS.current }),
+            slot({ kind: 'category', categoryId: CATEGORY_IDS.current }),
+            slot({ kind: 'category', categoryId: CATEGORY_IDS.current }),
+            slot({ kind: 'vt', mode: 'promo', poolId: POOL }),
+            slot({ kind: 'jingle', categoryId: CATEGORY_IDS.jingles }),
+          ],
+        },
+      ],
+    ]);
+    const placer = createPromoPlacer(snapshot([promo(1, { maxPlaysPerDay: 1 })]), {
+      seed: 's',
+      clocks,
+    });
+    ask(placer, '10:00');
+    expect(placer.issues.map((i) => i.code)).toEqual(['no_song_after']);
+    expect(placer.placements).toHaveLength(0);
+  });
+
+  it('gives back the play of a placement the day rejects', () => {
+    const snap = fixtureSnapshot({ songs: 600, clocks: [promoClock()] });
+    const placer = createPromoPlacer(snapshot([promo(1, { maxPlaysPerDay: 1 })]), {
+      seed: snap.stationId,
+    });
+    const day = generateDay(snap, DATE, {
+      extensions: { placeVoiceTrack: placer.placeVoiceTrack },
+    });
+    expect(placer.placements).toHaveLength(1);
+    // The same day where B is not a song: the placement is rejected, its play given back.
+    const [first] = placer.placements;
+    const a = day.items.findIndex(
+      (i) =>
+        i.assetId === first?.after.assetId && i.start.getTime() === first?.after.start.getTime(),
+    );
+    const broken = {
+      ...day,
+      items: day.items.map((i, n) => (n === a + 1 ? { ...i, kind: 'jingle' as const } : i)),
+    };
+    expect(placer.resolve(broken).placed).toHaveLength(0);
+    // The cap is free again for the next slot.
+    ask(placer, '23:30');
+    expect(placer.placements).toHaveLength(2);
+  });
+});

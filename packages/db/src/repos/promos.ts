@@ -1,5 +1,5 @@
 import type { PromoCandidate, PromoPlay, PromoSnapshot } from '@ondes/scheduling';
-import { addDays, type LocalDate, localDayBounds } from '@ondes/shared';
+import { addDays, type LocalDate, localDayBounds, promoVoiceMs } from '@ondes/shared';
 import { and, asc, eq, gte, inArray, isNull, lt, notInArray, or } from 'drizzle-orm';
 import { type MutationContext, withAudit } from '../audit.ts';
 import type { Db, Executor } from '../client.ts';
@@ -65,7 +65,7 @@ export async function loadPromoSnapshot(
     startAt: r.startAt,
     killAt: r.killAt,
     enabled: r.enabled,
-    playMs: voiceMs(r),
+    playMs: promoVoiceMs(r),
   }));
 
   const sorted = [...options.dates].sort();
@@ -90,20 +90,6 @@ export async function loadPromoSnapshot(
     );
   const plays: PromoPlay[] = played.map((p) => ({ promoId: p.promoId, at: p.at }));
   return { timeZone: options.timeZone, promos, plays };
-}
-
-/** The voice's play length: its cues, else the asset's length, else 30 s. */
-function voiceMs(r: {
-  durationMs: number | null;
-  sampleRate: number | null;
-  cueIn: number | null;
-  cueOut: number | null;
-}): number {
-  if (r.sampleRate && r.cueOut !== null) {
-    const length = r.cueOut - (r.cueIn ?? 0);
-    if (length > 0) return Math.round((length * 1000) / r.sampleRate);
-  }
-  return r.durationMs ?? 30_000;
 }
 
 /** A placement of a written day: A and B by position in the day. */

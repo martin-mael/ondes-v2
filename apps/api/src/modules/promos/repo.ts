@@ -24,11 +24,13 @@ import {
   type CreateVtPool,
   createPromoSchema,
   createVtPoolSchema,
+  daysBetween,
   type ListPromosQuery,
   type LocalDate,
   listPromosQuerySchema,
   localDateOf,
   localDayBounds,
+  PROMO_PLAYS_MAX_DAYS,
   type Promo,
   type PromoPlayCounts,
   type PromoPlays,
@@ -396,6 +398,13 @@ export async function promoPlays(
   const from: LocalDate = q.from ?? addDays(today, -7);
   const to: LocalDate = q.to ?? addDays(today, 7);
   if (to < from) throw new HttpError(422, 'invalid_range', '`to` is before `from`');
+  if (daysBetween(from, to) >= PROMO_PLAYS_MAX_DAYS) {
+    throw new HttpError(
+      422,
+      'invalid_range',
+      `at most ${PROMO_PLAYS_MAX_DAYS} days of plays at a time`,
+    );
+  }
   const start = localDayBounds(from, timeZone).startsAt;
   const end = localDayBounds(to, timeZone).endsAt;
 
@@ -494,6 +503,28 @@ async function checkReferences(
   }
 }
 
+/**
+ * A start or kill date sent alone is checked against the other one the asset has: the kill date
+ * must come after the start (422, not the library's own conflict).
+ */
+async function checkValidity(
+  tx: Tx,
+  scope: StationScope,
+  assetId: string,
+  values: { startAt?: Date | null | undefined; killAt?: Date | null | undefined },
+) {
+  const [row] = await tx
+    .select({ startAt: asset.startAt, killAt: asset.killAt })
+    .from(asset)
+    .where(and(eq(asset.id, assetId), whereStation(asset, scope)));
+  if (!row) throw new NotFoundError('asset', assetId);
+  const startAt = values.startAt !== undefined ? values.startAt : row.startAt;
+  const killAt = values.killAt !== undefined ? values.killAt : row.killAt;
+  if (startAt && killAt && killAt.getTime() <= startAt.getTime()) {
+    throw new HttpError(422, 'invalid_validity', 'the kill date must be after the start date');
+  }
+}
+
 async function setPools(tx: Tx, scope: StationScope, promoId: string, poolIds: string[]) {
   await tx
     .delete(vtPoolMember)
@@ -524,6 +555,7 @@ export async function createPromo(db: Db, ctx: StationContext, input: CreateProm
     }
     await checkReferences(tx, ctx.scope, values);
     if (values.startAt !== undefined || values.killAt !== undefined) {
+      await checkValidity(tx, ctx.scope, values.assetId, values);
       await updateAsset(tx, ctx, values.assetId, {
         ...(values.startAt !== undefined ? { startAt: values.startAt } : {}),
         ...(values.killAt !== undefined ? { killAt: values.killAt } : {}),
@@ -592,6 +624,7 @@ export async function updatePromo(
       .map((m) => m.poolId)
       .sort();
     if (values.startAt !== undefined || values.killAt !== undefined) {
+      await checkValidity(tx, ctx.scope, before.assetId, values);
       await updateAsset(tx, ctx, before.assetId, {
         ...(values.startAt !== undefined ? { startAt: values.startAt } : {}),
         ...(values.killAt !== undefined ? { killAt: values.killAt } : {}),

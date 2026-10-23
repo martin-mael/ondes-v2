@@ -3,7 +3,10 @@ import { localDayBounds, zonedInstant } from '../time/index.ts';
 import {
   createPromoSchema,
   inDayparts,
+  promoAirWindow,
   promoStatus,
+  promoValidOnAir,
+  promoVoiceMs,
   updatePromoSchema,
   validThroughout,
 } from './promos.ts';
@@ -103,5 +106,40 @@ describe('promo inputs', () => {
         dayparts: [{ weekdays: [1, 1], startHour: 6, endHour: 10 }],
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('promoAirWindow / promoValidOnAir / promoVoiceMs', () => {
+  const t = new Date('2026-11-04T10:00:20Z');
+  it('without lanes: 30 s either side of the transition, plus the voice', () => {
+    expect(promoAirWindow(t, 12_000)).toEqual({
+      from: new Date('2026-11-04T09:59:50Z'),
+      to: new Date('2026-11-04T10:01:02Z'),
+    });
+  });
+  it('with the voice lane: exactly when it airs', () => {
+    expect(promoAirWindow(t, 12_000, -40_000)).toEqual({
+      from: new Date('2026-11-04T09:59:40Z'),
+      to: new Date('2026-11-04T09:59:52Z'),
+    });
+  });
+  it('a promo starting at 10:00 can’t be voiced over a 10:00:20 transition', () => {
+    // The default segue may start the voice 30 s early: 09:59:50, before its start.
+    const window = { startAt: new Date('2026-11-04T10:00:00Z'), killAt: null };
+    expect(promoValidOnAir(window, t, 12_000)).toBe(false);
+    expect(promoValidOnAir(window, new Date('2026-11-04T10:00:30Z'), 12_000)).toBe(true);
+    // Placed 40 s before the transition by its segue: not yet started.
+    expect(promoValidOnAir(window, new Date('2026-11-04T10:00:30Z'), 12_000, -40_000)).toBe(false);
+  });
+  it('measures the voice by its cues first', () => {
+    expect(
+      promoVoiceMs({ durationMs: 20_000, sampleRate: 44_100, cueIn: 0, cueOut: 661_500 }),
+    ).toBe(15_000);
+    expect(promoVoiceMs({ durationMs: 20_000, sampleRate: null, cueIn: null, cueOut: null })).toBe(
+      20_000,
+    );
+    expect(promoVoiceMs({ durationMs: null, sampleRate: null, cueIn: null, cueOut: null })).toBe(
+      30_000,
+    );
   });
 });

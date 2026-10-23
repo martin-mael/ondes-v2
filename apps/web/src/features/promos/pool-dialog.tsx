@@ -15,6 +15,7 @@ import {
 } from '@/ui/dialog';
 import { Field, FieldError, FieldLabel } from '@/ui/field';
 import { Input } from '@/ui/input';
+import { Label } from '@/ui/label';
 import { Textarea } from '@/ui/textarea';
 import { DelayedSpinner } from '../../app/pending.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
@@ -147,16 +148,18 @@ export function PoolDialog({
                   value={draft.color ?? '#888888'}
                   onChange={(e) => setDraft((d) => ({ ...d, color: e.target.value }))}
                 />
-                {/* biome-ignore lint/a11y/noLabelWithoutControl: Base UI's checkbox renders the control. */}
-                <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <div className="flex items-center gap-2">
                   <Checkbox
+                    id="pool-no-color"
                     checked={draft.color === null}
                     onCheckedChange={(on) =>
                       setDraft((d) => ({ ...d, color: on ? null : '#888888' }))
                     }
                   />
-                  {t('pool.noColor')}
-                </label>
+                  <Label htmlFor="pool-no-color" className="text-sm font-normal">
+                    {t('pool.noColor')}
+                  </Label>
+                </div>
               </div>
             </Field>
             <DialogFooter>

@@ -1,9 +1,10 @@
 import {
+  type ClockSlot,
   inDayparts,
   type LocalDate,
   localDateOf,
   type PromoDaypart,
-  validThroughout,
+  promoValidOnAir,
 } from '@ondes/shared';
 import type {
   GeneratedDay,
@@ -23,9 +24,9 @@ import { randomFor } from '../rules/random.ts';
 // (`defaultPromoLanes`).
 //
 // Choosing a promo of the pool, at the slot's time:
-// - eligible: enabled, in the pool, valid (the asset's `startAt`/`killAt`) from one voice length
-//   before the transition to one after it, inside one of its dayparts, under its daily cap
-//   (station-local day of the transition);
+// - eligible: enabled, in the pool, valid (the asset's `startAt`/`killAt`) over every time the
+//   default segue could voice it (`promoAirWindow`), inside one of its dayparts, under its daily
+//   cap (station-local day of the transition);
 // - the one with the fewest plays that day for its weight (`(plays + 1) / weight`) wins, so
 //   plays spread in proportion to weight; then the one placed least recently; then a seeded draw
 //   (`randomFor(seed, …)`), so equal promos rotate the same way on every run.
@@ -95,6 +96,11 @@ export interface PromoIssue {
 export interface PromoPlacer {
   /** The generator hook (`GeneratorExtensions.placeVoiceTrack`). */
   placeVoiceTrack(context: VtPlacementContext): PlannedItem[] | null;
+  /**
+   * `resolvePromoPlacements` for a generated day, and the plays of the placements it rejects
+   * taken back, so they count neither against caps nor in rotation for the days after.
+   */
+  resolve(day: GeneratedDay): { placed: ResolvedPromoPlacement[]; issues: PromoIssue[] };
   /** Placements made so far, in placement order. */
   readonly placements: readonly PromoPlacementPlan[];
   readonly issues: readonly PromoIssue[];
@@ -103,17 +109,46 @@ export interface PromoPlacer {
 /** Item kinds a promo may sit between. */
 const SONG = 'song';
 
-export function createPromoPlacer(snapshot: PromoSnapshot, options: { seed: string }): PromoPlacer {
+/** The clock slots kinds a promo slot may be followed by: a music pick (the song B). */
+const isMusicSlot = (slot: ClockSlot | undefined) => slot?.kind === 'category';
+
+/**
+ * The slot after `index` that plans B: the next one that isn't a voice track (another promo or
+ * placeholder plans nothing of its own). Undefined past the clock's end.
+ */
+function nextPlannedSlot(slots: readonly ClockSlot[], index: number): ClockSlot | undefined {
+  for (let i = index + 1; i < slots.length; i++) {
+    const slot = slots[i] as ClockSlot;
+    if (slot.kind !== 'vt') return slot;
+  }
+  return undefined;
+}
+
+export function createPromoPlacer(
+  snapshot: PromoSnapshot,
+  options: {
+    seed: string;
+    /**
+     * The clocks (the generator snapshot's), to see what follows a promo slot: a slot not
+     * followed by a music pick is turned down before counting a play.
+     */
+    clocks?: ReadonlyMap<string, { slots: readonly ClockSlot[] }>;
+  },
+): PromoPlacer {
   const placements: PromoPlacementPlan[] = [];
   const issues: PromoIssue[] = [];
-  /** Plays per promo per station-local date, and each promo's latest play. */
+  /** Plays per promo per station-local date, and each promo's play times (for recency). */
   const perDay = new Map<string, number>();
-  const latest = new Map<string, number>();
+  const times = new Map<string, number[]>();
   const count = (promoId: string, date: LocalDate) => perDay.get(`${promoId}:${date}`) ?? 0;
-  const record = (promoId: string, at: Date) => {
+  const latestOf = (promoId: string) => Math.max(-Infinity, ...(times.get(promoId) ?? []));
+  const record = (promoId: string, at: Date, by = 1) => {
     const key = `${promoId}:${localDateOf(at, snapshot.timeZone)}`;
-    perDay.set(key, (perDay.get(key) ?? 0) + 1);
-    latest.set(promoId, Math.max(latest.get(promoId) ?? -Infinity, at.getTime()));
+    perDay.set(key, (perDay.get(key) ?? 0) + by);
+    const list = times.get(promoId) ?? [];
+    if (by > 0) list.push(at.getTime());
+    else list.splice(list.lastIndexOf(at.getTime()), 1);
+    times.set(promoId, list);
   };
   for (const play of snapshot.plays) record(play.promoId, play.at);
   const taken = new Set<PlannedItem>();
@@ -124,7 +159,7 @@ export function createPromoPlacer(snapshot: PromoSnapshot, options: { seed: stri
       (p) =>
         p.enabled &&
         p.poolIds.includes(poolId) &&
-        validThroughout(p, new Date(at.getTime() - p.playMs), new Date(at.getTime() + p.playMs)) &&
+        promoValidOnAir(p, at, p.playMs) &&
         inDayparts(p.dayparts, at, snapshot.timeZone) &&
         (p.maxPlaysPerDay === null || count(p.id, date) < p.maxPlaysPerDay),
     );
@@ -133,7 +168,7 @@ export function createPromoPlacer(snapshot: PromoSnapshot, options: { seed: stri
       const candidate = {
         promo,
         score: (count(promo.id, date) + 1) / promo.weight,
-        last: latest.get(promo.id) ?? -Infinity,
+        last: latestOf(promo.id),
         draw: randomFor(options.seed, `${poolId}:${at.toISOString()}:${promo.id}`),
       };
       if (
@@ -152,6 +187,11 @@ export function createPromoPlacer(snapshot: PromoSnapshot, options: { seed: stri
   return {
     placements,
     issues,
+    resolve(day) {
+      const result = resolvePromoPlacements(day, placements);
+      for (const p of result.rejected) record(p.promoId, p.at, -1);
+      return { placed: result.placed, issues: result.issues };
+    },
     placeVoiceTrack(context) {
       const { poolId } = context;
       // Placeholders (recorded later) aren't promos: the generator reports them.
@@ -171,6 +211,10 @@ export function createPromoPlacer(snapshot: PromoSnapshot, options: { seed: stri
         return issue('no_song_before');
       }
       if (a.keptId !== null || taken.has(a)) return issue('transition_taken');
+      const slots = options.clocks?.get(context.clockId)?.slots;
+      if (slots && !isMusicSlot(nextPlannedSlot(slots, context.slotIndex))) {
+        return issue('no_song_after');
+      }
       const promo = choose(poolId, context.at);
       if (!promo) return issue('no_eligible_promo');
       taken.add(a);
@@ -235,11 +279,12 @@ function findPlanned(items: readonly GeneratedItem[], planned: PlannedItem): num
 export function resolvePromoPlacements(
   day: GeneratedDay,
   placements: readonly PromoPlacementPlan[],
-): { placed: ResolvedPromoPlacement[]; issues: PromoIssue[] } {
+): { placed: ResolvedPromoPlacement[]; issues: PromoIssue[]; rejected: PromoPlacementPlan[] } {
   const from = day.startsAt.getTime();
   const to = day.endsAt.getTime();
   const placed: ResolvedPromoPlacement[] = [];
   const issues: PromoIssue[] = [];
+  const rejected: PromoPlacementPlan[] = [];
   for (const p of placements) {
     if (p.at.getTime() < from || p.at.getTime() >= to) continue;
     const fromPosition = findPlanned(day.items, p.after);
@@ -252,6 +297,7 @@ export function resolvePromoPlacements(
         clockId: p.clockId,
         slotIndex: p.slotIndex,
       });
+      rejected.push(p);
       continue;
     }
     const a = day.items[fromPosition] as GeneratedItem;
@@ -262,5 +308,5 @@ export function resolvePromoPlacements(
       plannedAt: new Date(a.plannedStart.getTime() + a.plannedDurationMs),
     });
   }
-  return { placed, issues };
+  return { placed, issues, rejected };
 }

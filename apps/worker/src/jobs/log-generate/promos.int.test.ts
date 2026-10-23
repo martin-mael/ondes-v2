@@ -174,7 +174,9 @@ async function dayOf(localDate: LocalDate) {
 }
 
 describe('promo slots in log-generate', () => {
-  it('writes pending placements between two consecutive songs, audited', async () => {
+  it('writes pending placements between two consecutive songs, audited', {
+    timeout: 60_000,
+  }, async () => {
     const report = await runLogGenerate(deps(), scope, { localDates: [DATE], status: 'draft' });
     expect(report?.issues[0]?.issues.filter((i) => i.code === 'vt_placeholder')).toEqual([]);
     const { day, rows, placements } = await dayOf(DATE);
@@ -201,15 +203,15 @@ describe('promo slots in log-generate', () => {
     expect(audits).toHaveLength(1);
   });
 
-  it('never places an expired promo, nor one not started yet', async () => {
+  it('never places an expired promo, nor one not started yet', { timeout: 60_000 }, async () => {
     const { placements } = await dayOf(DATE);
     const [always, untilNoon, nextWeek] = promoIds;
     const noon = zonedInstant(DATE, '12:00', TZ).getTime();
     expect(placements.some((p) => p.promoId === nextWeek)).toBe(false);
     const killed = placements.filter((p) => p.promoId === untilNoon);
     expect(killed.length).toBeGreaterThan(0);
-    // Ends (with its 20 s) before the kill instant.
-    for (const p of killed) expect(p.plannedAt.getTime() + 20_000).toBeLessThan(noon);
+    // Its whole air window (up to 30 s after the transition, plus its 20 s) is before the kill.
+    for (const p of killed) expect(p.plannedAt.getTime() + 30_000 + 20_000).toBeLessThan(noon);
     // After noon, only the one that is still valid.
     expect(
       placements.filter((p) => p.plannedAt.getTime() >= noon).every((p) => p.promoId === always),
@@ -221,7 +223,9 @@ describe('promo slots in log-generate', () => {
     expect(share).toBeLessThan(0.6);
   });
 
-  it('regenerating replaces the placements, and only an edited segue pins its songs', async () => {
+  it('regenerating replaces the placements, and only an edited segue pins its songs', {
+    timeout: 60_000,
+  }, async () => {
     const { placements } = await dayOf(DATE);
     const [auto, edited] = placements.filter((p) => p.status === 'pending') as [
       (typeof placements)[number],

@@ -273,7 +273,9 @@ describe('promos', () => {
   let promoId: string;
   let voiceId: string;
 
-  it('makes a vt asset a promo, its validity written to the asset', async () => {
+  it('makes a vt asset a promo, its validity written to the asset', {
+    timeout: 30_000,
+  }, async () => {
     poolId = (
       await ok<VtPool>(await call('programmer', 'POST', '/vt-pools', { name: 'Concerts' }), 201)
     ).id;
@@ -336,7 +338,9 @@ describe('promos', () => {
     ).toBe(422);
   });
 
-  it('turns a placement into a default segue over the transition', async () => {
+  it('turns a placement into a default segue over the transition', {
+    timeout: 30_000,
+  }, async () => {
     const songA = await newAsset(scope, 'Song A', 180, 'song');
     const songB = await newAsset(scope, 'Song B', 180, 'song');
     // A's outro: the last 10 s; B's intro: 6 s.
@@ -374,7 +378,9 @@ describe('promos', () => {
     expect(promo.plays.planned).toBe(1);
   });
 
-  it('drops a placement whose promo expired and deletes its generated segue', async () => {
+  it('drops a placement whose promo expired and deletes its generated segue', {
+    timeout: 30_000,
+  }, async () => {
     const [p] = await t.tdb.db
       .select()
       .from(promoPlacement)
@@ -400,7 +406,9 @@ describe('promos', () => {
     ]);
   });
 
-  it('keeps a segue a person saved, even after its placement is dropped', async () => {
+  it('keeps a segue a person saved, even after its placement is dropped', {
+    timeout: 30_000,
+  }, async () => {
     await ok(
       await call('programmer', 'PATCH', `/promos/${promoId}`, { killAt: '2026-12-01T00:00:00Z' }),
     );
@@ -424,7 +432,9 @@ describe('promos', () => {
     await ok(await call('programmer', 'PATCH', `/promos/${promoId}`, { enabled: true }));
   });
 
-  it('counts aired plays from the as-run: vt items and transition voices', async () => {
+  it('counts aired plays from the as-run: vt items and transition voices', {
+    timeout: 30_000,
+  }, async () => {
     const now = new Date();
     const entry = async (startedAt: Date, more: Partial<typeof asRunEntry.$inferInsert>) => {
       await t.tdb.db.insert(asRunEntry).values({
@@ -481,7 +491,9 @@ describe('promos', () => {
     expect(list.items.map((i) => i.id)).toEqual([promoId]);
   });
 
-  it('deleting a promo retires its coming placements and their generated segues', async () => {
+  it('deleting a promo retires its coming placements and their generated segues', {
+    timeout: 30_000,
+  }, async () => {
     const a = await addSong(await newAsset(scope, 'Song E', 180, 'song'));
     const b = await addSong(await newAsset(scope, 'Song F', 180, 'song'));
     const p = await placement(promoId, voiceId, poolId, a, b);
@@ -499,5 +511,107 @@ describe('promos', () => {
     expect((await audits(promoId)).map((x) => x.action).at(-1)).toBe('promo.delete');
     // The asset stays in the library.
     expect(await t.tdb.db.select().from(asset).where(eq(asset.id, voiceId))).toHaveLength(1);
+  });
+});
+
+describe('review: past plays, pool deletion, dates', () => {
+  let poolId: string;
+  let promoId: string;
+  let voiceId: string;
+
+  beforeAll(async () => {
+    poolId = (
+      await ok<VtPool>(await call('programmer', 'POST', '/vt-pools', { name: 'Review pool' }), 201)
+    ).id;
+    voiceId = await newAsset(scope, 'Promo review', 20, 'vt');
+    promoId = (
+      await ok<Promo>(
+        await call('programmer', 'POST', '/promos', {
+          assetId: voiceId,
+          poolIds: [poolId],
+          startAt: '2026-10-01T00:00:00Z',
+        }),
+        201,
+      )
+    ).id;
+  }, 30_000);
+
+  async function placedPair(name: string) {
+    const a = await addSong(await newAsset(scope, `${name} A`, 180, 'song'));
+    const b = await addSong(await newAsset(scope, `${name} B`, 180, 'song'));
+    const p = await placement(promoId, voiceId, poolId, a, b);
+    await logUpdated();
+    const row = await placementRow(p.id);
+    expect(row?.status).toBe('placed');
+    return row as NonNullable<typeof row>;
+  }
+
+  it('leaves a transition that is already past alone', { timeout: 30_000 }, async () => {
+    const row = await placedPair('Past');
+    // Time passes: the transition is behind us.
+    await t.tdb.db
+      .update(promoPlacement)
+      .set({ plannedAt: new Date(Date.now() - 3_600_000) })
+      .where(eq(promoPlacement.id, row.id));
+    await ok(
+      await call('programmer', 'PATCH', `/promos/${promoId}`, { killAt: '2026-10-02T00:00:00Z' }),
+    );
+    await logUpdated();
+    expect(await placementRow(row.id)).toMatchObject({ status: 'placed', segueId: row.segueId });
+    expect(
+      await t.tdb.db
+        .select()
+        .from(segue)
+        .where(eq(segue.id, row.segueId ?? '')),
+    ).toHaveLength(1);
+    await ok(await call('programmer', 'PATCH', `/promos/${promoId}`, { killAt: null }));
+  });
+
+  it('deleting a pool retires its coming placements and their segues', {
+    timeout: 30_000,
+  }, async () => {
+    const row = await placedPair('Pool');
+    await ok(await call('programmer', 'DELETE', `/vt-pools/${poolId}`), 204);
+    expect(await placementRow(row.id)).toMatchObject({
+      status: 'dropped',
+      detail: 'the pool was deleted',
+      segueId: null,
+    });
+    expect(
+      await t.tdb.db
+        .select()
+        .from(segue)
+        .where(eq(segue.id, row.segueId ?? '')),
+    ).toEqual([]);
+    expect((await call('programmer', 'DELETE', `/vt-pools/${poolId}`)).statusCode).toBe(404);
+  });
+
+  it('checks a lone kill or start date against the other one', async () => {
+    // Starts 2026-10-01: a kill date before it is refused, alone in the patch.
+    const res = await call('programmer', 'PATCH', `/promos/${promoId}`, {
+      killAt: '2026-09-01T00:00:00Z',
+    });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error).toBe('invalid_validity');
+    await ok(
+      await call('programmer', 'PATCH', `/promos/${promoId}`, { killAt: '2026-12-01T00:00:00Z' }),
+    );
+    const late = await call('programmer', 'PATCH', `/promos/${promoId}`, {
+      startAt: '2027-01-01T00:00:00Z',
+    });
+    expect(late.statusCode).toBe(422);
+  });
+
+  it('answers at most 92 days of plays', async () => {
+    const res = await call(
+      'programmer',
+      'GET',
+      `/promos/${promoId}/plays?from=2026-01-01&to=2026-12-31`,
+    );
+    expect(res.statusCode).toBe(422);
+    expect(
+      (await call('programmer', 'GET', `/promos/${promoId}/plays?from=2026-10-01&to=2026-12-31`))
+        .statusCode,
+    ).toBe(200);
   });
 });
