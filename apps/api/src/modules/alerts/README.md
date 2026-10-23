@@ -10,6 +10,7 @@ A generic, station-scoped alert framework, plus silence detection on top of it.
 | `repo.ts` | Queries for alerts, actions, the event log, engine boots, notifications and silence settings. |
 | `service.ts` | `createAlertService`, available as `app.alerts`. Wraps the repo, publishes `alert.*` events, runs actions and sends emails. |
 | `engine-alerts.ts` | Turns engine events (#28) into alerts, handles the silence actions and the reconcile. |
+| `island-alerts.ts` | Failed island renders (#71): `island.updated` / `island.removed` -> `island.render_failed`, and its reconcile. |
 | `email-job.ts` | The `alert-email` job (`notify` lane). |
 | `routes.ts` | The API under `/api/v1/stations/:stationId/…`. |
 | `plugin.ts` | `alertsPlugin`: wires the durable consumer, the email worker, the action fast path and the sweep. |
@@ -154,6 +155,22 @@ ranges and defaults (`settings.test.ts`). After a change:
 If no replica can reach the engine, the action stays `pending`. The alert still escalates and
 emails.
 
+## Dashboard alerts (#71)
+
+ADR 0035. The web app shows every alert type on the alerts page and the dashboard's panel.
+
+**Engine restarts**: the lifecycle supervisor (#35) publishes `engine.restarted` when Docker
+restarts a crashed container or it replaces a dead one. That raises a `warning` `engine.restarted`
+(one per station, `occurrences` counts restarts), resolved by the reconcile after 30 min without a
+restart (`restartStableMs`). A crash loop is `engine.restart_storm`.
+
+**Failed renders**: `island-alerts.ts`, from the same durable consumer: on `island.updated` /
+`island.removed` it reads the island row and raises `island.render_failed` (warning, key
+`island.render_failed:<islandId>`) for a `failed` island the renderer gave up on (no `retry_at`)
+whose head item still has to air. It resolves with `rendered`, `rendering`, `retrying`,
+`removed` or `slot_over`. The reconcile (every 30 s) raises the ones whose event was lost and
+closes stale ones.
+
 ## Tests
 
 - **Unit**: `pnpm vitest run apps/api/src/modules/alerts`.
@@ -173,3 +190,6 @@ emails.
   - raises the alert and gets skipped;
   - resolves the alert on `blank.recovered`.
 - **Queue** (`packages/queue/src/events-durable.int.test.ts`): `consumeEventsDurable`.
+- **Dashboard types** (`health-alerts.int.test.ts`, #71): one test per type the dashboard lists
+  (silence, engine restarts, failed renders, missing episode, uncached item), each checking the
+  `alert.raised` event arrives within 5 s, and acknowledge.

@@ -85,6 +85,22 @@ export const alertTypes = {
    * ISO, and `lead`, `policy`, `fallback` or `reason`).
    */
   episodeMissing: 'show.episode_missing',
+  /**
+   * An island (#56) failed to render and won't be retried: a bad input, or its transient
+   * retries are spent (#71). One per island (`details.islandId`, `segueIds`, `headItemId`,
+   * `error`); resolved once it renders, its spec changes or it is removed. The segues around
+   * it air as the engine's plain transitions meanwhile. `details.i18n`:
+   * `islandRenderFailed`, params `error`, `airsAt` (ISO or null).
+   */
+  islandRenderFailed: 'island.render_failed',
+  /**
+   * The station's engine crashed and Docker or the lifecycle restarted it (#71, from #35's
+   * supervisor). `warning`, one per station: `occurrences` counts the restarts, `details` has
+   * the last one's `restarts` and `crashed`. Resolved after 30 min without a restart; a crash
+   * loop is `engine.restart_storm` instead. `details.i18n`: `engineRestarted`, params
+   * `restarts` (in the window), `minutes` (the window), `crashed`.
+   */
+  engineRestarted: 'engine.restarted',
 } as const;
 
 /**

@@ -19,7 +19,8 @@
 # then: processing (compressor, limiter) > as-run > mksafe > blank.detect > outputs.
 #
 # Ports (inside the station's Docker network):
-#   control_port (7000)  control API: harbor HTTP + JSON. Internal only, never published.
+#   control_port (7000)  control API: harbor HTTP + JSON, and the live inputs' pre-listen
+#                        streams (#71). Internal only, never published.
 #   live_port    (8005)  input.harbor pool for live DJs (one mount per input). Published.
 #   live_port+1  (8006)  Shoutcast (ICY) sources, first input only, when live_icy. Published
 #                        on a port of its own from the pool (not the live port + 1).
@@ -610,6 +611,26 @@ end
 def live_connected() =
   list.exists(fun (inp) -> inp.connected(), live_pool)
 end
+
+# Pre-listen (#71): each live input as its DJ sends it, before it takes the air, for the
+# dashboard. One MP3 stream per input on control_port (internal only, never published), mount
+# `prelisten/<input>`, behind the control token as HTTP basic auth (user `ondes`). The api
+# proxies it to members with `live:read`. Fallible: it encodes only while a DJ is connected.
+def prelisten_output(inp) =
+  ignore(
+    output.harbor(
+      id="prelisten_#{inp.index}",
+      port=control_port,
+      mount="prelisten/#{inp.index}",
+      user="ondes",
+      password=control_token,
+      fallible=true,
+      %mp3(bitrate=96, samplerate=44100),
+      inp.source
+    )
+  )
+end
+list.iter(prelisten_output, live_pool)
 
 def live_input_at(i) =
   match = list.filter(fun (inp) -> inp.index == i, live_pool)

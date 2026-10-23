@@ -2,6 +2,7 @@ import type { Permission } from '@ondes/shared';
 import type { LinkProps } from '@tanstack/react-router';
 import {
   AudioLinesIcon,
+  BellIcon,
   CalendarClockIcon,
   CalendarDaysIcon,
   CalendarRangeIcon,
@@ -37,6 +38,12 @@ export const stationNav: NavItem[] = [
     label: 'shell.nav.dashboard',
     icon: LayoutDashboardIcon,
     permission: 'dashboard:read',
+  },
+  {
+    to: '/stations/$stationId/alerts',
+    label: 'shell.nav.alerts',
+    icon: BellIcon,
+    permission: 'alert:read',
   },
   {
     to: '/stations/$stationId/shows/calendar',

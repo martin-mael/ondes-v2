@@ -95,7 +95,7 @@ Every new container is a new boot with an empty queue; the feeder re-pushes on
 - **Boot**: removes orphans, then reconciles every `running` station, three at a time.
   Stations that fail (Docker or the guard down, say) go to a retry set. The supervisor retries
   them with backoff (5 s, doubling, up to 5 min).
-- **Supervisor** (every 15 s):
+- **Supervisor** (every 5 s; 15 s before #71):
   - counts Docker's own restarts (`RestartCount` deltas) and restarts dead containers itself;
   - retries failed stations;
   - removes **orphans**: engine containers with this deployment's prefix whose station has no

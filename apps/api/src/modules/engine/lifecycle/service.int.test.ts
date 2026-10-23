@@ -13,7 +13,7 @@ import {
   unsafeScope,
 } from '@ondes/db';
 import { createTestDatabase } from '@ondes/db/testing';
-import type { Actor, EngineRealtimeEvent } from '@ondes/shared';
+import { type Actor, type EngineRealtimeEvent, engineStatusViewSchema } from '@ondes/shared';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../../../app.ts';
@@ -197,12 +197,24 @@ describe('engine lifecycle decisions', () => {
     expect(lifecycle.guard.isTripped(scope.stationId)).toBe(true);
     expect(docker.byName(name)?.running).toBe(false);
     expect(docker.byName(name)?.body.HostConfig.RestartPolicy).toEqual({ Name: 'no' });
+    // The two restarts under the limit are reported (#71's `engine.restarted` alert), the storm
+    // isn't: it has its own event.
+    expect(
+      published
+        .filter((e) => e.type === 'engine.restarted' && e.stationId === scope.stationId)
+        .map((e) => e.data),
+    ).toEqual([
+      { bootId: null, restarts: 2, inWindow: 2, windowSeconds: 600, crashed: false },
+      { bootId: null, restarts: 1, inWindow: 3, windowSeconds: 600, crashed: true },
+    ]);
     expect(
       published.filter((e) => e.type === 'engine.restart_storm' && e.stationId === scope.stationId),
     ).toEqual([
       expect.objectContaining({ data: { bootId: null, restarts: 4, windowSeconds: 600 } }),
     ]);
     expect((await lifecycle.reconcile(scope)).action).toBe('storm');
+    // The contract the dashboard (#71) reads it with.
+    expect(engineStatusViewSchema.safeParse(await lifecycle.status(scope)).success).toBe(true);
     expect((await lifecycle.status(scope)).restartStorm).toEqual({
       tripped: true,
       since: expect.any(String),

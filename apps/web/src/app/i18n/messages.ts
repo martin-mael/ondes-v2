@@ -117,6 +117,7 @@ const en = {
   'account.recovery.done': "I've saved them",
 
   'shell.nav.dashboard': 'Dashboard',
+  'shell.nav.alerts': 'Alerts',
   'shell.nav.calendar': 'Calendar',
   'shell.nav.shows': 'Shows',
   'shell.nav.recordVt': 'Record a VT',
@@ -158,7 +159,6 @@ const en = {
   'dashboard.live': 'Live',
   'dashboard.connecting': 'Connecting…',
   'dashboard.offline': 'Reconnecting…',
-  'dashboard.empty': 'Station widgets will show up here.',
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -276,6 +276,7 @@ const fr: Messages = {
   'account.recovery.done': 'Je les ai enregistrés',
 
   'shell.nav.dashboard': 'Tableau de bord',
+  'shell.nav.alerts': 'Alertes',
   'shell.nav.calendar': 'Calendrier',
   'shell.nav.shows': 'Émissions',
   'shell.nav.recordVt': 'Enregistrer une voix',
@@ -319,7 +320,6 @@ const fr: Messages = {
   'dashboard.live': 'En direct',
   'dashboard.connecting': 'Connexion…',
   'dashboard.offline': 'Reconnexion…',
-  'dashboard.empty': 'Les widgets de la station apparaîtront ici.',
 };
 
 export const messages: Record<Locale, Messages> = { en, fr };
