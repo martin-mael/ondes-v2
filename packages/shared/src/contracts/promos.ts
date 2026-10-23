@@ -36,6 +36,13 @@ const colorSchema = z.string().regex(/^#[0-9a-f]{6}$/, 'color like #a1b2c3');
  * (or 0–24) is the whole day. No daypart: any time.
  */
 export const promoDaypartSchema = z.object({
+  /** ISO weekdays, sorted, distinct. */
+  weekdays: z.array(gridWeekdaySchema),
+  startHour: gridHourSchema,
+  endHour: gridEndHourSchema,
+});
+/** A daypart as written: weekdays distinct (stored sorted), at least one. */
+export const promoDaypartInputSchema = z.object({
   weekdays: z
     .array(gridWeekdaySchema)
     .min(1)
@@ -185,7 +192,7 @@ const promoFields = {
   eventAt: dateInputSchema.nullable(),
   weight: z.int().min(1).max(PROMO_MAX_WEIGHT),
   maxPlaysPerDay: z.int().min(1).max(PROMO_MAX_PLAYS_PER_DAY).nullable(),
-  dayparts: z.array(promoDaypartSchema).max(PROMO_MAX_DAYPARTS),
+  dayparts: z.array(promoDaypartInputSchema).max(PROMO_MAX_DAYPARTS),
   poolIds: z
     .array(uuidSchema)
     .max(PROMO_MAX_POOLS)
@@ -245,11 +252,14 @@ export type PromoPlacementStatus = z.infer<typeof promoPlacementStatusSchema>;
 export const promoPlaySchema = z.object({
   kind: z.enum(['planned', 'aired']),
   /** Planned: the transition's planned time; aired: when the voice went on air. */
-  at: z.date(),
+  playedAt: z.date(),
+  /** The station-local date it belongs to (the log day, for a planned one). */
+  localDate: localDateSchema,
   placementId: uuidSchema.nullable(),
   placementStatus: promoPlacementStatusSchema.nullable(),
-  /** The song before it (A), when still in the log. */
+  /** The songs around it (A, B), while still in the log: the segue editor's transition. */
   fromItemId: uuidSchema.nullable(),
+  toItemId: uuidSchema.nullable(),
   segueId: uuidSchema.nullable(),
   asRunEntryId: uuidSchema.nullable(),
   /** Why a placement was dropped. */

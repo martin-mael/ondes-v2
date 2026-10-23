@@ -11,6 +11,7 @@ import {
   LifeBuoyIcon,
   ListMusicIcon,
   type LucideIcon,
+  MegaphoneIcon,
   MicIcon,
   RadioTowerIcon,
   SlidersHorizontalIcon,
@@ -67,6 +68,12 @@ export const stationNav: NavItem[] = [
     label: 'shell.nav.recordVt',
     icon: AudioLinesIcon,
     permission: 'voice_track:write_own',
+  },
+  {
+    to: '/stations/$stationId/promos',
+    label: 'shell.nav.promos',
+    icon: MegaphoneIcon,
+    permission: 'voice_track:read',
   },
   {
     to: '/stations/$stationId/library',

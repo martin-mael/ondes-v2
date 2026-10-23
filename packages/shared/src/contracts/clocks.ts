@@ -84,9 +84,10 @@ export const vtSlotSchema = z.object({
   categoryId: ref,
   /**
    * `promo` only: the VT pool (#60) whose promos the generator voices over the transition
-   * between the songs around the slot. Takes precedence over `categoryId`.
+   * between the songs around the slot. Takes precedence over `categoryId`. Absent (or null):
+   * none.
    */
-  poolId: ref,
+  poolId: uuidSchema.nullable().optional(),
 });
 export const jingleSlotSchema = z.object({
   kind: z.literal('jingle'),
@@ -128,7 +129,7 @@ export function slotCategoryId(slot: ClockSlot): string | null {
     case 'fill':
       return slot.categoryId;
     case 'vt':
-      return slot.mode === 'promo' && slot.poolId === null ? slot.categoryId : null;
+      return slot.mode === 'promo' && !slot.poolId ? slot.categoryId : null;
     default:
       return null;
   }
@@ -136,7 +137,7 @@ export function slotCategoryId(slot: ClockSlot): string | null {
 
 /** The VT pool a `promo` slot draws from (#60), if any. */
 export function slotPoolId(slot: ClockSlot): string | null {
-  return slot.kind === 'vt' && slot.mode === 'promo' ? slot.poolId : null;
+  return slot.kind === 'vt' && slot.mode === 'promo' ? (slot.poolId ?? null) : null;
 }
 
 /** The asset type a slot's category should hold; `null` when any type goes. */

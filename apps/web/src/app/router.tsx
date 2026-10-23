@@ -19,6 +19,7 @@ import { librarySearchParamsSchema } from '../features/library/filters.ts';
 import { LibraryPage } from '../features/library/library-page.tsx';
 import { LivePage } from '../features/live/live-page.tsx';
 import { TimelinePage } from '../features/log-timeline/timeline-page.tsx';
+import { PromosPage } from '../features/promos/promos-page.tsx';
 import { CategoriesPage } from '../features/rotation/categories/categories-page.tsx';
 import {
   EditCategoryPage,
@@ -335,6 +336,13 @@ const vtRecordRoute = createRoute({
   component: VtRecorderPage,
 });
 
+// Promo VTs and VT pools (#60).
+const promosRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'promos',
+  component: PromosPage,
+});
+
 const routeTree = rootRoute.addChildren([
   authLayout.addChildren([
     loginRoute,
@@ -368,6 +376,7 @@ const routeTree = rootRoute.addChildren([
       segueRoute,
       segueRecordRoute,
       vtRecordRoute,
+      promosRoute,
     ]),
   ]),
 ]);

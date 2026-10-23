@@ -1,4 +1,5 @@
 import {
+  asRunEntry,
   asset,
   auditDiff,
   type Db,
@@ -70,6 +71,9 @@ async function timeZoneOf(db: Executor, scope: StationScope): Promise<string> {
   return row.timezone;
 }
 
+/** A timestamp parameter for raw SQL (the driver takes strings there, not `Date`s). */
+const ts = (at: Date) => sql`${at.toISOString()}::timestamptz`;
+
 function pgCode(error: unknown): string | undefined {
   const e = error as { cause?: { code?: string }; code?: string };
   return e.cause?.code ?? e.code;
@@ -89,8 +93,8 @@ export async function listPools(db: Executor, scope: StationScope, now = new Dat
           poolId: vtPoolMember.poolId,
           promoCount: sql<number>`count(*)::int`,
           activeCount: sql<number>`(count(*) filter (where ${promo.enabled}
-            and (${asset.startAt} is null or ${asset.startAt} <= ${now})
-            and (${asset.killAt} is null or ${asset.killAt} > ${now})))::int`,
+            and (${asset.startAt} is null or ${asset.startAt} <= ${ts(now)})
+            and (${asset.killAt} is null or ${asset.killAt} > ${ts(now)})))::int`,
         })
         .from(vtPoolMember)
         .innerJoin(promo, eq(promo.id, vtPoolMember.promoId))
@@ -299,12 +303,12 @@ function airedPlays(scope: StationScope, assetIds: string[]) {
   const ids = uuidArray(assetIds);
   return sql`
     select e.id as entry_id, e.asset_id, e.started_at as at
-      from as_run_entry e
+      from ${asRunEntry} e
      where e.station_id = ${scope.stationId} and e.kind = 'vt' and e.asset_id = any(${ids})
     union all
     select e.id as entry_id, (v->>'assetId')::uuid as asset_id,
            e.started_at + ((v->>'offsetMs')::int * interval '1 millisecond') as at
-      from as_run_entry e
+      from ${asRunEntry} e
       cross join lateral jsonb_array_elements(e.transition->'voices') v
      where e.station_id = ${scope.stationId}
        and e.transition is not null
@@ -324,8 +328,8 @@ async function playCounts(
   const weekAgo = new Date(now.getTime() - 7 * 86_400_000);
   const aired = (await db.execute(sql`
     select p.asset_id,
-           count(*) filter (where p.at >= ${today})::int as today,
-           count(*) filter (where p.at >= ${weekAgo})::int as week,
+           count(*) filter (where p.at >= ${ts(today)})::int as today,
+           count(*) filter (where p.at >= ${ts(weekAgo)})::int as week,
            count(*)::int as total,
            max(p.at) as last
       from (${airedPlays(
@@ -409,7 +413,7 @@ export async function promoPlays(
     .orderBy(asc(promoPlacement.plannedAt));
   const aired = (await db.execute(sql`
     select p.entry_id, p.at from (${airedPlays(scope, [row.assetId])}) p
-     where p.at >= ${start} and p.at < ${end}
+     where p.at >= ${ts(start)} and p.at < ${ts(end)}
      order by p.at`)) as unknown as { entry_id: string; at: string | Date }[];
 
   const items: PromoPlays['items'] = [
@@ -418,25 +422,29 @@ export async function promoPlays(
       .filter((p) => p.status === 'dropped' || p.plannedAt >= now)
       .map((p) => ({
         kind: 'planned' as const,
-        at: p.plannedAt,
+        playedAt: p.plannedAt,
+        localDate: p.localDate,
         placementId: p.id,
         placementStatus: p.status,
         fromItemId: p.fromItemId,
+        toItemId: p.toItemId,
         segueId: p.segueId,
         asRunEntryId: null,
         detail: p.detail,
       })),
     ...aired.map((a) => ({
       kind: 'aired' as const,
-      at: new Date(a.at),
+      playedAt: new Date(a.at),
+      localDate: localDateOf(new Date(a.at), timeZone),
       placementId: null,
       placementStatus: null,
       fromItemId: null,
+      toItemId: null,
       segueId: null,
       asRunEntryId: a.entry_id,
       detail: null,
     })),
-  ].sort((a, b) => a.at.getTime() - b.at.getTime());
+  ].sort((a, b) => a.playedAt.getTime() - b.playedAt.getTime());
   const byDay = new Map<LocalDate, number>();
   for (const a of aired) {
     const date = localDateOf(new Date(a.at), timeZone);

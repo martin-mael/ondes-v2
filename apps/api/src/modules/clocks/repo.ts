@@ -75,7 +75,9 @@ function toSlot(row: SlotRow): ClockSlot {
     ...(['category', 'jingle', 'fill', 'vt'].includes(row.kind)
       ? { categoryId: row.categoryId }
       : {}),
-    ...(row.kind === 'vt' ? { mode: row.vtMode, poolId: row.poolId } : {}),
+    ...(row.kind === 'vt'
+      ? { mode: row.vtMode, ...(row.poolId ? { poolId: row.poolId } : {}) }
+      : {}),
     ...(row.kind === 'marker'
       ? { timing: row.timing, offsetMs: row.offsetMs, capMs: row.capMs }
       : {}),
