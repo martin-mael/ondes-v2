@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  addMembership,
   auditLog,
   createAsset,
   createOrganization,
@@ -10,10 +11,12 @@ import {
   liveSlotCheck,
   logItem,
   logItemFallback,
+  type OrgScope,
   resolveOrgScope,
   resolveStationScope,
   type StationScope,
   show,
+  user,
 } from '@ondes/db';
 import { createTestDatabase } from '@ondes/db/testing';
 import type { Actor, RaiseAlert, RealtimeEvent, ShowSlot } from '@ondes/shared';
@@ -25,7 +28,7 @@ import { writeLogDay } from '../log/repo.ts';
 import { noClockMusic, noClockResolver } from '../shows/episode-check/fallback.ts';
 import { createEpisode, createShow, createSlot, getSlot, updateSlot } from '../shows/repo.ts';
 import { createEvent } from './events.ts';
-import { createStreamer } from './repo.ts';
+import { createStreamer, updateStreamer } from './repo.ts';
 import { createLiveSlotCheck } from './slot-check.ts';
 import { standingOf } from './standing.ts';
 import { createLiveSwitcher, type LiveSwitchEngine } from './switching.ts';
@@ -46,6 +49,7 @@ const OUTSIDE = new Date('2026-11-07T11:00:00Z');
 
 let tdb: Awaited<ReturnType<typeof createTestDatabase>>;
 let scope: StationScope;
+let orgScope: OrgScope;
 let engine: ReturnType<typeof fakeEngine>;
 let published: RealtimeEvent[];
 let now: Date;
@@ -95,7 +99,7 @@ beforeAll(async () => {
   tdb = await createTestDatabase();
   const db = tdb.db;
   const org = await createOrganization(db, system, { slug: 'live-slots-org', name: 'Org' });
-  const orgScope = await resolveOrgScope(db, org.id);
+  orgScope = await resolveOrgScope(db, org.id);
   const st = await createStation(
     db,
     { actor: system, scope: orgScope },
@@ -552,5 +556,316 @@ describe('missed live slots', () => {
       graceMs: 10 * MIN,
       earlyConnect: 'wait',
     });
+  });
+});
+
+describe('review fixes', () => {
+  /** A show with a live slot on `date` at 20:00 Paris (19:00 UTC in November), 10 min grace. */
+  async function liveShow(name: string, date: string) {
+    const created = await createShow(tdb.db, ctx(), { name });
+    const slot = await createSlot(tdb.db, ctx(), created.id, {
+      type: 'live',
+      rule: { freq: 'once', date, time: '20:00' },
+      durationMs: 60 * MIN,
+      live: { graceMs: 10 * MIN },
+    });
+    return { show: created, slot, start: new Date(`${date}T19:00:00Z`) };
+  }
+
+  async function dj(username: string, extra: object) {
+    const created = await createStreamer(tdb.db, ctx(), {
+      displayName: `DJ ${username}`,
+      username,
+      ...extra,
+    });
+    ids[username] = created.streamer.id;
+    return created.streamer.id;
+  }
+
+  const fakeAlerts = () => {
+    const raised: RaiseAlert[] = [];
+    const resolved: string[] = [];
+    const alerts = {
+      raise: async (_: StationScope, input: RaiseAlert) => {
+        raised.push(input);
+        return { alert: null, outcome: 'raised' };
+      },
+      resolve: async (_: StationScope, key: string) => {
+        resolved.push(key);
+        return null;
+      },
+    } as unknown as AlertService;
+    return { raised, resolved, alerts };
+  };
+
+  const slotCheck = (alerts: AlertService) =>
+    createLiveSlotCheck({
+      db: tdb.db,
+      alerts,
+      fallback: { resolveClock: noClockResolver, clockMusic: noClockMusic },
+      logger: logger as never,
+      now: () => now,
+    });
+
+  it('binds a DJ on air ad hoc to their slot when it starts: episode, as-run, no missed alert', async () => {
+    const { show: overlap, slot, start } = await liveShow('Overlap', '2026-11-10');
+    const planned = await createEpisode(tdb.db, ctx(), overlap.id, {
+      slotId: slot.id,
+      occurrenceDate: '2026-11-10',
+    });
+    const host = await dj('host', { showIds: [overlap.id], anyTime: true, adHoc: 'allowed' });
+    const { raised, resolved, alerts } = fakeAlerts();
+    const check = slotCheck(alerts);
+    const s = switcher();
+    engine.connect(1, host);
+    now = at(start, -30);
+    await s.sweep(scope);
+    const adHoc = await openSession();
+    expect(adHoc).toMatchObject({ trigger: 'ad_hoc', slotId: null });
+    // The engine reports the DJ's audio: one live as-run entry, still on air.
+    await asrun.recordStart(tdb.db, scope, {
+      eventId: randomUUID(),
+      bootId: 'b1',
+      seq: 50,
+      at: now,
+      itemId: null,
+      segmentId: null,
+      source: 'live',
+      title: null,
+      artist: null,
+      filename: null,
+      rid: null,
+      liveSessionId: adHoc?.id ?? null,
+    });
+
+    now = at(start, 1);
+    await s.sweep(scope);
+    const bound = await openSession();
+    expect(bound).toMatchObject({
+      id: adHoc?.id,
+      trigger: 'slot',
+      slotId: slot.id,
+      occurrenceDate: '2026-11-10',
+      episodeId: planned.id,
+      title: 'Overlap',
+      scheduledEndAt: at(start, 60),
+    });
+    // Same session, no gate change.
+    expect(engine.commands).toEqual(['open 1']);
+    const { items } = await asrun.listAsRun(tdb.db, scope, {
+      from: at(start, -60).toISOString(),
+      to: at(start, 60).toISOString(),
+    });
+    expect(items.find((e) => e.liveSessionId === adHoc?.id)).toMatchObject({
+      episode: { id: planned.id, number: planned.number },
+      live: { djName: 'DJ host', title: 'Overlap' },
+    });
+
+    // Past the grace period and at the end: not missed, the episode aired.
+    now = at(start, 11);
+    await check.sweep(scope);
+    now = at(start, 61);
+    await check.sweep(scope);
+    expect(raised).toHaveLength(0);
+    expect(resolved).toEqual([`live.slot_missed:${slot.id}:2026-11-10`]);
+    const [ep] = await tdb.db.select().from(episode).where(eq(episode.id, planned.id));
+    expect(ep?.status).toBe('aired');
+  });
+
+  it('counts a DJ of the show on air across the slot even when unbound', async () => {
+    const { show: s2, slot, start } = await liveShow('Unbound', '2026-11-11');
+    const host2 = await dj('host2', { showIds: [s2.id], anyTime: true });
+    // Put on air by hand before the slot and never bound (another replica's sweep, say).
+    await tdb.db.insert(liveSession).values({
+      orgId: scope.orgId,
+      stationId: scope.stationId,
+      streamerId: host2,
+      input: 1,
+      trigger: 'manual',
+      startedAt: at(start, -20),
+    });
+    const { raised, alerts } = fakeAlerts();
+    now = at(start, 15);
+    await slotCheck(alerts).sweep(scope);
+    expect(raised).toHaveLength(0);
+    expect(slot.id).toBeTruthy();
+  });
+
+  it('keeps an ad-hoc request pending when going on air fails', async () => {
+    const shy = await dj('shy', { anyTime: true });
+    const s = switcher();
+    engine.connect(1, shy);
+    await login('shy', at(OUTSIDE, -1));
+    await s.sweep(scope);
+    const [pending] = await tdb.db
+      .select()
+      .from(liveRequest)
+      .where(eq(liveRequest.streamerId, shy));
+    // Disabled since (the revoker isn't wired here): the go-live refuses.
+    await updateStreamer(tdb.db, ctx(), shy, { enabled: false });
+    await expect(s.approve(ctx(), pending?.id as string)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'streamer_not_allowed',
+    });
+    const [after] = await tdb.db
+      .select()
+      .from(liveRequest)
+      .where(eq(liveRequest.id, pending?.id as string));
+    expect(after?.status).toBe('pending');
+    expect(published.some((e) => e.type === 'live.request.decided')).toBe(false);
+  });
+
+  it('keeps a session the engine applied though its call failed, and closes an untracked gate', async () => {
+    const s = switcher();
+    engine.connect(1, ids.walkin ?? null);
+    const setLive = engine.setLive;
+    engine.setLive = async (enabled, opts) => {
+      await setLive(enabled, opts);
+      throw new Error('timeout');
+    };
+    const session = await s.goLive(ctx(), 1, 'manual', null);
+    expect(engine.sessionId).toBe(session.id);
+    expect(await openSession()).toMatchObject({ id: session.id });
+    engine.setLive = setLive;
+
+    // A gate on a session Node has no record of: closed by the next sweep.
+    await tdb.db.delete(liveSession);
+    now = at(OUTSIDE, 1);
+    await s.sweep(scope);
+    expect(engine.commands.at(-1)).toBe('close');
+    expect(engine.enabled).toBe(false);
+  });
+
+  it('an event listing nobody needs approval for approval DJs, and binds the approved session', async () => {
+    const event = await createEvent(tdb.db, ctx(), {
+      title: 'Open mic',
+      startsAt: new Date('2026-11-12T19:00:00Z'),
+      endsAt: new Date('2026-11-12T21:00:00Z'),
+    });
+    const s = switcher();
+    now = new Date('2026-11-12T19:05:00Z');
+    engine.connect(1, ids.guest ?? null);
+    await login('guest');
+    await s.sweep(scope);
+    expect(await openSession()).toBeUndefined();
+    const [pending] = await tdb.db
+      .select()
+      .from(liveRequest)
+      .where(
+        and(eq(liveRequest.streamerId, ids.guest as string), eq(liveRequest.status, 'pending')),
+      );
+    expect(pending).toBeTruthy();
+    await s.approve(ctx(), pending?.id as string);
+    expect(await openSession()).toMatchObject({
+      trigger: 'ad_hoc',
+      eventId: event.id,
+      title: 'Open mic',
+    });
+
+    // An `allowed` DJ goes on air for it by themselves.
+    await tdb.db.delete(liveSession);
+    engine = fakeEngine();
+    engine.connect(2, ids.walkin ?? null);
+    now = new Date('2026-11-12T19:10:00Z');
+    await s.sweep(scope);
+    expect(await openSession()).toMatchObject({ trigger: 'event', eventId: event.id });
+  });
+
+  it('a slot DJ wins over an event DJ connected on a lower input', async () => {
+    const { show: s3, start } = await liveShow('Clash', '2026-11-13');
+    const slotDj = await dj('clash', { showIds: [s3.id] });
+    await createEvent(tdb.db, ctx(), {
+      title: 'Clashing event',
+      startsAt: at(start, -30),
+      endsAt: at(start, 60),
+      streamerIds: [ids.stage as string],
+    });
+    const s = switcher();
+    engine.connect(1, ids.stage ?? null);
+    engine.connect(2, slotDj);
+    now = at(start, 1);
+    await s.sweep(scope);
+    expect(await openSession()).toMatchObject({ trigger: 'slot', streamerId: slotDj, input: 2 });
+  });
+
+  it('a manager can’t approve their own request while another manager can', async () => {
+    const [me] = await tdb.db
+      .insert(user)
+      .values({ email: 'selfie@live-slots.test', name: 'Selfie' })
+      .returning();
+    const [other] = await tdb.db
+      .insert(user)
+      .values({ email: 'other@live-slots.test', name: 'Other' })
+      .returning();
+    const meId = me?.id as string;
+    // A station manager who is also a DJ.
+    const mgr = { actor: system, scope: orgScope };
+    await addMembership(tdb.db, mgr, {
+      level: 'station',
+      stationId: scope.stationId,
+      userId: meId,
+      role: 'station_manager',
+    });
+    const selfie = await dj('selfie', { anyTime: true, userId: meId });
+    const s = switcher();
+    engine.connect(1, selfie);
+    await login('selfie');
+    await s.sweep(scope);
+    const [pending] = await tdb.db
+      .select()
+      .from(liveRequest)
+      .where(eq(liveRequest.streamerId, selfie));
+    const asMe = { actor: { type: 'user' as const, userId: meId }, scope };
+    // Another manager can decide: refused.
+    await addMembership(tdb.db, mgr, {
+      level: 'station',
+      stationId: scope.stationId,
+      userId: other?.id as string,
+      role: 'station_manager',
+    });
+    await expect(s.approve(asMe, pending?.id as string)).rejects.toMatchObject({
+      statusCode: 403,
+      code: 'live_self_approval',
+    });
+  });
+
+  it('closes a missed slot whose end is long past (an outage), and reads DST slots right', async () => {
+    const { raised, resolved, alerts } = fakeAlerts();
+    const check = slotCheck(alerts);
+    // Small Hours, 29 March: 02:30 is in the gap and airs 03:30 CEST (01:30 UTC), 5 min grace.
+    now = new Date('2026-03-29T01:34:00Z');
+    await check.sweep(scope);
+    expect(raised).toHaveLength(0);
+    now = new Date('2026-03-29T01:35:00Z');
+    await check.sweep(scope);
+    expect(raised).toHaveLength(1);
+    // No log item for it: nothing could stand in.
+    expect(raised[0]).toMatchObject({
+      severity: 'critical',
+      details: { occurrenceDate: '2026-03-29', startsAt: '2026-03-29T01:30:00.000Z' },
+    });
+    // The api was down for two days: the row is closed all the same.
+    now = new Date('2026-03-31T12:00:00Z');
+    await check.sweep(scope);
+    const [row] = await tdb.db
+      .select()
+      .from(liveSlotCheck)
+      .where(eq(liveSlotCheck.occurrenceDate, '2026-03-29'));
+    expect(row?.closedAt).toEqual(now);
+    expect(resolved).toContain(row ? `live.slot_missed:${row.slotId}:2026-03-29` : '');
+
+    // 25 October: the first 02:30 (CEST, 00:30 UTC); ends 01:30 UTC, during the second 02:30.
+    now = new Date('2026-10-25T00:35:00Z');
+    await check.sweep(scope);
+    expect(raised.at(-1)).toMatchObject({
+      details: { occurrenceDate: '2026-10-25', startsAt: '2026-10-25T00:30:00.000Z' },
+    });
+    now = new Date('2026-10-25T01:31:00Z');
+    await check.sweep(scope);
+    const [oct] = await tdb.db
+      .select()
+      .from(liveSlotCheck)
+      .where(eq(liveSlotCheck.occurrenceDate, '2026-10-25'));
+    expect(oct?.closedAt).toEqual(now);
   });
 });

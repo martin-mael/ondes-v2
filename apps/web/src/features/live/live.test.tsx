@@ -1,6 +1,6 @@
 import type { LiveConnectionInfo, MyOrg, Streamer } from '@ondes/shared';
 import { waitFor, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   type ApiRoute,
   me,
@@ -274,5 +274,59 @@ describe('live page', () => {
       endsAt: '2026-06-21T20:00:00.000Z',
       streamerIds: [streamerId],
     });
+  });
+
+  it('sets a streamer’s ad-hoc policy (#65)', async () => {
+    const { screen, user, calls } = renderApp(
+      base,
+      as('station_manager', {
+        [`GET ${base}/streamers`]: [200, { streamers: [streamer()] }],
+        [`GET ${base}/streamers/user-candidates`]: [200, { users: [] }],
+        [`GET /stations/${stationId}/shows`]: [200, { items: [] }],
+        [`PATCH ${base}/streamers/${streamerId}`]: [200, streamer({ adHoc: 'allowed' })],
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Edit' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    await user.selectOptions(dialog.getByLabelText('Outside their slots'), 'allowed');
+    await user.click(dialog.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(calls.some((c) => c.method === 'PATCH')).toBe(true));
+    const patch = calls.find((c) => c.method === 'PATCH');
+    expect(patch?.body).toMatchObject({ adHoc: 'allowed' });
+  });
+
+  it('deletes an event after confirming (#65)', async () => {
+    const eventId = '01a15ddf-0000-7000-8000-0000000006e2';
+    const event = {
+      id: eventId,
+      stationId,
+      title: 'Block party',
+      startsAt: '2026-11-21T16:00:00.000Z',
+      endsAt: '2026-11-21T20:00:00.000Z',
+      streamers: [],
+      createdAt: at,
+      updatedAt: at,
+    };
+    const { screen, user, calls } = renderApp(
+      base,
+      as('station_manager', {
+        [`GET ${base}/streamers`]: [200, { streamers: [] }],
+        [`GET ${base}/events`]: [200, { events: [event] }],
+        [`DELETE ${base}/events/${eventId}`]: [204, null],
+      }),
+    );
+    expect(await screen.findByText('Block party')).toBeTruthy();
+    expect(screen.getByText(/Any streamer/)).toBeTruthy();
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+    const row = within(screen.getByText('Block party').closest('li') as HTMLElement);
+    await user.click(row.getByRole('button', { name: 'Delete' }));
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.method === 'DELETE' && c.path === `${base}/events/${eventId}`),
+      ).toBe(true),
+    );
+    expect(confirm).toHaveBeenCalledWith('Delete the event “Block party”?');
+    vi.unstubAllGlobals();
   });
 });

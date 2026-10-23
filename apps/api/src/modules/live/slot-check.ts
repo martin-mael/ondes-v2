@@ -1,16 +1,19 @@
 import {
   type Db,
   episode,
+  liveSession,
   liveSlotCheck,
   logItem,
   logItemFallback,
   type StationScope,
+  showSlot,
   station,
+  streamerShow,
   whereStation,
   withAudit,
 } from '@ondes/db';
 import { type Actor, alertTypes, type LogItemInput } from '@ondes/shared';
-import { and, asc, eq, gte, isNull, lt, lte } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import type { AlertService } from '../alerts/service.ts';
 import * as log from '../log/repo.ts';
@@ -19,7 +22,6 @@ import { formatStationTime } from '../shows/episode-check/emails.ts';
 import { type FallbackDeps, resolveFallback } from '../shows/episode-check/fallback.ts';
 import { markLiveEpisodeMissing } from '../shows/live-slots.ts';
 import { getOccurrences } from '../shows/repo.ts';
-import { occurrencesWithSessions } from './standing.ts';
 
 // Live slots nobody came on air for (#65, ADR 0033). Each api replica runs `sweep` with the
 // live switcher's, per running station:
@@ -28,14 +30,22 @@ import { occurrencesWithSessions } from './standing.ts';
 //   `fallbackPolicy`, resolved now for the rest of the slot) goes into the log in place of
 //   what's left of the slot's `live_slot` item. A DJ who connects later still takes the air:
 //   live overrides the queue, and the feeder resumes the log at the current time afterwards;
-// - an occurrence that ended (within the last `LOOKBACK_MS`) with no DJ on air marks its
-//   planned episode `missing`; the alert resolves (`occurrence_ended`).
+// - an occurrence that ended (within the last `LOOKBACK_MS`, or any time for an occurrence
+//   that has a check row, after an outage) with no DJ on air marks its planned episode
+//   `missing`; the alert resolves (`occurrence_ended`).
+// "A DJ on air" is a session bound to the occurrence, or any live session of one of the
+// show's streamers overlapping it (a DJ on air before the slot whose session the switcher
+// hadn't bound yet). It is checked again right before acting, so a takeover committing during
+// the sweep doesn't get a fallback.
 // Each step runs once across replicas: a `live_slot_check` row per occurrence, claimed with
 // `update … where missed_at is null` / `closed_at is null`.
 
 const ACTOR: Actor = { type: 'system', name: 'live-slot-check' };
-/** How far back ended occurrences are closed: a sweep down for longer than this skips them. */
-const LOOKBACK_MS = 15 * 60 * 1000;
+/**
+ * How far back ended occurrences with no check row are closed. Rows already there (a missed
+ * slot) are closed whatever their age.
+ */
+const LOOKBACK_MS = 24 * 3600 * 1000;
 /** A slot's `live_slot` log item starts within this much of the occurrence (retiming drift). */
 const ITEM_MATCH_MS = 5 * 60 * 1000;
 
@@ -67,7 +77,7 @@ export function createLiveSlotCheck(options: LiveSlotCheckOptions) {
   const { db, logger } = options;
   const now = options.now ?? (() => new Date());
 
-  async function ensureRow(scope: StationScope, o: Occurrence) {
+  async function ensureRow(scope: StationScope, o: Omit<Occurrence, 'showName' | 'graceMs'>) {
     await db
       .insert(liveSlotCheck)
       .values({
@@ -81,8 +91,38 @@ export function createLiveSlotCheck(options: LiveSlotCheckOptions) {
       .onConflictDoNothing();
   }
 
-  const key = (o: { slotId: string; date: string }) =>
-    and(eq(liveSlotCheck.slotId, o.slotId), eq(liveSlotCheck.occurrenceDate, o.date));
+  const key = (scope: StationScope, o: { slotId: string; date: string }) =>
+    and(
+      whereStation(liveSlotCheck, scope),
+      eq(liveSlotCheck.slotId, o.slotId),
+      eq(liveSlotCheck.occurrenceDate, o.date),
+    );
+
+  /**
+   * Whether a DJ went on air in the occurrence (up to `at`): a session bound to it, or a live
+   * session of one of the show's streamers overlapping it.
+   */
+  async function hadDj(scope: StationScope, o: Omit<Occurrence, 'showName' | 'graceMs'>, at: Date) {
+    const until = new Date(Math.min(at.getTime(), o.endsAt.getTime()));
+    const [row] = await db
+      .select({ id: liveSession.id })
+      .from(liveSession)
+      .where(
+        and(
+          eq(liveSession.stationId, scope.stationId),
+          or(
+            and(eq(liveSession.slotId, o.slotId), eq(liveSession.occurrenceDate, o.date)),
+            and(
+              sql`${liveSession.streamerId} in (select ${streamerShow.streamerId} from ${streamerShow} where ${streamerShow.showId} = ${o.showId})`,
+              lt(liveSession.startedAt, until),
+              or(isNull(liveSession.endedAt), gt(liveSession.endedAt, o.startsAt)),
+            ),
+          ),
+        ),
+      )
+      .limit(1);
+    return !!row;
+  }
 
   /** The slot's `live_slot` item in the log, if it's still there and untouched. */
   async function liveItem(scope: StationScope, o: Occurrence) {
@@ -205,9 +245,14 @@ export function createLiveSlotCheck(options: LiveSlotCheckOptions) {
     const [claimed] = await db
       .update(liveSlotCheck)
       .set({ missedAt: at })
-      .where(and(key(o), isNull(liveSlotCheck.missedAt)))
+      .where(and(key(scope, o), isNull(liveSlotCheck.missedAt)))
       .returning();
     if (!claimed) return;
+    // Checked again now the step is ours: a DJ who took the air during the sweep wins.
+    if (await hadDj(scope, o, now())) {
+      await db.update(liveSlotCheck).set({ missedAt: null }).where(key(scope, o));
+      return;
+    }
     let result: Awaited<ReturnType<typeof applyFallback>>;
     try {
       result = await applyFallback(scope, o, at);
@@ -216,7 +261,7 @@ export function createLiveSlotCheck(options: LiveSlotCheckOptions) {
       logger.error({ err, stationId: scope.stationId, slotId: o.slotId }, 'Live fallback failed');
       result = { kind: null, reason: 'no_log_item' };
     }
-    await db.update(liveSlotCheck).set({ fallback: result.kind }).where(key(o));
+    await db.update(liveSlotCheck).set({ fallback: result.kind }).where(key(scope, o));
     const when = formatStationTime(o.startsAt, await timezoneOf(scope));
     await options.alerts?.raise(scope, {
       type: alertTypes.liveSlotMissed,
@@ -256,17 +301,24 @@ export function createLiveSlotCheck(options: LiveSlotCheckOptions) {
       { stationId: scope.stationId, slotId: o.slotId, fallback: result.kind },
       'Live slot missed',
     );
+    // A DJ who came while the fallback went in: their session's resolve may have run before
+    // this raise, so resolve here too.
+    if (await hadDj(scope, o, now())) {
+      await options.alerts?.resolve(scope, liveSlotMissedKey(o.slotId, o.date), {
+        reason: 'dj_on_air',
+      });
+    }
   }
 
-  async function close(scope: StationScope, o: Occurrence, hadDj: boolean, at: Date) {
+  async function close(scope: StationScope, o: Omit<Occurrence, 'showName' | 'graceMs'>, at: Date) {
     await ensureRow(scope, o);
     const [claimed] = await db
       .update(liveSlotCheck)
       .set({ closedAt: at })
-      .where(and(key(o), isNull(liveSlotCheck.closedAt)))
+      .where(and(key(scope, o), isNull(liveSlotCheck.closedAt)))
       .returning();
     if (!claimed) return;
-    if (!hadDj) {
+    if (!(await hadDj(scope, o, at))) {
       await withAudit(db, { actor: ACTOR, scope }, async (tx, audit) => {
         const marked = await markLiveEpisodeMissing(tx, scope, audit, o);
         // Nothing planned to mark: the audit row still records the empty occurrence.
@@ -285,7 +337,7 @@ export function createLiveSlotCheck(options: LiveSlotCheckOptions) {
   }
 
   return {
-    /** Live occurrences of the station past their grace or just ended. Idempotent. */
+    /** Live occurrences of the station past their grace or ended. Idempotent. */
     async sweep(scope: StationScope) {
       const at = now();
       const t = at.getTime();
@@ -304,28 +356,50 @@ export function createLiveSlotCheck(options: LiveSlotCheckOptions) {
           endsAt: o.endsAt,
           graceMs: o.live?.graceMs ?? 0,
         }));
-      if (!live.length) return;
-      const withDj = await occurrencesWithSessions(db, scope, live);
-      const open = await db
-        .select({ slotId: liveSlotCheck.slotId, date: liveSlotCheck.occurrenceDate })
+      const rows = await db
+        .select({
+          slotId: liveSlotCheck.slotId,
+          date: liveSlotCheck.occurrenceDate,
+          startsAt: liveSlotCheck.startsAt,
+          endsAt: liveSlotCheck.endsAt,
+          missedAt: liveSlotCheck.missedAt,
+          closedAt: liveSlotCheck.closedAt,
+          showId: showSlot.showId,
+        })
         .from(liveSlotCheck)
+        .innerJoin(showSlot, eq(showSlot.id, liveSlotCheck.slotId))
         .where(
           and(
-            eq(liveSlotCheck.stationId, scope.stationId),
-            lte(liveSlotCheck.endsAt, at),
-            isNull(liveSlotCheck.closedAt),
+            whereStation(liveSlotCheck, scope),
+            or(
+              // Open rows of any age (an outage longer than the lookback), and the rows of
+              // the occurrences in view.
+              isNull(liveSlotCheck.closedAt),
+              live.length
+                ? inArray(
+                    liveSlotCheck.slotId,
+                    live.map((o) => o.slotId),
+                  )
+                : undefined,
+            ),
           ),
         );
-      const pendingClose = new Set(open.map((r) => `${r.slotId}/${r.date}`));
+      const byKey = new Map(rows.map((r) => [`${r.slotId}/${r.date}`, r]));
       for (const o of live) {
-        const k = `${o.slotId}/${o.date}`;
-        const hadDj = withDj.has(k);
+        const row = byKey.get(`${o.slotId}/${o.date}`);
+        if (row?.closedAt) continue;
         if (o.endsAt.getTime() <= t) {
-          // Nothing to do for a slot a DJ aired that never needed a check row.
-          if (!hadDj || pendingClose.has(k)) await close(scope, o, hadDj, at);
-        } else if (!hadDj && t >= o.startsAt.getTime() + o.graceMs) {
-          await missed(scope, o, at);
+          await close(scope, o, at);
+        } else if (!row?.missedAt && t >= o.startsAt.getTime() + o.graceMs) {
+          if (!(await hadDj(scope, o, at))) await missed(scope, o, at);
         }
+      }
+      // Open rows whose occurrence is out of view (older than the lookback, or its slot
+      // changed since): closed from what the row says.
+      const inView = new Set(live.map((o) => `${o.slotId}/${o.date}`));
+      for (const r of rows) {
+        if (r.closedAt || r.endsAt.getTime() > t || inView.has(`${r.slotId}/${r.date}`)) continue;
+        await close(scope, { ...r, date: r.date }, at);
       }
     },
 

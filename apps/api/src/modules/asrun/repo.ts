@@ -322,6 +322,36 @@ async function resolveLive(db: Executor, scope: StationScope, sessionId: string 
   return { ...episode, liveDjName: row.streamerName, liveTitle: row.title };
 }
 
+/**
+ * A live session bound to its slot or event after it went on air (#65: the DJ was on air ad
+ * hoc when their slot started): the live entries of that session still on air take the new
+ * snapshot. The one exception to append-only: those entries are open (not ended), and the
+ * snapshot is what the session is now.
+ */
+export async function bindLiveEntries(
+  db: Executor,
+  scope: StationScope,
+  session: typeof liveSession.$inferSelect,
+): Promise<void> {
+  const live = await resolveLive(db, scope, session.id);
+  await db
+    .update(asRunEntry)
+    .set({
+      episodeId: null,
+      showId: null,
+      episodeNumber: null,
+      liveTitle: null,
+      ...live,
+    })
+    .where(
+      and(
+        whereStation(asRunEntry, scope),
+        eq(asRunEntry.liveSessionId, session.id),
+        isNull(asRunEntry.endedAt),
+      ),
+    );
+}
+
 /** Records an item going on air (a redelivery returns the entry recorded the first time). */
 export async function recordStart(
   db: Executor,

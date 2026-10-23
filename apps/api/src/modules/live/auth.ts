@@ -22,8 +22,9 @@ export { LIVE_AUTH_ROUTE, liveAuthUrl } from './url.ts';
 //
 // A login passes when the username exists on the station, the password matches its argon2id
 // hash, the streamer is enabled and not expired, and it may connect now: any time, or from
-// `LIVE_EARLY_CONNECT_MS` before an allowed show's slot until the slot ends (reruns excluded),
-// or likewise around an event they're on (#65).
+// `LIVE_EARLY_CONNECT_MS` before an allowed show's live slot until the slot ends (since #65,
+// live slots only: ADR 0023 also admitted pre-recorded ones), or likewise around an event
+// they're on or one listing nobody (#65).
 // Connecting doesn't put the DJ on air: Node opens the live gate (#64, #65).
 
 /** Accepted logins closer together than this are not audited again (reconnect loops). */
@@ -82,8 +83,11 @@ export async function checkLiveLogin(
       : { occurrences: [] };
     // Overlapping [now, now + early) = starts within the early window, or already running.
     const inSlot =
-      occurrences.some((o) => showIds.has(o.show.id) && o.type !== 'rerun') ||
-      // Or an event they're on (or one listing nobody), with the same early window (#65).
+      // Live slots only (#65): a pre-recorded slot doesn't take a DJ, and admitting one there
+      // would only raise an ad-hoc request, which `anyTime` streamers are for.
+      occurrences.some((o) => showIds.has(o.show.id) && o.type === 'live') ||
+      // Or an event they're on (or one listing nobody, where an `approval` DJ still has to be
+      // approved), with the same early window (#65).
       (await eventsFor(db, scope, row.id, now)).length > 0;
     if (!inSlot) return { ok: false, reason: 'outside_slot', streamerId: row.id };
   }

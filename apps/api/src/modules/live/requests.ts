@@ -5,6 +5,7 @@ import {
   NotFoundError,
   type StationScope,
   streamer,
+  type Tx,
   whereStation,
   writeAudit,
 } from '@ondes/db';
@@ -105,7 +106,7 @@ export async function raise(
  * any more: another manager or the sweep decided first.
  */
 export async function decide(
-  db: Db,
+  db: Db | Tx,
   ctx: { actor: Actor; scope: StationScope },
   requestId: string,
   status: Exclude<LiveRequestStatus, 'pending'>,
@@ -130,6 +131,22 @@ export async function decide(
     diff: { status: { from: 'pending', to: status } },
   });
   return row;
+}
+
+/** Locks the request if it's still pending (`FOR UPDATE`), for an approval in progress. */
+export async function lockPending(tx: Tx, scope: StationScope, requestId: string) {
+  const [row] = await tx
+    .select({ id: liveRequest.id })
+    .from(liveRequest)
+    .where(
+      and(
+        eq(liveRequest.id, requestId),
+        whereStation(liveRequest, scope),
+        eq(liveRequest.status, 'pending'),
+      ),
+    )
+    .for('update');
+  return !!row;
 }
 
 /** Pending requests of the station, raw (the sweep cancels the stale ones). */

@@ -3,6 +3,7 @@ import {
   type Db,
   type Executor,
   liveSession,
+  membership,
   type StationScope,
   station,
   streamer,
@@ -19,12 +20,19 @@ import type {
   LiveStatus,
   RealtimeEvent,
 } from '@ondes/shared';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
 import { HttpError } from '../../plugins/errors.ts';
+import { bindLiveEntries } from '../asrun/repo.ts';
 import { type LiveEpisode, startLiveEpisode, undoLiveEpisode } from '../shows/live-slots.ts';
 import { statusOf } from './repo.ts';
 import * as requests from './requests.ts';
-import { type LiveBinding, returnedSince, type Standing, standingOf } from './standing.ts';
+import {
+  type LiveBinding,
+  returnedSince,
+  STANDING_RANK,
+  type Standing,
+  standingOf,
+} from './standing.ts';
 
 // Live switching (#64, ADR 0027). The station engine has a pool of harbor inputs; this decides
 // which DJ is on air and keeps a `live_session` row per stretch of air a DJ holds:
@@ -274,7 +282,9 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
     let binding = bound ?? null;
     if (bound === undefined && streamerId) {
       const standing = await standingOf(db, ctx.scope, streamerId, now());
-      if (standing.kind === 'slot' || standing.kind === 'event') binding = standing.binding;
+      if (standing.kind === 'slot' || standing.kind === 'event' || standing.kind === 'ad_hoc') {
+        binding = standing.binding;
+      }
     }
     const occurrence = binding?.kind === 'slot' ? binding.occurrence : null;
     const event = binding?.kind === 'event' ? binding.event : null;
@@ -368,6 +378,19 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
     try {
       await engine.setLive(true, { input, sessionId: created.id });
     } catch (err) {
+      // The call may have failed after the engine applied it (a timeout): if the engine is on
+      // the new session, keep it rather than leave a DJ on air with no session (#65 review).
+      const applied = await engine
+        .state()
+        .then((st) => st.live.enabled && st.live.session_id === created.id)
+        .catch(() => false);
+      if (applied) {
+        logger.warn(
+          { err, stationId: ctx.scope.stationId, sessionId: created.id },
+          'The engine went live though the call failed: session kept',
+        );
+        return finishGoLive(ctx, created, previous, occurrence, streamerId, input, trigger);
+      }
       await withAudit(db, ctx, async (tx, audit) => {
         await tx.delete(liveSession).where(eq(liveSession.id, created.id));
         if (previous) {
@@ -376,7 +399,10 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
             .set({ endedAt: null, endReason: null })
             .where(eq(liveSession.id, previous.id));
         }
-        if (episode) await undoLiveEpisode(tx, ctx.scope, audit, episode);
+        // Only an episode no other session uses (another replica may have reused it since).
+        if (episode && !(await episodeInUse(tx, ctx.scope, episode.id))) {
+          await undoLiveEpisode(tx, ctx.scope, audit, episode);
+        }
         await audit({
           action: 'live.session.start_failed',
           entity: { type: 'live_session', id: created.id },
@@ -385,6 +411,19 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
       });
       throw err;
     }
+    return finishGoLive(ctx, created, previous, occurrence, streamerId, input, trigger);
+  };
+
+  /** After the engine took the new session: events, the missed-slot alert, the DTO. */
+  async function finishGoLive(
+    ctx: Ctx,
+    created: SessionRow,
+    previous: SessionRow | undefined,
+    occurrence: { slotId: string; date: string } | null,
+    streamerId: string | null,
+    input: number,
+    trigger: LiveSessionTrigger,
+  ) {
     if (previous) await publishEnded(ctx.scope, previous);
     await publish(ctx.scope, {
       ...envelope(ctx.scope),
@@ -392,15 +431,88 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
       data: { sessionId: created.id, streamerId, input, trigger },
     });
     logger.info({ stationId: ctx.scope.stationId, input, streamerId, trigger }, 'Live on air');
-    if (occurrence && options.onSlotLive) {
-      try {
-        await options.onSlotLive(ctx.scope, { slotId: occurrence.slotId, date: occurrence.date });
-      } catch (err) {
-        logger.warn({ err, stationId: ctx.scope.stationId }, 'Resolving a missed live slot failed');
-      }
-    }
+    if (occurrence) await slotLive(ctx.scope, occurrence);
     return toSession(created, await streamerNames(db, ctx.scope.stationId, [streamerId]));
-  };
+  }
+
+  async function slotLive(scope: StationScope, occurrence: { slotId: string; date: string }) {
+    if (!options.onSlotLive) return;
+    try {
+      await options.onSlotLive(scope, { slotId: occurrence.slotId, date: occurrence.date });
+    } catch (err) {
+      logger.warn({ err, stationId: scope.stationId }, 'Resolving a missed live slot failed');
+    }
+  }
+
+  async function episodeInUse(tx: Executor, scope: StationScope, episodeId: string) {
+    const [row] = await tx
+      .select({ id: liveSession.id })
+      .from(liveSession)
+      .where(and(eq(liveSession.stationId, scope.stationId), eq(liveSession.episodeId, episodeId)))
+      .limit(1);
+    return !!row;
+  }
+
+  /**
+   * The DJ on air ad hoc (or put on air by hand, unbound) whose own slot or event has started:
+   * the open session becomes that slot's (show, occurrence, episode) or event's, in place, with
+   * no gate change. The as-run entry still on air takes the same snapshot (#65 review: without
+   * this the slot counted as missed while its DJ was on air).
+   */
+  async function bind(scope: StationScope, open: SessionRow, binding: LiveBinding) {
+    const occurrence = binding.kind === 'slot' ? binding.occurrence : null;
+    const event = binding.kind === 'event' ? binding.event : null;
+    const bound = await withAudit(db, { actor: SYSTEM, scope }, async (tx, audit) => {
+      const episode = occurrence
+        ? await startLiveEpisode(tx, scope, audit, occurrence, now())
+        : null;
+      const [row] = await tx
+        .update(liveSession)
+        .set({
+          trigger: binding.kind,
+          showId: occurrence?.showId ?? null,
+          slotId: occurrence?.slotId ?? null,
+          occurrenceDate: occurrence?.date ?? null,
+          episodeId: episode?.id ?? null,
+          episodeNumber: episode?.number ?? null,
+          eventId: event?.id ?? null,
+          title: occurrence?.showName ?? event?.title ?? null,
+          scheduledEndAt: occurrence?.endsAt ?? event?.endsAt ?? null,
+        })
+        .where(
+          and(
+            eq(liveSession.id, open.id),
+            isNull(liveSession.endedAt),
+            isNull(liveSession.slotId),
+            isNull(liveSession.eventId),
+          ),
+        )
+        .returning();
+      // Ended or bound meanwhile (another replica): undo nothing, the transaction rolls back.
+      if (!row) throw new HttpError(409, 'live_session_conflict', 'the session changed');
+      await audit({
+        action: 'live.session.bind',
+        entity: { type: 'live_session', id: row.id },
+        diff: {
+          trigger: { from: open.trigger, to: binding.kind },
+          ...(occurrence
+            ? {
+                slot: { from: null, to: `${occurrence.slotId}/${occurrence.date}` },
+                episodeId: { from: null, to: episode?.id ?? null },
+              }
+            : {}),
+          ...(event ? { eventId: { from: null, to: event.id } } : {}),
+        },
+      });
+      await bindLiveEntries(tx, scope, row);
+      return row;
+    }).catch((err: unknown) => {
+      if (err instanceof HttpError) return null;
+      throw err;
+    });
+    if (bound && occurrence) await slotLive(scope, occurrence);
+    return bound;
+  }
 
   /** Hands connected streamers who may no longer be on to the revoker (`onNotAllowed`). */
   async function revokeNotAllowed(scope: StationScope, state: EngineState) {
@@ -455,19 +567,56 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
    */
   async function arbitrate(scope: StationScope, state: EngineState) {
     const open = await openLiveSession(db, scope.stationId);
-    // A gate opened by hand outside any session: nothing to decide.
-    if (state.live.enabled && !open) return;
+    if (state.live.enabled && !open) {
+      // The engine is on a session Node doesn't have (a failed call it applied after all, a
+      // session closed under it): an untracked DJ on air. Sessions are inserted before the
+      // engine call, so this can't be another replica's go-live in flight. A gate opened with
+      // no session id (an engine rendered before #64) is left alone.
+      if (state.live.session_id) {
+        await engineOf(scope.stationId).then((e) => e.setLive(false));
+        await writeAudit(
+          db,
+          { actor: SYSTEM, scope },
+          {
+            action: 'live.gate.close',
+            entity: { type: 'station', id: scope.stationId },
+            diff: { sessionId: { from: state.live.session_id, to: null } },
+          },
+        );
+        logger.warn(
+          { stationId: scope.stationId, sessionId: state.live.session_id },
+          'Closed the gate on a live session Node has no record of',
+        );
+      }
+      return;
+    }
     const at = now();
-    const connected = (state.live.inputs ?? []).flatMap((slot) => {
+    const standings = new Map<number, Standing>();
+    const found = (state.live.inputs ?? []).flatMap((slot) => {
       const streamerId = streamerIdOf(slot.streamer_id);
       return slot.connected && streamerId ? [{ input: slot.input, streamerId }] : [];
     });
-    const standings = new Map<number, Standing>();
-    for (const c of connected) {
+    for (const c of found) {
       standings.set(c.input, await standingOf(db, scope, c.streamerId, at));
     }
+    // A slot DJ wins over an event DJ, then by input (#65 review).
+    const rank = (c: { input: number }) => STANDING_RANK[standings.get(c.input)?.kind ?? 'ad_hoc'];
+    const connected = [...found].sort((a, b) => rank(a) - rank(b) || a.input - b.input);
     const onAir = (c: { input: number; streamerId: string }) =>
       !!open && open.input === c.input && open.streamerId === c.streamerId;
+    // The DJ on air unbound (ad hoc, or by hand) whose slot or event started: bind in place.
+    const own = connected.find(onAir);
+    const ownStanding = own ? standings.get(own.input) : undefined;
+    if (
+      open &&
+      !open.slotId &&
+      !open.eventId &&
+      (ownStanding?.kind === 'slot' || ownStanding?.kind === 'event')
+    ) {
+      await bind(scope, open, ownStanding.binding);
+      await syncRequests(scope, connected, standings);
+      return;
+    }
     const preemptible =
       !open ||
       open.trigger === 'ad_hoc' ||
@@ -480,7 +629,6 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
       for (const c of connected) {
         const standing = standings.get(c.input);
         if (standing?.kind !== 'slot' && standing?.kind !== 'event') continue;
-        // Already on air (their own ad-hoc session runs on into their slot).
         if (onAir(c)) continue;
         if (await returnedSince(db, scope, c.streamerId, standing.since)) continue;
         tookOver = await tryGoLive(scope, c.input, standing.kind, standing.binding);
@@ -556,6 +704,40 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
     }
   }
 
+  /**
+   * A manager linked to the streamer can't approve their own request while another member of
+   * the station may decide (`engine:control`: owners, admins, station managers): someone else
+   * does. Alone, they may (#65 review; ADR 0033).
+   */
+  async function checkNotSelfApproval(ctx: Ctx, streamerId: string) {
+    if (ctx.actor.type !== 'user') return;
+    const userId = ctx.actor.userId;
+    const [row] = await db
+      .select({ userId: streamer.userId })
+      .from(streamer)
+      .where(and(eq(streamer.id, streamerId), eq(streamer.stationId, ctx.scope.stationId)));
+    if (row?.userId !== userId) return;
+    const [other] = await db
+      .select({ userId: membership.userId })
+      .from(membership)
+      .where(
+        and(
+          eq(membership.orgId, ctx.scope.orgId),
+          or(eq(membership.stationId, ctx.scope.stationId), isNull(membership.stationId)),
+          inArray(membership.role, ['owner', 'admin', 'station_manager']),
+          ne(membership.userId, userId),
+        ),
+      )
+      .limit(1);
+    if (other) {
+      throw new HttpError(
+        403,
+        'live_self_approval',
+        'another manager approves your own request to go on air',
+      );
+    }
+  }
+
   async function publishDecided(
     scope: StationScope,
     requestId: string,
@@ -608,6 +790,7 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
       if (request.status !== 'pending') {
         throw new HttpError(409, 'live_request_decided', `the request was ${request.status}`);
       }
+      await checkNotSelfApproval(ctx, request.streamer.id);
       const engine = await engineOf(ctx.scope.stationId);
       const slot = (await engine.state()).live.inputs?.find((i) => i.input === request.input);
       // Still the same connection: the DJ didn't hang up (and nobody else took their input).
@@ -617,12 +800,19 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
         }
         throw new HttpError(409, 'live_input_not_connected', 'the DJ is no longer connected');
       }
-      // Decided first, so a second manager's click gets a 409 rather than a second handover.
-      if (!(await requests.decide(db, ctx, requestId, 'approved', now()))) {
-        throw new HttpError(409, 'live_request_decided', 'the request was already decided');
-      }
+      // The pending row stays locked while the DJ goes on air: a second manager waits, then
+      // gets a 409. If going on air fails, the transaction rolls back and the request is still
+      // pending, so the prompt stays (#65 review).
+      const session = await db.transaction(async (tx) => {
+        if (!(await requests.lockPending(tx, ctx.scope, requestId))) {
+          throw new HttpError(409, 'live_request_decided', 'the request was already decided');
+        }
+        const started = await goLive(ctx, request.input, 'ad_hoc');
+        await requests.decide(tx, ctx, requestId, 'approved', now());
+        return started;
+      });
       await publishDecided(ctx.scope, requestId, 'approved');
-      return goLive(ctx, request.input, 'ad_hoc');
+      return session;
     },
 
     async refuse(ctx, requestId) {

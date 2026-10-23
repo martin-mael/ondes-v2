@@ -692,6 +692,40 @@ describe('events and ad-hoc requests (#65)', () => {
     );
   });
 
+  it('admits a show’s DJ around its live slots only, not its pre-recorded ones', async () => {
+    const created = await t.app.inject({
+      method: 'POST',
+      url: `/api/v1/stations/${scope.stationId}/shows`,
+      cookies: { ondes_session: cookies.manager },
+      payload: { name: 'Taped' },
+    });
+    const taped = created.json<Show>().id;
+    const slot = await t.app.inject({
+      method: 'POST',
+      url: `/api/v1/stations/${scope.stationId}/shows/${taped}/slots`,
+      cookies: { ondes_session: cookies.manager },
+      payload: {
+        type: 'prerecorded',
+        rule: { freq: 'once', date: '2030-03-01', time: '20:00' },
+        durationMs: 3_600_000,
+      },
+    });
+    expect(slot.statusCode).toBe(201);
+    await call('manager', 'POST', '/streamers', {
+      displayName: 'Taper',
+      username: 'taper',
+      password: 'taper-password-123',
+      showIds: [taped],
+    });
+    const result = await checkLiveLogin(
+      t.tdb.db,
+      scope.stationId,
+      { username: 'taper', password: 'taper-password-123' },
+      new Date('2030-03-01T19:30:00Z'),
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'outside_slot' });
+  });
+
   it('lists pending requests for readers, and only engine:control decides', async () => {
     const listed = await call('presenter', 'GET', '/requests');
     expect(listed.statusCode).toBe(200);

@@ -70,8 +70,11 @@ export const streamerSchema = z.object({
   expiresAt: z.coerce.date().nullable(),
   /** Connect at any time, not only around the allowed shows' slots. */
   anyTime: z.boolean(),
-  /** Outside their slots and events (#65). */
-  adHoc: liveAdHocPolicySchema,
+  /**
+   * Outside their slots and events (#65). Optional with a default so older api versions'
+   * payloads still parse.
+   */
+  adHoc: liveAdHocPolicySchema.default('approval'),
   /** Shows whose slots this streamer may connect for. */
   shows: z.array(z.object({ id: uuidSchema, name: z.string(), colour: z.string().nullable() })),
   status: streamerStatusSchema,
