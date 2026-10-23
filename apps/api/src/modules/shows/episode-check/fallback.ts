@@ -1,9 +1,8 @@
 import {
-  asset,
   type Db,
   type Executor,
-  episode,
   fillWithClockMusic,
+  pickEpisode,
   type StationScope,
   show,
   station,
@@ -11,7 +10,7 @@ import {
 } from '@ondes/db';
 import { resolveClockAt } from '@ondes/scheduling';
 import type { EpisodeFallbackKind, EpisodeFallbackPolicy, LogItemInput } from '@ondes/shared';
-import { and, desc, eq, isNotNull, isNull, lt, ne, or } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { loadClockGrid } from '../../clocks/grid-repo.ts';
 
 // What airs in place of a missing episode (#47, ADR 0022). Read by the episode check when it
@@ -107,64 +106,24 @@ export async function resolveFallback(
         fallback: clockId && items?.length ? { kind: 'clock_music', clockId, items } : null,
       };
     }
-    case 'episode': {
-      // The chosen episode, if it still has audio; else the latest one, like the default.
-      if (row.episodeId && row.episodeId !== request.missingEpisodeId) {
-        const [chosen] = await db
-          .select({ id: episode.id, assetId: episode.assetId })
-          .from(episode)
-          .where(
-            and(
-              whereStation(episode, scope),
-              eq(episode.id, row.episodeId),
-              eq(episode.showId, request.showId),
-            ),
-          );
-        if (chosen?.assetId) {
-          return {
-            policy,
-            fallback: { kind: 'episode', episodeId: chosen.id, assetId: chosen.assetId },
-          };
-        }
-      }
-      const latest = await latestEpisode(db, scope, request);
-      return { policy, fallback: latest ? { kind: 'latest_episode', ...latest } : null };
-    }
+    case 'episode':
     case 'latest_episode': {
-      const latest = await latestEpisode(db, scope, request);
-      return { policy, fallback: latest ? { kind: 'latest_episode', ...latest } : null };
+      // The chosen episode if it still has audio, else the latest one (#48's `pickEpisode`,
+      // shared with rerun slots).
+      const picked = await pickEpisode(db, scope, {
+        showId: request.showId,
+        strategy: policy,
+        episodeId: row.episodeId,
+        excludeEpisodeId: request.missingEpisodeId,
+        occurrenceDate: request.occurrenceDate,
+        startsAt: request.startsAt,
+      });
+      return {
+        policy,
+        fallback: picked
+          ? { kind: picked.kind, episodeId: picked.episodeId, assetId: picked.assetId }
+          : null,
+      };
     }
   }
-}
-
-/**
- * The show's latest episode with audio that has already gone out: the highest number among
- * those aired, unscheduled, or planned for an earlier date. A ready premiere planned for a
- * later week is not burned as a rerun.
- */
-async function latestEpisode(
-  db: Executor,
-  scope: StationScope,
-  request: FallbackRequest,
-): Promise<{ episodeId: string; assetId: string } | null> {
-  const [row] = await db
-    .select({ episodeId: episode.id, assetId: asset.id })
-    .from(episode)
-    .innerJoin(asset, eq(asset.id, episode.assetId))
-    .where(
-      and(
-        whereStation(episode, scope),
-        eq(episode.showId, request.showId),
-        isNotNull(episode.assetId),
-        request.missingEpisodeId ? ne(episode.id, request.missingEpisodeId) : undefined,
-        or(
-          eq(episode.status, 'aired'),
-          isNull(episode.occurrenceDate),
-          lt(episode.occurrenceDate, request.occurrenceDate),
-        ),
-      ),
-    )
-    .orderBy(desc(episode.number))
-    .limit(1);
-  return row ?? null;
 }

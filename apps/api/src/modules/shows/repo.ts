@@ -61,6 +61,7 @@ import {
 } from '@ondes/shared';
 import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { HttpError } from '../../plugins/errors.ts';
+import { rerunColumns, resolveReruns, toSlotRerun } from './reruns.ts';
 
 // Shows, slots, exceptions and episodes (#44, ADR 0014). Every function takes the station
 // scope and filters on it; mutations run in `withAudit`. Recurrence is `@ondes/scheduling`'s:
@@ -345,6 +346,7 @@ async function toSlots(db: Executor, rows: SlotRow[]): Promise<ShowSlot[]> {
     type: r.type,
     rule: r.rule,
     durationMs: r.durationMs,
+    rerun: toSlotRerun(r),
     exceptions: exceptions.get(r.id) ?? [],
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
@@ -399,17 +401,19 @@ export async function createSlot(
     if (durationMs === null) {
       throw new HttpError(422, 'duration_required', 'the show has no default duration');
     }
+    const type = parsed.type ?? parent.defaultSlotType;
     const [row] = await tx
       .insert(showSlot)
       .values({
         orgId: ctx.scope.orgId,
         stationId: ctx.scope.stationId,
         showId,
-        type: parsed.type ?? parent.defaultSlotType,
+        type,
         rule: parsed.rule,
         startsOn: ruleStartDate(parsed.rule),
         endsOn: ruleEndDate(parsed.rule),
         durationMs,
+        ...(await rerunColumns(tx, ctx.scope, showId, type, parsed.rerun)),
       })
       .returning();
     if (!row) throw new Error('insert returned no row');
@@ -433,10 +437,18 @@ export async function updateSlot(
   return withAudit(db, ctx, async (tx, audit) => {
     const before = await slotRow(tx, ctx.scope, showId, slotId);
     const rule = parsed.rule ?? before.rule;
+    const { rerun, ...fields } = parsed;
+    const type = parsed.type ?? before.type;
+    // The strategy is rewritten when it's given or the type changes; else a rerun slot keeps its.
+    const rerunFields =
+      rerun !== undefined || type !== before.type
+        ? await rerunColumns(tx, ctx.scope, showId, type, rerun)
+        : {};
     const [after] = await tx
       .update(showSlot)
       .set({
-        ...parsed,
+        ...fields,
+        ...rerunFields,
         ...(parsed.rule ? { startsOn: ruleStartDate(rule), endsOn: ruleEndDate(rule) } : {}),
       })
       .where(and(eq(showSlot.id, slotId), whereStation(showSlot, ctx.scope)))
@@ -968,11 +980,30 @@ export async function getOccurrences(
         )
     : [];
   const byOccurrence = new Map(episodes.map((e) => [`${e.slotId}/${e.occurrenceDate}`, e]));
+  const reruns = await resolveReruns(
+    db,
+    scope,
+    occurrences.map((o) => ({
+      slotId: o.slot.id,
+      slot: o.slot,
+      occurrenceDate: o.date,
+      startsAt: o.startsAt,
+    })),
+  );
+  const summary = (e: EpisodeRow) => ({
+    id: e.id,
+    number: e.number,
+    title: e.title,
+    kind: e.kind,
+    assetId: e.assetId,
+    status: e.status,
+  });
 
   return {
     timezone,
     occurrences: occurrences.map((o) => {
       const e = byOccurrence.get(`${o.slot.id}/${o.date}`);
+      const rerunOf = reruns.get(`${o.slot.id}/${o.date}`);
       return {
         slotId: o.slot.id,
         date: o.date,
@@ -982,16 +1013,8 @@ export async function getOccurrences(
         endsAt: o.endsAt,
         durationMs: o.durationMs,
         moved: o.moved,
-        episode: e
-          ? {
-              id: e.id,
-              number: e.number,
-              title: e.title,
-              kind: e.kind,
-              assetId: e.assetId,
-              status: e.status,
-            }
-          : null,
+        episode: e ? summary(e) : null,
+        ...(o.slot.type === 'rerun' ? { rerunOf: rerunOf ? summary(rerunOf) : null } : {}),
       };
     }),
     conflicts: findConflicts(occurrences).map((c) => ({

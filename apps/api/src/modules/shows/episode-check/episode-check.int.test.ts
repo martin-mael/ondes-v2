@@ -366,7 +366,13 @@ describe('fallbacks', () => {
     const chosen = await api<Episode>(
       'POST',
       `/shows/${p.show.id}/episodes`,
-      { number: 20, assetId: chosenAsset },
+      // Only an aired episode can stand in (#48, ADR 0028).
+      {
+        number: 20,
+        assetId: chosenAsset,
+        status: 'aired',
+        airedAt: new Date(Date.now() - 7 * 86_400_000).toISOString(),
+      },
       201,
     );
     await api('PATCH', `/shows/${p.show.id}`, { fallbackEpisodeId: chosen.id });

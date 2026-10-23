@@ -2,13 +2,14 @@ import {
   createShowSlotSchema,
   isoWeekday,
   localDateOf,
+  type RerunStrategy,
   type Show,
   type ShowSlot,
   type SlotRule,
   type SlotType,
   type Weekday,
 } from '@ondes/shared';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { type FormEvent, useEffect, useState } from 'react';
 import { Button } from '@/ui/button';
 import {
@@ -25,9 +26,10 @@ import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
-import { invalidateShows, showsApi } from './api.ts';
+import { episodesQuery, invalidateShows, showsApi } from './api.ts';
 import { formatDay, formatDuration, weekdayName, weekdays } from './format.ts';
 import { useShowT } from './messages.ts';
+import { rerunnable } from './rerun-dialog.tsx';
 
 // Create or edit a slot: when the show airs (weekly, every N weeks, or once) and its
 // exceptions. Changing the rule or the type can detach the episodes planned in occurrences that
@@ -43,6 +45,9 @@ interface Draft {
   date: string;
   time: string;
   durationMin: string;
+  /** Rerun slots (#48): which episode airs again. */
+  rerunStrategy: RerunStrategy;
+  rerunEpisodeId: string;
 }
 
 function draftOf(show: Show, slot: ShowSlot | undefined, today: string): Draft {
@@ -58,7 +63,18 @@ function draftOf(show: Show, slot: ShowSlot | undefined, today: string): Draft {
     date: rule?.freq === 'once' ? rule.date : today,
     time: rule?.time ?? '20:00',
     durationMin: String(Math.round(durationMs / 60_000)),
+    rerunStrategy: slot?.rerun?.strategy ?? 'latest_episode',
+    rerunEpisodeId: (slot?.rerun?.strategy === 'episode' && slot.rerun.episodeId) || '',
   };
+}
+
+/** What the api is sent for the slot's type: a strategy goes with rerun slots only. */
+function rerunOf(draft: Draft) {
+  if (draft.type !== 'rerun') return {};
+  // A chosen-episode strategy is kept even before an episode is picked (saved incomplete).
+  return draft.rerunStrategy === 'episode'
+    ? { rerun: { strategy: 'episode' as const, episodeId: draft.rerunEpisodeId || null } }
+    : { rerun: { strategy: 'latest_episode' as const } };
 }
 
 function ruleOf(draft: Draft): SlotRule {
@@ -104,6 +120,11 @@ export function SlotEditorDialog({
   const [invalid, setInvalid] = useState<Set<string>>(new Set());
   const [formError, setFormError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
+  // Episodes a rerun slot can air again: those with audio.
+  const episodes = useQuery({
+    ...episodesQuery(stationId, show.id),
+    enabled: open && draft.type === 'rerun' && draft.rerunStrategy === 'episode',
+  });
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the dialog opens.
   useEffect(() => {
@@ -143,6 +164,7 @@ export function SlotEditorDialog({
       type: draft.type,
       rule: ruleOf(draft),
       durationMs: Math.round(Number(draft.durationMin) * 60_000),
+      ...rerunOf(draft),
     };
     const parsed = createShowSlotSchema.safeParse(body);
     if (!parsed.success) {
@@ -207,6 +229,51 @@ export function SlotEditorDialog({
                 </NativeSelect>
               </Field>
             </div>
+
+            {draft.type === 'rerun' && (
+              <div className="grid grid-cols-2 gap-4">
+                <Field>
+                  <FieldLabel htmlFor="slot-rerun">{t('rerun.strategy')}</FieldLabel>
+                  <NativeSelect
+                    id="slot-rerun"
+                    value={draft.rerunStrategy}
+                    onChange={(e) => set('rerunStrategy', e.target.value as RerunStrategy)}
+                  >
+                    <NativeSelectOption value="latest_episode">
+                      {t('rerun.latest_episode')}
+                    </NativeSelectOption>
+                    <NativeSelectOption value="episode">{t('rerun.episode')}</NativeSelectOption>
+                  </NativeSelect>
+                </Field>
+                {draft.rerunStrategy === 'episode' && (
+                  <Field>
+                    <FieldLabel htmlFor="slot-rerun-episode">{t('rerun.episodeField')}</FieldLabel>
+                    <NativeSelect
+                      id="slot-rerun-episode"
+                      value={draft.rerunEpisodeId}
+                      onChange={(e) => set('rerunEpisodeId', e.target.value)}
+                    >
+                      <NativeSelectOption value="">{t('rerun.episodeNone')}</NativeSelectOption>
+                      {episodes.data?.items
+                        .filter((e) => rerunnable(e) || e.id === draft.rerunEpisodeId)
+                        .map((e) => (
+                          <NativeSelectOption key={e.id} value={e.id}>
+                            {`#${e.number}${e.title ? ` · ${e.title}` : ''}`}
+                            {e.status !== 'aired' && e.occurrenceDate && e.occurrenceDate >= today
+                              ? ` (${t('rerun.premieres', { date: formatDay(e.occurrenceDate, locale) })})`
+                              : ''}
+                          </NativeSelectOption>
+                        ))}
+                    </NativeSelect>
+                  </Field>
+                )}
+                <FieldDescription className="col-span-2">
+                  {draft.rerunStrategy === 'episode' && !draft.rerunEpisodeId
+                    ? t('rerun.episodeMissing')
+                    : t('rerun.help')}
+                </FieldDescription>
+              </div>
+            )}
 
             {draft.freq === 'weekly' ? (
               <>
