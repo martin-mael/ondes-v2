@@ -58,7 +58,7 @@ export function AlertItem({
 
   return (
     <li
-      className="relative flex flex-col gap-1 overflow-hidden rounded-[4px] bg-muted/40 py-2 pr-3 pl-4 text-sm sm:flex-row sm:items-start sm:gap-3"
+      className={`relative flex flex-col gap-2 overflow-hidden rounded-[4px] bg-muted/40 py-2 pr-3 pl-4 text-sm ${compact ? '' : 'sm:flex-row sm:items-start sm:gap-3'}`}
       data-testid="alert-item"
       data-severity={alert.severity}
     >
@@ -72,7 +72,7 @@ export function AlertItem({
           <Badge variant={alert.severity === 'critical' && open ? 'destructive' : 'outline'}>
             {t(`severity.${alert.severity}`)}
           </Badge>
-          {!compact && alertTypeLabel(alert.type, t) !== text.title && (
+          {!compact && !text.title.includes(alertTypeLabel(alert.type, t)) && (
             <span className="text-xs text-muted-foreground">{alertTypeLabel(alert.type, t)}</span>
           )}
           {alert.occurrences > 1 && (
