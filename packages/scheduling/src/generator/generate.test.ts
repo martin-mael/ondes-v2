@@ -4,10 +4,8 @@ import {
   DEFAULT_ROTATION_RULES,
   LOG_TRANSITION_MS,
   localDayBounds,
-  logItemInputSchema,
-  logItemOriginSchema,
+  logDayItemInputSchema,
   type RotationRule,
-  relaxedRuleSchema,
   zonedFields,
   zonedInstant,
 } from '@ondes/shared';
@@ -39,12 +37,12 @@ const MINUTE = 60_000;
 
 const top = (day: GeneratedDay) => day.items.filter((i) => i.segmentId === null);
 
-/** The day's new items as the log's bulk write takes them. */
+/** The day's new items as the log's bulk write takes them (`logDayItemInputSchema`). */
 function asInputs(day: GeneratedDay) {
   return day.items
     .filter((i) => i.keptId === null)
-    .map((i) => ({
-      input: logItemInputSchema.parse({
+    .map((i) =>
+      logDayItemInputSchema.parse({
         kind: i.kind,
         plannedDurationMs: i.plannedDurationMs,
         assetId: i.assetId,
@@ -54,10 +52,10 @@ function asInputs(day: GeneratedDay) {
         timing: i.timing,
         anchorAt: i.anchorAt?.toISOString() ?? null,
         capMs: i.capMs,
+        origin: i.origin,
+        relaxedRules: i.relaxedRules,
       }),
-      origin: logItemOriginSchema.parse(i.origin),
-      relaxed: i.relaxedRules.map((r) => relaxedRuleSchema.parse(r)),
-    }));
+    );
 }
 
 function occurrence(overrides: Partial<GeneratorOccurrence> = {}): GeneratorOccurrence {

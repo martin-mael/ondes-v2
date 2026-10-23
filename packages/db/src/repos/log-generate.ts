@@ -32,7 +32,7 @@ import {
   type LogTimingConflict,
   localDateOf,
   localDayBounds,
-  logItemInputSchema,
+  logDayItemInputSchema,
   type RotationRule,
   rotationRulesSchema,
   type TagKey,
@@ -791,8 +791,8 @@ export async function writeGeneratedDay(
   const { scope } = ctx;
   const rows = generated.items.map((item) => {
     if (item.keptId !== null) return null;
-    // The contract a manual insert would meet (ADR 0026: output validates against it).
-    const parsed = logItemInputSchema.parse({
+    // The log contract for bulk day writes (ADR 0026: the output validates against it).
+    const parsed = logDayItemInputSchema.parse({
       kind: item.kind,
       plannedDurationMs: item.plannedDurationMs,
       assetId: item.assetId,
@@ -802,8 +802,10 @@ export async function writeGeneratedDay(
       timing: item.timing,
       anchorAt: item.anchorAt?.toISOString() ?? null,
       capMs: item.capMs,
+      origin: item.origin,
+      relaxedRules: item.relaxedRules,
     });
-    return { parsed, origin: item.origin };
+    return { parsed, origin: parsed.origin };
   });
   return withAudit(db, ctx, async (tx, audit) => {
     const day = await lockOrCreateDay(tx, scope, generated, options.status ?? 'draft');
@@ -859,7 +861,7 @@ export async function writeGeneratedDay(
         anchorAt: row.parsed.anchorAt ? new Date(row.parsed.anchorAt) : null,
         capMs: row.parsed.capMs ?? null,
         locked: false,
-        relaxedRules: item.relaxedRules,
+        relaxedRules: row.parsed.relaxedRules,
         segmentId: null,
         ...originColumns(row.origin),
       });

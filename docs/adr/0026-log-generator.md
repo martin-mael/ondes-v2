@@ -38,8 +38,8 @@ a week in under 10 s for a 20k-track library.
   `system:log-generate`). It deletes the items that aren't kept, renumbers the kept ones
   (through negative positions: the position key isn't deferrable) and inserts the new ones.
   Then it bumps the version, stores `seed` and `generator_version`, and refreshes the next
-  day's first-item conflict. Every new item is parsed with `logItemInputSchema` first: the
-  output meets the contract a manual insert meets.
+  day's first-item conflict. Every new item is parsed with `logDayItemInputSchema` first (the
+  bulk-write contract: `logItemInputSchema`'s rules plus origin and relaxed rules).
 - **The `log-generate` worker job** (`apps/worker/src/jobs/log-generate`, bulk lane) takes 1–14
   consecutive dates. It loads one snapshot for all of them, generates them in order, writes
   each, and publishes one `log.updated` (cause `generate`). No event triggers it: #101's
@@ -146,7 +146,8 @@ counts. Turning them into dashboard alerts is left to the caller (#101).
 ### Missing episodes (ADR 0022)
 - An occurrence whose episode has no audio, or that has no episode planned, becomes an
   `episode` item without an asset (`contract:` PR #165 allows it). It has the premiere's
-  `episode_id` and `origin_show_slot_id`. This is the empty item #47's fallback fills at T−1h.
+  `episode_id`, when there is one, and always `origin_show_slot_id`. Without either, an episode
+  item is refused: a manual input must name its `episodeId`, a bulk write its show slot. This is the empty item #47's fallback fills at T−1h.
 - The generator doesn't plan fallbacks itself: whether audio arrives is only known close to
   air time.
 - **Late audio:** `attachEpisodeAudio(db, ctx, episodeId)` puts an episode's new asset into the
