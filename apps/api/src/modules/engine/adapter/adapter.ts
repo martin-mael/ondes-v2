@@ -73,6 +73,12 @@ export type EngineAdapter = {
   setLive(enabled: boolean, options?: LiveGateOptions): Promise<void>;
   /** Hangs up the DJ on one harbor input (#64). False if nobody was connected there. */
   disconnectLive(input: number): Promise<boolean>;
+  /**
+   * Pre-listen (#71): the harbor input's audio as its DJ sends it, an endless MP3 stream from
+   * the control port (`prelisten/<input>`). Null when nobody streams there. Abort `signal` to
+   * hang up; the body has no timeout, only the answer does.
+   */
+  listen(input: number, signal?: AbortSignal): Promise<Response | null>;
 };
 
 export type LiveGateOptions = { input?: number; sessionId?: string };
@@ -313,6 +319,41 @@ export function createEngineAdapter(options: EngineAdapterOptions): EngineAdapte
         repeatable: true,
       });
       return disconnected;
+    },
+
+    async listen(input, signal) {
+      const n = command(z.int().min(1).max(16), input, 'GET /prelisten/:input');
+      const route = `GET /prelisten/${n}`;
+      const answered = AbortSignal.timeout(timeoutMs);
+      const both = signal ? AbortSignal.any([signal, answered]) : answered;
+      const headers: Record<string, string> = {};
+      if (token) headers.authorization = `Basic ${btoa(`ondes:${token}`)}`;
+      let res: Response;
+      try {
+        // Only the headers are timed: once they're in, the stream runs until `signal` aborts.
+        const controller = new AbortController();
+        const abort = () => controller.abort(both.reason);
+        both.addEventListener('abort', abort, { once: true });
+        res = await doFetch(new URL(`${baseUrl}/prelisten/${n}`), {
+          headers,
+          signal: controller.signal,
+        });
+        both.removeEventListener('abort', abort);
+        signal?.addEventListener('abort', abort, { once: true });
+      } catch (cause) {
+        if (signal?.aborted) throw cause;
+        throw new EngineUnavailableError('unreachable', 'Engine unreachable', {
+          stationId,
+          route,
+          cause,
+        });
+      }
+      if (res.status === 404) {
+        await res.body?.cancel();
+        return null;
+      }
+      if (!res.ok) throw httpError(res.status, await res.text(), route);
+      return res;
     },
   };
 }

@@ -28,6 +28,7 @@ import { listenerRoutes } from './modules/listeners/routes.ts';
 import { type LivePluginOptions, livePlugin } from './modules/live/plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
+import { type PrelistenRoutesOptions, prelistenRoutes } from './modules/prelisten/routes.ts';
 import { rotationRoutes } from './modules/rotation/routes.ts';
 import { rotationRulesRoutes } from './modules/rotation/rules/routes.ts';
 import { type SeguesPluginOptions, seguesPlugin } from './modules/segues/plugin.ts';
@@ -76,6 +77,8 @@ export interface AppOptions {
    * auth route (default: the engine lifecycle's, when it runs).
    */
   live?: LivePluginOptions;
+  /** Pre-listen (#71); defaults to the engine lifecycle's adapters. */
+  prelisten?: PrelistenRoutesOptions;
   /** Team onboarding (#113): DNS resolver and sending limits. */
   invitations?: InvitationsOptions;
   /** Real-time stream tuning (tests shorten the timers). */
@@ -155,6 +158,12 @@ export async function buildApp(options: AppOptions) {
   });
   // Listener counts for the dashboard (#71): what the Icecast poller (#32) recorded.
   await app.register(listenerRoutes, { prefix: '/api/v1' });
+  // Pre-listen of the live inputs (#71), proxied from the station's engine.
+  await app.register(prelistenRoutes, {
+    prefix: '/api/v1',
+    ...(lifecycle ? { engineFor: (stationId: string) => lifecycle.adapterFor(stationId) } : {}),
+    ...options.prelisten,
+  });
   // Playout cache (#31): `app.playoutCache` for the feeder, `GET …/cache`, cache alerts.
   await app.register(cachePlugin, options.cache ?? {});
   // Safety playlist and emergency file (#34): routes, on-air source, fallback alerts.

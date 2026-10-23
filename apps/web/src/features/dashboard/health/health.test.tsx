@@ -152,6 +152,21 @@ describe('dashboard health panels', () => {
     expect(within(panel).getByRole('link', { name: 'All alerts' })).toBeVisible();
   });
 
+  it('pre-listens to one ready input at a time', async () => {
+    const { screen, user } = renderApp(url, routes('station_manager'));
+    const sources = await screen.findAllByTestId('live-source');
+    await user.click(within(sources[0] as HTMLElement).getByRole('button', { name: 'Pre-listen' }));
+    expect(screen.getByTestId('prelisten-audio')).toHaveAttribute(
+      'src',
+      `/api/v1/stations/${stationId}/live/inputs/1/listen`,
+    );
+    await user.click(within(sources[1] as HTMLElement).getByRole('button', { name: 'Pre-listen' }));
+    expect(screen.getAllByTestId('prelisten-audio')).toHaveLength(1);
+    expect(screen.getByTestId('prelisten-audio').getAttribute('src')).toContain('/inputs/2/');
+    await user.click(within(sources[1] as HTMLElement).getByRole('button', { name: 'Stop' }));
+    expect(screen.queryByTestId('prelisten-audio')).toBeNull();
+  });
+
   it('follows engine events, and hides what the role can’t read', async () => {
     const r = routes('viewer');
     r[`GET ${api}/live/status`] = [403, { error: 'forbidden', message: 'no' }];

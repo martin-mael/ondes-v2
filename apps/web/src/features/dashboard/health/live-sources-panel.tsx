@@ -1,16 +1,20 @@
 import type { LiveStatus } from '@ondes/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { HeadphonesIcon, SquareIcon } from 'lucide-react';
+import { useState } from 'react';
 import { Badge } from '@/ui/badge';
+import { Button } from '@/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/card';
 import { Skeleton } from '@/ui/skeleton';
-import { isApiError } from '../../../app/api/client.ts';
+import { API_BASE, isApiError } from '../../../app/api/client.ts';
 import { useSse } from '../../../app/sse/sse.tsx';
 import { useAlertT } from '../../alerts/messages.ts';
 import { healthKeys, liveStatusQuery } from './api.ts';
 
 // Connected live sources (#71): the station's harbor inputs (#64) with a DJ connected, which one
-// is on air and which are buffered enough to take it. Refetched on the live events. Members
-// without `live:read` get nothing (the api refuses).
+// is on air and which are buffered enough to take it, and a pre-listen of each ready input (the
+// engine's stream of it, proxied by the api) to check a DJ before putting them on air. One input
+// at a time. Refetched on the live events. Members without `live:read` get nothing.
 
 const liveEvents = new Set([
   'engine.live.connected',
@@ -42,7 +46,7 @@ export function LiveSourcesPanel({ stationId }: { stationId: string }) {
         {query.isPending ? (
           <Skeleton className="h-12 w-full" />
         ) : query.data ? (
-          <LiveSources status={query.data} />
+          <LiveSources stationId={stationId} status={query.data} />
         ) : (
           <p className="text-muted-foreground">{t('live.unreachable')}</p>
         )}
@@ -51,8 +55,10 @@ export function LiveSourcesPanel({ stationId }: { stationId: string }) {
   );
 }
 
-function LiveSources({ status }: { status: LiveStatus }) {
+function LiveSources({ stationId, status }: { stationId: string; status: LiveStatus }) {
   const t = useAlertT();
+  const [listening, setListening] = useState<number | null>(null);
+  const [failed, setFailed] = useState<number | null>(null);
   if (!status.enabled) return <p className="text-muted-foreground">{t('live.disabled')}</p>;
   if (!status.reachable) return <p className="text-muted-foreground">{t('live.unreachable')}</p>;
   const connected = status.inputs.filter((input) => input.connected);
@@ -80,6 +86,37 @@ function LiveSources({ status }: { status: LiveStatus }) {
             <Badge variant={onAir ? 'destructive' : 'outline'} className="ml-auto">
               {onAir ? t('live.onAir') : input.ready ? t('live.ready') : t('live.buffering')}
             </Badge>
+            {input.ready && (
+              <Button
+                size="sm"
+                variant={listening === input.input ? 'secondary' : 'outline'}
+                aria-pressed={listening === input.input}
+                onClick={() => {
+                  setFailed(null);
+                  setListening(listening === input.input ? null : input.input);
+                }}
+              >
+                {listening === input.input ? <SquareIcon /> : <HeadphonesIcon />}
+                {listening === input.input ? t('live.stopListen') : t('live.preListen')}
+              </Button>
+            )}
+            {listening === input.input && (
+              // biome-ignore lint/a11y/useMediaCaption: a live DJ stream has no captions.
+              <audio
+                autoPlay
+                src={`${API_BASE}/stations/${encodeURIComponent(stationId)}/live/inputs/${input.input}/listen`}
+                onError={() => {
+                  setListening(null);
+                  setFailed(input.input);
+                }}
+                data-testid="prelisten-audio"
+              />
+            )}
+            {failed === input.input && (
+              <p className="w-full text-xs text-muted-foreground">
+                {t('live.preListenUnavailable')}
+              </p>
+            )}
           </li>
         );
       })}
