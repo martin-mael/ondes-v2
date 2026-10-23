@@ -20,7 +20,8 @@
 # Ports (inside the station's Docker network):
 #   control_port (7000)  control API: harbor HTTP + JSON. Internal only, never published.
 #   live_port    (8005)  input.harbor pool for live DJs (one mount per input). Published.
-#   live_port+1  (8006)  Shoutcast (ICY) sources, first input only, when live_icy. Published.
+#   live_port+1  (8006)  Shoutcast (ICY) sources, first input only, when live_icy. Published
+#                        on a port of its own from the pool (not the live port + 1).
 #   metrics_port (9599)  Prometheus metrics, when metrics_enabled. Internal only, no auth:
 #                        the lifecycle (#35) turns it off until something scrapes it.
 #
@@ -371,6 +372,9 @@ live_enabled = ref(false)
 # an input).
 live_selected = ref(0)
 live_session_id = ref("")
+# The session of the previous selection: a handover to a DJ still buffering keeps the DJ on
+# air, under their own session, until the new one is ready.
+live_previous_session = ref("")
 # The input whose audio is on air, 0 when none (written by the clock thread).
 live_on_air = ref(0)
 # Ends the track on air, whichever branch it comes from (POST /v1/skip).
@@ -444,7 +448,15 @@ def live_input_of(index) =
       live_mount_of(index)
     )
 
-  # Never forward the DJ's credentials: drop the Authorization header.
+  # Only the headers that describe the client and its stream: never the DJ's credentials
+  # (Authorization) or anything else they send.
+  def described(h) =
+    name = string.case(lower=true, fst(h))
+    name == "user-agent"
+    or name == "content-type"
+    or string.contains(prefix="ice-", name)
+    or string.contains(prefix="icy-", name)
+  end
   s.on_connect(
     synchronous=true,
     fun (headers) ->
@@ -454,10 +466,7 @@ def live_input_of(index) =
         d = json.object()
         d.add("input", index)
         d.add("streamer_id", nullable_string(streamer()))
-        d.add(
-          "headers",
-          list.filter(fun (h) -> string.case(lower=true, fst(h)) != "authorization", headers)
-        )
+        d.add("headers", list.filter(described, headers))
         emit("live.connected", d)
       end
   )
@@ -480,10 +489,6 @@ end
 
 live_pool = if live_input then list.init(live_inputs, fun (i) -> live_input_of(i + 1)) else [] end
 
-def live_selects(i) =
-  live_enabled() and (live_selected() == 0 or live_selected() == i)
-end
-
 # Ready once input.harbor has buffered `buffer` seconds; only then can it take the air.
 def live_input_ready(inp) =
   inp.connected() and inp.source.is_ready()
@@ -497,10 +502,40 @@ def live_connected() =
   list.exists(fun (inp) -> inp.connected(), live_pool)
 end
 
-# The input the gate lets through: the selected one, or the first ready one.
+def live_input_at(i) =
+  match = list.filter(fun (inp) -> inp.index == i, live_pool)
+  if list.is_empty(match) then null else list.hd(match) end
+end
+
+# The input the gate lets through: the selected one once it is ready (none selected: the
+# first ready one). While the selected DJ is still buffering, the DJ on air stays on air: a
+# handover never drops the air to automation.
 def live_gate_input() =
-  ready = list.filter(fun (inp) -> live_selects(inp.index) and live_input_ready(inp), live_pool)
-  if list.is_empty(ready) then null else list.hd(ready) end
+  def ready_at(i) =
+    inp = live_input_at(i)
+    if null.defined(inp) and live_input_ready(null.get(inp)) then inp else null end
+  end
+  if
+    live_selected() == 0
+  then
+    ready = list.filter(live_input_ready, live_pool)
+    if list.is_empty(ready) then null else list.hd(ready) end
+  else
+    selected = ready_at(live_selected())
+    if
+      null.defined(selected)
+    then
+      selected
+    elsif live_on_air() != 0 then ready_at(live_on_air())
+    else
+      null
+    end
+  end
+end
+
+def live_gate_index() =
+  inp = live_gate_input()
+  if null.defined(inp) then null.get(inp).index else 0 end
 end
 
 def with_live(auto) =
@@ -516,35 +551,40 @@ def with_live(auto) =
       id="live_inputs",
       track_sensitive=false,
       transitions=list.map(fun (_) -> live_fade, live_pool),
-      list.map(fun (inp) -> ({live_selected() == 0 or live_selected() == inp.index}, inp.source), live_pool)
+      list.map(fun (inp) -> ({live_gate_index() == inp.index}, inp.source), live_pool)
     )
 
-  # Tag above the gate: opening it (or a handover) starts a new track there, and
-  # insert_missing gives that track metadata, which is what the as-run callback keys on.
-  # Below it would not work: harbor inputs run on their own, their track starts when the
-  # DJ connects, not when they go on air.
-  gated =
-    metadata.map(
-      insert_missing=true,
-      fun (_) ->
-        begin
-          inp = live_gate_input()
-          if
-            null.defined(inp)
-          then
-            inp = null.get(inp)
-            [
-              ("ondes_source", "live"),
-              ("ondes_live_input", "#{inp.index}"),
-              ("ondes_live_session", live_session_id()),
-              ("ondes_live_streamer", inp.streamer())
-            ]
-          else
-            [("ondes_source", "live")]
-          end
-        end,
-      gated
-    )
+  # What the live branch is tagged with: the as-run callback keys on it.
+  def live_tags() =
+    inp = live_gate_input()
+    if
+      null.defined(inp)
+    then
+      inp = null.get(inp)
+      # A DJ held on air during a handover keeps their own session.
+      session =
+        if
+          live_selected() == 0 or live_selected() == inp.index
+        then
+          live_session_id()
+        else
+          live_previous_session()
+        end
+      [
+        ("ondes_source", "live"),
+        ("ondes_live_input", "#{inp.index}"),
+        ("ondes_live_session", session),
+        ("ondes_live_streamer", inp.streamer())
+      ]
+    else
+      [("ondes_source", "live")]
+    end
+  end
+
+  # Tag above the input switch: a handover starts a new track there, and insert_missing gives
+  # that track metadata. Below it would not work: harbor inputs run on their own, their track
+  # starts when the DJ connects, not when they go on air.
+  gated = metadata.map(insert_missing=true, fun (_) -> live_tags(), gated)
 
   # Taking the air. The automation track on air is faded out under the DJ and frozen
   # there (Liquidsoap doesn't pull a source that isn't selected): it must never come back.
@@ -553,6 +593,9 @@ def with_live(auto) =
   # what comes next.
   def to_live(a, b) =
     auto_feed.insert_metadata([("liq_cross_end_duration", "0."), ("liq_fade_out", "0.")])
+    # Fresh tags for this takeover: the input switch may still be on the same input as the
+    # previous show, so no new track (and no metadata) would come from below.
+    gated.insert_metadata(live_tags())
     live_fade(a, b)
   end
 
@@ -564,6 +607,9 @@ def with_live(auto) =
     live_on_air := 0
     current_segment().aborted := true
     auto_feed.skip()
+    # What comes back (the return file or the log's next item) starts at full level: when
+    # the DJ hung up there is nothing to fade out over, and a fade-in would be near silence.
+    auto_feed.insert_metadata([("liq_fade_in", "0."), ("liq_cross_start_duration", "0.")])
     return_pending := true
     live_fade(a, b)
   end
@@ -574,6 +620,8 @@ def with_live(auto) =
     switch(
       id="live_gate",
       track_sensitive=false,
+      # Never replay the previous show's tags when the gate reopens: to_live inserts new ones.
+      replay_metadata=false,
       transitions=[to_live, to_auto],
       [({live_enabled() and null.defined(live_gate_input())}, gated), ({true}, auto)]
     )
@@ -1183,7 +1231,13 @@ def handle_live(req, res) =
           if
             p.enabled
           then
-            live_session_id := p.session_id ?? ""
+            session = p.session_id ?? ""
+            if
+              session != live_session_id() or wanted != live_selected()
+            then
+              live_previous_session := live_session_id()
+            end
+            live_session_id := session
             live_selected := wanted
           end
           live_enabled := p.enabled

@@ -20,7 +20,7 @@ import type {
   LiveStatus,
   RealtimeEvent,
 } from '@ondes/shared';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { HttpError } from '../../plugins/errors.ts';
 import { getOccurrences } from '../shows/repo.ts';
 import { statusOf } from './repo.ts';
@@ -61,7 +61,20 @@ export type LiveSwitcherOptions = {
   publish?: (event: RealtimeEvent) => unknown;
   logger: Logger;
   now?: () => Date;
+  /**
+   * Called by the sweep for a streamer connected on an input who may no longer be (disabled,
+   * expired or deleted since they connected): the revoker, which also retries a revocation
+   * whose hang-up failed.
+   */
+  onNotAllowed?: (
+    scope: StationScope,
+    streamerId: string,
+    reason: 'disabled' | 'expired' | 'deleted',
+  ) => Promise<unknown>;
 };
+
+/** A session younger than this is left alone by the sweep: its engine call may be on the way. */
+const SWEEP_GRACE_MS = 10_000;
 
 type Ctx = { actor: Actor; scope: StationScope };
 type SessionRow = typeof liveSession.$inferSelect;
@@ -199,27 +212,54 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
     return closed;
   }
 
-  /** Whether a live slot of one of the streamer's shows is running at `at`. */
-  async function inLiveSlot(scope: StationScope, streamerId: string, at: Date) {
+  /** The live slot of one of the streamer's shows running at `at`: its start, or null. */
+  async function liveSlotStart(scope: StationScope, streamerId: string, at: Date) {
     const allowed = await db
       .select({ showId: streamerShow.showId })
       .from(streamerShow)
       .where(
         and(eq(streamerShow.streamerId, streamerId), eq(streamerShow.stationId, scope.stationId)),
       );
-    if (!allowed.length) return false;
+    if (!allowed.length) return null;
     const showIds = new Set(allowed.map((a) => a.showId));
     const { occurrences } = await getOccurrences(db, scope, {
       from: at,
       to: new Date(at.getTime() + 1000),
     });
-    return occurrences.some(
+    const slot = occurrences.find(
       (o) =>
         o.type === 'live' &&
         showIds.has(o.show.id) &&
         o.startsAt.getTime() <= at.getTime() &&
         o.endsAt.getTime() > at.getTime(),
     );
+    return slot?.startsAt ?? null;
+  }
+
+  /**
+   * Someone handed the air back to automation during this slot (a manual return, or a gate
+   * closed by hand) and the DJ hasn't connected again since: the automatic takeover must not
+   * undo it. A new login (`last_connected_at`) lifts it; so does the next slot.
+   */
+  async function returnedDuringSlot(scope: StationScope, streamerId: string, slotStart: Date) {
+    const [row] = await db
+      .select({ id: liveSession.id })
+      .from(liveSession)
+      .innerJoin(streamer, eq(streamer.id, liveSession.streamerId))
+      .where(
+        and(
+          eq(liveSession.stationId, scope.stationId),
+          eq(liveSession.streamerId, streamerId),
+          eq(liveSession.endReason, 'returned'),
+          gte(liveSession.endedAt, slotStart),
+          or(
+            isNull(streamer.lastConnectedAt),
+            sql`${streamer.lastConnectedAt} <= ${liveSession.endedAt}`,
+          ),
+        ),
+      )
+      .limit(1);
+    return !!row;
   }
 
   async function scopeOf(stationId: string): Promise<StationScope | undefined> {
@@ -253,7 +293,16 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
     }
 
     const open = await openLiveSession(db, ctx.scope.stationId);
-    if (open && open.input === input && state.live.enabled && state.live.selected === input) {
+    // The same DJ on the same input, already through the gate: nothing to do. Another DJ on
+    // that input (a missed disconnect) gets a session of their own.
+    if (
+      open &&
+      open.input === input &&
+      open.streamerId === streamerId &&
+      state.live.enabled &&
+      state.live.selected === input &&
+      state.live.session_id === open.id
+    ) {
       return toSession(open, await streamerNames(db, ctx.scope.stationId, [open.streamerId]));
     }
 
@@ -296,14 +345,33 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
             trigger: { from: null, to: trigger },
           },
         });
-        // Inside the transaction: if the engine refuses, nothing is recorded.
-        await engine.setLive(true, { input, sessionId: row.id });
         return row;
       });
     } catch (err) {
       if (isUniqueViolation(err)) {
         throw new HttpError(409, 'live_session_conflict', 'another live session was just opened');
       }
+      throw err;
+    }
+    // After the commit: the engine is never told about a session that a rollback would undo.
+    // If it refuses, the session is taken back (and the previous one reopened).
+    try {
+      await engine.setLive(true, { input, sessionId: created.id });
+    } catch (err) {
+      await withAudit(db, ctx, async (tx, audit) => {
+        await tx.delete(liveSession).where(eq(liveSession.id, created.id));
+        if (previous) {
+          await tx
+            .update(liveSession)
+            .set({ endedAt: null, endReason: null })
+            .where(eq(liveSession.id, previous.id));
+        }
+        await audit({
+          action: 'live.session.start_failed',
+          entity: { type: 'live_session', id: created.id },
+          diff: { reason: { from: null, to: err instanceof Error ? err.message : String(err) } },
+        });
+      });
       throw err;
     }
     if (previous) await publishEnded(ctx.scope, previous);
@@ -316,13 +384,37 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
     return toSession(created, await streamerNames(db, ctx.scope.stationId, [streamerId]));
   };
 
+  /** Hands connected streamers who may no longer be on to the revoker (`onNotAllowed`). */
+  async function revokeNotAllowed(scope: StationScope, state: EngineState) {
+    if (!options.onNotAllowed) return;
+    const ids = [
+      ...new Set(
+        (state.live.inputs ?? [])
+          .filter((i) => i.connected)
+          .map((i) => streamerIdOf(i.streamer_id))
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    if (!ids.length) return;
+    const rows = await db
+      .select()
+      .from(streamer)
+      .where(and(eq(streamer.stationId, scope.stationId), inArray(streamer.id, ids)));
+    for (const id of ids) {
+      const row = rows.find((r) => r.id === id);
+      const status = row ? statusOf(row, now()) : 'deleted';
+      if (status !== 'active') await options.onNotAllowed(scope, id, status);
+    }
+  }
+
   async function takeOverIfInSlot(scope: StationScope, state: EngineState) {
     if (state.live.enabled || (await openLiveSession(db, scope.stationId))) return;
     const at = now();
     for (const slot of state.live.inputs ?? []) {
       const streamerId = streamerIdOf(slot.streamer_id);
       if (!slot.connected || !streamerId) continue;
-      if (!(await inLiveSlot(scope, streamerId, at))) continue;
+      const slotStart = await liveSlotStart(scope, streamerId, at);
+      if (!slotStart || (await returnedDuringSlot(scope, streamerId, slotStart))) continue;
       try {
         await goLive({ actor: SYSTEM, scope }, slot.input, 'slot');
       } catch (err) {
@@ -450,21 +542,27 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
       } catch {
         return; // unreachable: nothing known, nothing to do
       }
+      await revokeNotAllowed(scope, state);
       const open = await openLiveSession(db, scope.stationId);
       if (!open) {
         await takeOverIfInSlot(scope, state);
         return;
       }
+      if (now().getTime() - open.startedAt.getTime() < SWEEP_GRACE_MS) return;
       const slot = state.live.inputs?.find((i) => i.input === open.input);
+      // Someone else on the session's input: its DJ left and another connected (missed events).
+      const otherDj = !!slot?.connected && streamerIdOf(slot.streamer_id) !== open.streamerId;
       // The engine lost the session: a missed disconnect or boot event, a gate closed by hand.
-      const lost = !state.live.enabled || !slot?.connected || state.live.session_id !== open.id;
+      const lost =
+        otherDj || !state.live.enabled || !slot?.connected || state.live.session_id !== open.id;
       if (!lost) return;
       const closed = await closeOpen(
         { actor: SYSTEM, scope },
-        slot?.connected ? 'returned' : 'disconnected',
+        slot?.connected && !otherDj ? 'returned' : 'disconnected',
         (row) => row.id === open.id,
       );
-      if (closed && state.live.enabled && state.live.session_id === open.id) {
+      // Still letting that input through: close the gate (the other DJ isn't the session's).
+      if (closed && state.live.enabled && state.live.selected === open.input) {
         await engine.setLive(false);
       }
     },

@@ -89,20 +89,38 @@ export function createLiveRevoker(options: {
       if (live.inputs && engine.disconnectLive) {
         const held = live.inputs.filter((i) => i.connected && i.streamer_id === streamerId);
         if (!held.length) return false;
+        // Their session ends first, with its reason: once the gate is closed, the switcher's
+        // sweep would otherwise record it as a plain return to automation.
+        await options.endSession?.(scope, streamerId);
         // The gate lets them through: their input is selected, or none is (the first ready one).
         const through = live.selected == null || held.some((i) => i.input === live.selected);
         if (live.enabled && through) await engine.setLive(false);
-        for (const i of held) await engine.disconnectLive(i.input);
-        await options.endSession?.(scope, streamerId);
+        // Hang up every input they hold, even if one fails. A DJ still connected after this is
+        // revoked again by the switcher's sweep (`onNotAllowed`), every few seconds.
+        const hungUp: number[] = [];
+        for (const i of held) {
+          try {
+            await engine.disconnectLive(i.input);
+            hungUp.push(i.input);
+          } catch (err) {
+            logger.error(
+              { err, stationId: scope.stationId, streamerId, input: i.input },
+              'Hanging up a revoked streamer failed; the live sweep retries',
+            );
+          }
+        }
         logger.warn(
-          { stationId: scope.stationId, streamerId, reason, inputs: held.map((i) => i.input) },
+          { stationId: scope.stationId, streamerId, reason, inputs: hungUp },
           'Live streamer revoked',
         );
-        await audited(scope, streamerId, {
-          disconnected: { from: null, to: held.map((i) => i.input) },
-          reason: { from: null, to: reason },
-        });
-        return true;
+        // A retry that changed nothing (the hang-up keeps failing) isn't audited again.
+        if (hungUp.length || (live.enabled && through)) {
+          await audited(scope, streamerId, {
+            disconnected: { from: null, to: hungUp },
+            reason: { from: null, to: reason },
+          });
+        }
+        return hungUp.length === held.length;
       }
       const holding = wasHolder ?? (await liveHolder(db, scope.stationId)) === streamerId;
       if (!holding) return false;

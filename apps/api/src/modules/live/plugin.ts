@@ -78,6 +78,9 @@ export const livePlugin = fp(
       engineFor: options.engineFor,
       publish: rabbit ? (event) => rabbit.events.publish(event) : undefined,
       logger: app.log,
+      // A streamer still connected though they may not be: revoke again (retries a failed
+      // hang-up, and catches an expiry the expiry sweep missed).
+      onNotAllowed: (scope, streamerId, reason) => revoker.revoke(scope, streamerId, reason),
     });
     const revoker = createLiveRevoker({
       db: app.db,

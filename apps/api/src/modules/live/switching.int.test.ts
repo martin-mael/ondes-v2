@@ -6,6 +6,7 @@ import {
   resolveOrgScope,
   resolveStationScope,
   type StationScope,
+  streamer,
 } from '@ondes/db';
 import { createTestDatabase } from '@ondes/db/testing';
 import type { Actor, EngineState, RealtimeEvent } from '@ondes/shared';
@@ -244,6 +245,20 @@ describe('live switching', () => {
     expect(await sessions()).toEqual([]);
   });
 
+  it('reopens the previous session when the engine refuses a handover', async () => {
+    const s = switcher();
+    engine.connect(1, ids.guest ?? null);
+    engine.connect(2, ids.resident ?? null);
+    const first = await s.goLive(ctx(), 1);
+    const setLive = engine.setLive;
+    engine.setLive = async () => {
+      throw new Error('engine down');
+    };
+    await expect(s.goLive(ctx(), 2)).rejects.toThrow('engine down');
+    engine.setLive = setLive;
+    expect((await sessions()).map((r) => [r.id, r.endedAt])).toEqual([[first.id, null]]);
+  });
+
   it('takes over at once when a DJ connects during their live slot, not outside it', async () => {
     const s = switcher();
     // Any-time streamer outside a slot: connected, waiting, not on air (ad-hoc live is #65).
@@ -312,8 +327,66 @@ describe('live switching', () => {
     engine.connect(1, ids.guest ?? null);
     await s.goLive(ctx(), 1);
     engine.hangUp(1);
+    // Not within the first seconds: the engine call of a new session may still be on the way.
+    await s.sweep(scope);
+    expect((await sessions()).at(-1)?.endedAt).toBeNull();
+    now = new Date(now.getTime() + 11_000);
     await s.sweep(scope);
     expect((await sessions()).at(-1)?.endReason).toBe('disconnected');
+  });
+
+  it('keeps a manual return for the rest of the slot, until the DJ connects again', async () => {
+    const s = switcher();
+    await tdb.db
+      .update(streamer)
+      .set({ lastConnectedAt: new Date(IN_SLOT.getTime() - 60_000) })
+      .where(eq(streamer.id, ids.resident ?? ''));
+    engine.connect(1, ids.resident ?? null);
+    await s.sweep(scope);
+    expect(engine.commands).toEqual(['open 1']);
+    now = new Date(IN_SLOT.getTime() + 5 * 60_000);
+    await s.returnToAutomation(ctx());
+    // The sweeps that follow, and the DJ's own events, leave the air to automation.
+    for (const minutes of [6, 20, 59]) {
+      now = new Date(IN_SLOT.getTime() + minutes * 60_000);
+      await s.sweep(scope);
+      await s.onEvent(engineEvent('engine.live.connected', 1));
+    }
+    expect(engine.commands).toEqual(['open 1', 'close']);
+    // The DJ connects again (a new accepted login): back on air, as a new session.
+    now = new Date(IN_SLOT.getTime() + 30 * 60_000);
+    await tdb.db
+      .update(streamer)
+      .set({ lastConnectedAt: now })
+      .where(eq(streamer.id, ids.resident ?? ''));
+    now = new Date(now.getTime() + 1000);
+    await s.sweep(scope);
+    expect(engine.commands).toEqual(['open 1', 'close', 'open 1']);
+    expect((await sessions()).map((r) => [r.trigger, r.endReason])).toEqual([
+      ['slot', 'returned'],
+      ['slot', null],
+    ]);
+  });
+
+  it('gives another DJ on the same input their own session', async () => {
+    const s = switcher();
+    engine.connect(1, ids.guest ?? null);
+    const first = await s.goLive(ctx(), 1);
+    // The guest left and the resident took input 1, and both events were missed.
+    engine.connect(1, ids.resident ?? null);
+    const second = await s.goLive(ctx(), 1);
+    expect(second.id).not.toBe(first.id);
+    expect(second.streamer?.id).toBe(ids.resident);
+    expect((await sessions()).map((r) => [r.streamerId, r.endReason])).toEqual([
+      [ids.guest, 'handover'],
+      [ids.resident, null],
+    ]);
+    // Seen by the sweep instead: the session ends and the gate closes on the other DJ.
+    engine.connect(1, ids.guest ?? null);
+    now = new Date(now.getTime() + 11_000);
+    await s.sweep(scope);
+    expect((await sessions()).at(-1)?.endReason).toBe('disconnected');
+    expect(engine.enabled).toBe(false);
   });
 
   it('hangs up a DJ by hand, and a revoked streamer on whichever input they hold', async () => {
@@ -336,5 +409,48 @@ describe('live switching', () => {
     expect((await sessions())[0]?.endReason).toBe('revoked');
     // Nobody left to revoke.
     expect(await revoker.revoke(scope, ids.resident ?? '', 'disabled')).toBe(false);
+  });
+
+  it("ends a revoked DJ's session even when hanging up fails, and the sweep retries", async () => {
+    const revoked: string[] = [];
+    let s: LiveSwitcher;
+    const revoker = createLiveRevoker({
+      db: tdb.db,
+      engineFor: async () => engine,
+      logger,
+      endSession: (sc, streamerId) =>
+        s.endSessionOf({ actor: system, scope: sc }, streamerId, 'revoked'),
+    });
+    s = createLiveSwitcher({
+      db: tdb.db,
+      engineFor: async () => engine as LiveSwitchEngine,
+      logger,
+      now: () => now,
+      onNotAllowed: async (sc, streamerId, reason) => {
+        revoked.push(reason);
+        return revoker.revoke(sc, streamerId, reason);
+      },
+    });
+    engine.connect(1, ids.guest ?? null);
+    await s.goLive(ctx(), 1);
+    const hangUp = engine.disconnectLive;
+    engine.disconnectLive = async () => {
+      throw new Error('engine busy');
+    };
+    await updateStreamer(tdb.db, ctx(), ids.guest ?? '', { enabled: false });
+    try {
+      expect(await revoker.revoke(scope, ids.guest ?? '', 'disabled')).toBe(false);
+      // Off air and its session ended with the right reason, though still connected.
+      expect(engine.enabled).toBe(false);
+      expect((await sessions())[0]?.endReason).toBe('revoked');
+      expect(engine.inputs[0]?.connected).toBe(true);
+      // The sweep notices the DJ is still there and revokes again, until the hang-up works.
+      engine.disconnectLive = hangUp;
+      await s.sweep(scope);
+      expect(revoked).toEqual(['disabled']);
+      expect(engine.inputs[0]?.connected).toBe(false);
+    } finally {
+      await updateStreamer(tdb.db, ctx(), ids.guest ?? '', { enabled: true });
+    }
   });
 });

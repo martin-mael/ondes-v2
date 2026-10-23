@@ -20,11 +20,13 @@ import {
 // template runs in the pinned Liquidsoap image with a WAV recorder on its final mix; two
 // more Liquidsoap containers play DJs streaming MP3 to two inputs of the pool. Every source
 // plays its own tone, so the recording says what aired when:
-//   A 440 Hz (queue, on air first) → DJ 1 220 Hz (takeover) → DJ 2 330 Hz (handover)
-//   → return jingle 880 Hz → B 660 Hz (the log, resumed with the next item).
-// The test checks there is no dead air from the first track to the end, and that A, which
-// the takeover interrupted, never comes back. Own network and containers, control port on a
-// random 127.0.0.1 port: never the shared dev stack.
+//   A 440 Hz (queue, on air first) → DJ 1 220 Hz (takeover) → DJ 2 330 Hz (handover, asked
+//   before DJ 2 is ready) → return jingle 880 Hz → B 660 Hz (the log's next item)
+//   → DJ 2 again → X 770 Hz is missed during the show (passed over, as the feeder does)
+//   → DJ 2 hangs up, no return file → C 550 Hz.
+// The test checks there is no dead air from the first tone to the last, that the items the
+// takeovers interrupted (A, then B) never come back and that X never airs. Own network and
+// containers, control port on a random 127.0.0.1 port: never the shared dev stack.
 
 const repo = resolve(import.meta.dirname, '../../../../..');
 const TOKEN = `live-switch-test-${randomBytes(8).toString('hex')}`;
@@ -33,7 +35,7 @@ const run = randomBytes(4).toString('hex');
 const network = `ondes-live-switch-${run}`;
 const engineName = `ondes-live-switch-engine-${run}`;
 const work = join(tmpdir(), `ondes-live-switch-${run}`);
-const TONES = { A: 440, B: 660, dj1: 220, dj2: 330, jingle: 880 };
+const TONES = { A: 440, B: 660, C: 550, X: 770, dj1: 220, dj2: 330, jingle: 880 };
 
 function liquidsoapImage(): string {
   if (process.env.LIQUIDSOAP_IMAGE) return process.env.LIQUIDSOAP_IMAGE;
@@ -100,6 +102,8 @@ beforeAll(async () => {
   mkdirSync(join(work, 'safety'), { recursive: true });
   writeTone(join(work, 'a.wav'), TONES.A, 90);
   writeTone(join(work, 'b.wav'), TONES.B, 90);
+  writeTone(join(work, 'c.wav'), TONES.C, 90);
+  writeTone(join(work, 'x.wav'), TONES.X, 90);
   writeTone(join(work, 'return.wav'), TONES.jingle, 2);
 
   const rendered = renderStationScript({
@@ -178,10 +182,9 @@ afterAll(() => {
 
 describe('harbor pool and live switching on the real engine', () => {
   it('takes over, hands over and returns to the log with no dead air and no replay', async () => {
-    const S1 = randomUUID();
-    const S2 = randomUUID();
-    await engine.push({ item_id: 'A', uri: '/work/a.wav', title: 'A' });
-    await engine.push({ item_id: 'B', uri: '/work/b.wav', title: 'B' });
+    const [S1, S2, S3] = [randomUUID(), randomUUID(), randomUUID()];
+    for (const id of ['A', 'B', 'X', 'C'])
+      await engine.push({ item_id: id, uri: `/work/${id.toLowerCase()}.wav`, title: id });
     await until('A on air', (s) => s.on_air.item_id === 'A');
     await sleep(2000);
 
@@ -199,11 +202,14 @@ describe('harbor pool and live switching on the real engine', () => {
     expect(state.live.session_id).toBe(S1);
     await sleep(3000);
 
-    // DJ 2 connects to the second input while DJ 1 is on air, then takes over.
+    // DJ 2 connects to the second input while DJ 1 is on air, and the handover is asked at
+    // once, before DJ 2 has buffered: DJ 1 stays on air until DJ 2 is ready.
     startDj('dj2', 'live-2', TONES.dj2);
-    state = await until('DJ 2 ready', (s) => s.live.inputs?.[1]?.ready === true);
-    expect(state.live.on_air).toBe(1);
+    await until('DJ 2 connected', (s) => s.live.inputs?.[1]?.connected === true);
     await engine.setLive(true, { input: 2, sessionId: S2 });
+    state = await engine.state();
+    expect(state.live.inputs?.[1]?.ready).toBe(false);
+    expect([state.live.on_air, state.on_air.source]).toEqual([1, 'live']);
     await until('DJ 2 on air', (s) => s.live.on_air === 2);
     await sleep(3000);
 
@@ -219,6 +225,22 @@ describe('harbor pool and live switching on the real engine', () => {
     await until('B on air', (s) => s.on_air.item_id === 'B', 15_000);
     await sleep(4000);
 
+    // A second show on input 2. During it X's time passes: the feeder passes it over (here,
+    // by hand), and the queue keeps C, in order. DJ 2 hangs up and there is no return file
+    // any more: C comes straight back, at full level.
+    await engine.setLive(true, { input: 2, sessionId: S3 });
+    await until('DJ 2 on air again', (s) => s.live.on_air === 2);
+    await sleep(2000);
+    expect((await engine.remove('X')).removed).toBe(1);
+    rmSync(join(work, 'return.wav'));
+    await sleep(1000);
+    await engine.disconnectLive(2);
+    // What Node does when the DJ on air hangs up: close the gate.
+    await engine.setLive(false);
+    docker(['rm', '-f', `ondes-live-switch-dj2-${run}`], false);
+    await until('C on air', (s) => s.on_air.item_id === 'C', 15_000);
+    await sleep(4000);
+
     const events: EngineEvent[] = await engine.events(0);
     const started = events.flatMap((e) =>
       e.type === 'track.started'
@@ -230,31 +252,49 @@ describe('harbor pool and live switching on the real engine', () => {
       ['live', S1, 1],
       ['live', S2, 2],
       ['queue', 'B', null],
+      ['live', S3, 2],
+      ['queue', 'C', null],
     ]);
     const connections = events.flatMap((e) =>
       e.type === 'live.connected' || e.type === 'live.disconnected' ? [[e.type, e.data.input]] : [],
     );
-    expect(connections.slice(0, 3)).toEqual([
+    expect(connections.slice(0, 4)).toEqual([
       ['live.connected', 1],
       ['live.connected', 2],
       ['live.disconnected', 1],
+      ['live.disconnected', 2],
     ]);
+    // Only what describes the client is forwarded, never its credentials.
+    const connected = events.find((e) => e.type === 'live.connected');
+    const names =
+      connected?.type === 'live.connected' ? connected.data.headers.map(([k]) => k) : [];
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) expect(name).toMatch(/^(user-agent|content-type|ice-|icy-)/i);
 
     // Stop the engine so the recorder closes its file, then listen.
     docker(['stop', '-t', '5', engineName], false);
     const { rate, samples } = readWavChannel(join(work, 'output.wav'));
     const windows = analyse(samples, rate);
     const runs = toneRuns(windows, TONES);
-    expect(runs.map((r) => r.label)).toEqual(['A', 'dj1', 'dj2', 'jingle', 'B']);
+    expect(runs.map((r) => r.label)).toEqual(['A', 'dj1', 'dj2', 'jingle', 'B', 'dj2', 'C']);
     const first = runs[0]?.from ?? 0;
     const last = runs.at(-1)?.to ?? 0;
     expect(silentWindows(windows, first, last)).toEqual([]);
-    // A, faded out under DJ 1 at the takeover, is gone for good: nothing of it from the end
-    // of that fade (1 s) to the end, not even under the return jingle's crossfade. A plays at
-    // -9 dBFS; switching transients leak about -51 dBFS into its frequency.
-    const takeover = runs.find((r) => r.label === 'dj1')?.from ?? 0;
-    const residue = toneLevels(samples, rate, TONES.A, takeover + 1, last);
-    expect(residue.length).toBeGreaterThan(100);
-    expect(residue.filter((w) => w.db > -40)).toEqual([]);
-  }, 180_000);
+    // What a takeover interrupted is gone for good: nothing of A from the end of the first
+    // takeover's fade (1 s), nothing of B from the end of the second's, and X never airs.
+    // The tones play at -9 dBFS (a replay would show at -9 to -15). Transitions leak into
+    // every frequency for one window: about -51 dBFS at a crossfade, -38 at a hang-up's cut.
+    const takeovers = runs.filter((r) => r.label === 'dj1' || r.label === 'dj2');
+    const afterFirst = takeovers[0]?.from ?? 0;
+    const afterSecond = runs.filter((r) => r.label === 'dj2')[1]?.from ?? 0;
+    for (const [tone, from] of [
+      [TONES.A, afterFirst + 1],
+      [TONES.B, afterSecond + 1],
+      [TONES.X, first],
+    ] as const) {
+      const residue = toneLevels(samples, rate, tone, from, last);
+      expect(residue.length).toBeGreaterThan(50);
+      expect(residue.filter((w) => w.db > -30)).toEqual([]);
+    }
+  }, 240_000);
 });
