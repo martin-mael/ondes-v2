@@ -57,17 +57,17 @@ const en = {
   'type.island.render_failed': 'Failed render',
 
   // `details.i18n` of missing-episode alerts (#47).
-  'episodeMissing.ahead': '{show} airs {when} and its episode has no audio yet. {then}',
+  'episodeMissing.ahead': '{show} airs {when} and its episode has no audio yet. {next}',
   'episodeMissing.fallback': '{show} airs {when} without its episode: {fallback} instead.',
   'episodeMissing.noFallback': '{show} airs {when} without its episode, and {reason}.',
   'episodeMissing.title': 'Missing episode: {show}',
-  'episodeMissing.then.latest_episode':
+  'episodeMissing.next.latest_episode':
     'If it’s still missing an hour before, the latest episode airs again.',
-  'episodeMissing.then.episode':
+  'episodeMissing.next.episode':
     'If it’s still missing an hour before, the episode chosen in the show settings airs again.',
-  'episodeMissing.then.clock_music':
+  'episodeMissing.next.clock_music':
     'If it’s still missing an hour before, music from the clock airs.',
-  'episodeMissing.then.none':
+  'episodeMissing.next.none':
     'If it’s still missing an hour before, nothing is planned: the safety playlist plays.',
   'episodeMissing.fallback.latest_episode': 'the latest episode airs again',
   'episodeMissing.fallback.episode': 'the episode chosen in the show settings airs again',
@@ -166,17 +166,17 @@ const fr: Record<AlertMessageKey, string> = {
   'type.show.episode_missing': 'Épisode manquant',
   'type.island.render_failed': 'Rendu en échec',
 
-  'episodeMissing.ahead': '{show} passe {when} et son épisode n’a pas encore d’audio. {then}',
+  'episodeMissing.ahead': '{show} passe {when} et son épisode n’a pas encore d’audio. {next}',
   'episodeMissing.fallback': '{show} passe {when} sans son épisode : {fallback} à la place.',
   'episodeMissing.noFallback': '{show} passe {when} sans son épisode, et {reason}.',
   'episodeMissing.title': 'Épisode manquant : {show}',
-  'episodeMissing.then.latest_episode':
+  'episodeMissing.next.latest_episode':
     'S’il manque encore une heure avant, le dernier épisode est rediffusé.',
-  'episodeMissing.then.episode':
+  'episodeMissing.next.episode':
     'S’il manque encore une heure avant, l’épisode choisi dans les réglages de l’émission est rediffusé.',
-  'episodeMissing.then.clock_music':
+  'episodeMissing.next.clock_music':
     'S’il manque encore une heure avant, la musique de l’horloge passe.',
-  'episodeMissing.then.none':
+  'episodeMissing.next.none':
     'S’il manque encore une heure avant, rien n’est prévu : la playlist de secours passe.',
   'episodeMissing.fallback.latest_episode': 'le dernier épisode est rediffusé',
   'episodeMissing.fallback.episode':

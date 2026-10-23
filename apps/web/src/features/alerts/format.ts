@@ -73,7 +73,7 @@ export function alertText(
     const parts = {
       show,
       when,
-      then: sub(t, 'episodeMissing.then', p.policy),
+      next: sub(t, 'episodeMissing.next', p.policy),
       fallback: sub(t, 'episodeMissing.fallback', p.fallback),
       reason: sub(t, 'episodeMissing.reason', p.reason),
     };
