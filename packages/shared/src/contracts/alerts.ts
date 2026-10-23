@@ -85,6 +85,14 @@ export const alertTypes = {
    * ISO, and `lead`, `policy`, `fallback` or `reason`).
    */
   episodeMissing: 'show.episode_missing',
+  /**
+   * The log generator couldn't do everything for a day (#101): hours without a clock, slots
+   * no song could fill, dropped or overlapping occurrences. `warning`, one per local date
+   * (`details.localDate`, `details.counts` per issue code, `details.issues` a sample);
+   * resolved when a regeneration of the day has none left, or once the day is over.
+   * `details.i18n` is `{ key: 'logRegen.issues', params: { localDate, total } }`.
+   */
+  logGenerationIssues: 'log.generation_issues',
 } as const;
 
 /**

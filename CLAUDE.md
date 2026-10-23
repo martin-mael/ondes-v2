@@ -35,7 +35,7 @@ apps/
     jobs/<job>/         # one folder per job type: ingest, loudness, autocue, analysis,
                         # peaks, dedupe, cache-sync (+ cache-fetch, its urgent
                         # one-file variant), episode-check, log-generate,
-                        # island-render, …
+                        # log-horizon, island-render, …
   web/src/
     app/                # shell, routing (router.tsx), auth pages, layout, api client,
                         # SSE client (sse/), i18n
@@ -49,14 +49,14 @@ packages/
     segues/                # island derivation and hashing (pure, shared by api, worker, web)
   db/
     src/schema/<domain>.ts # one file per domain: tenancy, library, engine, asrun,
-                           # rotation, clocks, shows, log, segues, live, alerts,
+                           # rotation, clocks, shows, log, regen, segues, live, alerts,
                            # cache, safety
     migrations/            # generated, timestamp-prefixed
   storage/                 # S3-compatible abstraction
   queue/                   # RabbitMQ job framework
   scheduling/              # pure, side-effect-free: rules engine, category picker,
                            # clock expansion, log generator (generator/), log timing
-                           # (log/: retime), back-timing
+                           # (log/: retime), regeneration (regen/), back-timing
 engine/
   templates/               # Liquidsoap script templates (pinned 2.4.x)
   tests/                   # engine fixtures, seam/timing tests

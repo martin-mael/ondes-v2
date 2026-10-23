@@ -27,6 +27,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
 import { HttpError } from '../../plugins/errors.ts';
+import { attachEpisodeAudioAndAnnounce } from '../log/regen-episodes.ts';
 import * as repo from './repo.ts';
 import { scheduleRerun } from './reruns-schedule.ts';
 
@@ -284,9 +285,28 @@ export async function showsRoutes(app: FastifyInstance) {
         response: { 200: episodeSchema },
       },
     },
-    (request) => {
+    async (request) => {
       const { showId, episodeId } = request.params;
-      return repo.updateEpisode(app.db, ctx(request), showId, episodeId, request.body);
+      const updated = await repo.updateEpisode(
+        app.db,
+        ctx(request),
+        showId,
+        episodeId,
+        request.body,
+      );
+      // Late audio (ADR 0026): the empty items planned for it take the new asset (#101).
+      if (request.body.assetId) {
+        await attachEpisodeAudioAndAnnounce(
+          {
+            db: app.db,
+            sink: app.hasDecorator('rabbit') ? app.rabbit.events : undefined,
+            log: request.log,
+          },
+          ctx(request),
+          episodeId,
+        );
+      }
+      return updated;
     },
   );
 

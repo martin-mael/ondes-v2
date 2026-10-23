@@ -57,6 +57,7 @@ import {
   startMs,
 } from './model.ts';
 import { PreviewBar, PreviewProvider, usePreview } from './preview.tsx';
+import { RegenButton } from './regen/regen-dialog.tsx';
 import {
   dayBounds,
   dayHours,
@@ -375,6 +376,15 @@ function Timeline() {
           >
             {t(day.status === 'published' ? 'day.unpublish' : 'day.publish')}
           </Button>
+        )}
+        {canWrite && date >= today && (
+          <RegenButton
+            className={day ? undefined : 'ml-auto'}
+            stationId={stationId}
+            date={date}
+            today={today}
+            timeZone={timeZone}
+          />
         )}
       </div>
 

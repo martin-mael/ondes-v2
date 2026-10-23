@@ -238,8 +238,13 @@ describe('log-generate job', () => {
     expect(songs.every((r) => r.originType === 'clock' && r.originClockId === clockId)).toBe(true);
     expect(songs.every((r) => songIds.includes(r.assetId as string))).toBe(true);
 
-    const event = events.at(-1);
+    const event = events.findLast((e) => e.type === 'log.updated');
     expect(event).toMatchObject({ type: 'log.updated', data: { cause: 'generate' } });
+    // Then the issues, for the api's alerts (#101).
+    expect(events.at(-1)).toMatchObject({
+      type: 'log.generated',
+      data: { orgId: scope.orgId, days: [{ localDate: DATE, changed: true }, { changed: true }] },
+    });
     expect(event?.type === 'log.updated' && event.data.days.map((d) => d.localDate)).toEqual([
       DATE,
       '2026-11-05',
@@ -254,19 +259,51 @@ describe('log-generate job', () => {
     });
   });
 
-  it('is deterministic: regenerating with the same seed writes the same items', async () => {
-    const before = (await items(DATE)).rows.map((r) => [
-      r.kind,
-      r.assetId,
-      r.plannedStart.getTime(),
-    ]);
+  it('is deterministic: regenerating with the same seed and inputs is a no-op (#101)', async () => {
+    const first = await items(DATE);
+    const before = first.rows.map((r) => [r.id, r.kind, r.assetId, r.plannedStart.getTime()]);
+    const audits = async () =>
+      (await tdb.db.select().from(auditLog)).filter((a) => a.action === 'log_day.generate').length;
+    const auditsBefore = await audits();
+    const eventsBefore = events.length;
     // The same days as the first run: the same snapshot (a lone day would see the next day's
     // items as planned history, and pick around them).
-    await runLogGenerate(deps(), scope, { localDates: [DATE, '2026-11-05'], status: 'draft' });
+    const report = await runLogGenerate(deps(), scope, {
+      localDates: [DATE, '2026-11-05'],
+      status: 'draft',
+    });
+    expect(report?.days.map((d) => d.changed)).toEqual([false, false]);
     const { day, rows } = await items(DATE);
-    expect(rows.map((r) => [r.kind, r.assetId, r.plannedStart.getTime()])).toEqual(before);
-    expect(day?.version).toBe(2);
+    // Not even new ids: nothing was written, no new version, no audit row, no `log.updated`.
+    expect(rows.map((r) => [r.id, r.kind, r.assetId, r.plannedStart.getTime()])).toEqual(before);
+    expect(day?.version).toBe(first.day?.version);
+    expect(await audits()).toBe(auditsBefore);
+    expect(events.slice(eventsBefore).map((e) => e.type)).toEqual(['log.generated']);
   });
+
+  it('announces the days it wrote when a later day fails, then fails (#101)', async () => {
+    const eventsBefore = events.length;
+    let calls = 0;
+    const failing: typeof writeGeneratedDay = async (db, ctx, day, options) => {
+      if (++calls === 2) throw new StaleGeneratorSnapshotError(day.localDate, ['test']);
+      return writeGeneratedDay(db, ctx, day, options);
+    };
+    await expect(
+      runLogGenerate({ ...deps(), writeDay: failing }, scope, {
+        localDates: ['2026-11-06', '2026-11-07'],
+        status: 'draft',
+      }),
+    ).rejects.toThrow(StaleGeneratorSnapshotError);
+    const sent = events.slice(eventsBefore);
+    expect(sent.map((e) => e.type)).toEqual(['log.updated', 'log.generated']);
+    const updated = sent[0];
+    expect(updated?.type === 'log.updated' && updated.data.days.map((d) => d.localDate)).toContain(
+      '2026-11-06',
+    );
+    expect(sent[1]?.type === 'log.generated' && sent[1].data.days.map((d) => d.localDate)).toEqual([
+      '2026-11-06',
+    ]);
+  }, 60_000);
 
   it('keeps locked items, segue ends and fallback marks with their ids on regeneration', async () => {
     const { rows } = await items(DATE);
