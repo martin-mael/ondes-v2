@@ -84,7 +84,8 @@ Created by #3. Packages are named `@ondes/<folder>` (e.g. `@ondes/shared`) and a
   - **Toasts:** bottom-right (`<Toaster position="bottom-right" />` in `app/app.tsx`).
   - **Room to work:** precision editors (cue points, waveforms) get a full page per item, not a cramped drawer panel.
   - **Saving work in progress:** never block a save because something is incomplete (e.g. hours with no clock); show a calm inline warning instead.
-- **No paid/licensed components by default** (Stereo Tool, commercial AcoustID, Essentia models). Make them opt-in plugins.
+- **No paid/licensed components by default** (Stereo Tool, commercial AcoustID). Make them opt-in plugins.
+- **No AI or ML models**, not even opt-in: no TTS, no trained classifiers or taggers (e.g. Essentia's pretrained models), no LLMs. Audio analysis uses signal processing only.
 - **Naming:** files kebab-case; DB tables snake_case singular (`log_item`); API routes `/api/v1/stations/:stationId/...`.
 
 ## Database migrations (parallel-safe)
