@@ -686,7 +686,12 @@ async function loadKept(
   db: Executor,
   scope: StationScope,
   library: Map<string, GeneratorAsset>,
-  days: { id: string; localDate: LocalDate; seed: string | null; generatorVersion: string | null }[],
+  days: {
+    id: string;
+    localDate: LocalDate;
+    seed: string | null;
+    generatorVersion: string | null;
+  }[],
   policy: KeepPolicy = {},
 ) {
   const kept = new Map<LocalDate, KeptItem[]>();
@@ -702,7 +707,8 @@ async function loadKept(
     .orderBy(asc(logItem.logDayId), asc(logItem.position));
   const dateOf = new Map(days.map((d) => [d.id, d.localDate]));
   const currentItems = new Map<LocalDate, CurrentItem[]>(days.map((d) => [d.localDate, []]));
-  for (const item of items) currentItems.get(dateOf.get(item.logDayId) as LocalDate)?.push(currentItemOf(item));
+  for (const item of items)
+    currentItems.get(dateOf.get(item.logDayId) as LocalDate)?.push(currentItemOf(item));
   for (const d of days) {
     current.set(d.localDate, {
       seed: d.seed,
@@ -963,7 +969,11 @@ export async function writeGeneratedDay(
     const unchanged =
       !day.created &&
       sameDay(
-        { seed: day.seed, generatorVersion: day.generatorVersion, items: current.map(currentItemOf) },
+        {
+          seed: day.seed,
+          generatorVersion: day.generatorVersion,
+          items: current.map(currentItemOf),
+        },
         generated,
       );
     if (unchanged) {

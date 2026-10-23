@@ -27,9 +27,15 @@ export async function stationTimezone(db: Executor, scope: StationScope): Promis
   return row?.timezone ?? null;
 }
 
-export async function getRegenSettings(db: Executor, scope: StationScope): Promise<LogRegenSettings> {
+export async function getRegenSettings(
+  db: Executor,
+  scope: StationScope,
+): Promise<LogRegenSettings> {
   const [row] = await db
-    .select({ horizonDays: logRegenSetting.horizonDays, newDayStatus: logRegenSetting.newDayStatus })
+    .select({
+      horizonDays: logRegenSetting.horizonDays,
+      newDayStatus: logRegenSetting.newDayStatus,
+    })
     .from(logRegenSetting)
     .where(whereStation(logRegenSetting, scope));
   return row ?? { ...LOG_REGEN_DEFAULT_SETTINGS };
@@ -110,10 +116,7 @@ export async function getRegenRequest(
   db: Executor,
   scope: StationScope,
 ): Promise<RegenRequest | null> {
-  const [row] = await db
-    .select()
-    .from(logRegenRequest)
-    .where(whereStation(logRegenRequest, scope));
+  const [row] = await db.select().from(logRegenRequest).where(whereStation(logRegenRequest, scope));
   if (!row) return null;
   return {
     fromDate: row.fromDate,

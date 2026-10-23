@@ -159,9 +159,7 @@ export const logDiffDaySchema = z.object({
   /** Current items the regeneration drops. */
   removed: z.array(logDiffItemSchema),
   /** The same item (same kind, what it plays, where it comes from) at another time. */
-  moved: z.array(
-    z.object({ item: logDiffItemSchema, fromStart: isoTime, shiftMs: z.int() }),
-  ),
+  moved: z.array(z.object({ item: logDiffItemSchema, fromStart: isoTime, shiftMs: z.int() })),
   /** Regenerated items that broke rotation rules; `new` when the current item didn't. */
   relaxed: z.array(z.object({ item: logDiffItemSchema, new: z.boolean() })),
   /** Current items that stay as they are, per reason (an item counts once, first reason). */

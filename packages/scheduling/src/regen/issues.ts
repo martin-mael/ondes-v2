@@ -16,7 +16,7 @@ const ALERTED: ReadonlySet<GeneratorIssueCode> = new Set([
 ]);
 
 /** Issues worth an alert. */
-export function alertedIssues(issues: readonly GeneratorIssue[]): GeneratorIssue[] {
+export function alertedIssues<T extends Pick<GeneratorIssue, 'code'>>(issues: readonly T[]): T[] {
   return issues.filter((i) => ALERTED.has(i.code));
 }
 

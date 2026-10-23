@@ -25,6 +25,11 @@ import { libraryPlugin } from './modules/library/plugin.ts';
 import { librarySearchRoutes } from './modules/library/search-routes.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { type LivePluginOptions, livePlugin } from './modules/live/plugin.ts';
+import {
+  type RegenPluginOptions,
+  regenPlugin,
+  scheduleChangesPlugin,
+} from './modules/log/regen-plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
 import { rotationRoutes } from './modules/rotation/routes.ts';
@@ -62,6 +67,8 @@ export interface AppOptions {
   safety?: SafetyPluginOptions;
   /** Missing-episode alerts and fallbacks (#47): the clock fallback's hooks, the interval. */
   episodeCheck?: EpisodeCheckPluginOptions;
+  /** Log regeneration (#101): dry-run extensions, the horizon sweep, the alerts queue (tests). */
+  regen?: RegenPluginOptions;
   /** Log feeder (#29), on when the api manages engines and has RabbitMQ. `false` turns it off. */
   feeder?: FeederPluginOptions | false;
   /** Media storage. Optional so tests that don't upload can skip S3; without it, no upload or peaks routes. */
@@ -96,6 +103,8 @@ export async function buildApp(options: AppOptions) {
   if (options.rabbit) await app.register(rabbitPlugin, options.rabbit);
   await app.register(mailPlugin, options.mail);
   await app.register(authPlugin, options.auth);
+  // Regeneration (#101): schedule mutations publish `schedule.changed`. Before the routes.
+  await app.register(scheduleChangesPlugin);
 
   app
     .withTypeProvider<ZodTypeProvider>()
@@ -158,6 +167,8 @@ export async function buildApp(options: AppOptions) {
   await app.register(safetyPlugin, options.safety ?? {});
   // Missing-episode alerts and fallbacks (#47): works off the worker's `episode_check` steps.
   await app.register(episodeCheckPlugin, options.episodeCheck ?? {});
+  // Log regeneration (#101): dry-run and apply routes, the horizon sweep, generation alerts.
+  await app.register(regenPlugin, options.regen ?? {});
   // Log feeder (#29): keeps each station's engine queue ahead of air, one replica per station.
   if (lifecycle && options.rabbit && options.feeder !== false) {
     await app.register(feederPlugin, options.feeder ?? {});

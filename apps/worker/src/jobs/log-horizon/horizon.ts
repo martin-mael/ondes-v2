@@ -9,7 +9,11 @@ import {
 } from '@ondes/db';
 import { consecutiveChunks, horizonDates, horizonWork } from '@ondes/scheduling';
 import { LOG_GENERATE_MAX_DAYS, type LocalDate, type LogHorizonJobPayload } from '@ondes/shared';
-import { type LogGenerateDeps, type LogGenerateReport, runLogGenerate } from '../log-generate/generate.ts';
+import {
+  type LogGenerateDeps,
+  type LogGenerateReport,
+  runLogGenerate,
+} from '../log-generate/generate.ts';
 
 // One `log-horizon` pass for a station (#101, ADR 0030):
 // 1. with `change`, record the schedule change (debounced: it's due 30 s after the last

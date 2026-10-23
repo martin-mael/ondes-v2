@@ -41,7 +41,10 @@ export function keepReasons(item: KeepCandidate, policy: KeepPolicy = {}): KeptR
 }
 
 /** The regeneration policy at `now`: freeze the next hour, keep manual edits. */
-export function regenPolicy(now: Date, freezeMs = REGEN_FREEZE_MS): Required<KeepPolicy> {
+export function regenPolicy(
+  now: Date,
+  freezeMs = REGEN_FREEZE_MS,
+): { frozenUntil: Date; manual: boolean } {
   return { frozenUntil: new Date(now.getTime() + freezeMs), manual: true };
 }
 

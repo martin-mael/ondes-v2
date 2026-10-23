@@ -2,12 +2,7 @@ import { type LocalDate, localDayBounds } from '@ondes/shared';
 import { describe, expect, it } from 'vitest';
 import { FIXTURE_TZ, fixtureSnapshot } from '../generator/fixture.ts';
 import { generateDay } from '../generator/generate.ts';
-import type {
-  GeneratedDay,
-  GeneratorSnapshot,
-  KeptItem,
-  KeptReason,
-} from '../generator/types.ts';
+import type { GeneratedDay, GeneratorSnapshot, KeptItem, KeptReason } from '../generator/types.ts';
 import { type CurrentDay, type CurrentItem, diffDay, sameDay } from './diff.ts';
 import {
   consecutiveChunks,
