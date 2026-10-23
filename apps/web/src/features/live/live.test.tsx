@@ -49,6 +49,7 @@ const connection: LiveConnectionInfo = {
   host: 'live.vandale.test',
   port: 8105,
   mount: 'live',
+  mounts: ['live', 'live-2'],
   shoutcastPort: null,
   formats: ['MP3', 'AAC'],
 };
@@ -78,9 +79,9 @@ describe('live page', () => {
     expect(
       screen.getByText('icecast://<your username>:<your password>@live.vandale.test:8105/live'),
     ).toBeTruthy();
-    expect(
-      screen.getByText(/Shoutcast \(v1\) clients would connect on the port \+ 1/),
-    ).toBeTruthy();
+    expect(screen.getByText(/doesn’t take Shoutcast \(v1\) clients/)).toBeTruthy();
+    // The harbor pool (#64): the next DJ's mount.
+    expect(screen.getByText(/If live is taken .*, use live-2/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'New streamer' })).toBeTruthy();
   });
 

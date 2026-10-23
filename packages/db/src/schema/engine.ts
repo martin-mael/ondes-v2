@@ -72,7 +72,8 @@ export const stationEngine = pgTable(
   ],
 );
 
-export const ENGINE_PORT_PURPOSES = ['live'] as const;
+/** `live_icy`: Shoutcast (ICY) sources of the live input (#64), harbor's `port + 1`. */
+export const ENGINE_PORT_PURPOSES = ['live', 'live_icy'] as const;
 export type EnginePortPurpose = (typeof ENGINE_PORT_PURPOSES)[number];
 
 /**

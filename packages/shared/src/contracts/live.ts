@@ -120,8 +120,14 @@ export const liveConnectionInfoSchema = z.object({
   port: z.int().nullable(),
   mount: z.string(),
   /**
-   * Shoutcast (ICY) clients connect on `port + 1` and send `username:password` as the password.
-   * Null while the engine doesn't listen for them (#64).
+   * Every mount of the harbor pool (#64), `mount` first: one DJ per mount, so the next DJ
+   * connects to a free one while the current DJ is on air.
+   */
+  mounts: z.array(z.string()),
+  /**
+   * The port to type in a Shoutcast (ICY) client, which connects on `port + 1` and sends
+   * `username:password` as the password. Null while the station doesn't take Shoutcast sources
+   * (engine setting `live.icy`) or its engine hasn't started with them yet.
    */
   shoutcastPort: z.int().nullable(),
   /** Encoders DJs may send. */
@@ -136,6 +142,8 @@ export const liveAuthRequestSchema = z.object({
   user: z.string().max(256),
   password: z.string().max(1024),
   address: z.string().max(256).optional(),
+  /** The harbor input of the station's pool the source connects to (#64). */
+  input: z.int().min(1).max(16).optional(),
 });
 export type LiveAuthRequest = z.infer<typeof liveAuthRequestSchema>;
 
@@ -169,3 +177,65 @@ export const liveAuthRefusalSchema = z.enum([
   'outside_slot',
 ]);
 export type LiveAuthRefusal = z.infer<typeof liveAuthRefusalSchema>;
+
+// --- Live switching (#64, ADR 0027) -------------------------------------------------------
+//
+// A station's engine has a pool of harbor inputs (`live.inputs` in its engine settings): one
+// DJ per input can be connected at once, and Node picks which one is on air. Putting a DJ on
+// air opens a live session; handing the air to another input closes it and opens the next;
+// returning to automation closes it. The engine tags the live as-run entries with the session.
+
+export const liveSessionTriggerSchema = z.enum(['slot', 'manual']);
+export type LiveSessionTrigger = z.infer<typeof liveSessionTriggerSchema>;
+
+/**
+ * `returned`: back to automation. `handover`: another input went on air. `disconnected`: the
+ * DJ on air hung up. `revoked`: the streamer was disabled, expired or deleted.
+ * `engine_restarted`: the engine came back without it.
+ */
+export const liveSessionEndReasonSchema = z.enum([
+  'returned',
+  'handover',
+  'disconnected',
+  'revoked',
+  'engine_restarted',
+]);
+export type LiveSessionEndReason = z.infer<typeof liveSessionEndReasonSchema>;
+
+export const liveSessionSchema = z.object({
+  id: uuidSchema,
+  /** Null for a deleted streamer, or a source that logged in with the shared password. */
+  streamer: z.object({ id: uuidSchema, displayName: z.string() }).nullable(),
+  input: z.int().min(1),
+  trigger: liveSessionTriggerSchema,
+  startedAt: z.date(),
+  endedAt: z.date().nullable(),
+  endReason: liveSessionEndReasonSchema.nullable(),
+});
+export type LiveSession = z.infer<typeof liveSessionSchema>;
+
+/** `GET /api/v1/stations/:stationId/live/status`: the pool, what's on air, the open session. */
+export const liveStatusSchema = z.object({
+  /** The station's live input is on in its engine settings. */
+  enabled: z.boolean(),
+  /** The engine answered; false: nothing below is known (stopped, restarting). */
+  reachable: z.boolean(),
+  /** The input whose audio is on air, null while automation is. */
+  onAir: z.int().min(1).nullable(),
+  session: liveSessionSchema.nullable(),
+  inputs: z.array(
+    z.object({
+      input: z.int().min(1),
+      mount: z.string(),
+      connected: z.boolean(),
+      /** Buffered enough to take the air. */
+      ready: z.boolean(),
+      streamer: z.object({ id: uuidSchema, displayName: z.string() }).nullable(),
+    }),
+  ),
+});
+export type LiveStatus = z.infer<typeof liveStatusSchema>;
+
+/** `PUT /api/v1/stations/:stationId/live/on-air`: put the DJ on this input on air. */
+export const putLiveOnAirSchema = z.object({ input: z.int().min(1).max(16) });
+export type PutLiveOnAir = z.infer<typeof putLiveOnAirSchema>;

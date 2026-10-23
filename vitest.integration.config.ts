@@ -11,6 +11,8 @@ const engine = [
   'apps/api/src/modules/alerts/silence.int.test.ts',
   // Runs the station template's live input against the harbor auth callback (#63).
   'apps/api/src/modules/live/live-auth.engine.int.test.ts',
+  // The harbor pool and live switching, recorded (#64).
+  'apps/api/src/modules/live/live-switching.engine.int.test.ts',
 ];
 const worker = ['apps/worker/src/**/*.int.test.ts'];
 

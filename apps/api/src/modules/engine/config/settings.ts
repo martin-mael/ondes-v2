@@ -165,6 +165,22 @@ export const stationEngineSettingsSchema = z
         /** Seconds buffered before a DJ can take the air, and the buffer's maximum. */
         buffer: z.number().min(1).max(30).default(5),
         maxBuffer: z.number().min(2).max(60).default(10),
+        /**
+         * Harbor inputs in the pool (#64): that many DJs can be connected at once, one per
+         * mount (`mount`, `mount-2`, …), and Node picks which one is on air. Two lets the
+         * next DJ connect and wait while the current one is on air.
+         */
+        inputs: z.int().min(1).max(4).default(2),
+        /**
+         * Also accept Shoutcast (ICY) sources on `port + 1`, on the first input of the pool.
+         * Off by default: Icecast-protocol clients (BUTT, Mixxx, OBS) don't need it.
+         */
+        icy: z.boolean().default(false),
+        /**
+         * Played once when the air goes back from a live DJ to automation (a jingle or a short
+         * bed), if the file exists. Unset or missing: straight back to the log.
+         */
+        returnFile: absolutePath.optional(),
       })
       .prefault({})
       .refine((l) => l.maxBuffer > l.buffer, {
@@ -234,6 +250,7 @@ export const stationEngineSettingsSchema = z
       ['control', s.control.port],
       ['metrics', s.metrics.port],
       ...(s.live.enabled ? [['live', s.live.port] as [string, number]] : []),
+      ...(s.live.enabled && s.live.icy ? [['live', s.live.port + 1] as [string, number]] : []),
     ];
     ports.forEach(([key, p], i) => {
       if (ports.findIndex(([, q]) => q === p) !== i)

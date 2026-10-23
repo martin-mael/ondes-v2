@@ -148,6 +148,14 @@ function ConnectionSettings({
       <ul className="flex list-disc flex-col gap-1 pl-5 text-sm text-muted-foreground">
         <li>{t('connection.formats', { formats: info.formats.join(', ') })}</li>
         <li>{t('connection.window', { minutes: LIVE_EARLY_CONNECT_MS / 60_000 })}</li>
+        {info.mounts.length > 1 && (
+          <li>
+            {t('connection.mounts', {
+              mount: info.mount,
+              others: info.mounts.slice(1).join(', '),
+            })}
+          </li>
+        )}
         <li>
           {info.shoutcastPort === null
             ? t('connection.shoutcastOff')

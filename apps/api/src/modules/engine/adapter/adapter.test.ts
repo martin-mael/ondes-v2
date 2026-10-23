@@ -132,6 +132,16 @@ describe('EngineAdapter', () => {
     expect(events.map((e) => [e.seq, e.type])).toEqual([[2, 'live.gate']]);
   });
 
+  it('opens the gate on an input with a live session, and hangs an input up (#64)', async () => {
+    await adapter.setLive(true, { input: 2, sessionId: 'session-1' });
+    const [gate] = await adapter.events(1);
+    expect(gate).toMatchObject({ type: 'live.gate', data: { input: 2, session_id: 'session-1' } });
+    expect(await adapter.disconnectLive(1)).toBe(false);
+    // Checked before sending: no input 0, and no 400 round trip.
+    await expect(adapter.disconnectLive(0)).rejects.toBeInstanceOf(EngineBadRequestError);
+    expect(engine.calls.filter((c) => c === 'POST /v1/live/disconnect')).toHaveLength(1);
+  });
+
   it('maps a disabled live input to EngineConflictError', async () => {
     engine.liveDisabled = true;
     await expect(adapter.setLive(true)).rejects.toBeInstanceOf(EngineConflictError);

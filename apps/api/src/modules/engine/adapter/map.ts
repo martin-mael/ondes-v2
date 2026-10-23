@@ -43,6 +43,8 @@ export function toRealtimeEvent(e: EngineEvent): EngineRealtimeEvent {
           filename: e.data.filename,
           rid: e.data.rid,
           liveSessionId: e.data.live_session_id ?? null,
+          liveStreamerId: e.data.live_streamer_id ?? null,
+          liveInput: e.data.live_input ?? null,
         },
       };
     case 'track.ended':
@@ -62,15 +64,29 @@ export function toRealtimeEvent(e: EngineEvent): EngineRealtimeEvent {
       return {
         ...envelope,
         type: 'engine.live.connected',
-        data: { ...origin, headers: e.data.headers },
+        data: {
+          ...origin,
+          headers: e.data.headers,
+          input: e.data.input ?? null,
+          streamerId: e.data.streamer_id ?? null,
+        },
       };
     case 'live.disconnected':
-      return { ...envelope, type: 'engine.live.disconnected', data: origin };
+      return {
+        ...envelope,
+        type: 'engine.live.disconnected',
+        data: { ...origin, input: e.data.input ?? null, streamerId: e.data.streamer_id ?? null },
+      };
     case 'live.gate':
       return {
         ...envelope,
         type: 'engine.live.gate',
-        data: { ...origin, enabled: e.data.enabled },
+        data: {
+          ...origin,
+          enabled: e.data.enabled,
+          input: e.data.input ?? null,
+          sessionId: e.data.session_id ?? null,
+        },
       };
     case 'blank.detected':
       return { ...envelope, type: 'engine.blank.detected', data: origin };

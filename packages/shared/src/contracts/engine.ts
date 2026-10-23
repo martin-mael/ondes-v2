@@ -30,7 +30,13 @@ export const ENGINE_ROUTES = {
   segment: `${ENGINE_CONTROL_PREFIX}/segment`,
   skip: `${ENGINE_CONTROL_PREFIX}/skip`,
   live: `${ENGINE_CONTROL_PREFIX}/live`,
+  /** Added by #64: hangs up the DJ on one input of the harbor pool. */
+  liveDisconnect: `${ENGINE_CONTROL_PREFIX}/live/disconnect`,
 } as const;
+
+/** Harbor inputs per station (#64): input `n` listens on mount `<mount>` (1) or `<mount>-n`. */
+export const ENGINE_LIVE_INPUTS_MAX = 4;
+const liveInput = z.int().min(1).max(ENGINE_LIVE_INPUTS_MAX);
 
 /** Which branch of the source chain is on air. */
 export const engineSourceSchema = z.enum(['live', 'queue', 'safety', 'emergency', 'unknown']);
@@ -140,9 +146,27 @@ export type EnginePushSegment = z.infer<typeof enginePushSegmentSchema>;
 /**
  * `POST /v1/live`: allow or forbid a connected live DJ to take over the air.
  * `409` if the station's live input is disabled in its settings.
+ *
+ * Harbor pool (#64): opening names the `input` to put on air (absent: the first ready one)
+ * and the live session Node opened, which the engine reports on that input's as-run events.
+ * Opening on another input while the gate is open is a handover (1 s crossfade). Closing
+ * hands the air back to automation; `400` for an input the pool doesn't have.
  */
-export const engineLiveGateSchema = z.object({ enabled: z.boolean() });
+export const engineLiveGateSchema = z.object({
+  enabled: z.boolean(),
+  input: liveInput.optional(),
+  session_id: engineId.optional(),
+});
 export type EngineLiveGate = z.infer<typeof engineLiveGateSchema>;
+
+/**
+ * `POST /v1/live/disconnect` (#64): hangs up the DJ on `input` (revoked streamer, kick). If
+ * they are on air, automation takes the air back. Answers `{disconnected}`: false if nobody
+ * was connected there.
+ */
+export const engineLiveDisconnectSchema = z.object({ input: liveInput });
+export type EngineLiveDisconnect = z.infer<typeof engineLiveDisconnectSchema>;
+export const engineLiveDisconnectResultSchema = z.object({ disconnected: z.boolean() });
 
 // `DELETE /v1/queue/:id` removes every queued entry whose item_id or segment_id is `id`
 // (404 if none). A segment can't be split: naming any of its parts removes all of it, and
@@ -224,7 +248,31 @@ export const engineStateSchema = z.object({
   on_air: onAirSchema.partial(),
   queue: z.array(engineQueuedRequestSchema),
   /** `ready` turns true once input.harbor has buffered enough to go on air (about 5 s). */
-  live: z.object({ enabled: z.boolean(), connected: z.boolean(), ready: z.boolean() }),
+  live: z.object({
+    enabled: z.boolean(),
+    /** Some input of the pool has a DJ connected / ready. */
+    connected: z.boolean(),
+    ready: z.boolean(),
+    /** The input Node selected; null: the first ready one. Added by #64. */
+    selected: liveInput.nullable().optional(),
+    /** The input whose audio is on air, null while automation is. */
+    on_air: liveInput.nullable().optional(),
+    /** The live session Node opened the gate with. */
+    session_id: z.string().nullable().optional(),
+    /** The harbor pool, in order. */
+    inputs: z
+      .array(
+        z.object({
+          input: liveInput,
+          mount: z.string(),
+          connected: z.boolean(),
+          ready: z.boolean(),
+          /** The streamer Node's auth webhook accepted on this input, if any. */
+          streamer_id: z.string().nullable(),
+        }),
+      )
+      .optional(),
+  }),
   blank: z.boolean(),
   /** Output level per channel in dBFS (floored at -120), null before the first frames. */
   output_db: z.array(z.number()).nullable(),
@@ -272,6 +320,10 @@ export const engineEventSchema = z.discriminatedUnion('type', [
        * when it opened the gate. Absent or null otherwise, and until the template sends it.
        */
       live_session_id: z.string().nullable().optional(),
+      /** For `source: live`: the streamer connected on the input on air (#64). */
+      live_streamer_id: z.string().nullable().optional(),
+      /** For `source: live`: the harbor input on air (#64). */
+      live_input: liveInput.nullable().optional(),
     }),
   }),
   /** The previous track left the air; `played` is how long it was the on-air track. */
@@ -289,14 +341,31 @@ export const engineEventSchema = z.discriminatedUnion('type', [
   z.object({
     ...eventBase,
     type: z.literal('live.connected'),
-    /** The source client's HTTP headers, minus Authorization. */
-    data: z.object({ headers: z.array(z.tuple([z.string(), z.string()])) }),
+    data: z.object({
+      /** The source client's HTTP headers, minus Authorization. */
+      headers: z.array(z.tuple([z.string(), z.string()])),
+      /** The harbor input it connected to, and the streamer the auth webhook named (#64). */
+      input: liveInput.optional(),
+      streamer_id: z.string().nullable().optional(),
+    }),
   }),
-  z.object({ ...eventBase, type: z.literal('live.disconnected'), data: empty }),
+  z.object({
+    ...eventBase,
+    type: z.literal('live.disconnected'),
+    data: z.object({
+      input: liveInput.optional(),
+      streamer_id: z.string().nullable().optional(),
+    }),
+  }),
   z.object({
     ...eventBase,
     type: z.literal('live.gate'),
-    data: z.object({ enabled: z.boolean() }),
+    data: z.object({
+      enabled: z.boolean(),
+      /** Added by #64: the selected input (null: the first ready one) and the session. */
+      input: liveInput.nullable().optional(),
+      session_id: z.string().nullable().optional(),
+    }),
   }),
   z.object({ ...eventBase, type: z.literal('blank.detected'), data: empty }),
   z.object({ ...eventBase, type: z.literal('blank.recovered'), data: empty }),
@@ -316,5 +385,7 @@ export const engineLiveAuthRequestSchema = z.object({
   user: z.string(),
   password: z.string(),
   address: z.string(),
+  /** The harbor input the source connects to (#64). */
+  input: liveInput.optional(),
 });
 export type EngineLiveAuthRequest = z.infer<typeof engineLiveAuthRequestSchema>;

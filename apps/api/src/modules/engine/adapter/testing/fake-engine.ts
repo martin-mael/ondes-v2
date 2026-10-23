@@ -189,8 +189,20 @@ export async function startFakeEngine(
     if (route === 'POST /v1/live') {
       if (engine.liveDisabled) return send(res, 409, { error: 'live input is disabled' });
       if (typeof body.enabled !== 'boolean') return send(res, 400, { error: 'invalid live' });
-      engine.emit('live.gate', { enabled: body.enabled });
+      const input = typeof body.input === 'number' ? body.input : null;
+      if (body.input !== undefined && (input === null || input < 1 || input > 2))
+        return send(res, 400, { error: `no input ${String(body.input)}` });
+      engine.emit('live.gate', {
+        enabled: body.enabled,
+        input,
+        session_id: typeof body.session_id === 'string' ? body.session_id : null,
+      });
       return send(res, 200, { enabled: body.enabled });
+    }
+    if (route === 'POST /v1/live/disconnect') {
+      if (engine.liveDisabled) return send(res, 409, { error: 'live input is disabled' });
+      if (body.input !== 1 && body.input !== 2) return send(res, 400, { error: 'no input' });
+      return send(res, 200, { disconnected: false });
     }
     return send(res, 404, { error: 'no route' });
   }
