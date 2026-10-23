@@ -83,7 +83,7 @@ const OLDER_MARGIN_MS = 30 * DAY;
  * The episode a rerun occurrence plays again (#48). The default plays the show's latest
  * episode with audio that already went out (the `latest_episode` strategy, the same rule as
  * #47's fallback). Once #48's slot fields are on main, the integration passes its resolver:
- * `(db, scope, o) => resolveRerun(db, scope, { slotId: o.slotId, occurrenceDate: o.date })`
+ * `(db, scope, o) => resolveRerun(db, scope, { slotId: o.slotId, occurrenceDate: o.date, startsAt: o.startsAt })`
  * (`packages/db/src/repos/reruns.ts`), which honours `rerun_strategy` / `rerun_episode_id`.
  */
 export type RerunResolver = (
@@ -522,8 +522,9 @@ async function episodeById(db: Executor, scope: StationScope, id: string) {
 }
 
 /**
- * The default rerun: the show's highest-numbered episode with audio that already went out
- * (aired, unscheduled, or premiered on an earlier date), like #47's `latest_episode` fallback.
+ * The default rerun: the show's highest-numbered episode with audio that has already aired by
+ * the occurrence's start: `aired` before it, or `ready` with its premiere on an earlier local
+ * date. The same rule as #48's `latestAiredEpisode` (`latest_episode` strategy).
  */
 export const latestEpisodeRerun: RerunResolver = async (db, scope, occurrence) => {
   const [row] = await db
@@ -536,9 +537,8 @@ export const latestEpisodeRerun: RerunResolver = async (db, scope, occurrence) =
         eq(episode.showId, occurrence.showId),
         isNotNull(episode.assetId),
         or(
-          eq(episode.status, 'aired'),
-          isNull(episode.occurrenceDate),
-          lt(episode.occurrenceDate, occurrence.date),
+          and(eq(episode.status, 'aired'), lt(episode.airedAt, occurrence.startsAt)),
+          and(eq(episode.status, 'ready'), lt(episode.occurrenceDate, occurrence.date)),
         ),
       ),
     )

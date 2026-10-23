@@ -368,4 +368,58 @@ describe('log-generate job', () => {
     row = (await items('2026-11-05')).rows.find((r) => r.kind === 'episode');
     expect(row?.assetId).toBe(audio?.id);
   });
+  it('plans a rerun with the latest episode that aired before it (#48 rule)', async () => {
+    const date: LocalDate = '2026-11-08';
+    const [aired, unaired] = await tdb.db
+      .insert(asset)
+      .values([
+        { ...base(), type: 'episode', title: 'Le Midi #10', durationMs: HOUR - 120_000 },
+        { ...base(), type: 'episode', title: 'Le Midi #11', durationMs: HOUR - 120_000 },
+      ])
+      .returning({ id: asset.id });
+    const [ep10] = await tdb.db
+      .insert(episode)
+      .values([
+        {
+          ...base(),
+          showId,
+          number: 10,
+          kind: 'prerecorded',
+          assetId: aired?.id,
+          status: 'aired',
+          airedAt: new Date('2026-10-30T11:00:00Z'),
+        },
+        // Has audio but never aired, and isn't scheduled: not rerunnable.
+        {
+          ...base(),
+          showId,
+          number: 11,
+          kind: 'prerecorded',
+          assetId: unaired?.id,
+          status: 'ready',
+        },
+      ])
+      .returning({ id: episode.id });
+    const [rerunSlot] = await tdb.db
+      .insert(showSlot)
+      .values({
+        ...base(),
+        showId,
+        type: 'rerun',
+        rule: { freq: 'once', date, time: '21:00' },
+        startsOn: date,
+        endsOn: date,
+        durationMs: HOUR,
+      })
+      .returning({ id: showSlot.id });
+    await runLogGenerate(deps(), scope, { localDates: [date], status: 'draft' });
+    const rerun = (await items(date)).rows.find((r) => r.originShowSlotId === rerunSlot?.id);
+    expect(rerun).toMatchObject({
+      kind: 'episode',
+      episodeId: ep10?.id,
+      assetId: aired?.id,
+      timing: 'hard',
+      plannedStart: zonedInstant(date, '21:00', TZ),
+    });
+  });
 });

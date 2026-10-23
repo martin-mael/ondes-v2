@@ -187,10 +187,12 @@ Which items a user may keep, dry-runs and diffs are #101's. It can pass its own 
 
 ### Reruns (#48)
 The loader takes a `RerunResolver`. The default (`latestEpisodeRerun`) plays the show's latest
-episode with audio that already went out (the `latest_episode` strategy, #47's rule). #48 (PR
+episode with audio that has aired by the occurrence's start (`aired` before it, or `ready` with
+an earlier premiere): #48's `latest_episode` rule. #48 (PR
 #166) adds `resolveRerun` in `packages/db/src/repos/reruns.ts`, which reads the slot's
 `rerun_strategy` / `rerun_episode_id`. Once both are on main, the default becomes
-`(db, scope, o) => resolveRerun(db, scope, { slotId: o.slotId, occurrenceDate: o.date })`. A rerun is planned like a premiere,
+`(db, scope, o) => resolveRerun(db, scope, { slotId: o.slotId, occurrenceDate: o.date,
+startsAt: o.startsAt })`. A rerun is planned like a premiere,
 with the episode it plays again, and gets no fallback mark.
 
 ## Consequences
