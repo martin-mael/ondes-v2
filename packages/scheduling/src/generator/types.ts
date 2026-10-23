@@ -212,11 +212,11 @@ export interface AnchorContext {
 
 /**
  * What `beforeAnchor` may use to change the run with the rules still applying (#46).
- * `pick`: an asset of `categoryId` for a slot at `at`, among the members `accept` lets through,
- * picked like any slot (rotation order, rules, relaxation). The pick joins the rules' history,
- * so later picks see it. Null when nothing is accepted. History is append-only (the picker's
- * indexes rely on it): an item the hook drops stays in it, as if it had aired, which only makes
- * later picks rest it a little more.
+ * - `pick`: an asset of `categoryId` for a slot at `at`, among the members `accept` lets
+ *   through, picked like any slot (rotation order, rules, relaxation). The pick joins the
+ *   rules' history, so later picks see it. Null when nothing is accepted.
+ * - `release`: takes a run item's pick (its asset at its `start`) out of the history, for an
+ *   item the hook drops or replaces, so the rules don't count a play that won't happen.
  */
 export interface AnchorTools {
   pick(request: {
@@ -224,6 +224,7 @@ export interface AnchorTools {
     at: Date;
     accept: (asset: GeneratorAsset) => boolean;
   }): { asset: GeneratorAsset; relaxedRules: RelaxedRule[] } | null;
+  release(item: PlannedItem): void;
 }
 
 /** A `vt` placeholder slot of a clock (`mode: 'placeholder'`). */

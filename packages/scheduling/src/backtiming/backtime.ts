@@ -13,20 +13,25 @@ import type {
 // The generator calls `beforeAnchor` at every anchored item with the run planned since the
 // previous one (ADR 0026). Its picks fill clock slots in order and stop at the anchor, so the
 // run ends up to about half a song early or late. Back-timing re-plans the end of the run:
-// 1. Trailing songs that overrun by more than the last one can be cut are dropped.
-// 2. If what's left still can't be absorbed, the last song is re-picked, in its own slot's
-//    category and under the rules, among the songs whose length lets the tail end on time.
-// 3. The last song is shortened when the run still overruns (a cut-off with a fade: the feeder
+// 1. Elastic fills the clock planned in the tail are taken out (one sized fill replaces them).
+// 2. The tail's songs that overrun by more than the last one can be cut are dropped, from the
+//    last one back: a VT or a jingle after them stays.
+// 3. If what's left still can't be absorbed, the last song is re-picked, in its own slot's
+//    category and under the rules, among the songs whose length lets the tail end on time;
+//    up to two songs are added when the gap is longer than a fill.
+// 4. The last song is shortened when the run still overruns (a cut-off with a fade: the feeder
 //    plays an item to its log slot, ADR 0031), down to `minSongMs`.
-// 4. A fill item (a bed from the clock's `fill` slot, else a jingle) takes the remaining seconds.
-//    It is picked longer than its slot when possible (`fillHeadroomMs`): the feeder stretches or
-//    trims it at runtime, re-planning from the as-run (ADR 0003 "re-plan the tail").
+// 5. A fill takes the remaining seconds: a bed from the clock's `fill` slot, sized to the gap
+//    and picked longer than it when possible (`fillHeadroomMs`), so the feeder can stretch or
+//    trim it at runtime (ADR 0003 "re-plan the tail"); else a whole jingle, the one that fits
+//    best (a little longer, with the song cut to make room, or the longest that fits).
 // The fill is planned at least `minFillMs` long when a fill source exists, cutting the song a
 // little more if needed, so the feeder always has a flexible item right before the anchor.
+// Dropped and replaced picks leave the rules' history (`AnchorTools.release`).
 //
-// Kept items, segments and items other than songs and fills are never touched: only the
-// generator's own trailing songs and fills are. Every `hard` and `soft` anchor is back-timed,
-// clock markers included (`isBackTimed` says why).
+// Kept items and segments are never touched; VTs and jingles of the tail stay, only moving
+// up when a song before them changes. Every `hard` and `soft` anchor is back-timed, clock
+// markers included (`isBackTimed` says why).
 
 export interface BackTimingOptions {
   /** Below this, a residual is left to the feeder (re-plan, engine cut). */
@@ -60,6 +65,8 @@ interface FillSource {
   sized: boolean;
   /** The longest member's log length. */
   maxMs: number;
+  /** Every member's log length. */
+  lengths: number[];
 }
 
 /**
@@ -96,155 +103,187 @@ export function backTimeRun(
   // The run's clock, else the anchor's (a marker right after a show has an empty run).
   const fill = fillSourceFor(snapshot, [...run, anchor]);
 
-  // The editable tail: trailing new songs and fills (a kept item or a segment ends it).
+  // The editable tail: the generator's own items after the last kept item or segment part.
   const editable = (item: PlannedItem | undefined) =>
     !!item && item.keptId === null && item.segmentId === null;
+  let from = run.length;
+  while (from > 0 && editable(run[from - 1])) from--;
+
   /** Where the run starts: its first item, or where the item before it ends. */
   const runStart = (context.run[0]?.start ?? context.runEndsAt).getTime();
-  const endOf = () => {
-    const last = run.at(-1);
-    return last ? last.start.getTime() + last.plannedDurationMs : runStart;
+  const endOf = (i = run.length - 1) => {
+    const item = run[i];
+    return item ? item.start.getTime() + item.plannedDurationMs : runStart;
   };
-  const cutOf = (item: PlannedItem) =>
-    item.kind === 'song' && editable(item)
+  // Each item's pick is in the rules' history at the start it was picked for.
+  const pickedAt = new Map<PlannedItem, Date>(run.map((item) => [item, item.start]));
+  const release = (item: PlannedItem) =>
+    tools.release({ ...item, start: pickedAt.get(item) ?? item.start });
+  const replace = (i: number, item: PlannedItem) => {
+    pickedAt.set(item, pickedAt.get(run[i] as PlannedItem) ?? item.start);
+    run[i] = item;
+  };
+  /** Items from `i` on follow each other again (after a removal or a length change). */
+  const reflow = (i: number) => {
+    for (let j = i; j < run.length; j++) {
+      replace(j, { ...(run[j] as PlannedItem), start: new Date(endOf(j - 1)) });
+    }
+  };
+
+  const cutOf = (item: PlannedItem | undefined) =>
+    item?.kind === 'song' && editable(item)
       ? Math.max(0, Math.min(o.maxSongCutMs, item.plannedDurationMs - o.minSongMs))
       : 0;
   /** The fill wanted for a gap, 0 without a fill source. */
   const fillFor = (gap: number) => (fill ? Math.max(gap, o.minFillMs) : 0);
-  /** Whether a gap is absorbed by cutting `last` and planning a fill. */
-  const absorbed = (gap: number, last: PlannedItem) => {
+  /** Whether a gap is absorbed by cutting `song` and planning a fill. */
+  const absorbed = (gap: number, song: PlannedItem | undefined) => {
     const fillMs = fillFor(gap);
     if (fill && fillMs > fill.maxMs) return false;
-    return fillMs - gap <= cutOf(last) && (fill !== null || gap <= o.toleranceMs);
+    return fillMs - gap <= cutOf(song) && (fill !== null || gap <= o.toleranceMs);
   };
-  /** Steps 1–3 on the editable tail; returns the gap left for the fill. */
-  function reshapeTail(): number {
-    // Fills the clock already planned (elastic `fill` slots) after the last kept item or segment
-    // go: one fill, sized here, takes their place at the end. What followed them moves up.
-    let fixedUntil = run.length;
-    while (fixedUntil > 0 && editable(run[fixedUntil - 1])) fixedUntil--;
-    for (let i = run.length - 1; i >= Math.max(fixedUntil, 1); i--) {
-      if ((run[i] as PlannedItem).kind !== 'fill') continue;
-      run.splice(i, 1);
-      for (let j = i; j < run.length; j++) {
-        const prev = run[j - 1] as PlannedItem;
-        const at = new Date(prev.start.getTime() + prev.plannedDurationMs);
-        run[j] = { ...(run[j] as PlannedItem), start: at };
-      }
-    }
+  /** The tail's last song: what is re-picked, cut or dropped, even before a VT or a jingle. */
+  const songIndex = () => {
+    for (let i = run.length - 1; i >= from; i--) if (run[i]?.kind === 'song') return i;
+    return -1;
+  };
 
-    // 1. Drop trailing songs the anchor cuts into by more than they can give.
-    let gap = target - endOf();
-    // The run's only song goes too when a fill can take its place.
-    while (run.length > 0) {
-      const last = run.at(-1) as PlannedItem;
-      if (last.kind !== 'song' || !editable(last) || gap >= -cutOf(last)) break;
-      if (run.length === 1 && !(fill && gap + last.plannedDurationMs <= fill.maxMs)) break;
-      run.pop();
-      gap = target - endOf();
-    }
-    const last = run.at(-1);
-    if (!last) return gap;
-    /** The last song of the tail: its slot's category gives the songs added below. */
-    const lastSong = run.findLast((i, n) => n >= fixedUntil && i.kind === 'song');
+  // 1. Fills the clock already planned (elastic `fill` slots) go: one fill, sized here, takes
+  //    their place at the end. What followed them moves up.
+  for (let i = run.length - 1; fill && i >= from; i--) {
+    if ((run[i] as PlannedItem).kind !== 'fill') continue;
+    release(run[i] as PlannedItem);
+    run.splice(i, 1);
+    reflow(i);
+  }
+  let gap = target - endOf();
 
-    // 2. Re-pick the last song so the tail can end on time; when even that leaves more than a
-    //    fill can take, add a song from the same category (twice at most).
-    const categoryId = lastSong ? slotCategory(snapshot, lastSong.origin) : null;
-    if (categoryId && last === lastSong && !absorbed(gap, last)) {
-      const before = last.start.getTime();
-      const picked = tools.pick({
-        categoryId,
-        at: last.start,
-        accept: (asset) => {
-          const length = itemLengthMs(asset);
-          return absorbed(target - (before + length), { ...last, plannedDurationMs: length });
-        },
-      });
-      if (picked) {
-        run[run.length - 1] = {
-          ...last,
-          assetId: picked.asset.id,
-          plannedDurationMs: itemLengthMs(picked.asset),
-          relaxedRules: picked.relaxedRules,
-        };
-        gap = target - endOf();
-      }
-    }
-    for (
-      let added = 0;
-      categoryId && added < 2 && !absorbed(gap, run.at(-1) as PlannedItem);
-      added++
-    ) {
-      const from = endOf();
-      const song = (accept: (length: number) => boolean) =>
-        tools.pick({ categoryId, at: new Date(from), accept: (a) => accept(itemLengthMs(a)) });
-      const fits = (length: number) => target - (from + length);
-      const picked =
-        song((ms) => absorbed(fits(ms), { ...(lastSong as PlannedItem), plannedDurationMs: ms })) ??
-        song((ms) => fits(ms) >= o.minFillMs);
-      if (!picked) break;
-      run.push({
-        ...(lastSong as PlannedItem),
+  // 2. Drop songs the anchor cuts into by more than they can give, from the last one back
+  //    (a VT or a jingle after them stays). The run's only song goes too when a fill can take
+  //    its place.
+  for (let si = songIndex(); si >= 0 && gap < -cutOf(run[si]); si = songIndex()) {
+    const song = run[si] as PlannedItem;
+    const songs = run.filter((item, n) => n >= from && item.kind === 'song').length;
+    if (songs === 1 && !(fill && gap + song.plannedDurationMs <= fill.maxMs)) break;
+    release(song);
+    run.splice(si, 1);
+    reflow(si);
+    gap = target - endOf();
+  }
+
+  // 3. Re-pick the last song so the tail can end on time; when even that leaves more than a
+  //    fill can take, add songs from its category (twice at most).
+  let si = songIndex();
+  const categoryId = si >= 0 ? slotCategory(snapshot, (run[si] as PlannedItem).origin) : null;
+  if (categoryId && !absorbed(gap, run[si])) {
+    const song = run[si] as PlannedItem;
+    const picked = tools.pick({
+      categoryId,
+      at: song.start,
+      accept: (asset) => {
+        const length = itemLengthMs(asset);
+        const g = gap + song.plannedDurationMs - length;
+        return absorbed(g, { ...song, plannedDurationMs: length });
+      },
+    });
+    if (picked) {
+      release(song);
+      const next = {
+        ...song,
         assetId: picked.asset.id,
         plannedDurationMs: itemLengthMs(picked.asset),
         relaxedRules: picked.relaxedRules,
-        start: new Date(from),
-      });
+      };
+      run[si] = next;
+      pickedAt.set(next, song.start);
+      reflow(si + 1);
       gap = target - endOf();
     }
-
-    // 3. Shorten the last song: the overrun, plus what the fill's minimum length needs.
-    const tail = run.at(-1) as PlannedItem;
-    const cut = Math.min(cutOf(tail), Math.max(0, fillFor(gap) - gap, -gap));
-    if (cut > 0) {
-      run[run.length - 1] = { ...tail, plannedDurationMs: tail.plannedDurationMs - cut };
-      gap += cut;
-    }
-    return gap;
   }
-
-  let gap = target - endOf();
-  // Only a fill can go after a kept item, a segment, or nothing (steps 1–3 need a song).
-  if (editable(run.at(-1))) gap = reshapeTail();
-
-  // 4. A fill for the rest.
-  if (fill && gap > o.toleranceMs) {
+  const template = si >= 0 ? (run[si] as PlannedItem) : null;
+  for (let added = 0; categoryId && template && added < 2; added++) {
+    if (absorbed(gap, run[songIndex()])) break;
     const at = new Date(endOf());
-    const pick = (accept: (length: number) => boolean) =>
-      tools.pick({
-        categoryId: fill.categoryId,
-        at,
-        accept: (asset: GeneratorAsset) => accept(itemLengthMs(asset)),
-      });
+    const fits = (length: number) => target - (at.getTime() + length);
+    const song = (accept: (length: number) => boolean) =>
+      tools.pick({ categoryId, at, accept: (a) => accept(itemLengthMs(a)) });
+    const picked =
+      song((ms) => absorbed(fits(ms), { ...template, plannedDurationMs: ms })) ??
+      song((ms) => fits(ms) >= o.minFillMs);
+    if (!picked) break;
+    const next = {
+      ...template,
+      assetId: picked.asset.id,
+      plannedDurationMs: itemLengthMs(picked.asset),
+      relaxedRules: picked.relaxedRules,
+      start: at,
+    };
+    run.push(next);
+    pickedAt.set(next, at);
+    gap = target - endOf();
+  }
+
+  // 4. Shorten the last song: the overrun, plus what the fill's minimum length needs.
+  si = songIndex();
+  const shorten = (ms: number) => {
+    const song = run[si] as PlannedItem;
+    replace(si, { ...song, plannedDurationMs: song.plannedDurationMs - ms });
+    reflow(si + 1);
+    gap += ms;
+  };
+  const cut = Math.min(cutOf(run[si]), Math.max(0, fillFor(gap) - gap, -gap));
+  if (cut > 0) shorten(cut);
+
+  // 5. A fill for the rest.
+  if (!fill || gap <= o.toleranceMs) return run;
+  const at = () => new Date(endOf());
+  const pick = (accept: (length: number) => boolean) =>
+    tools.pick({
+      categoryId: fill.categoryId,
+      at: at(),
+      accept: (asset: GeneratorAsset) => accept(itemLengthMs(asset)),
+    });
+  let picked: ReturnType<typeof pick> = null;
+  if (fill.sized) {
     // A bed: long enough to stretch at runtime, else long enough, else the longest there is.
-    // A jingle: the longest that fits, within a few seconds of the gap if possible.
-    const picked = fill.sized
-      ? (pick((ms) => ms >= gap + o.fillHeadroomMs) ??
-        pick((ms) => ms >= gap) ??
-        pick((ms) => ms >= fill.maxMs))
-      : (pick((ms) => ms <= gap && ms >= gap - o.minFillMs) ?? pick((ms) => ms <= gap));
-    if (picked) {
-      const length = itemLengthMs(picked.asset);
-      run.push({
-        keptId: null,
-        kind: fill.sized ? 'fill' : 'jingle',
-        plannedDurationMs: fill.sized ? Math.min(gap, length) : length,
-        assetId: picked.asset.id,
-        episodeId: null,
-        liveSlotId: null,
-        title: null,
-        timing: 'flow',
-        anchorAt: null,
-        capMs: null,
-        origin: fill.origin,
-        relaxedRules: picked.relaxedRules,
-        segmentId: null,
-        crossOutMs: null,
-        start: at,
-      });
+    picked =
+      pick((ms) => ms >= gap + o.fillHeadroomMs) ??
+      pick((ms) => ms >= gap) ??
+      pick((ms) => ms >= fill.maxMs);
+  } else {
+    // A jingle plays whole. Best, one a little longer than the gap with the song cut to make
+    // room (the shortest such); else the longest that fits. Lengths are tried in that order.
+    const room = cutOf(run[si]) - cut;
+    const lengths = [...new Set(fill.lengths)];
+    const longer = lengths.filter((l) => l >= gap && l - gap <= room).sort((a, b) => a - b);
+    const shorter = lengths.filter((l) => l < gap).sort((a, b) => b - a);
+    for (const length of [...longer, ...shorter]) {
+      picked = pick((ms) => ms === length);
+      if (!picked) continue;
+      if (length > gap) shorten(length - gap);
+      break;
     }
   }
+  if (!picked) return run;
+  const length = itemLengthMs(picked.asset);
+  const item: PlannedItem = {
+    keptId: null,
+    kind: fill.sized ? 'fill' : 'jingle',
+    plannedDurationMs: fill.sized ? Math.min(gap, length) : length,
+    assetId: picked.asset.id,
+    episodeId: null,
+    liveSlotId: null,
+    title: null,
+    timing: 'flow',
+    anchorAt: null,
+    capMs: null,
+    origin: fill.origin,
+    relaxedRules: picked.relaxedRules,
+    segmentId: null,
+    crossOutMs: null,
+    start: at(),
+  };
+  run.push(item);
   return run;
 }
 
@@ -279,6 +318,7 @@ function fillSourceFor(
         origin: { type: 'clock', clockId: clock.id, slotIndex },
         sized: kind === 'fill',
         maxMs: Math.max(...category.members.map((m) => itemLengthMs(m))),
+        lengths: category.members.map((m) => itemLengthMs(m)),
       };
     }
     return null;

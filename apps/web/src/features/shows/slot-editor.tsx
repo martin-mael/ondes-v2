@@ -74,7 +74,10 @@ function draftOf(show: Show, slot: ShowSlot | undefined, today: string): Draft {
   };
 }
 
-/** The start policy sent: a cap only with a soft start. */
+/**
+ * The start policy sent: a cap only with a soft start. A cap that isn't a number is sent as
+ * NaN, so the contract refuses it and the field says so (never silently the default).
+ */
 function startOf(draft: Draft) {
   if (draft.startMode === 'hard') return { startMode: 'hard' as const, startCapMs: null };
   const cap = draft.startCapS.trim();
@@ -414,6 +417,13 @@ export function SlotEditorDialog({
                     placeholder="30"
                     value={draft.startCapS}
                     onChange={(e) => set('startCapS', e.target.value)}
+                  />
+                  <FieldError
+                    errors={
+                      invalid.has('startCapMs')
+                        ? [{ message: t('slot.startCapInvalid') }]
+                        : undefined
+                    }
                   />
                 </Field>
               )}

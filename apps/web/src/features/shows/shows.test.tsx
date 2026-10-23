@@ -481,6 +481,11 @@ describe('show page', () => {
     fireEvent.change(dialog.getByLabelText('Date'), { target: { value: '2026-12-31' } });
     fireEvent.change(dialog.getByLabelText('Time'), { target: { value: '23:00' } });
     await user.selectOptions(dialog.getByLabelText('Start'), 'soft');
+    await user.type(dialog.getByLabelText('Late by at most (s)'), '700');
+    await user.click(dialog.getByRole('button', { name: 'Add the slot' }));
+    expect(await dialog.findByText('Seconds, from 0 to 600.')).toBeVisible();
+    expect(created).toHaveLength(1);
+    await user.clear(dialog.getByLabelText('Late by at most (s)'));
     await user.type(dialog.getByLabelText('Late by at most (s)'), '45');
     await user.click(dialog.getByRole('button', { name: 'Add the slot' }));
     await waitFor(() => expect(created).toHaveLength(2));

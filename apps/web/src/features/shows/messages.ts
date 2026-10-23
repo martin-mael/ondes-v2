@@ -152,6 +152,7 @@ const en = {
   'slot.start.hard': 'On time',
   'slot.start.soft': 'After the current item',
   'slot.startCap': 'Late by at most (s)',
+  'slot.startCapInvalid': 'Seconds, from 0 to 600.',
   'slot.startHelp.hard':
     'Starts exactly on time: whatever is playing fades out under it. The music before it is planned to end on time.',
   'slot.startHelp.soft':
@@ -440,6 +441,7 @@ const fr: Record<ShowMessageKey, string> = {
   'slot.start.hard': 'À l’heure',
   'slot.start.soft': 'Après l’élément en cours',
   'slot.startCap': 'Retard maximal (s)',
+  'slot.startCapInvalid': 'En secondes, de 0 à 600.',
   'slot.startHelp.hard':
     'Commence pile à l’heure : ce qui passe s’efface en fondu. La musique avant est prévue pour finir à l’heure.',
   'slot.startHelp.soft':

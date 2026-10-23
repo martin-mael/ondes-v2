@@ -74,10 +74,13 @@ export const HARD_START_SHOWS: readonly HardStartShow[] = [
 ];
 
 /** One occurrence of every show on each date, each with its own episode file. */
-export function hardStartOccurrences(dates: readonly LocalDate[]): GeneratorOccurrence[] {
+export function hardStartOccurrences(
+  dates: readonly LocalDate[],
+  shows: readonly HardStartShow[] = HARD_START_SHOWS,
+): GeneratorOccurrence[] {
   let n = 0;
   return dates.flatMap((date) =>
-    HARD_START_SHOWS.map((show) => {
+    shows.map((show) => {
       n++;
       const asset = fixtureAsset(80_000 + n, {
         type: 'episode',
@@ -115,6 +118,8 @@ export interface HardStartFixtureOptions {
   seed?: string;
   /** Older airings for most songs (`fixtureSnapshot`'s `airedBefore`). */
   airedBefore?: Date;
+  /** Default `HARD_START_SHOWS`. */
+  shows?: readonly HardStartShow[];
 }
 
 export function hardStartSnapshot(
@@ -125,7 +130,7 @@ export function hardStartSnapshot(
   const base = fixtureSnapshot({
     songs: options.songs ?? 1_500,
     clocks: [beds ? hourClockWithFill() : hourClock()],
-    occurrences: hardStartOccurrences(dates),
+    occurrences: hardStartOccurrences(dates, options.shows),
     ...(options.seed ? { seed: options.seed } : {}),
     ...(options.airedBefore ? { airedBefore: options.airedBefore } : {}),
   });

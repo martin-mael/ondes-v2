@@ -22,9 +22,11 @@ import { FLEXIBLE_KINDS, stretchTail } from './hardstart.ts';
 //   runs dry before it. Without it, a gap bigger than `holdGapMs` holds the item until its
 //   anchor and what the tail can't absorb is reported in `late`.
 // - `soft`: entries that would start at or after the anchor are dropped; so is the last one
-//   if it would end after `anchor + cap`. A gap is stretched like a hard one's, aiming
-//   `cutOverlapMs` past the anchor: a soft item starts when the music ends, never early. An item
-//   on air past the cap is reported in `late`.
+//   past `anchor + cap` is cut, else dropped (`absorb`). A gap is stretched like a hard one's,
+//   aiming `cutOverlapMs` past the anchor, and one bigger than `holdGapMs` holds the item until
+//   its anchor: a soft item starts when the music ends, not early. When the item on air itself
+//   runs past the cap, the engine cuts it there (`scheduled` at `anchor + cap`, with
+//   `engineCut`); without it, that is reported in `late`.
 // - `not_before`: held until its anchor when it would start more than `holdGapMs` early.
 // - `live_slot`: nothing to push; the entries after it are held until the slot's end.
 // - `marker`: a timing point only (its anchor applies), nothing to push.
@@ -214,23 +216,35 @@ export function planFeed(input: PlanInput): FeedPlan {
     }
   };
 
-  /** Absorbs `overrun` ms in the queued tail, from its end. Returns what's left. */
+  /**
+   * Absorbs `overrun` ms in the tail since the previous anchor (`tailFrom`), from its end:
+   * first whole flexible entries (song, bed, fill) that fit in it, then trims of the flexible
+   * ones, and only then whole other entries (a VT, a jingle), so a voice track stays when the
+   * music around it can give the time. Returns what's left.
+   */
   const absorb = (overrun: number): number => {
     let left = overrun;
-    for (let j = wanted.length - 1; j >= 0 && left > o.toleranceMs; j--) {
-      const w = wanted[j] as PlannedEntry;
-      const length = w.entry.slotMs - w.trimMs;
-      if (left >= length) {
-        shorten(j, length, true);
-        left -= length;
-        continue;
+    const pass = (test: (w: PlannedEntry) => boolean, trim: boolean) => {
+      for (let j = wanted.length - 1; j >= tailFrom && left > o.toleranceMs; j--) {
+        const w = wanted[j] as PlannedEntry;
+        if (!test(w)) continue;
+        const length = w.entry.slotMs - w.trimMs;
+        if (!trim && left >= length) {
+          shorten(j, length, true);
+          left -= length;
+          continue;
+        }
+        const cut = trim ? Math.min(left, Math.max(0, w.entry.flexMs - w.trimMs)) : 0;
+        if (cut > 0) {
+          shorten(j, cut, false);
+          left -= cut;
+        }
       }
-      const cut = Math.min(left, Math.max(0, w.entry.flexMs - w.trimMs));
-      if (cut > 0) {
-        shorten(j, cut, false);
-        left -= cut;
-      }
-    }
+    };
+    const flexible = (w: PlannedEntry) => isFlexibleKind(w.entry.kind);
+    pass(flexible, false);
+    pass(flexible, true);
+    pass((w) => !flexible(w), false);
     return left;
   };
 
@@ -270,17 +284,26 @@ export function planFeed(input: PlanInput): FeedPlan {
       if (!waitFor(e, anchor)) break;
     } else if (anchor !== null && e.timing === 'soft') {
       // Whatever would start at or after the anchor makes way for this item.
-      const dropLast = () => {
+      while (wanted.length > tailFrom && (wanted.at(-1) as PlannedEntry).startMs >= anchor) {
         const last = wanted.at(-1) as PlannedEntry;
         shorten(wanted.length - 1, last.entry.slotMs - last.trimMs, true);
-      };
-      while (wanted.length && (wanted.at(-1) as PlannedEntry).startMs >= anchor) dropLast();
+      }
+      // At most `capMs` late: the tail is cut (or dropped) down to the cap.
       const cap = anchor + (e.capMs ?? 0);
-      if (t > cap && wanted.length) dropLast();
-      if (t > cap + o.toleranceMs) late.push({ itemId: e.id, ms: t - cap });
-      // Never early: the tail aims a little past the anchor, the item waits for its end.
+      const left = t > cap ? absorb(t - cap) : 0;
+      if (left > o.toleranceMs) {
+        // The item on air itself runs past the cap: the engine cuts it there (#46).
+        if (o.engineCut && PUSHED.includes(e.kind) && e.kind !== 'segment' && !e.unplayable) {
+          scheduled = { entry: e, atMs: cap };
+          break;
+        }
+        late.push({ itemId: e.id, ms: left });
+      }
+      // Not early: the tail aims a little past the anchor, the item waits for its end; a gap
+      // the tail can't stretch over holds the item until its anchor, like a hard one.
       const aim = anchor + o.cutOverlapMs;
       if (aim - t > o.toleranceMs) t += stretchTail(wanted, tailFrom, aim - t);
+      if (!waitFor(e, anchor)) break;
     } else if (anchor !== null && e.timing === 'not_before') {
       if (!waitFor(e, anchor)) break;
     }

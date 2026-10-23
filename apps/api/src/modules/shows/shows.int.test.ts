@@ -295,6 +295,10 @@ describe('slots and exceptions', () => {
       await call('programmer', 'PATCH', `/shows/${s.id}/slots/${soft.id}`, { startMode: 'hard' }),
     );
     expect(hard.slot).toMatchObject({ startMode: 'hard', startCapMs: null });
+    const capOnHard = await call('programmer', 'PATCH', `/shows/${s.id}/slots/${soft.id}`, {
+      startCapMs: 10_000,
+    });
+    expect([capOnHard.statusCode, capOnHard.json().error]).toEqual([422, 'start_cap_on_hard']);
     const again = await ok<ShowSlotChange>(
       await call('programmer', 'PATCH', `/shows/${s.id}/slots/${soft.id}`, { startMode: 'soft' }),
     );

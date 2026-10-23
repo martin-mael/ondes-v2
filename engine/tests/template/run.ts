@@ -516,15 +516,39 @@ async function main() {
         waiting.on_air.item_id === 'G',
       'state: G on air, H scheduled at its time',
     );
-    await sleep(9000);
+    // Once H is on air, as the feeder does: queue what follows it (K), and post the next hard
+    // start (I), then cancel it. Neither may disturb H.
+    let onAirH = false;
+    for (let i = 0; i < 100 && !onAirH; i++) {
+      await sleep(100);
+      onAirH =
+        engineStateSchema.parse(await (await call('GET', '/state')).json()).on_air.item_id === 'H';
+    }
+    check(onAirH, 'H goes on air');
+    writeWav(join(work, 'k.wav'), tone(330, 8, 0.3));
+    await call('POST', '/queue', { item_id: 'K', uri: inContainer(join(work, 'k.wav')) });
+    const afterH = engineStateSchema.parse(await (await call('GET', '/state')).json());
+    check(afterH.scheduled === null, 'state: nothing scheduled once H has started');
+    const cancel = await call('POST', '/schedule', {
+      item_id: 'I',
+      uri: inContainer(join(work, 'h.wav')),
+      at: Date.now() / 1000 + 60,
+    });
+    const duringH = engineStateSchema.parse(await (await call('GET', '/state')).json());
+    check(
+      cancel.status === 201 && duringH.on_air.item_id === 'H' && duringH.scheduled?.item_id === 'I',
+      'the next hard start, posted while H plays, waits: H stays on air',
+    );
+    const cancelled = (await (await call('DELETE', '/schedule')).json()) as { cancelled: boolean };
+    await sleep(8000);
     const hardEvents = engineEventBatchSchema
       .parse(await (await call('GET', `/events?after=${hardBefore}`)).json())
       .filter((e) => e.type === 'track.started');
     const hEvent = hardEvents.find((e) => e.data.item_id === 'H');
     check(
-      JSON.stringify(hardEvents.map((e) => e.data.item_id)) === JSON.stringify(['G', 'H']) &&
+      JSON.stringify(hardEvents.map((e) => e.data.item_id)) === JSON.stringify(['G', 'H', 'K']) &&
         hEvent?.data.source === 'queue',
-      `as-run: G, then H as a log item, and G doesn't resume (got ${JSON.stringify(
+      `as-run: G, H as a log item, then K; G doesn't resume (got ${JSON.stringify(
         hardEvents.map((e) => [e.data.item_id, e.data.rid, (e.at - hAt).toFixed(2)]),
       )})`,
     );
@@ -534,19 +558,10 @@ async function main() {
       hEvent !== undefined && Math.abs(hEvent.at - hAt) < 0.3,
       `H reported on air at its time (${hEvent ? (hEvent.at - hAt).toFixed(3) : '?'} s)`,
     );
-    const afterH = engineStateSchema.parse(await (await call('GET', '/state')).json());
-    check(afterH.scheduled === null, 'state: nothing scheduled once H has started');
-    const cancel = await call('POST', '/schedule', {
-      item_id: 'I',
-      uri: inContainer(join(work, 'h.wav')),
-      at: Date.now() / 1000 + 60,
-    });
-    const cancelled = await call('DELETE', '/schedule');
     check(
-      cancel.status === 201 &&
-        ((await cancelled.json()) as { cancelled: boolean }).cancelled &&
+      cancelled.cancelled &&
         engineStateSchema.parse(await (await call('GET', '/state')).json()).scheduled === null,
-      'DELETE /v1/schedule cancels it',
+      'DELETE /v1/schedule cancels it, and H played on',
     );
 
     docker(['stop', '-t', '10', name]);
@@ -650,12 +665,21 @@ async function main() {
     const tAt = (seconds: number) => hStart + Math.round(seconds * SAMPLE_RATE);
     const g = (t: number) => amplitudeAt(output, 440, tAt(t), span);
     const h = (t: number) => amplitudeAt(output, 660, tAt(t), span);
+    const k = (t: number) => amplitudeAt(output, 330, tAt(t), span);
     console.log(
       `     hard start: G ${g(-0.6).toFixed(3)} before, ${g(1.5).toFixed(3)} after; H ${h(1).toFixed(3)}`,
     );
     check(hStart >= 0 && g(-0.6) > 0.2, 'hard start: G on air until H');
-    check(h(1) > 0.2 && h(3) > 0.2, 'hard start: H at full level from its start');
-    check(g(1.5) < 0.01 && g(4.6) < 0.01, 'hard start: G faded out under H, and does not resume');
+    check(
+      h(1) > 0.2 && h(3) > 0.2 && h(3.4) > 0.2,
+      'hard start: H at full level from its start to its end',
+    );
+    check(g(1.5) < 0.01 && g(5) < 0.01, 'hard start: G faded out under H, and does not resume');
+    console.log(
+      `     K/G/H: ${[-2, 0, 2, 4, 4.5, 5, 6, 7, 8, 9].map((t) => `${t}:${k(t).toFixed(2)}/${g(t).toFixed(2)}/${h(t).toFixed(2)}`).join(' ')} len ${(output.length - hStart) / SAMPLE_RATE}`,
+    );
+    const kMax = Math.max(...[4.2, 4.6, 5, 5.4, 5.8, 6.2].map(k));
+    check(kMax > 0.2, `hard start: K, queued after H, airs after it (${kMax.toFixed(3)})`);
   } finally {
     if (failures.length) console.log(docker(['logs', '--tail', '40', name], false));
     docker(['rm', '-f', name], false);

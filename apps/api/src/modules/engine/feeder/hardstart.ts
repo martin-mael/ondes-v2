@@ -112,14 +112,15 @@ export function scheduleAction(input: {
 }): 'schedule' | 'unschedule' | 'none' {
   const { engine, wanted } = input;
   if (wanted) {
+    // Close to its time, the engine's copy of the same item stays, whatever changed.
+    if (engine?.itemId === wanted.itemId && wanted.atMs - input.nowMs < SCHEDULE_FREEZE_MS) {
+      return 'none';
+    }
     const same =
       engine?.itemId === wanted.itemId &&
       Math.abs(engine.atMs - wanted.atMs) < 1 &&
-      (input.sent === null || input.sent === wanted.fingerprint);
-    if (same && input.sent !== null) return 'none';
-    // Close to its time, the engine's copy of the same item stays.
-    if (same && wanted.atMs - input.nowMs < SCHEDULE_FREEZE_MS) return 'none';
-    return 'schedule';
+      input.sent === wanted.fingerprint;
+    return same ? 'none' : 'schedule';
   }
   if (engine && !input.stillHard) return 'unschedule';
   return 'none';

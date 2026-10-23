@@ -443,8 +443,12 @@ export async function updateSlot(
     const rule = parsed.rule ?? before.rule;
     const { rerun, startMode, startCapMs, ...fields } = parsed;
     const type = parsed.type ?? before.type;
-    // A cap only goes with a soft start: a slot made hard drops it.
+    // A cap only goes with a soft start: a slot made hard drops it, and a cap alone on a hard
+    // slot is refused rather than silently dropped.
     const mode = startMode ?? before.startMode;
+    if (mode === 'hard' && startCapMs != null) {
+      throw new HttpError(422, 'start_cap_on_hard', 'startCapMs only applies to a soft start');
+    }
     const startFields =
       startMode !== undefined || startCapMs !== undefined
         ? {

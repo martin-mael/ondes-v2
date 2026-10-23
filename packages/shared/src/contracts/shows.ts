@@ -340,7 +340,10 @@ export const updateShowSlotSchema = patchOf(
     durationMs: showDurationSchema,
     rerun: slotRerunInputSchema,
     startMode: slotStartModeSchema,
-    /** Dropped when the slot ends up `hard`. */
+    /**
+     * `soft` slots only: a cap on a slot that stays `hard` is a 422 (`start_cap_on_hard`). A slot
+     * made `hard` drops its cap.
+     */
     startCapMs: slotStartCapSchema.nullable(),
   }),
 ).refine((s) => s.startCapMs == null || s.startMode !== 'hard', startCapOnlySoft);

@@ -11,6 +11,7 @@ import {
   datesFrom,
   FIXTURE_TZ,
   HARD_START_SHOWS,
+  type HardStartShow,
   hardStartSnapshot,
 } from '@ondes/scheduling/testing';
 import {
@@ -255,7 +256,9 @@ class ModelEngine implements FeederEngine {
 
   /** Plays the audio up to `to`. */
   advance(to: number) {
-    for (;;) {
+    for (let guard = 0; ; guard++) {
+      if (guard > 100_000)
+        throw new Error(`engine model stuck at ${new Date(this.time).toISOString()}`);
       const playing = this.onAir as Playing;
       const next = Math.min(playing.endMs, this.gateMs);
       if (next > to) break;
@@ -359,10 +362,16 @@ type SimResult = {
 /** Two weeks from `first`, played through the feeder. */
 async function simulate(
   first: LocalDate,
-  options: { engineCut: boolean; seed: number; disturb?: Disturbances },
+  options: {
+    engineCut: boolean;
+    seed: number;
+    disturb?: Disturbances;
+    shows?: readonly HardStartShow[];
+    days?: number;
+  },
 ): Promise<SimResult> {
-  const dates = datesFrom(first, 14);
-  const snapshot = hardStartSnapshot(dates);
+  const dates = datesFrom(first, options.days ?? 14);
+  const snapshot = hardStartSnapshot(dates, options.shows ? { shows: options.shows } : {});
   const days = generateDays(snapshot, dates, { extensions: backTiming(snapshot) });
   const assets = assetsOf(snapshot);
   const items = logOf(days, assets);
@@ -409,11 +418,14 @@ async function simulate(
     .map((i) => Date.parse(i.anchorAt as string));
   // An engine restart 18 min before an evening show, which it had scheduled: the new boot
   // has lost the schedule and the queue.
-  const restartAt = zonedInstant(dates[7] as LocalDate, '18:12', FIXTURE_TZ).getTime();
+  const restartAt = dates[7]
+    ? zonedInstant(dates[7], '18:12', FIXTURE_TZ).getTime()
+    : Number.POSITIVE_INFINITY;
   let restarted = false;
   let tick = begin;
   let anchor = 0;
-  while (now < end) {
+  for (let guard = 0; now < end; guard++) {
+    if (guard > 2_000_000) throw new Error(`simulation stuck at ${new Date(now).toISOString()}`);
     const wake = engine.wakeups.length ? Math.min(...engine.wakeups) : Number.POSITIVE_INFINITY;
     while ((anchors[anchor] ?? Number.POSITIVE_INFINITY) < now) anchor++;
     const near = (anchors[anchor] ?? Number.POSITIVE_INFINITY) - now <= 120_000;
@@ -537,5 +549,38 @@ describe('hard starts over two weeks of as-run (simulation)', () => {
     // `holdGapMs` (5 s) early is queued rather than held behind the safety playlist.
     expect(percentile(abs, 50)).toBeLessThanOrEqual(500);
     expect(percentile(abs, 75)).toBeLessThanOrEqual(5_000);
+  });
+
+  it('starts back-to-back hard items on time, the one on air untouched', {
+    timeout: 120_000,
+  }, async () => {
+    // 07:00 then 08:00 and 09:00, each episode filling its hour: the next one is scheduled
+    // with the engine while the one before it plays.
+    const hour = (n: number, time: string, episodeMs: number): HardStartShow => ({
+      slotId: `00000000-0000-7000-8552-00000000000${n}`,
+      time,
+      durationMs: 3_600_000,
+      episodeMs,
+    });
+    const shows = [
+      hour(1, '07:00', 3_540_000),
+      hour(2, '08:00', 3_599_980),
+      hour(3, '09:00', 1_800_000),
+    ];
+    const { hard, missing, engine } = await simulate('2026-10-24', {
+      engineCut: true,
+      seed: 7,
+      shows,
+      days: 3,
+    });
+    expect(missing).toEqual([]);
+    expect(hard).toHaveLength(3 * shows.length);
+    for (const drift of hard) expect(Math.abs(drift)).toBeLessThanOrEqual(FRAME);
+    // The 08:00 episode plays whole: the 09:00 one, scheduled 45 min ahead during it, only cuts
+    // what it overruns its hour by (the model's length noise, under a second), never earlier.
+    const cutEpisodes = engine.cuts.filter((c) => c.itemId !== null && c.residualMs > 1_000);
+    expect(
+      cutEpisodes.filter((c) => engine.items.get(c.itemId as string)?.kind === 'episode'),
+    ).toEqual([]);
   });
 });

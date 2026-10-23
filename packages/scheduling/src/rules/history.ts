@@ -162,6 +162,26 @@ class TypeIndex {
  */
 const indexes = new WeakMap<readonly PlayedItem[], Map<AssetType, TypeIndex>>();
 
+/**
+ * Takes items out of a history array in place, for a planner that changes its mind (the
+ * generator's back-timing dropping a pick, #46). The indexes built on the array are dropped,
+ * so the next pick rebuilds them (and the picker's rotation order with them). Returns how many
+ * items went.
+ */
+export function removeFromHistory(
+  history: PlayedItem[],
+  remove: (item: PlayedItem) => boolean,
+): number {
+  let removed = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (!remove(history[i] as PlayedItem)) continue;
+    history.splice(i, 1);
+    removed++;
+  }
+  if (removed > 0) indexes.delete(history);
+  return removed;
+}
+
 function indexFor(history: readonly PlayedItem[], type: AssetType): TypeIndex {
   let byType = indexes.get(history);
   if (!byType) {

@@ -13,7 +13,13 @@ import {
 } from '@ondes/shared';
 import { expandGrid } from '../grid/index.ts';
 import { retime } from '../log/index.ts';
-import { type PickSnapshot, type PlayedItem, pickForSlot, playedFrom } from '../rules/index.ts';
+import {
+  type PickSnapshot,
+  type PlayedItem,
+  pickForSlot,
+  playedFrom,
+  removeFromHistory,
+} from '../rules/index.ts';
 import {
   type AnchorTools,
   GENERATOR_VERSION,
@@ -482,6 +488,17 @@ class DayBuilder {
       if (!result.asset) return null;
       this.history.push(playedFrom(result.asset, at));
       return { asset: result.asset, relaxedRules: result.relaxed };
+    },
+    release: (item) => {
+      if (item.keptId !== null || item.assetId === null) return;
+      const at = item.start.getTime();
+      let found = false;
+      // The one play this item stands for: its asset at its start.
+      removeFromHistory(this.history, (played) => {
+        if (found || played.assetId !== item.assetId || played.at.getTime() !== at) return false;
+        found = true;
+        return true;
+      });
     },
   };
 

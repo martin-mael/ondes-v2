@@ -476,25 +476,72 @@ auto = overlay
 # frame early (the switch takes effect one frame after its predicate holds) and half a
 # frame early again, to take the frame nearest to `at`.
 #
-# Threads: harbor handlers write `scheduled_at`, `scheduled_fade` and the scheduled queue;
-# `scheduled_item` is set by them and cleared by the clock thread when the item takes the
-# air; the clock thread alone writes `clock_origin` and `frame_pos`.
+# One item at a time: a new schedule posted while the scheduled item is on air waits until
+# that item has ended (or until its own time comes, which cuts the one on air), so posting
+# the next hard start never disturbs the current one; nor does DELETE.
+#
+# Threads: harbor handlers only write the request (`schedule_*`) and bump `schedule_seq`
+# last; the clock thread applies it (`apply_schedule`, before every frame) and alone writes
+# the scheduled queue, `scheduled_*`, `clock_origin` and `frame_pos`.
 scheduled = request.queue(id="scheduled")
 scheduled_at = ref(infinity)
 scheduled_item = ref("")
 scheduled_fade = ref(1.)
+# The scheduled item is on air: the gate stays open until it ends.
+scheduled_on_air = ref(false)
+schedule_seq = ref(0)
+applied_seq = ref(0)
+schedule_at = ref(infinity)
+schedule_item = ref("")
+schedule_fade = ref(1.)
+schedule_requests = ref([])
 clock_origin = ref(infinity)
 frame_pos = ref(0.)
 frame_duration = settings.frame.duration()
 
+def due(t) =
+  clock_origin() != infinity and clock_origin() + frame_pos() >= t - 1.5 * frame_duration
+end
+
 def scheduled_gate() =
-  clock_origin() != infinity
-  and clock_origin() + frame_pos() >= scheduled_at() - 1.5 * frame_duration
+  scheduled_on_air() or due(scheduled_at())
+end
+
+# The item on air from `scheduled` ends with its last frame (`remaining`; a request.queue
+# stays "ready" once empty, so `is_ready` can't tell): the gate shuts then, and the
+# automation takes the air back. A request from the handlers is applied once nothing plays
+# from `scheduled`, or right away when its own time has come (it then cuts the one on air,
+# without a fade: two hard starts that overlap).
+def apply_schedule() =
+  if
+    scheduled_on_air()
+    and
+      (not scheduled.is_ready()
+       or
+         (scheduled.remaining() >= 0. and scheduled.remaining() <= frame_duration))
+  then
+    scheduled_on_air := false
+    scheduled_at := infinity
+  end
+  if
+    schedule_seq() > applied_seq()
+  then
+    playing = scheduled_on_air()
+    if
+      not playing or (not list.is_empty(schedule_requests()) and due(schedule_at()))
+    then
+      applied_seq := schedule_seq()
+      scheduled_at := schedule_at()
+      scheduled_fade := schedule_fade()
+      scheduled_item := schedule_item()
+      scheduled.set_queue(schedule_requests())
+      if playing then scheduled.skip() end
+    end
+  end
 end
 
 scheduled_gated =
   switch(id="scheduled_gate", track_sensitive=false, [(scheduled_gate, scheduled)])
-automation = auto
 
 # The outgoing side of a transition fades out without metadata: the as-run must not see
 # the item it leaves start again.
@@ -502,18 +549,30 @@ def quiet(s) =
   metadata.map(strip=true, update=false, fun (_) -> [], s)
 end
 
+# The as-run's source on air (set below, where the as-run is defined).
+source_on_air = ref(fun () -> "")
+
 def cut_to_scheduled(a, b) =
   fade_s = scheduled_fade()
   # The interrupted queue segment ends as a whole (its island, B body, never resume), and
   # the voices of the item it ends never start. The fade keeps pulling it until then.
-  # When safety was on air, the current segment is one that already ended: no harm.
+  # Only that segment: by then Node has queued what follows the hard start, and the
+  # interrupted entry may already have ended on its own during the fade. When safety was
+  # on air, the current segment is one that already ended: nothing to skip.
+  interrupted = current_segment()
+  on_air_source = source_on_air()
+  from_queue = on_air_source() == "queue"
   thread.run(
     delay=fade_s + 0.2,
     fun () ->
       begin
-        current_segment().aborted := true
         voice_epoch := voice_epoch() + 1
-        automation.skip()
+        if
+          from_queue and current_segment().id == interrupted.id
+        then
+          interrupted.aborted := true
+          queue.skip()
+        end
       end
   )
   add(normalize=false, [(b : source), (fade.out(duration=fade_s, quiet(a)) : source)])
@@ -527,9 +586,10 @@ auto =
   fallback(
     id="hardstart",
     track_sensitive=false,
-    # The interrupted track was skipped: what the automation airs next brings its own
-    # metadata, the old one must not be replayed into the as-run.
-    replay_metadata=false,
+    # When the automation takes the air back, its current track's metadata is replayed:
+    # the item queued after the hard start (often taken while the cut's fade still pulled
+    # the automation) is reported when it really goes on air.
+    replay_metadata=true,
     transitions=[cut_to_scheduled, back_to_automation],
     [scheduled_gated, auto]
   )
@@ -541,13 +601,20 @@ auto.on_frame(
     begin
       frame_pos := source.time(auto)
       clock_origin := min(clock_origin(), time() - frame_pos())
+      apply_schedule()
     end
 )
 
-# Once the scheduled item is on air it is no longer "scheduled" (GET /v1/state). The gate
-# stays open while it plays (closing it would hand the air back to the automation at once);
-# the scheduled queue is empty once it ends, so the automation takes over then.
-scheduled.on_track(synchronous=true, fun (_) -> scheduled_item := "")
+# Once the scheduled item is on air it is no longer "scheduled" (GET /v1/state), and the
+# gate stays open while it plays: closing it would hand the air back to the automation.
+scheduled.on_track(
+  synchronous=true,
+  fun (_) ->
+    begin
+      scheduled_on_air := true
+      scheduled_item := ""
+    end
+)
 
 # ---------------------------------------------------------------------------------------
 # Live input: a pool of harbor inputs and an on-air selector driven by Node (#64, ADR 0027).
@@ -972,6 +1039,7 @@ current_key = ref("")
 current_item = ref("")
 current_segment_id = ref(json.value(null))
 current_source = ref("")
+source_on_air := fun () -> current_source()
 current_started = ref(0.)
 
 def air_key(m) =
@@ -1198,14 +1266,18 @@ end
 
 # The item waiting for its time (POST /v1/schedule), or null.
 def scheduled_json() =
+  # A request the clock thread hasn't applied yet wins over what it holds.
+  pending = schedule_seq() > applied_seq()
+  item = if pending then schedule_item() else scheduled_item() end
+  starts_at = if pending then schedule_at() else scheduled_at() end
   if
-    scheduled_item() == ""
+    item == ""
   then
     json.value(null)
   else
     d = json.object()
-    d.add("item_id", scheduled_item())
-    d.add("at", scheduled_at())
+    d.add("item_id", item)
+    d.add("at", starts_at)
     json.value(d)
   end
 end
@@ -1539,12 +1611,12 @@ def handle_schedule(req, res) =
       then
         fail(res, 422, "cannot resolve #{problem}")
       else
-        # The new time first: the gate must be shut before the request is there.
-        scheduled_at := p.at
-        scheduled_fade := null.get(default=1., p.fade_out)
-        scheduled.set_queue([])
-        scheduled.push(r)
-        scheduled_item := p.item_id
+        # Applied by the clock thread (`apply_schedule`): the sequence number goes last.
+        schedule_at := p.at
+        schedule_fade := null.get(default=1., p.fade_out)
+        schedule_item := p.item_id
+        schedule_requests := [r]
+        schedule_seq := schedule_seq() + 1
         reply(res, 201, request_json(r).stringify(compact=true))
       end
     catch err do
@@ -1553,15 +1625,18 @@ def handle_schedule(req, res) =
   end
 end
 
-# DELETE /v1/schedule: cancels the scheduled item, if it hasn't started.
+# DELETE /v1/schedule: cancels the scheduled item, if it hasn't started. One on air keeps
+# playing.
 def handle_unschedule(req, res) =
   if
     authorized(req, res)
   then
-    had = scheduled_item() != ""
-    scheduled_at := infinity
-    scheduled_item := ""
-    scheduled.set_queue([])
+    pending = schedule_seq() > applied_seq()
+    had = (if pending then schedule_item() else scheduled_item() end) != ""
+    schedule_at := infinity
+    schedule_item := ""
+    schedule_requests := []
+    schedule_seq := schedule_seq() + 1
     reply(res, 200, json.stringify({cancelled=had}))
   end
 end
