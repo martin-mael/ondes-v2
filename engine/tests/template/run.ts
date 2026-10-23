@@ -1,6 +1,8 @@
 // Station template runtime test (#27): runs the rendered template in the pinned Liquidsoap
 // image, drives its control API like the adapter (#28) does, and checks that an island
 // chain pushed as one segment airs with no seam (spike #12) and is reported per request.
+// The segment is the body the feeder builds (#57, `buildPushChain`), and the island fallback
+// (a voice laid over an item, the music ducked) is checked on the same output.
 //
 //   node engine/tests/template/run.ts [--keep]
 //
@@ -8,22 +10,36 @@
 // a random 127.0.0.1 port), never the shared dev stack. Everything generated goes to
 // engine/tests/template/.work/run. See README.md.
 import { spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { renderStationScript } from '../../../apps/api/src/modules/engine/config/index.ts';
 import {
+  buildPushChain,
+  buildPushItem,
+  type FeedMedia,
+} from '../../../apps/api/src/modules/engine/feeder/push.ts';
+import {
   type EngineEvent,
   engineEventBatchSchema,
   engineHealthSchema,
   engineQueuedRequestSchema,
   engineStateSchema,
+  playoutRelPath,
 } from '../../../packages/shared/src/index.ts';
 import { decode, mono, SAMPLE_RATE, writeWav } from '../splice/audio.ts';
 import { FORMATS, makeMaterial } from '../splice/fixtures.ts';
-import { cues, joins, liqSeconds, makePlan, reference, renderIsland } from '../splice/island.ts';
+import {
+  bJoin,
+  cues,
+  joins,
+  liqSeconds,
+  makePlan,
+  reference,
+  renderIsland,
+} from '../splice/island.ts';
 import {
   compareJoins,
   detectDropouts,
@@ -62,6 +78,62 @@ function check(ok: boolean, what: string): void {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Engine-side cache root of the test: files are placed as the playout cache places them. */
+const CACHE = '/work/cache';
+
+/** Copies a file into the test's playout cache layout; returns its sha256. */
+function cacheFile(work: string, path: string, ext: string): string {
+  const bytes = readFileSync(path);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const rel = playoutRelPath({ sha256, ext });
+  mkdirSync(join(work, 'cache', dirname(rel)), { recursive: true });
+  writeFileSync(join(work, 'cache', rel), bytes);
+  return sha256;
+}
+
+/** Playout media as the feeder's repo loads it (no loudness: gains come from `gainOverrideDb`). */
+function feedMedia(sha256: string, seconds: number, extra: Partial<FeedMedia> = {}): FeedMedia {
+  return {
+    assetId: sha256.slice(0, 8),
+    fileId: sha256.slice(0, 8),
+    sha256,
+    ext: 'flac',
+    flacBlockSize: 1024,
+    durationSamples: Math.round(seconds * SAMPLE_RATE),
+    sampleRate: SAMPLE_RATE,
+    cached: true,
+    title: '',
+    artists: [],
+    cues: null,
+    gain: { normalizeLoudness: false, gainOverrideDb: null, loudness: null },
+    ...extra,
+  };
+}
+
+/** A sine tone, stereo. */
+function tone(hz: number, seconds: number, amplitude: number) {
+  const n = Math.round(seconds * SAMPLE_RATE);
+  const c = new Float32Array(n);
+  for (let i = 0; i < n; i++) c[i] = amplitude * Math.sin((2 * Math.PI * hz * i) / SAMPLE_RATE);
+  return { sampleRate: SAMPLE_RATE, channels: [c, c.slice()] };
+}
+
+/** Amplitude of `hz` in `x[from, from + length)` (single-bin DFT). */
+function amplitudeAt(x: Float32Array, hz: number, from: number, length: number): number {
+  let re = 0;
+  let im = 0;
+  for (let i = 0; i < length; i++) {
+    const v = x[from + i] ?? 0;
+    const w = (2 * Math.PI * hz * i) / SAMPLE_RATE;
+    re += v * Math.cos(w);
+    im += v * Math.sin(w);
+  }
+  return (2 * Math.hypot(re, im)) / length;
+}
+
+const liqSecondsNum = (n: number, sr: number, hasCueIn: boolean) =>
+  Number(liqSeconds(n, sr, hasCueIn));
 
 async function main() {
   const { values } = parseArgs({ options: { keep: { type: 'boolean', default: false } } });
@@ -169,36 +241,91 @@ async function main() {
     const afterPartial = engineStateSchema.parse(await (await call('GET', '/state')).json());
     check(afterPartial.queue.length === 0, 'a refused segment queues nothing');
 
-    // The island chain, pushed as one segment. Cue points come from the splice test's
-    // renderer model: snapped to the FLAC block grid and biased by half a sample.
-    const seg = await call('POST', '/segment', {
-      segment_id: 'S1',
-      // Straight into A from silence, so the output starts with A's first sample, and no
-      // fade at the end of B.
-      cross_in: 0,
-      fade_in: 0,
-      cross_out: 0,
-      fade_out: 0,
-      parts: [
-        {
-          item_id: 'A',
-          uri: inContainer(join(work, 'a.flac')),
-          cue_in: Number(cue.a.cueIn),
-          cue_out: Number(cue.a.cueOut),
-          amplify_db: plan.gainA,
-          title: 'A body',
-        },
-        { item_id: 'VT', uri: inContainer(island), amplify_db: 0, title: 'island' },
-        {
-          item_id: 'B',
-          uri: inContainer(join(work, 'b.flac')),
-          cue_in: Number(cue.b.cueIn),
-          cue_out: Number(liqSeconds(bCueOut, SAMPLE_RATE, true)),
-          amplify_db: plan.gainB,
-          title: 'B body',
-        },
-      ],
+    // The island chain, pushed as one segment, built by the feeder (#57) from the media as
+    // its repo loads them. A's cue-in is the splice test's odd position, before snapping: the
+    // feeder moves it up to the FLAC grid (ADR 0018) and biases every cue by half a sample.
+    const shaA = cacheFile(work, join(work, 'a.flac'), 'flac');
+    const shaB = cacheFile(work, join(work, 'b.flac'), 'flac');
+    const shaIsland = cacheFile(work, island, 'flac');
+    const sr = SAMPLE_RATE;
+    const chainCues = (cueIn: number | null, cueOut: number | null) => ({
+      sampleRate: sr,
+      cueIn,
+      cueOut,
+      fadeIn: null,
+      fadeOut: null,
+      crossStartNext: null,
     });
+    const gain = (db: number) => ({ normalizeLoudness: true, gainOverrideDb: db, loudness: null });
+    const body = buildPushChain(
+      {
+        segmentId: 'S1',
+        steps: [
+          {
+            kind: 'body',
+            source: {
+              itemId: 'A',
+              title: 'A body',
+              cueOverrides: null,
+              media: feedMedia(shaA, 30, {
+                cues: chainCues(88_211, null),
+                gain: gain(plan.gainA),
+              }),
+            },
+            from: null,
+            to: plan.aJoin,
+          },
+          {
+            kind: 'island',
+            itemId: 'VT',
+            sha256: shaIsland,
+            lengthSamples: plan.length,
+            title: 'island',
+            artist: null,
+          },
+          {
+            kind: 'body',
+            source: {
+              itemId: 'B',
+              title: 'B body',
+              cueOverrides: { crossOutMs: 0 },
+              media: feedMedia(shaB, 30, {
+                cues: chainCues(null, bCueOut),
+                gain: gain(plan.gainB),
+              }),
+            },
+            from: bJoin(plan) + plan.handle,
+            to: null,
+          },
+        ],
+      },
+      {
+        station: { loudnessTargetLufs: -16, truePeakLimitDbtp: 24 },
+        crossInMs: 0,
+        engineRoot: CACHE,
+      },
+    );
+    // Straight into A from silence, so the output starts with A's first sample, and no fade at
+    // the end of B.
+    body.fade_in = 0;
+    body.fade_out = 0;
+    const [pA, pVT, pB] = body.parts;
+    const sameSample = (x: number | undefined, y: string) =>
+      x !== undefined && Math.ceil(x * sr) === Math.ceil(Number(y) * sr);
+    check(
+      sameSample(pA?.cue_in, cue.a.cueIn) &&
+        sameSample(pA?.cue_out, cue.a.cueOut) &&
+        sameSample(pB?.cue_in, cue.b.cueIn) &&
+        sameSample(pB?.cue_out, liqSeconds(bCueOut, sr, true)) &&
+        pA?.amplify_db === plan.gainA &&
+        pB?.amplify_db === plan.gainB &&
+        pVT?.amplify_db === 0 &&
+        pVT.cue_in === undefined &&
+        body.cross_in === 0 &&
+        body.cross_out === 0,
+      'feeder chain body: snapped, biased cues, per-part gains, island at 0 dB',
+    );
+    const seg = await call('POST', '/segment', body);
     check(seg.status === 201, `POST /v1/segment: 201 (got ${seg.status})`);
     const segBody = (await seg.json()) as { segment_id: string; requests: unknown[] };
     check(
@@ -302,6 +429,54 @@ async function main() {
       `after the skip nothing of the segment airs (got ${JSON.stringify(afterSkip)})`,
     );
 
+    // The island fallback (#57): F plays 6 s of a 220 Hz tone with a 2 s voice (1 kHz) laid over
+    // it from 3 s before its end, the music ducked to -12 dB meanwhile. Built by the feeder.
+    await sleep(2500);
+    writeWav(join(work, 'f.wav'), tone(220, 6, 0.3));
+    writeWav(join(work, 'voice.wav'), tone(1000, 2, 0.2));
+    const shaF = cacheFile(work, join(work, 'f.wav'), 'wav');
+    const shaVoice = cacheFile(work, join(work, 'voice.wav'), 'wav');
+    const before = engineEventBatchSchema.parse(
+      await (await call('GET', '/events?after=0')).json(),
+    ).length;
+    const f = buildPushItem(
+      {
+        itemId: 'F',
+        title: 'fallback',
+        cueOverrides: { crossInMs: 0, crossOutMs: 0 },
+        media: feedMedia(shaF, 6, { ext: 'wav' }),
+      },
+      {
+        station: { loudnessTargetLufs: -16, truePeakLimitDbtp: 24 },
+        engineRoot: CACHE,
+        overlay: [
+          {
+            uri: `${CACHE}/${playoutRelPath({ sha256: shaVoice, ext: 'wav' })}`,
+            start: -3,
+            duration: 2,
+            cueOut: liqSecondsNum(2 * sr, sr, false),
+            duckDb: -12,
+          },
+        ],
+      },
+    );
+    f.fade_in = 0;
+    f.fade_out = 0;
+    check(
+      f.overlay?.[0]?.at === 3 && f.overlay?.[0]?.duck_db === -12,
+      'fallback body: the voice starts 3 s into F, ducking to -12 dB',
+    );
+    check((await call('POST', '/queue', f)).status === 201, 'push with a voice overlay: 201');
+    await sleep(9000);
+    const afterF = engineEventBatchSchema
+      .parse(await (await call('GET', `/events?after=${before}`)).json())
+      .filter((e) => e.type === 'track.started')
+      .map((e) => e.data.item_id);
+    check(
+      JSON.stringify(afterF) === JSON.stringify(['F']),
+      `the voice is no item on air: as-run sees F only (got ${JSON.stringify(afterF)})`,
+    );
+
     docker(['stop', '-t', '10', name]);
 
     // Seam check, as in the splice test: the output from A's first sample against the ideal
@@ -342,6 +517,55 @@ async function main() {
     check(
       overrun <= frame && y.slice(refLength + frame).every((v) => Math.abs(v) < 1e-4),
       `B body stops at its cue-out (+${overrun} samples, ≤ one frame), then silence`,
+    );
+
+    // The fallback, at the end of the output: find F's onset (the 220 Hz tone), then measure.
+    const win = Math.round(0.05 * SAMPLE_RATE);
+    let fStart = -1;
+    for (let i = output.length - win; i >= 0; i -= win) {
+      // Above the noise of the earlier segments, below F ducked by 12 dB (0.075).
+      if (amplitudeAt(output, 220, i, win) > 0.03) fStart = i;
+      else if (fStart >= 0) break;
+    }
+    // F starts from silence: its first loud sample is its onset, to the sample.
+    for (let i = Math.max(0, fStart - win); i < fStart + win; i++) {
+      if (Math.abs(output[i] ?? 0) > 0.02) {
+        fStart = i;
+        break;
+      }
+    }
+    const at = (seconds: number) => fStart + Math.round(seconds * SAMPLE_RATE);
+    const span = Math.round(0.5 * SAMPLE_RATE);
+    const music = (t: number) => amplitudeAt(output, 220, at(t), span);
+    const voice = (t: number) => amplitudeAt(output, 1000, at(t), span);
+    // The voice's onset: first 10 ms window past half its level.
+    let vOnset = -1;
+    const step = Math.round(0.005 * SAMPLE_RATE);
+    for (let i = at(2); i < at(4.5); i += step) {
+      if (amplitudeAt(output, 1000, i, 2 * step) > 0.1) {
+        vOnset = (i - fStart) / SAMPLE_RATE;
+        break;
+      }
+    }
+    const duck = 20 * Math.log10(music(3.8) / music(1.2));
+    console.log(
+      `     fallback: voice at ${vOnset.toFixed(3)} s, voice ${voice(3.8).toFixed(3)}, duck ${duck.toFixed(1)} dB`,
+    );
+    check(fStart >= 0, 'fallback: F airs');
+    check(
+      // Degraded timing (ADR 0024): usually within a 40 ms frame, sometimes up to about 160 ms
+      // late, when the item's metadata reaches the as-run callback late.
+      Math.abs(vOnset - 3) <= 0.2,
+      `fallback: the voice starts 3 s into F, within 200 ms (${vOnset.toFixed(3)} s)`,
+    );
+    check(
+      voice(1.2) < 0.01 && Math.abs(voice(3.8) - 0.2) < 0.03 && voice(5.4) < 0.01,
+      'fallback: the voice plays for its 2 s at its own gain, and only then',
+    );
+    check(Math.abs(duck + 12) <= 1.5, `fallback: music ducked by -12 dB (${duck.toFixed(1)} dB)`);
+    check(
+      Math.abs(20 * Math.log10(music(5.4) / music(1.2))) <= 1,
+      'fallback: the music comes back to full level after the voice',
     );
   } finally {
     if (failures.length) console.log(docker(['logs', '--tail', '40', name], false));

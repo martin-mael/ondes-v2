@@ -24,7 +24,8 @@ import {
 //
 // Presenters (#45) have `show:write_own` but not `library:write`: they may still upload the
 // audio of their episodes, i.e. `episode` uploads for a show they host, and act on the uploads
-// they started.
+// they started. With `voice_track:write_own` they may also upload the voice tracks they record
+// in the segue editor (#59): `vt` uploads, and act on the ones they started.
 // Attaching the asset to an episode is the shows api's check (`show:write_own` on the show).
 
 export interface UploadPluginOptions {
@@ -43,14 +44,18 @@ type Handler = (deps: UploadDeps, ctx: Ctx, request: FastifyRequest) => Promise<
 const uploadId = (request: FastifyRequest) => paramsSchema.parse(request.params).uploadId;
 
 /**
- * Guard of the write routes: `library:write`, or else `show:write_own` for an episode upload:
- * a new one for a show the caller hosts (`showId` in the body; `show:write` may name any show),
- * or one the signed-in caller started. Runs after body parsing (not a marked auth guard), which
- * the create check needs.
+ * Guard of the write routes: `library:write`, or else, for a signed-in caller:
+ * - `show:write_own` for an episode upload: a new one for a show the caller hosts (`showId` in
+ *   the body; `show:write` may name any show), or one the caller started;
+ * - `voice_track:write_own` (or `voice_track:write`) for a voice track recorded in the browser
+ *   (#59): a new `vt` upload, or one the caller started.
+ * Runs after body parsing (not a marked auth guard), which the create check needs.
  */
 function uploadWriteGuard(app: FastifyInstance): preHandlerAsyncHookHandler {
   const libraryWrite = app.requirePermission('library', 'write');
   const showWriteOwn = app.requirePermission('show', 'write_own');
+  const voiceWrite = app.requirePermission('voice_track', 'write');
+  const voiceWriteOwn = app.requirePermission('voice_track', 'write_own');
   return async function guard(request, reply) {
     try {
       await libraryWrite.call(app, request, reply);
@@ -59,23 +64,38 @@ function uploadWriteGuard(app: FastifyInstance): preHandlerAsyncHookHandler {
       if (!(error instanceof HttpError && error.code === 'forbidden')) throw error;
       const auth = request.auth;
       if (auth?.kind !== 'session') throw error;
-      try {
-        await showWriteOwn.call(app, request, reply);
-      } catch {
-        throw error;
-      }
+      const holds = async (...guards: preHandlerAsyncHookHandler[]) => {
+        for (const g of guards) {
+          try {
+            await g.call(app, request, reply);
+            return true;
+          } catch (failure) {
+            // Missing that permission: try the next. Anything else (db down, 2FA required,
+            // not a member of the station) is the answer.
+            if (!(failure instanceof HttpError && failure.code === 'forbidden')) throw failure;
+          }
+        }
+        return false;
+      };
+      // The scope (and `request.permissions`) exist once one of these guards passed.
       const params = paramsSchema.safeParse(request.params);
-      const scope = stationScopeOf(request);
       if (!params.success) {
         const body = request.body as { assetType?: unknown; showId?: unknown } | undefined;
+        if (body?.assetType === 'vt' && (await holds(voiceWriteOwn, voiceWrite))) return;
         const showId = uuidSchema.safeParse(body?.showId);
-        if (body?.assetType === 'episode' && showId.success) {
+        if (body?.assetType === 'episode' && showId.success && (await holds(showWriteOwn))) {
           if (request.permissions?.has('show:write')) return;
+          const scope = stationScopeOf(request);
           if (await isHost(app.db, scope, showId.data, auth.user.id)) return;
         }
-      } else {
-        const found = await getUpload(app.db, scope, params.data.uploadId);
-        if (found.assetType === 'episode' && found.createdBy === auth.user.id) return;
+      } else if (await holds(showWriteOwn, voiceWriteOwn, voiceWrite)) {
+        const found = await getUpload(app.db, stationScopeOf(request), params.data.uploadId);
+        const held = request.permissions;
+        const may =
+          (found.assetType === 'episode' && held?.has('show:write_own')) ||
+          (found.assetType === 'vt' &&
+            (held?.has('voice_track:write_own') || held?.has('voice_track:write')));
+        if (may && found.createdBy === auth.user.id) return;
       }
       throw error;
     }

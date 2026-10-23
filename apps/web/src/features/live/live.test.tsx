@@ -49,6 +49,7 @@ const connection: LiveConnectionInfo = {
   host: 'live.vandale.test',
   port: 8105,
   mount: 'live',
+  mounts: ['live', 'live-2'],
   shoutcastPort: null,
   formats: ['MP3', 'AAC'],
 };
@@ -78,10 +79,26 @@ describe('live page', () => {
     expect(
       screen.getByText('icecast://<your username>:<your password>@live.vandale.test:8105/live'),
     ).toBeTruthy();
-    expect(
-      screen.getByText(/Shoutcast \(v1\) clients would connect on the port \+ 1/),
-    ).toBeTruthy();
+    expect(screen.getByText(/doesn’t take Shoutcast \(v1\) clients/)).toBeTruthy();
+    // The harbor pool (#64): the next DJ's mount.
+    expect(screen.getByText(/If live is taken .*, use live-2/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'New streamer' })).toBeTruthy();
+  });
+
+  it('says the port is not assigned yet before the engine starts, with nothing to copy', async () => {
+    const { screen } = renderApp(
+      base,
+      as('station_manager', {
+        [`GET ${base}/streamers`]: [200, { streamers: [] }],
+        [`GET ${base}/connection`]: [200, { ...connection, port: null }],
+      }),
+    );
+    expect(await screen.findByText(/hasn’t started yet/)).toBeTruthy();
+    // Port in BUTT and Mixxx, and OBS's URL.
+    expect(screen.getAllByText('Not assigned yet')).toHaveLength(3);
+    expect(screen.queryByText(/icecast:\/\//)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy Port' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Copy Server' })).toHaveLength(2);
   });
 
   it('creates a streamer and shows its password once', async () => {

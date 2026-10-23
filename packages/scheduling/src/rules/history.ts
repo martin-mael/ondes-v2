@@ -79,9 +79,16 @@ export function tagKey(tag: { key: string; value: string }): string {
   return `${tag.key}=${normalizeName(tag.value)}`;
 }
 
+/** Normalized tag keys per tag list, computed once per list (items and members are reused). */
+const tagSets = new WeakMap<readonly { key: TagKey; value: string }[], Set<string>>();
+
 export function hasTag(tags: readonly { key: TagKey; value: string }[], match: TagMatch): boolean {
-  const wanted = tagKey(match);
-  return tags.some((t) => tagKey(t) === wanted);
+  let set = tagSets.get(tags);
+  if (!set) {
+    set = new Set(tags.map(tagKey));
+    tagSets.set(tags, set);
+  }
+  return set.has(tagKey(match));
 }
 
 /** The lookup keys of an item, computed once per item (a sequence reuses the same items). */
@@ -116,53 +123,138 @@ function push(index: KeyIndex, key: string, position: number) {
   else index.set(key, [position]);
 }
 
+type IndexKind = 'asset' | 'title' | 'album' | 'artist' | 'primaryArtist';
+
+/** The items of one asset type in air order, with their lookup keys indexed. */
+class TypeIndex {
+  readonly items: PlayedItem[] = [];
+  readonly byKind: Record<IndexKind, KeyIndex> = {
+    asset: new Map(),
+    title: new Map(),
+    album: new Map(),
+    artist: new Map(),
+    primaryArtist: new Map(),
+  };
+  /** The last item per asset (the latest one, in air order). */
+  readonly lastByAsset = new Map<string, PlayedItem>();
+  /** How many items of the source array it has read. */
+  consumed = 0;
+
+  add(item: PlayedItem) {
+    const i = this.items.length;
+    this.items.push(item);
+    if (item.assetId) this.lastByAsset.set(item.assetId, item);
+    const keys = keysOf(item);
+    if (item.assetId) push(this.byKind.asset, item.assetId, i);
+    if (keys.title) push(this.byKind.title, keys.title, i);
+    if (keys.album) push(this.byKind.album, keys.album, i);
+    for (const a of keys.artists) push(this.byKind.artist, a, i);
+    for (const a of keys.primaryArtists) push(this.byKind.primaryArtist, a, i);
+  }
+}
+
+/**
+ * Indexes per history array and type. A sequence of picks (`pickSequence`, the log generator)
+ * appends each pick to the same array: when the new items come after every indexed one, the
+ * index is extended instead of rebuilt. Anything else rebuilds it, so the result is always the
+ * items of the type sorted by time (stable), as a fresh index would have them. History arrays
+ * are treated as append-only: an item is never changed or removed in place.
+ */
+const indexes = new WeakMap<readonly PlayedItem[], Map<AssetType, TypeIndex>>();
+
+function indexFor(history: readonly PlayedItem[], type: AssetType): TypeIndex {
+  let byType = indexes.get(history);
+  if (!byType) {
+    byType = new Map();
+    indexes.set(history, byType);
+  }
+  const cached = byType.get(type);
+  if (cached && cached.consumed <= history.length) {
+    let last = cached.items.at(-1)?.at.getTime() ?? Number.NEGATIVE_INFINITY;
+    let appendable = true;
+    for (let i = cached.consumed; i < history.length; i++) {
+      const item = history[i] as PlayedItem;
+      if (item.type !== type) continue;
+      const t = item.at.getTime();
+      if (t < last) {
+        appendable = false;
+        break;
+      }
+      last = t;
+    }
+    if (appendable) {
+      for (let i = cached.consumed; i < history.length; i++) {
+        const item = history[i] as PlayedItem;
+        if (item.type === type) cached.add(item);
+      }
+      cached.consumed = history.length;
+      return cached;
+    }
+  }
+  const index = new TypeIndex();
+  for (const item of history
+    .filter((item) => item.type === type)
+    .sort((a, b) => a.at.getTime() - b.at.getTime())) {
+    index.add(item);
+  }
+  index.consumed = history.length;
+  byType.set(type, index);
+  return index;
+}
+
 /** History of one slot: the items of the slot's type in air order, and lookups on them. */
 export class SlotHistory {
-  readonly items: PlayedItem[];
+  readonly items: readonly PlayedItem[];
   /** Index of the first item at or after the slot: items before it precede the slot. */
   readonly insertAt: number;
-  private readonly byAsset: KeyIndex = new Map();
-  private readonly byTitle: KeyIndex = new Map();
-  private readonly byAlbum: KeyIndex = new Map();
-  private readonly byArtist: KeyIndex = new Map();
-  private readonly byPrimaryArtist: KeyIndex = new Map();
+  private readonly index: TypeIndex;
 
   constructor(history: readonly PlayedItem[], type: AssetType, at: Date) {
-    this.items = history
-      .filter((item) => item.type === type)
-      .sort((a, b) => a.at.getTime() - b.at.getTime());
+    this.index = indexFor(history, type);
+    this.items = this.index.items;
+    // The first item at or after the slot (binary search: items are in air order).
     const t = at.getTime();
-    let insertAt = this.items.length;
-    this.items.forEach((item, i) => {
-      if (insertAt === this.items.length && item.at.getTime() >= t) insertAt = i;
-      const keys = keysOf(item);
-      if (item.assetId) push(this.byAsset, item.assetId, i);
-      if (keys.title) push(this.byTitle, keys.title, i);
-      if (keys.album) push(this.byAlbum, keys.album, i);
-      for (const a of keys.artists) push(this.byArtist, a, i);
-      for (const a of keys.primaryArtists) push(this.byPrimaryArtist, a, i);
-    });
-    this.insertAt = insertAt;
+    let lo = 0;
+    let hi = this.items.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if ((this.items[mid] as PlayedItem).at.getTime() < t) lo = mid + 1;
+      else hi = mid;
+    }
+    this.insertAt = lo;
   }
 
-  private index(kind: 'asset' | 'title' | 'album' | 'artist' | 'primaryArtist'): KeyIndex {
-    switch (kind) {
-      case 'asset':
-        return this.byAsset;
-      case 'title':
-        return this.byTitle;
-      case 'album':
-        return this.byAlbum;
-      case 'artist':
-        return this.byArtist;
-      case 'primaryArtist':
-        return this.byPrimaryArtist;
+  /**
+   * The index behind this history: the same object for every slot of one history array and
+   * type while it only grows (see `indexFor`). Lets a sequence of picks reuse work.
+   */
+  get source(): object {
+    return this.index;
+  }
+
+  /** Every item precedes the slot (a sequence planning forward in time). */
+  get allPrecede(): boolean {
+    return this.insertAt === this.items.length;
+  }
+
+  /** The last item with this asset before the slot, if any. */
+  lastBefore(assetId: string): PlayedItem | undefined {
+    // Every item precedes the slot (a sequence planning forward): the latest one is it.
+    if (this.insertAt === this.items.length) return this.index.lastByAsset.get(assetId);
+    const positions = this.positions('asset', assetId);
+    let lo = 0;
+    let hi = positions.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if ((positions[mid] as number) < this.insertAt) lo = mid + 1;
+      else hi = mid;
     }
+    return lo > 0 ? this.items[positions[lo - 1] as number] : undefined;
   }
 
   /** Positions of the items with this key, in air order. */
-  positions(kind: Parameters<SlotHistory['index']>[0], key: string): readonly number[] {
-    return this.index(kind).get(key) ?? [];
+  positions(kind: IndexKind, key: string): readonly number[] {
+    return this.index.byKind[kind].get(key) ?? [];
   }
 
   /** The `count` items right before the slot, nearest last. */

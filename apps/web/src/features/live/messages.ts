@@ -16,6 +16,7 @@ const en = {
   'connection.noPort': 'The station’s engine hasn’t started yet: its port shows here once it runs.',
   'connection.host': 'Server',
   'connection.port': 'Port',
+  'connection.notAssigned': 'Not assigned yet',
   'connection.mount': 'Mount point',
   'connection.user': 'Username',
   'connection.password': 'Password',
@@ -23,9 +24,11 @@ const en = {
   'connection.yourPassword': 'your password',
   'connection.formats': 'Send {formats}. 128 kbps or more, 44.1 kHz stereo.',
   'connection.shoutcast':
-    'Shoutcast (v1) clients connect on the port + 1 ({port}) and type username:password as the password.',
+    'Shoutcast (v1) clients: type port {port} (they connect on the next one) and username:password as the password.',
   'connection.shoutcastOff':
-    'Shoutcast (v1) clients would connect on the port + 1 and type username:password as the password, but this station doesn’t listen for them yet: use the Icecast settings.',
+    'This station doesn’t take Shoutcast (v1) clients: use the Icecast settings.',
+  'connection.mounts':
+    'If {mount} is taken (another DJ is connected), use {others}: the next DJ connects and waits while the current one is on air.',
   'connection.window':
     'You can connect from {minutes} minutes before your show’s slot until it ends. Connecting doesn’t put you on air: the station switches to you at the slot’s start.',
   'connection.noStreamers':
@@ -116,6 +119,7 @@ const fr: typeof en = {
     'Le moteur de la station n’a pas encore démarré : son port s’affichera ici dès qu’il tournera.',
   'connection.host': 'Serveur',
   'connection.port': 'Port',
+  'connection.notAssigned': 'Pas encore attribué',
   'connection.mount': 'Point de montage',
   'connection.user': 'Identifiant',
   'connection.password': 'Mot de passe',
@@ -123,9 +127,11 @@ const fr: typeof en = {
   'connection.yourPassword': 'votre mot de passe',
   'connection.formats': 'Envoyez du {formats}. 128 kb/s ou plus, 44,1 kHz stéréo.',
   'connection.shoutcast':
-    'Les clients Shoutcast (v1) se connectent sur le port + 1 ({port}) avec identifiant:mot de passe comme mot de passe.',
+    'Clients Shoutcast (v1) : saisissez le port {port} (ils se connectent sur le suivant) et identifiant:mot de passe comme mot de passe.',
   'connection.shoutcastOff':
-    'Les clients Shoutcast (v1) se connecteraient sur le port + 1 avec identifiant:mot de passe comme mot de passe, mais cette station ne les écoute pas encore : utilisez les réglages Icecast.',
+    'Cette station n’accepte pas les clients Shoutcast (v1) : utilisez les réglages Icecast.',
+  'connection.mounts':
+    'Si {mount} est pris (un autre DJ est connecté), utilisez {others} : le DJ suivant se connecte et attend pendant que l’actuel est à l’antenne.',
   'connection.window':
     'Vous pouvez vous connecter {minutes} minutes avant le créneau de votre émission et jusqu’à sa fin. Vous connecter ne vous met pas à l’antenne : la station bascule sur vous au début du créneau.',
   'connection.noStreamers':

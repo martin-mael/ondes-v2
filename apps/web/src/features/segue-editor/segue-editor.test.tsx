@@ -3,6 +3,8 @@ import { waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type ApiRoute, orgs, renderApp, signedIn, stationId } from '../../app/testing/render.tsx';
 import { logItem } from '../log-timeline/testing.ts';
+import { setRecorderDeps } from '../vt-recorder/recorder.ts';
+import { fakeRecorder } from '../vt-recorder/testing.ts';
 
 // The segue editor on the whole app with a fake api: opened from the timeline, lanes for A,
 // the voice and B, the ducking preset, undo/redo, the estimated time on air in station time,
@@ -303,6 +305,203 @@ describe('segue editor', () => {
     await screen.findByText('Voice 1');
     await user.click(screen.getByRole('button', { name: 'Add a voice' }));
     expect(await screen.findByRole('dialog', { name: 'Add a voice' })).toBeInTheDocument();
+  });
+
+  describe('recording a VT (#59)', () => {
+    const take = '01a15ddf-0000-7000-8000-0000000002f2';
+    const uploadId = '01a15ddf-0000-7000-8000-0000000007a1';
+    const upload = (status: string, extra: object = {}) => ({
+      id: uploadId,
+      orgId: '01a15ddf-0000-7000-8000-0000000007c1',
+      stationId,
+      status,
+      filename: 'take.wav',
+      sizeBytes: 10,
+      contentType: 'audio/wav',
+      assetType: 'vt',
+      partSize: 64 * 1024 * 1024,
+      partCount: 1,
+      sha256: null,
+      assetId: null,
+      duplicateOfAssetId: null,
+      errorCode: null,
+      error: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      ...extra,
+    });
+    const recordRoutes = (existing: Segue, extra: Record<string, ApiRoute> = {}) =>
+      routes(existing, {
+        [`GET ${base}/segues/media`]: [
+          200,
+          {
+            items: {
+              [a.id]: media(a.assetId as string, 200),
+              [b.id]: media(b.assetId as string, 200),
+            },
+            assets: { [vtAsset]: media(vtAsset, 5), [take]: media(take, 2.5) },
+          },
+        ],
+        [`GET ${base}/assets/${take}`]: [404],
+        ...extra,
+      });
+    let fake: ReturnType<typeof fakeRecorder>;
+    beforeEach(() => {
+      fake = fakeRecorder();
+      setRecorderDeps(fake.deps);
+      Object.defineProperty(navigator, 'mediaDevices', {
+        value: { getUserMedia: fake.getUserMedia },
+        configurable: true,
+      });
+    });
+    afterEach(() => {
+      setRecorderDeps();
+      Reflect.deleteProperty(navigator, 'mediaDevices');
+    });
+
+    /** Opens the recorder from the editor, after an unsaved edit of the draft. */
+    async function openRecorder(r: ReturnType<typeof renderApp>) {
+      const { screen, user } = r;
+      await screen.findByText('Voice 1');
+      await user.click(screen.getByRole('button', { name: 'Envelopes' }));
+      await user.click(
+        await screen.findByRole('menuitem', { name: 'Fade out the outgoing song (2 s)' }),
+      );
+      await user.click(screen.getByRole('button', { name: 'Record a VT' }));
+      await screen.findByRole('heading', { name: 'Record a VT for this segue' });
+      await user.click(screen.getByRole('button', { name: 'Use the microphone' }));
+      await screen.findByRole('combobox', { name: 'Input' });
+    }
+
+    /** Records 1 s of silence, `voice` s at `level`, then 1 s of silence. */
+    async function recordTake(r: ReturnType<typeof renderApp>, voice: number, level: number) {
+      const { screen, user } = r;
+      await user.click(screen.getByRole('button', { name: /^(Record|Retake)$/ }));
+      await screen.findByRole('status');
+      const start = fake.startFrame(true);
+      fake.deliver(start, 1, 0);
+      fake.deliver(start + 48_000, voice, level);
+      fake.deliver(start + 48_000 * (1 + voice), 1, 0);
+      await user.click(screen.getByRole('button', { name: 'Stop' }));
+      await screen.findByText(/kept of/);
+    }
+
+    it('records over the pre-roll, uploads the take and places it where it was spoken', async () => {
+      const put = vi.fn((body: unknown): [number, unknown] => [200, segue(body as object)]);
+      const created = vi.fn((_body: unknown): [number, unknown] => [201, upload('uploading')]);
+      const r = renderApp(
+        url,
+        recordRoutes(segue(), {
+          [`PUT ${base}/segues/${segue().id}`]: put,
+          [`POST ${base}/uploads`]: created,
+          [`POST ${base}/uploads/${uploadId}/parts`]: [
+            200,
+            { parts: [{ partNumber: 1, url: 'https://s3.test/part/1' }], expiresIn: 3600 },
+          ],
+          'PUT /part/1': [200],
+          [`POST ${base}/uploads/${uploadId}/complete`]: [202, upload('queued')],
+          [`GET ${base}/uploads/${uploadId}`]: [200, upload('ingested', { assetId: take })],
+        }),
+      );
+      const { screen, user, history } = r;
+      await openRecorder(r);
+      // The mic is opened raw.
+      expect(fake.getUserMedia.mock.calls[0]?.[0]).toMatchObject({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      });
+      await recordTake(r, 2, 0.3);
+      // Trimmed to 150 ms before the voice and 300 ms after it.
+      expect(screen.getByText('0:02.5 kept of 0:04.0')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Upload and place' }));
+      await waitFor(() => expect(history.location.pathname).toBe(`${base}/log/segue`));
+      expect(created.mock.calls[0]?.[0]).toMatchObject({
+        assetType: 'vt',
+        contentType: 'audio/wav',
+      });
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(await screen.findByText('Voice 2')).toBeInTheDocument();
+
+      // Pre-roll: 10 s before the transition (the voice at −3 s); the take starts 30 ms of
+      // latency before it, and the voice 0.85 s into the take.
+      const from = -s(3) - s(10);
+      const start = from - Math.round(0.03 * SR) + Math.round(0.85 * SR);
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(put).toHaveBeenCalledOnce());
+      expect(put.mock.calls[0]?.[0]).toMatchObject({
+        version: 4,
+        // The draft's fade-out came back with the take.
+        out: { envelope: [{ at: -s(2) }, { at: 0, gainDb: -90 }] },
+        voices: [{ assetId: vtAsset }, { assetId: take, start, cueIn: 0 }],
+      });
+    });
+
+    it('warns calmly when a take clips or is very quiet, and retakes', async () => {
+      const r = renderApp(url, recordRoutes(segue()));
+      const { screen } = r;
+      await openRecorder(r);
+      await recordTake(r, 1, 1);
+      expect(screen.getByText(/The take clips/)).toBeInTheDocument();
+      // Never a block.
+      expect(screen.getByRole('button', { name: 'Upload and place' })).toBeEnabled();
+
+      await recordTake(r, 3, 0.01);
+      expect(screen.queryByText(/The take clips/)).not.toBeInTheDocument();
+      expect(screen.getByText(/The take is very quiet/)).toBeInTheDocument();
+      expect(screen.getByText('0:03.5 kept of 0:05.0')).toBeInTheDocument();
+    });
+
+    it('asks before dropping a take, and takes the draft back without asking', async () => {
+      const r = renderApp(url, recordRoutes(segue()));
+      const { screen, user, history } = r;
+      await openRecorder(r);
+      // Only the draft is unsaved: it goes back with the link.
+      await user.click(screen.getByText('Back to the segue'));
+      await screen.findByText('Voice 1');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+
+      // A take is lost by leaving: that asks.
+      await user.click(screen.getByRole('button', { name: 'Record a VT' }));
+      await user.click(await screen.findByRole('button', { name: 'Use the microphone' }));
+      await screen.findByRole('combobox', { name: 'Input' });
+      await recordTake(r, 1, 0.3);
+      await user.click(screen.getByText('Back to the segue'));
+      expect(
+        await screen.findByRole('dialog', { name: 'Leave without saving?' }),
+      ).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Stay' }));
+      expect(history.location.pathname).toBe(`${base}/log/segue/record`);
+    });
+
+    it('drops a draft left behind when the editor is opened another way', async () => {
+      const r = renderApp(url, recordRoutes(segue()));
+      const { screen, history } = r;
+      await openRecorder(r);
+      // Out of the recorder by another way (the draft's guard is answered elsewhere).
+      history.push(`${base}/log?date=2026-10-21`);
+      const leave = await screen.findByRole('button', { name: 'Leave without saving' });
+      await r.user.click(leave);
+      history.push(url);
+      await screen.findByText('Voice 1');
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    });
+
+    it('says when a take arrives on a segue with 4 voices already', async () => {
+      const voices = [1, 2, 3, 4].map((n) => ({
+        assetId: vtAsset,
+        start: -s(n),
+        gainDb: 0,
+        envelope: [],
+      }));
+      const { screen } = renderApp(
+        `${url}&voice=${take}&at=${-s(4)}`,
+        recordRoutes(segue({ voices })),
+      );
+      expect(await screen.findByText(/already has 4 voices/)).toBeInTheDocument();
+      expect(screen.queryByText('Voice 5')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    });
   });
 
   it('says when the transition is gone from the log', async () => {

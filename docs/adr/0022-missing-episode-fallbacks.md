@@ -104,10 +104,12 @@ Two things shape the design:
   - The episode must be one of the show's own; the api answers 422 otherwise. It is set to null
     if that episode is deleted.
   - Edited in the show dialog and audited with `show.update`.
-- **Latest episode:** the highest-numbered episode with an asset that has already gone out:
-  aired, unscheduled, or premiered on an earlier date. A ready premiere for next week is not
-  burned as a rerun.
-- **Chosen episode:** falls back to the latest one when it has no audio.
+- **Latest episode:** the highest-numbered episode with an asset that has already gone out. A
+  ready premiere for next week is not burned as a rerun. Since #48 (ADR 0028), "gone out" is
+  the reruns' rule: marked aired before the slot, or premiering on an earlier date. An
+  unscheduled episode that never aired no longer counts.
+- **Chosen episode:** falls back to the latest one when it has no audio, or hasn't aired by the
+  slot (ADR 0028).
 - **Applying it:** the plugin finds the occurrence's empty item in the log and replaces it
   through the log repository (`replaceLogItem`).
   - The empty item is a top-level item within the occurrence, with `origin_show_slot_id` = the

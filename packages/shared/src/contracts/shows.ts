@@ -35,7 +35,7 @@ export const showDurationSchema = z.int().min(60_000).max(SHOW_MAX_DURATION_MS);
 /**
  * - `prerecorded`: an episode file, hard-started on time.
  * - `live`: a presenter connects (BUTT); automation takes over if nobody does (#65).
- * - `rerun`: a previous episode airs again (#48 adds the strategy).
+ * - `rerun`: a previous episode of the show airs again, picked by the slot's `rerun` strategy (#48).
  */
 export const slotTypeSchema = z.enum(['prerecorded', 'live', 'rerun']);
 export type SlotType = z.infer<typeof slotTypeSchema>;
@@ -131,6 +131,38 @@ export type EpisodeFallbackPolicy = z.infer<typeof episodeFallbackPolicySchema>;
 /** What a fallback actually aired, as marked on the log item and the as-run entry. */
 export const episodeFallbackKindSchema = z.enum(['latest_episode', 'episode', 'clock_music']);
 export type EpisodeFallbackKind = z.infer<typeof episodeFallbackKindSchema>;
+
+// --- Reruns (#48, ADR 0028) ----------------------------------------------------------------
+
+/**
+ * Which episode a rerun slot airs again. Resolved per occurrence, through the same resolver as
+ * the missing-episode fallback (`resolveFallback`):
+ * - `latest_episode`: the show's latest episode with audio that has already gone out before
+ *   the occurrence's date (aired, unscheduled, or premiered on an earlier date);
+ * - `episode`: that episode ("episode N"); the latest one if it has no audio or was deleted.
+ */
+export const rerunStrategySchema = z.enum(['latest_episode', 'episode']);
+export type RerunStrategy = z.infer<typeof rerunStrategySchema>;
+
+/**
+ * A rerun slot's strategy, as written. The episode must be one of the slot's show; null saves
+ * the choice before an episode is picked (the latest one airs until then).
+ */
+export const slotRerunInputSchema = z.discriminatedUnion('strategy', [
+  z.object({ strategy: z.literal('latest_episode') }),
+  z.object({ strategy: z.literal('episode'), episodeId: uuidSchema.nullable() }),
+]);
+export type SlotRerunInput = z.input<typeof slotRerunInputSchema>;
+
+/**
+ * As read: `episodeId` is null when no episode was picked yet, or the chosen one was deleted
+ * (the latest one airs).
+ */
+export const slotRerunSchema = z.discriminatedUnion('strategy', [
+  z.object({ strategy: z.literal('latest_episode') }),
+  z.object({ strategy: z.literal('episode'), episodeId: uuidSchema.nullable() }),
+]);
+export type SlotRerun = z.infer<typeof slotRerunSchema>;
 
 // --- Show --------------------------------------------------------------------------------
 
@@ -228,6 +260,11 @@ export const showSlotSchema = z.object({
   rule: slotRuleSchema,
   /** Elapsed time: a 2 h slot airs 2 h even across a DST change (ADR 0014). */
   durationMs: z.int(),
+  /**
+   * Set exactly on `rerun` slots (#48): which episode airs again. Optional so older api
+   * versions' payloads still parse; the api always sends it.
+   */
+  rerun: slotRerunSchema.nullable().optional(),
   /** Ordered by date. */
   exceptions: z.array(slotExceptionSchema),
   createdAt: z.date(),
@@ -235,20 +272,30 @@ export const showSlotSchema = z.object({
 });
 export type ShowSlot = z.infer<typeof showSlotSchema>;
 
-/** `type` defaults to the show's `defaultSlotType`, `durationMs` to its `defaultDurationMs`. */
+/**
+ * `type` defaults to the show's `defaultSlotType`, `durationMs` to its `defaultDurationMs`.
+ * `rerun` goes with `type: 'rerun'` only, and defaults to `{ strategy: 'latest_episode' }`.
+ */
 export const createShowSlotSchema = z.object({
   type: slotTypeSchema.optional(),
   rule: slotRuleSchema,
   durationMs: showDurationSchema.optional(),
+  rerun: slotRerunInputSchema.optional(),
 });
 export type CreateShowSlot = z.input<typeof createShowSlotSchema>;
 
 /**
  * Exceptions on dates the new rule no longer has are dropped. Premieres on occurrences that no
- * longer exist (or on every occurrence, for a change to `rerun`) are detached.
+ * longer exist (or on every occurrence, for a change to `rerun`) are detached. A change to
+ * `rerun` without `rerun` reruns the latest episode; a change away from it drops the strategy.
  */
 export const updateShowSlotSchema = patchOf(
-  z.object({ type: slotTypeSchema, rule: slotRuleSchema, durationMs: showDurationSchema }),
+  z.object({
+    type: slotTypeSchema,
+    rule: slotRuleSchema,
+    durationMs: showDurationSchema,
+    rerun: slotRerunInputSchema,
+  }),
 );
 export type UpdateShowSlot = z.input<typeof updateShowSlotSchema>;
 
@@ -385,6 +432,20 @@ export const listEpisodesQuerySchema = z.object({
 export const episodeListSchema = z.object({ items: z.array(episodeSchema) });
 export type EpisodeList = z.infer<typeof episodeListSchema>;
 
+/**
+ * `POST …/shows/:showId/episodes/:episodeId/reruns`: airs an episode again, once, as a one-off
+ * `rerun` slot at a station-local `date` and `time`. The episode must have aired by then (see
+ * ADR 0028: marked aired before that time, or premiering on an earlier date). `durationMs`
+ * defaults to the premiere slot's, then the show's default, then the episode's audio rounded up
+ * to the minute.
+ */
+export const scheduleRerunSchema = z.object({
+  date: localDateSchema,
+  time: localTimeSchema,
+  durationMs: showDurationSchema.optional(),
+});
+export type ScheduleRerun = z.input<typeof scheduleRerunSchema>;
+
 // --- Occurrences -------------------------------------------------------------------------
 
 export const SHOW_OCCURRENCES_MAX_DAYS = 92;
@@ -421,6 +482,11 @@ export const showOccurrenceSchema = z.object({
   moved: z.boolean(),
   /** The episode planned for this occurrence, if any. */
   episode: occurrenceEpisodeSchema.nullable(),
+  /**
+   * A rerun occurrence (#48): the episode it airs again, as resolved now (null: nothing to
+   * rerun yet). Absent on other slot types.
+   */
+  rerunOf: occurrenceEpisodeSchema.nullable().optional(),
 });
 export type ShowOccurrence = z.infer<typeof showOccurrenceSchema>;
 

@@ -2,6 +2,7 @@ import { consumeEventsDurable, type EventSubscription } from '@ondes/queue';
 import { type RealtimeEvent, realtimeEventSchema } from '@ondes/shared';
 import type { FastifyInstance } from 'fastify';
 import fp from 'fastify-plugin';
+import { asRunOverlayRoutes } from './overlay-routes.ts';
 import { createAsRunRecorder } from './recorder.ts';
 import { asRunRoutes } from './routes.ts';
 
@@ -14,13 +15,14 @@ export type AsRunPluginOptions = {
 };
 
 /**
- * As-run (#30): mounts `GET …/asrun` under `/api/v1` and, with RabbitMQ, records the engine's
+ * As-run (#30): mounts `GET …/asrun` (and the log vs as-run overlay, #53) under `/api/v1` and, with RabbitMQ, records the engine's
  * track events from a durable, single-active-consumer queue (`consumeEventsDurable`): one
  * replica at a time, in order per station, nothing lost while the api restarts.
  */
 export const asRunPlugin = fp(
   async (app: FastifyInstance, options: AsRunPluginOptions) => {
     await app.register(asRunRoutes, { prefix: '/api/v1' });
+    await app.register(asRunOverlayRoutes, { prefix: '/api/v1' });
     const rabbit = app.hasDecorator('rabbit') ? app.rabbit : undefined;
     if (!rabbit) return;
     const recorder = createAsRunRecorder({

@@ -35,7 +35,13 @@ asset. Deleting a station deletes its history.
 - the file sha from the cache path (`media/ab/<sha256>.flac`, ADR 0004), else the asset's
   playout file. A safety or unplanned file finds its asset by that sha;
 - title and artist as aired: the engine's metadata, else the log item and the asset;
-- `artists`: the asset's artists array, for artist rules.
+- `artists`: the asset's artists array, for artist rules;
+- the **transition** (#57, ADR 0024) from what the feeder pushed (`feeder_push.parts`, by boot
+  and entry): an island airs as its own entry (no log item, engine id `island:<hash>`) with
+  `transition.rendered = true` and its voices (the VT play); a fallback head carries
+  `transition.rendered = false` and the voices laid over its crossfade. A body of an island
+  chain is planned to its island (`planned_duration_ms` = the body's length), so it ends
+  `complete`.
 
 **Times.** `started_at` / `ended_at` are on the engine's clock, in UTC (`started_at` = the
 `track.started` time; `ended_at` = the end event's `started_at + played`). `recorded_at` is the api's clock. `driftMs` in the API is
@@ -56,6 +62,13 @@ regulators can ask years later, see `docs/research/07-compliance-royalties-loggi
 `GET /api/v1/stations/:stationId/asrun` (`log:read`), see `listAsRunQuerySchema`:
 - `from` + `to` (≤ 31 days), or `date`: the station-local day (23–25 h around DST);
 - `assetId`, `source`; `order=asc|desc`; `limit` (≤ 500), `cursor` (`nextCursor`).
+
+`GET /api/v1/stations/:stationId/asrun/overlay?date` (`log:read`, #53): the station-local day's
+plan with what aired laid over it, one row per entry plus one per plan item that never aired:
+`aired`, `replaced`, `fallback`, `missed`, `pending`, `live`, `safety`, `emergency`,
+`unplanned`, `transition` (`asRunOverlaySchema`). Matching (`overlay.ts`, pure): by log item id,
+live entries by the live slot they overlap, rendered islands (#57) as the transition between
+their items, the rest off-plan. Decisions: ADR 0029.
 
 ## For later consumers (`index.ts`)
 - `lastAiredByAsset(db, scope, assetIds, before)`, `lastAiredByArtist(db, scope, artists, since, before)` (#38);

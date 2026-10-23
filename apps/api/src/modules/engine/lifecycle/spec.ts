@@ -110,6 +110,8 @@ export function engineSettingsFor(
       ...live,
       port: ENGINE_PORTS.live,
       authUrl: liveAuthUrl(config.internalApiUrl, station.stationId),
+      // Played once after a live show, when the file is in the cache (#64, ADR 0027).
+      returnFile: `${ENGINE_CACHE_MOUNT}/live-return.flac`,
     },
     paths: {
       safetyDir: `${ENGINE_CACHE_MOUNT}/safety`,
@@ -158,6 +160,12 @@ export type ContainerSpecInput = {
   secrets: EngineSecrets;
   /** Host port for the live input, or null when live is disabled. */
   livePort: number | null;
+  /**
+   * Host port for Shoutcast (ICY) sources (harbor's `live + 1` in the container), or null when
+   * the station doesn't take them (#64). Any free port of the pool: a Shoutcast client is told
+   * `port - 1`, since it connects to the port it's given plus one.
+   */
+  liveIcyPort?: number | null;
 };
 
 /** The `POST /containers/create` body for a station's engine, and a hash of it. */
@@ -172,6 +180,10 @@ export function engineContainerSpec(
   const portBindings: NonNullable<ContainerCreateBody['HostConfig']['PortBindings']> = {};
   if (input.livePort !== null)
     portBindings[live] = [{ HostIp: config.liveBindIp, HostPort: String(input.livePort) }];
+  if (input.livePort !== null && input.liveIcyPort != null)
+    portBindings[`${ENGINE_PORTS.liveIcy}/tcp`] = [
+      { HostIp: config.liveBindIp, HostPort: String(input.liveIcyPort) },
+    ];
   if (config.publishControlOnLoopback)
     portBindings[control] = [{ HostIp: '127.0.0.1', HostPort: '' }];
 

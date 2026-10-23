@@ -32,6 +32,9 @@ const en = {
   'toolbar.zoomOut': 'Zoom out',
   'toolbar.fit': 'Show the whole transition',
   'toolbar.addVoice': 'Add a voice',
+  'toolbar.record': 'Record a VT',
+  'record.full':
+    'This segue already has 4 voices: the take is in the library, remove a voice to place it.',
   'toolbar.presets': 'Envelopes',
   'toolbar.save': 'Save',
   'toolbar.loading': 'Loading the audio…',
@@ -101,6 +104,9 @@ const fr: Record<SegueMessageKey, string> = {
   'toolbar.zoomOut': 'Zoom arrière',
   'toolbar.fit': 'Voir tout l’enchaînement',
   'toolbar.addVoice': 'Ajouter une voix',
+  'toolbar.record': 'Enregistrer une voix',
+  'record.full':
+    'Cet enchaînement a déjà 4 voix : la prise est dans la médiathèque, retirez une voix pour la placer.',
   'toolbar.presets': 'Enveloppes',
   'toolbar.save': 'Enregistrer',
   'toolbar.loading': 'Chargement de l’audio…',

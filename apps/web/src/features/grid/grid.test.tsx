@@ -165,7 +165,7 @@ describe('weekly grid page', () => {
     await user.selectOptions(screen.getByLabelText('Default clock'), 'Music');
     expect(screen.queryByText(/have no clock/)).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Music' }));
-    await user.click(screen.getByRole('button', { name: 'Paint Breakfast with Music' }));
+    await user.click(screen.getByRole('button', { name: 'Assign Music to Breakfast' }));
     expect(screen.getByRole('button', { name: 'Friday 06:00: Music' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Saturday 06:00: default (Music)' })).toBeVisible();
 

@@ -289,53 +289,84 @@ const partInputSchema = z.object({
 });
 export type LogSegmentPartInput = z.input<typeof partInputSchema>;
 
+const itemInputShape = z.object({
+  kind: logItemKindSchema,
+  plannedDurationMs: z
+    .int()
+    .min(0)
+    .max(24 * 3600 * 1000)
+    .default(0),
+  assetId: uuidSchema.nullish(),
+  episodeId: uuidSchema.nullish(),
+  liveSlotId: uuidSchema.nullish(),
+  title: z.string().max(300).nullish(),
+  cueOverrides: cueOverridesSchema.nullish(),
+  ...timingInput,
+  locked: z.boolean().default(false),
+  parts: z.array(partInputSchema).max(SEGMENT_MAX_PARTS).optional(),
+});
+type ItemInputFields = z.output<typeof itemInputShape>;
+
+/**
+ * The rules every item input meets. `identifiesEpisode` says whether an `episode` item without
+ * an asset still says which occurrence it stands for.
+ */
+const itemRules =
+  <T extends ItemInputFields>(identifiesEpisode: (v: T) => boolean) =>
+  (v: T, ctx: z.RefinementCtx) => {
+    const fail = (message: string, path: string) =>
+      ctx.addIssue({ code: 'custom', message, path: [path] });
+    if (!refineTiming(v)) {
+      fail(
+        'anchorAt is required for hard, soft and not_before timing, and only for them',
+        'anchorAt',
+      );
+    }
+    if (v.capMs != null && v.timing !== 'soft') fail('capMs only applies to soft timing', 'capMs');
+    if (v.kind === 'episode') {
+      if (!v.assetId && !identifiesEpisode(v)) {
+        fail('an episode needs an assetId, or the episode or show slot it stands for', 'assetId');
+      }
+    } else if ((ASSET_KINDS as readonly string[]).includes(v.kind) && !v.assetId) {
+      fail('this kind needs an assetId', 'assetId');
+    }
+    if (v.kind === 'marker' && v.plannedDurationMs !== 0) {
+      fail('a marker has no duration', 'plannedDurationMs');
+    }
+    if (v.kind === 'segment' ? (v.parts?.length ?? 0) < 2 : v.parts !== undefined) {
+      fail('a segment has 2 to 16 parts; other kinds have none', 'parts');
+    }
+  };
+
 /**
  * An item to insert or a replacement. Rules per kind:
- * - asset kinds need `assetId`; `marker` has duration 0; `segment` has 2–16 `parts` and
+ * - asset kinds need `assetId`, except `episode`, which may instead name its `episodeId`: an
+ *   episode whose audio isn't there yet, which the missing-episode check fills (ADR 0022).
+ *   `marker` has duration 0; `segment` has 2–16 `parts` and
  *   its duration is computed from them (see `plannedDurationMs`; the input value is ignored);
  * - `timing` other than `flow` needs `anchorAt`, `flow` must not have one; `capMs` is `soft` only.
  *   The anchor must fall inside the item's local day (`startsAt <= anchorAt < endsAt`), or 422.
  * Manual items get `origin: manual`; `relaxedRules` are the generator's.
  */
-export const logItemInputSchema = z
-  .object({
-    kind: logItemKindSchema,
-    plannedDurationMs: z
-      .int()
-      .min(0)
-      .max(24 * 3600 * 1000)
-      .default(0),
-    assetId: uuidSchema.nullish(),
-    episodeId: uuidSchema.nullish(),
-    liveSlotId: uuidSchema.nullish(),
-    title: z.string().max(300).nullish(),
-    cueOverrides: cueOverridesSchema.nullish(),
-    ...timingInput,
-    locked: z.boolean().default(false),
-    parts: z.array(partInputSchema).max(SEGMENT_MAX_PARTS).optional(),
-  })
-  .refine(refineTiming, {
-    message: 'anchorAt is required for hard, soft and not_before timing, and only for them',
-    path: ['anchorAt'],
-  })
-  .refine((v) => v.capMs == null || v.timing === 'soft', {
-    message: 'capMs only applies to soft timing',
-    path: ['capMs'],
-  })
-  .refine((v) => !(ASSET_KINDS as readonly string[]).includes(v.kind) || !!v.assetId, {
-    message: 'this kind needs an assetId',
-    path: ['assetId'],
-  })
-  .refine((v) => v.kind !== 'marker' || v.plannedDurationMs === 0, {
-    message: 'a marker has no duration',
-    path: ['plannedDurationMs'],
-  })
-  .refine((v) => (v.kind === 'segment' ? (v.parts?.length ?? 0) >= 2 : v.parts === undefined), {
-    message: 'a segment has 2 to 16 parts; other kinds have none',
-    path: ['parts'],
-  });
+export const logItemInputSchema = itemInputShape.superRefine(itemRules((v) => !!v.episodeId));
 export type LogItemInput = z.input<typeof logItemInputSchema>;
 export type ParsedLogItemInput = z.output<typeof logItemInputSchema>;
+
+/**
+ * One item of a bulk day write (the generator, the dev fixture): an input plus where it comes
+ * from. A show occurrence planned with no episode at all is an `episode` item with neither
+ * asset nor episode: its origin's show slot says which occurrence it stands for, and the
+ * missing-episode check finds it by that slot (ADR 0022).
+ */
+export const logDayItemInputSchema = itemInputShape
+  .extend({
+    origin: logItemOriginSchema,
+    relaxedRules: z.array(relaxedRuleSchema).default([]),
+  })
+  .superRefine(
+    itemRules((v) => !!v.episodeId || (v.origin.type === 'show' && v.origin.showSlotId !== null)),
+  );
+export type LogDayItemInputDto = z.input<typeof logDayItemInputSchema>;
 
 /** Where an inserted or moved item goes: next to an item, or at the end of a local day. */
 export const logPlacementSchema = z.union([

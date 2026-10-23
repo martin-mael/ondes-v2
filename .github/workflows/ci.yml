@@ -68,6 +68,8 @@ jobs:
               - *tooling
               - engine/**
               - apps/api/src/modules/engine/config/**
+              # The template test plays the bodies the feeder builds (#57).
+              - apps/api/src/modules/engine/feeder/push.ts
               - apps/worker/src/jobs/island-render/**
               - apps/worker/src/jobs/ingest/ffmpeg.ts
               - packages/shared/**

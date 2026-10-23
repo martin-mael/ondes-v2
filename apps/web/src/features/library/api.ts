@@ -7,6 +7,7 @@ import {
   libraryBulkResultSchema,
   libraryFacetsSchema,
   librarySearchPageSchema,
+  type SetAssetTags,
   type SortDirection,
   tagSchema,
 } from '@ondes/shared';
@@ -101,6 +102,13 @@ export const tagsQuery = (stationId: string) =>
 export const libraryApi = {
   bulk: (stationId: string, body: LibraryBulk) =>
     request(`${station(stationId)}/library/bulk`, { body, schema: libraryBulkResultSchema }),
+  /** Replaces the asset's whole tag set. */
+  setTags: (stationId: string, assetId: string, body: SetAssetTags) =>
+    request(`${station(stationId)}/assets/${assetId}/tags`, {
+      method: 'PUT',
+      body,
+      schema: z.object({ tags: z.array(tagSchema) }),
+    }),
 };
 
 /** After an edit or new assets: every library list, count and detail of the station. */

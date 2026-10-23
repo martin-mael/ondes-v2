@@ -367,17 +367,22 @@ export async function connectionInfo(
   const liveSchema = stationEngineSettingsSchema.shape.live;
   const stored = liveSchema.safeParse((row.engineSettings as { live?: unknown }).live ?? {});
   const live = stored.success ? stored.data : liveSchema.parse({});
-  const [port] = await db
-    .select({ port: enginePort.port })
+  const ports = await db
+    .select({ port: enginePort.port, purpose: enginePort.purpose })
     .from(enginePort)
-    .where(and(eq(enginePort.stationId, scope.stationId), eq(enginePort.purpose, 'live')));
+    .where(eq(enginePort.stationId, scope.stationId));
+  const portOf = (purpose: string) => ports.find((p) => p.purpose === purpose)?.port ?? null;
+  const icy = live.icy ? portOf('live_icy') : null;
   return {
     enabled: live.enabled,
     host: publicHost,
-    port: port?.port ?? null,
+    port: portOf('live'),
     mount: live.mount,
-    // The template doesn't open harbor's ICY port yet: the harbor pool (#64) does.
-    shoutcastPort: null,
+    mounts: Array.from({ length: live.inputs }, (_, i) =>
+      i === 0 ? live.mount : `${live.mount}-${i + 1}`,
+    ),
+    // Published on its own port of the pool: the client adds one to the port it's given.
+    shoutcastPort: icy === null ? null : icy - 1,
     formats: LIVE_FORMATS,
   };
 }

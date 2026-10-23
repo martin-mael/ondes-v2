@@ -1,6 +1,7 @@
 import type { Permission } from '@ondes/shared';
 import type { LinkProps } from '@tanstack/react-router';
 import {
+  AudioLinesIcon,
   CalendarClockIcon,
   CalendarDaysIcon,
   CalendarRangeIcon,
@@ -60,6 +61,12 @@ export const stationNav: NavItem[] = [
     label: 'shell.nav.log',
     icon: CalendarClockIcon,
     permission: 'log:read',
+  },
+  {
+    to: '/stations/$stationId/voice-tracks/record',
+    label: 'shell.nav.recordVt',
+    icon: AudioLinesIcon,
+    permission: 'voice_track:write_own',
   },
   {
     to: '/stations/$stationId/library',

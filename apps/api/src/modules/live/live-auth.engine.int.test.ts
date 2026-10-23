@@ -81,6 +81,7 @@ beforeAll(async () => {
   const ctx = { actor: system, scope };
   for (const [username, extra] of [
     ['dj-good', { anyTime: true }],
+    ['dj-two', { anyTime: true }],
     ['dj-off', { anyTime: true, enabled: false }],
     // No allowed show and not "any time": never inside a slot.
     ['dj-slotless', {}],
@@ -177,7 +178,7 @@ afterAll(() => close());
 
 let djs = 0;
 /** Starts a stand-in DJ streaming a tone. Returns its stop function. */
-function startDj(username: string, password: string): () => void {
+function startDj(username: string, password: string, mount = 'live'): () => void {
   const name = `ondes-live-auth-dj${djs++}-${run}`;
   const script = join(work, `${name}.liq`);
   writeFileSync(
@@ -187,7 +188,7 @@ function startDj(username: string, password: string): () => void {
       'settings.log.level := 2',
       `output.icecast(%mp3(bitrate=128), host=${JSON.stringify(engineName)}, port=8005,`,
       `  user=${JSON.stringify(username)}, password=${JSON.stringify(password)},`,
-      '  mount="live", sine())',
+      `  mount=${JSON.stringify(mount)}, sine())`,
     ].join('\n'),
   );
   docker([
@@ -259,6 +260,48 @@ describe('harbor auth callback on the real engine', () => {
     'connects a Shoutcast-style source (user source, password username:password)',
     async () => {
       expect(await connects('source', `dj-good:${passwords['dj-good']}`)).toBe(true);
+    },
+    SLOW,
+  );
+
+  it(
+    'reports which streamer holds which input, and names them on the live as-run (#64)',
+    async () => {
+      const stopOne = startDj('dj-good', passwords['dj-good'] ?? '');
+      const stopTwo = startDj('dj-two', passwords['dj-two'] ?? '', 'live-2');
+      try {
+        let live = (await engine.state()).live;
+        for (let i = 0; i < 60 && !live.inputs?.every((x) => x.ready); i++) {
+          await sleep(250);
+          live = (await engine.state()).live;
+        }
+        expect(live.inputs?.map((x) => x.streamer_id)).toEqual([ids['dj-good'], ids['dj-two']]);
+        const session = '0199a4e2-7c1d-7000-8000-00000000c0de';
+        await engine.setLive(true, { input: 2, sessionId: session });
+        for (let i = 0; i < 40 && (await engine.state()).live.on_air !== 2; i++) await sleep(250);
+        const started = (await engine.events(0)).filter(
+          (e) => e.type === 'track.started' && e.data.source === 'live',
+        );
+        expect(started.at(-1)?.data).toMatchObject({
+          live_session_id: session,
+          live_streamer_id: ids['dj-two'],
+          live_input: 2,
+        });
+        const connected = (await engine.events(0)).flatMap((e) =>
+          e.type === 'live.connected' ? [[e.data.input, e.data.streamer_id]] : [],
+        );
+        expect(connected).toEqual(
+          expect.arrayContaining([
+            [1, ids['dj-good']],
+            [2, ids['dj-two']],
+          ]),
+        );
+      } finally {
+        await engine.setLive(false);
+        stopOne();
+        stopTwo();
+        for (let i = 0; i < 40 && (await engine.state()).live.connected; i++) await sleep(250);
+      }
     },
     SLOW,
   );

@@ -5,6 +5,7 @@ import {
   createAsset,
   createOrganization,
   createStation,
+  feederPush,
   logDay,
   logItem,
   type OrgScope,
@@ -544,6 +545,94 @@ describe('recording', () => {
       asRunEvents.find((e) => e.type === 'asrun.ended' && e.data.id === entry?.id),
     );
     expect(ended.data.endedAt).toBe(new Date(startedAt.getTime() + 1_800_000).toISOString());
+  });
+});
+
+describe('island transitions (#57)', () => {
+  it('records what the feeder pushed: a body planned to its island, the island and its voice', async () => {
+    const st = await newStation(false);
+    const a = await song(st.scope, 'A', ['X']);
+    const itemId = await logItemFor(st.scope, a.assetId, new Date('2026-06-10T16:00:00Z'));
+    const voiceAssetId = randomUUID();
+    const segueId = randomUUID();
+    const island = 'island:'.concat('c'.repeat(64));
+    const transition = {
+      rendered: true,
+      islandId: randomUUID(),
+      hash: 'c'.repeat(64),
+      segueIds: [segueId],
+      voices: [{ assetId: voiceAssetId, title: 'VT', offsetMs: 300, durationMs: 4000 }],
+    };
+    await tdb.db.insert(feederPush).values({
+      ...st.scope,
+      bootId: st.bootId,
+      entryId: itemId,
+      fingerprint: 'f',
+      parts: [
+        { itemId, expectedMs: 120_500, transition: null },
+        { itemId: island, expectedMs: 6000, transition },
+      ],
+      itemIds: [itemId, randomUUID()],
+    });
+    const start = (seq: number, id: string) =>
+      repo.recordStart(tdb.db, st.scope, {
+        eventId: randomUUID(),
+        bootId: st.bootId,
+        seq,
+        at: new Date('2026-06-10T16:00:00Z'),
+        itemId: id,
+        segmentId: itemId,
+        source: 'queue',
+        title: null,
+        artist: null,
+        filename: null,
+        rid: String(seq),
+      });
+    // A's body: planned to its island (120.5 s), not to the log item's 180 s.
+    const body = await start(1, itemId);
+    expect(body?.entry).toMatchObject({ logItemId: itemId, plannedDurationMs: 120_500 });
+    expect(body?.entry.transition ?? null).toBeNull();
+    const isl = await start(2, island);
+    expect(isl?.entry).toMatchObject({ logItemId: null, plannedDurationMs: 6000, transition });
+    // A body ending at its island is complete, not cut.
+    const ended = await repo.recordEnd(tdb.db, st.scope, {
+      eventId: randomUUID(),
+      bootId: st.bootId,
+      seq: 3,
+      itemId,
+      source: 'queue',
+      startedAt: new Date('2026-06-10T16:00:00Z'),
+      playedMs: 120_400,
+    });
+    expect(ended?.entry.outcome).toBe('complete');
+  });
+
+  it('still names an island it has no push record for, by its engine id', async () => {
+    const st = await newStation(false);
+    const recorded = await repo.recordStart(tdb.db, st.scope, {
+      eventId: randomUUID(),
+      bootId: st.bootId,
+      seq: 1,
+      at: new Date('2026-06-10T17:00:00Z'),
+      itemId: 'island:'.concat('d'.repeat(64)),
+      segmentId: randomUUID(),
+      source: 'queue',
+      title: 'B',
+      artist: null,
+      filename: null,
+      rid: '1',
+    });
+    expect(recorded?.entry).toMatchObject({
+      logItemId: null,
+      plannedDurationMs: null,
+      transition: {
+        rendered: true,
+        islandId: null,
+        hash: 'd'.repeat(64),
+        segueIds: [],
+        voices: [],
+      },
+    });
   });
 });
 

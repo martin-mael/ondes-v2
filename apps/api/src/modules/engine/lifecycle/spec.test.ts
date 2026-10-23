@@ -145,6 +145,28 @@ describe('engine container spec', () => {
     });
   });
 
+  it('publishes the Shoutcast port on its own host port when the station takes them (#64)', () => {
+    const icy = engineContainerSpec(config, {
+      station: { stationId: 'st-1' },
+      configVersion: 'abc',
+      script: 'SCRIPT',
+      secrets,
+      livePort: 8100,
+      liveIcyPort: 8107,
+    }).body;
+    expect(icy.HostConfig.PortBindings).toEqual({
+      '8005/tcp': [{ HostIp: '0.0.0.0', HostPort: '8100' }],
+      '8006/tcp': [{ HostIp: '0.0.0.0', HostPort: '8107' }],
+    });
+    const policy = {
+      image: config.image,
+      namePrefix: config.containerPrefix,
+      network: config.network,
+      cacheRoot: config.cacheRoot,
+    };
+    expect(checkEngineCreate(policy, 'ondes-engine-st-1', icy)).toBeNull();
+  });
+
   it('is exactly what the Docker proxy guard allows', () => {
     const policy = {
       image: config.image,

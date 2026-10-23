@@ -7,6 +7,7 @@ import {
   listEpisodesQuerySchema,
   localDateSchema,
   putSlotExceptionSchema,
+  scheduleRerunSchema,
   showHostCandidateListSchema,
   showListSchema,
   showOccurrencesQuerySchema,
@@ -27,6 +28,7 @@ import { z } from 'zod';
 import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
 import { HttpError } from '../../plugins/errors.ts';
 import * as repo from './repo.ts';
+import { scheduleRerun } from './reruns-schedule.ts';
 
 // Shows, slots and episodes API (#44), under /api/v1/stations/:stationId. Every mutation is
 // audited (repo.ts).
@@ -295,6 +297,25 @@ export async function showsRoutes(app: FastifyInstance) {
       const { showId, episodeId } = request.params;
       await repo.deleteEpisode(app.db, ctx(request), showId, episodeId);
       return reply.code(204).send();
+    },
+  );
+
+  /** "Schedule a rerun" (#48): a one-off rerun slot. `show:write`, like any slot. */
+  r.post(
+    '/stations/:stationId/shows/:showId/episodes/:episodeId/reruns',
+    {
+      preHandler: write,
+      schema: {
+        params: episodeParams,
+        body: scheduleRerunSchema,
+        response: { 201: showSlotSchema },
+      },
+    },
+    async (request, reply) => {
+      const { showId, episodeId } = request.params;
+      return reply
+        .code(201)
+        .send(await scheduleRerun(app.db, ctx(request), showId, episodeId, request.body));
     },
   );
 

@@ -11,9 +11,17 @@ import {
   station,
   whereStation,
 } from '@ondes/db';
-import { alertTypes, cacheExtOf, type LogItem, type PlayoutGainStation } from '@ondes/shared';
+import {
+  alertTypes,
+  cacheExtOf,
+  feederPushPartsSchema,
+  type IslandPlan,
+  type LogItem,
+  type PlayoutGainStation,
+} from '@ondes/shared';
 import { and, eq, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { getLogRange } from '../../log/repo.ts';
+import { deriveIslandsFor } from '../../segues/sync.ts';
 import type { FeederPushStore } from './feeder.ts';
 import type { FeedMedia } from './push.ts';
 
@@ -154,6 +162,65 @@ export async function loadMedia(
   return media;
 }
 
+/** An island the segues of the window call for right now (ADR 0017 `deriveIslandsFor`). */
+export type FeedIsland = {
+  hash: string;
+  plan: IslandPlan;
+  /** A `ready` render with this exact hash, and whether the station's cache has its file. */
+  rendered: { islandId: string; sha256: string; cached: boolean } | null;
+};
+
+export type FeedIslands = {
+  islands: FeedIsland[];
+  /** Media of every asset the islands play (voices included), by asset id. */
+  media: Map<string, FeedMedia>;
+};
+
+/**
+ * The islands of the segues touching `itemIds`, re-derived from the log and the library as
+ * they are now (never a stale render: ADR 0017), with their render's cache state and the media
+ * of the voices they play, for the fallback.
+ */
+export async function loadFeedIslands(
+  db: Executor,
+  scope: StationScope,
+  itemIds: readonly string[],
+): Promise<FeedIslands> {
+  const derived = await deriveIslandsFor(db, scope, itemIds);
+  if (!derived.islands.length) return { islands: [], media: new Map() };
+  const shas = derived.islands.flatMap((i) => (i.rendered?.file ? [i.rendered.file.sha256] : []));
+  const cached = shas.length
+    ? await db
+        .select({ sha256: playoutCacheFile.sha256 })
+        .from(playoutCacheFile)
+        .where(
+          and(
+            whereStation(playoutCacheFile, scope),
+            inArray(playoutCacheFile.sha256, shas),
+            eq(playoutCacheFile.state, 'ready'),
+          ),
+        )
+    : [];
+  const ready = new Set(cached.map((r) => r.sha256));
+  const assetIds = [
+    ...new Set(derived.islands.flatMap((i) => Object.values(i.files).map((f) => f.assetId))),
+  ];
+  return {
+    islands: derived.islands.map((i) => ({
+      hash: i.hash,
+      plan: i,
+      rendered: i.rendered?.file
+        ? {
+            islandId: i.rendered.islandId,
+            sha256: i.rendered.file.sha256,
+            cached: ready.has(i.rendered.file.sha256),
+          }
+        : null,
+    })),
+    media: await loadMedia(db, scope, assetIds),
+  };
+}
+
 /** Records of other boots and older than this are dropped by `prune`. */
 const PUSH_RECORD_MAX_AGE_MS = 2 * 24 * 3_600_000;
 
@@ -163,24 +230,46 @@ export function createFeederPushStore(db: Executor, scope: StationScope): Feeder
     and(whereStation(feederPush, scope), eq(feederPush.bootId, bootId));
   return {
     async load(bootId) {
-      return db
+      const rows = await db
         .select({
           entryId: feederPush.entryId,
           fingerprint: feederPush.fingerprint,
           trimMs: feederPush.trimMs,
           aired: feederPush.aired,
+          parts: feederPush.parts,
+          itemIds: feederPush.itemIds,
         })
         .from(feederPush)
         .where(where(bootId));
+      // jsonb written by another api version: parts that don't parse are as good as none.
+      return rows.map((r) => ({
+        ...r,
+        parts: feederPushPartsSchema.safeParse(r.parts).data ?? null,
+      }));
     },
 
     async save(bootId, entryId, push) {
       await db
         .insert(feederPush)
-        .values({ ...scope, bootId, entryId, ...push, pushedAt: new Date() })
+        .values({
+          ...scope,
+          bootId,
+          entryId,
+          fingerprint: push.fingerprint,
+          trimMs: push.trimMs,
+          parts: push.parts ?? null,
+          itemIds: push.itemIds ?? null,
+          pushedAt: new Date(),
+        })
         .onConflictDoUpdate({
           target: [feederPush.stationId, feederPush.bootId, feederPush.entryId],
-          set: { fingerprint: push.fingerprint, trimMs: push.trimMs, pushedAt: new Date() },
+          set: {
+            fingerprint: push.fingerprint,
+            trimMs: push.trimMs,
+            parts: push.parts ?? null,
+            itemIds: push.itemIds ?? null,
+            pushedAt: new Date(),
+          },
         });
     },
 

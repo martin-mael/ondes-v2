@@ -3,6 +3,8 @@ import {
   asset,
   assetFile,
   type Executor,
+  episode,
+  feederPush,
   logItem,
   logItemFallback,
   type StationScope,
@@ -14,8 +16,10 @@ import {
   type AsRunEntry,
   type AsRunList,
   type AsRunSource,
+  type AsRunTransition,
   asRunOutcome,
   type EngineSource,
+  feederPushPartsSchema,
   type ListAsRunQuery,
   listAsRunQuerySchema,
   uuidSchema,
@@ -51,6 +55,11 @@ export function toEntry(row: Row): AsRunEntry {
     plannedDurationMs: row.plannedDurationMs,
     driftMs: row.plannedStart ? row.startedAt.getTime() - row.plannedStart.getTime() : null,
     fallback: row.fallback,
+    episode:
+      row.episodeId && row.showId && row.episodeNumber !== null
+        ? { id: row.episodeId, showId: row.showId, number: row.episodeNumber, rerun: row.rerun }
+        : null,
+    transition: row.transition,
     bootId: row.bootId,
     seq: row.seq,
     recordedAt: row.recordedAt.toISOString(),
@@ -124,7 +133,7 @@ export type Recorded = { entry: AsRunEntry; fresh: boolean };
 async function resolveItem(
   db: Executor,
   scope: StationScope,
-  input: Pick<StartInput, 'itemId' | 'title' | 'artist' | 'filename'>,
+  input: Pick<StartInput, 'itemId' | 'title' | 'artist' | 'filename' | 'at'>,
 ) {
   const itemId = asUuid(input.itemId);
   const [item] = itemId
@@ -138,6 +147,11 @@ async function resolveItem(
           title: logItem.title,
           // Airing in place of a missing episode (#47): what stood in for it.
           fallback: logItemFallback.kind,
+          originShowSlotId: logItem.originShowSlotId,
+          // The show episode it airs (#48): number and premiere slot, for the rerun flag.
+          episode: { id: episode.id, showId: episode.showId, number: episode.number },
+          premiereSlotId: episode.slotId,
+          airedAt: episode.airedAt,
         })
         .from(logItem)
         // Only while the item still plays what the fallback put there (not swapped by hand).
@@ -147,6 +161,10 @@ async function resolveItem(
             eq(logItemFallback.logItemId, logItem.id),
             eq(logItemFallback.assetId, logItem.assetId),
           ),
+        )
+        .leftJoin(
+          episode,
+          and(eq(episode.id, logItem.episodeId), eq(episode.stationId, logItem.stationId)),
         )
         .where(and(whereStation(logItem, scope), eq(logItem.id, itemId)))
     : [];
@@ -185,11 +203,91 @@ async function resolveItem(
     plannedStart: item?.plannedStart ?? null,
     plannedDurationMs: item?.plannedDurationMs ?? null,
     fallback: item?.fallback ?? null,
+    ...episodeSnapshot(item, input.at),
     assetId,
     fileSha256,
     title: input.title ?? item?.title ?? a?.title ?? null,
     artist: input.artist ?? (a && a.artists.length > 0 ? a.artists.join(', ') : null),
     artists,
+  };
+}
+
+/**
+ * The episode columns of an entry (#48, ADR 0028). It airs again when:
+ * - it stands in for a missing episode (#47's mark);
+ * - it was planned in another show slot than its premiere's (a rerun slot);
+ * - otherwise (no premiere slot, or added by hand), when it already aired before.
+ * Its own premiere slot never makes it a rerun, so an item replayed after a restart isn't one.
+ */
+function episodeSnapshot(
+  item:
+    | {
+        fallback: string | null;
+        originShowSlotId: string | null;
+        episode: { id: string; showId: string; number: number } | null;
+        premiereSlotId: string | null;
+        airedAt: Date | null;
+      }
+    | undefined,
+  at: Date,
+) {
+  const e = item?.episode;
+  if (!item || !e) return { episodeId: null, showId: null, episodeNumber: null, rerun: false };
+  let rerun: boolean;
+  if (item.fallback === 'latest_episode' || item.fallback === 'episode') rerun = true;
+  else if (item.originShowSlotId !== null && item.originShowSlotId === item.premiereSlotId) {
+    rerun = false;
+  } else if (item.originShowSlotId !== null && item.premiereSlotId !== null) rerun = true;
+  else rerun = item.airedAt !== null && item.airedAt < at;
+  return { episodeId: e.id, showId: e.showId, episodeNumber: e.number, rerun };
+}
+
+/**
+ * An episode's first airing (not a rerun) marks it `aired` (#48): what makes it rerunnable. Its
+ * `aired_at` is the first one's start; a later replay keeps it.
+ */
+async function markAired(db: Executor, scope: StationScope, entry: Row) {
+  if (!entry.episodeId || entry.rerun) return;
+  await db
+    .update(episode)
+    .set({
+      status: 'aired',
+      airedAt: sql`coalesce(${episode.airedAt}, ${entry.startedAt.toISOString()}::timestamptz)`,
+    })
+    .where(and(whereStation(episode, scope), eq(episode.id, entry.episodeId)));
+}
+
+/**
+ * What the feeder pushed for this request (#57, `feeder_push.parts`): the transition it carries
+ * (the island it is, or the voices over its crossfade) and how long it was meant to play inside
+ * an island chain (a body ends at its island). Without the record (another feeder's, pruned), an
+ * island still says which one it is through its engine id (`island:<hash>`).
+ */
+async function pushedPart(
+  db: Executor,
+  scope: StationScope,
+  input: Pick<StartInput, 'bootId' | 'itemId' | 'segmentId'>,
+): Promise<{ transition: AsRunTransition | null; expectedMs: number | null }> {
+  const entryId = asUuid(input.segmentId) ?? asUuid(input.itemId);
+  const [row] = entryId
+    ? await db
+        .select({ parts: feederPush.parts })
+        .from(feederPush)
+        .where(
+          and(
+            whereStation(feederPush, scope),
+            eq(feederPush.bootId, input.bootId),
+            eq(feederPush.entryId, entryId),
+          ),
+        )
+    : [];
+  const parts = feederPushPartsSchema.safeParse(row?.parts).data;
+  const part = parts?.find((p) => p.itemId === input.itemId);
+  if (part) return { transition: part.transition, expectedMs: part.expectedMs };
+  const hash = input.itemId?.startsWith('island:') ? input.itemId.slice(7) : null;
+  return {
+    transition: hash ? { rendered: true, islandId: null, hash, segueIds: [], voices: [] } : null,
+    expectedMs: null,
   };
 }
 
@@ -209,6 +307,7 @@ export async function recordStart(
 ): Promise<Recorded | null> {
   const resolved = await resolveItem(db, scope, input);
   const source = asRunSourceOf(input.source);
+  const pushed = source === 'log' ? await pushedPart(db, scope, input) : null;
   const [row] = await db
     .insert(asRunEntry)
     .values({
@@ -220,14 +319,23 @@ export async function recordStart(
       rid: input.rid,
       source,
       ...resolved,
+      // A body of an island chain is planned to its island, not to the log item's own end.
+      plannedDurationMs: pushed?.expectedMs ?? resolved.plannedDurationMs,
+      transition: pushed?.transition ?? null,
       liveSessionId: source === 'live' ? asUuid(input.liveSessionId ?? null) : null,
       startedAt: input.at,
     })
     .onConflictDoNothing()
     .returning();
-  if (row) return { entry: toEntry(row), fresh: true };
+  if (row) {
+    await markAired(db, scope, row);
+    return { entry: toEntry(row), fresh: true };
+  }
   const existing = await byEventId(db, scope, input.eventId);
-  return existing ? { entry: toEntry(existing), fresh: false } : null;
+  if (!existing) return null;
+  // Idempotent: a redelivery finishes a mark the first delivery didn't get to.
+  await markAired(db, scope, existing);
+  return { entry: toEntry(existing), fresh: false };
 }
 
 export type EndInput = {
@@ -309,6 +417,7 @@ export async function recordEnd(
     title: null,
     artist: null,
     filename: null,
+    at: input.startedAt,
   });
   const [row] = await db
     .insert(asRunEntry)
@@ -328,7 +437,10 @@ export async function recordEnd(
     })
     .onConflictDoNothing()
     .returning();
-  if (row) return { entry: toEntry(row), fresh: true };
+  if (row) {
+    await markAired(db, scope, row);
+    return { entry: toEntry(row), fresh: true };
+  }
   const existing = await byEventId(db, scope, input.eventId);
   return existing ? { entry: toEntry(existing), fresh: false } : null;
 }

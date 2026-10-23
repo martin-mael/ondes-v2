@@ -191,6 +191,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@ondes/scheduling':
+        specifier: workspace:*
+        version: link:../scheduling
       '@ondes/shared':
         specifier: workspace:*
         version: link:../shared

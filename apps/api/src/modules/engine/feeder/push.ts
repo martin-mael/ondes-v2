@@ -4,6 +4,7 @@ import {
   type EnginePushSegment,
   type EngineSegmentPart,
   getPlayoutGain,
+  PLAYOUT_SAMPLE_RATE,
   type PlayoutGainAsset,
   type PlayoutGainStation,
   playoutPath,
@@ -75,6 +76,8 @@ export type PushContext = {
   trimFadeSeconds?: number;
   /** Engine-side cache root (`/cache`). */
   engineRoot?: string;
+  /** Voices to lay over the transition out of this entry (island fallback). */
+  overlay?: readonly OverlayVoice[];
 };
 
 /** Seconds with microsecond resolution: enough for half a sample at 44.1 kHz. */
@@ -206,6 +209,13 @@ export function buildPushItem(source: PushSource, ctx: PushContext): EnginePushI
   if (crossIn !== undefined) item.cross_in = crossIn / 1000;
   const crossOut = crossOutMsOf(source);
   if (crossOut !== undefined) item.cross_out = crossOut / 1000;
+  if (ctx.overlay?.length) {
+    // From its cue points when it has a cue-out (trims included), else from its length.
+    const lengthMs = playLengthMs(source);
+    const played =
+      lastLengthSeconds(item) ?? (lengthMs === null ? null : Math.max(0, lengthMs - trimMs) / 1000);
+    item.overlay = overlayAt(ctx.overlay, played);
+  }
   return item;
 }
 
@@ -236,6 +246,7 @@ export function buildPushSegment(source: SegmentSource, ctx: PushContext): Engin
   if (crossIn !== undefined) segment.cross_in = crossIn / 1000;
   const crossOut = segmentCrossOutMs(source);
   if (crossOut !== undefined) segment.cross_out = crossOut / 1000;
+  if (ctx.overlay?.length) segment.overlay = overlayAt(ctx.overlay, lastLengthSeconds(segment));
   return segment;
 }
 
@@ -246,4 +257,181 @@ export function segmentCrossOutMs(source: SegmentSource): number | undefined {
   // A part's own crossOutMs means nothing inside a segment (contracts/log.ts).
   const cueOverrides = last.cueOverrides ? { ...last.cueOverrides, crossOutMs: undefined } : null;
   return crossOutMsOf({ ...last, cueOverrides });
+}
+
+// --- Island chains (#57, ADR 0024) ---------------------------------------------------------
+
+/**
+ * One body of an island chain: an item played from `from` to `to` (samples of its playout
+ * copy). Null `from` is the item's own cue-in, null `to` its own end. The island's head body
+ * ends at the island's head join; its tail body starts at the tail join.
+ */
+export type ChainBody = {
+  kind: 'body';
+  source: PushSource;
+  from: number | null;
+  to: number | null;
+};
+
+/** A rendered island inside a chain, played whole at 0 dB. */
+export type ChainIsland = {
+  kind: 'island';
+  /** The engine `item_id`: `island:<spec hash>` (the as-run resolves it). */
+  itemId: string;
+  /** The rendered FLAC's own SHA-256 (its playout cache key, ADR 0018). */
+  sha256: string;
+  lengthSamples: number;
+  title: string | null;
+  artist: string | null;
+};
+
+/**
+ * `A body, island, B body` (or a longer run, when islands follow one another), aired as one
+ * `POST /v1/segment`. Its id is the head item's id: the planner sees the chain as one entry.
+ */
+export type ChainSource = {
+  segmentId: string;
+  steps: (ChainBody | ChainIsland)[];
+  /** The head item's own `crossInMs` override (the head may have no body of its own). */
+  crossInMs?: number | undefined;
+};
+
+/** The engine `item_id` of an island. */
+export const islandEngineId = (hash: string) => `island:${hash}`;
+
+/** Up to the next multiple of `grid`. */
+const snapUp = (n: number, grid: number | null) =>
+  grid && grid > 0 ? Math.ceil(n / grid) * grid : n;
+
+/** Where a chain body starts and ends, in samples at `sr`, cue-in snapped up to the grid. */
+export function chainBodyRange(body: ChainBody): { from: number; to: number; sr: number } | null {
+  const p = positionsOf(body.source);
+  const end = endOf(p, body.source.media);
+  if (!end) return null;
+  const sr = end.sr;
+  const ownIn = p.cueIn && p.cueIn.sr === sr ? p.cueIn.n : 0;
+  // Every seek into a body must land on the playout copy's grid (spike #12, ADR 0018 "Grid
+  // snapping"): moved up, so it only ever shortens the body, never the island.
+  const from = snapUp(body.from ?? ownIn, body.source.media.flacBlockSize);
+  const to = body.to ?? end.n;
+  return to > from ? { from, to, sr } : null;
+}
+
+/** Playing length of each step, in ms, in order (null when unknown). */
+export function chainStepLengthsMs(source: ChainSource): (number | null)[] {
+  return source.steps.map((step) => {
+    if (step.kind === 'island')
+      return Math.round((step.lengthSamples * 1000) / PLAYOUT_SAMPLE_RATE);
+    const range = chainBodyRange(step);
+    return range ? Math.round(((range.to - range.from) * 1000) / range.sr) : null;
+  });
+}
+
+/**
+ * `POST /v1/segment` body for an island chain, following spike #12 to the letter:
+ * - bodies carry their own gain (`liq_amplify`), cue-ins on the grid, and cue points biased by
+ *   half a sample (`(n − ½)/sr` with a cue-in, `cue_out = (n + ½)/sr` without);
+ * - islands play whole with `liq_amplify` set explicitly to 0 dB, no cue points;
+ * - nothing at the joins: fades and crossfades only on the way into and out of the chain.
+ */
+export function buildPushChain(source: ChainSource, ctx: PushContext): EnginePushSegment {
+  const parts: EngineSegmentPart[] = [];
+  for (const step of source.steps) {
+    if (step.kind === 'island') {
+      const part: EngineSegmentPart = {
+        item_id: step.itemId,
+        uri: playoutPath({ sha256: step.sha256, ext: 'flac' }, ctx.engineRoot),
+        amplify_db: 0,
+      };
+      if (step.title) part.title = step.title;
+      if (step.artist) part.artist = step.artist;
+      parts.push(part);
+      continue;
+    }
+    const range = chainBodyRange(step);
+    if (!range) continue;
+    const { media } = step.source;
+    const part: EngineSegmentPart = {
+      item_id: step.source.itemId,
+      uri: playoutPath({ sha256: media.sha256, ext: media.ext }, ctx.engineRoot),
+    };
+    if (range.from > 0) part.cue_in = round6((range.from - 0.5) / range.sr);
+    part.cue_out = round6((range.to + (range.from > 0 ? -0.5 : 0.5)) / range.sr);
+    const amplify = gainOf(step.source, ctx.station);
+    if (amplify !== undefined) part.amplify_db = amplify;
+    const title = step.source.title ?? media.title;
+    if (title) part.title = title;
+    if (media.artists.length) part.artist = media.artists.join(', ');
+    parts.push(part);
+  }
+  const segment: EnginePushSegment = { segment_id: source.segmentId, parts };
+  const first = source.steps[0];
+  const last = source.steps.at(-1);
+  // A fade-in only when the chain starts on a body that starts at its own cue-in; a fade-out
+  // only when it ends on a body that ends at its own end.
+  if (first?.kind === 'body' && first.from === null) {
+    const fadeIn = seconds(positionsOf(first.source).fadeIn);
+    if (fadeIn !== undefined) segment.fade_in = fadeIn;
+  }
+  if (last?.kind === 'body' && last.to === null) {
+    const fadeOut = seconds(positionsOf(last.source).fadeOut);
+    if (fadeOut !== undefined) segment.fade_out = fadeOut;
+  }
+  const crossIn = source.crossInMs ?? ctx.crossInMs;
+  if (crossIn !== undefined) segment.cross_in = crossIn / 1000;
+  const crossOut = chainCrossOutMs(source);
+  if (crossOut !== undefined) segment.cross_out = crossOut / 1000;
+  if (ctx.overlay?.length) {
+    // A chain ending on an island has no cue-out to read its length from: use the island's.
+    const lastMs = chainStepLengthsMs(source).at(-1);
+    const length = last?.kind === 'island' && lastMs != null ? lastMs / 1000 : null;
+    segment.overlay = overlayAt(ctx.overlay, length ?? lastLengthSeconds(segment));
+  }
+  return segment;
+}
+
+/** The chain's overlap into the next entry: its tail item's, when the chain ends on a body. */
+export function chainCrossOutMs(source: ChainSource): number | undefined {
+  const last = source.steps.at(-1);
+  if (last?.kind !== 'body' || last.to !== null) return undefined;
+  return crossOutMsOf(last.source);
+}
+
+// --- Voice overlay (the island fallback, #57) ------------------------------------------------
+
+/**
+ * A voice to lay over the transition out of an entry when its island can't air. `start` is in
+ * seconds relative to the end of the entry's last request (the segue axis, ADR 0017: negative
+ * starts before A's end).
+ */
+export type OverlayVoice = {
+  uri: string;
+  start: number;
+  duration: number;
+  cueIn?: number;
+  cueOut?: number;
+  amplifyDb?: number;
+  duckDb?: number;
+};
+
+/** How long the last request of a body plays, from its cue points; null when unknown. */
+function lastLengthSeconds(body: EnginePushItem | EnginePushSegment): number | null {
+  const last = 'parts' in body ? body.parts.at(-1) : body;
+  if (last?.cue_out === undefined) return null;
+  return last.cue_out - (last.cue_in ?? 0);
+}
+
+function overlayAt(voices: readonly OverlayVoice[], length: number | null) {
+  return voices.map((v) => {
+    const voice: NonNullable<EnginePushItem['overlay']>[number] = {
+      uri: v.uri,
+      at: round6(Math.max(0, (length ?? 0) + v.start)),
+      duration: round6(v.duration),
+    };
+    if (v.cueIn !== undefined) voice.cue_in = v.cueIn;
+    if (v.cueOut !== undefined) voice.cue_out = v.cueOut;
+    if (v.amplifyDb !== undefined) voice.amplify_db = v.amplifyDb;
+    if (v.duckDb !== undefined) voice.duck_db = v.duckDb;
+    return voice;
+  });
 }

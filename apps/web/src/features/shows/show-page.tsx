@@ -8,6 +8,7 @@ import {
   PencilIcon,
   PlusIcon,
   RadioIcon,
+  Repeat2Icon,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
@@ -38,6 +39,7 @@ import {
 } from './episode-dialog.tsx';
 import { formatDay, formatDuration, formatTime, ruleSummary } from './format.ts';
 import { useShowError, useShowT } from './messages.ts';
+import { canScheduleRerun, RerunDialog, RerunOf } from './rerun-dialog.tsx';
 import { ShowFormDialog } from './show-form.tsx';
 import { ShowArtwork } from './shows-page.tsx';
 import { SlotEditorDialog } from './slot-editor.tsx';
@@ -70,6 +72,7 @@ export function ShowPage() {
   const [editingShow, setEditingShow] = useState(false);
   const [slotEdit, setSlotEdit] = useState<{ slotId?: string } | null>(null);
   const [episodeEdit, setEpisodeEdit] = useState<EpisodeEdit>(null);
+  const [rerunOf, setRerunOf] = useState<string | null>(null);
 
   if (show.isPending) return <PageSkeleton />;
   if (show.isError) {
@@ -218,6 +221,7 @@ export function ShowPage() {
         </div>
         <SlotList
           slots={slots.data?.items}
+          episodes={episodes.data?.items}
           pending={slots.isPending}
           canManage={access.canManage}
           onEdit={(slot) => setSlotEdit({ slotId: slot.id })}
@@ -238,7 +242,10 @@ export function ShowPage() {
           episodes={episodes.data?.items}
           pending={episodes.isPending}
           canEdit={canEdit}
+          canManage={access.canManage}
+          timezone={access.timezone}
           onEdit={(episode) => setEpisodeEdit({ episodeId: episode.id })}
+          onRerun={(episode) => setRerunOf(episode.id)}
         />
       </section>
 
@@ -260,6 +267,13 @@ export function ShowPage() {
             open={slotEdit !== null && (!slotEdit.slotId || editedSlot !== undefined)}
             onOpenChange={(open) => !open && setSlotEdit(null)}
             onDetached={(ids) => setDetached(ids)}
+          />
+          <RerunDialog
+            stationId={stationId}
+            showId={showId}
+            episode={episodes.data?.items.find((e) => e.id === rerunOf) ?? null}
+            timezone={access.timezone}
+            onClose={() => setRerunOf(null)}
           />
           <DeleteShow stationId={stationId} showId={showId} name={data.name} />
         </>
@@ -425,7 +439,7 @@ function UpcomingSection({
                       )}
                     </>
                   ) : o.type === 'rerun' ? (
-                    <span className="text-muted-foreground">{t('upcoming.rerun')}</span>
+                    <RerunOf occurrence={o} />
                   ) : canEdit ? (
                     <>
                       {o.type === 'prerecorded' && (
@@ -546,13 +560,29 @@ function UnscheduledRow({
   );
 }
 
+/** A rerun slot's strategy in words. */
+function rerunSummary(
+  slot: ShowSlot,
+  episodes: Episode[] | undefined,
+  t: ReturnType<typeof useShowT>,
+) {
+  const rerun = slot.rerun;
+  if (!rerun) return null;
+  if (rerun.strategy === 'latest_episode') return t('rerun.slotLatest');
+  const chosen = episodes?.find((e) => e.id === rerun.episodeId);
+  if (!rerun.episodeId) return t('rerun.slotEpisodeGone');
+  return chosen ? t('rerun.slotEpisode', { number: chosen.number }) : null;
+}
+
 function SlotList({
   slots,
+  episodes,
   pending,
   canManage,
   onEdit,
 }: {
   slots: ShowSlot[] | undefined;
+  episodes: Episode[] | undefined;
   pending: boolean;
   canManage: boolean;
   onEdit(slot: ShowSlot): void;
@@ -573,6 +603,7 @@ function SlotList({
               {formatDuration(slot.durationMs)}
               {slot.exceptions.length > 0 &&
                 ` · ${t('slots.exceptions', { count: slot.exceptions.length })}`}
+              {slot.rerun && ` · ${rerunSummary(slot, episodes, t) ?? t('type.rerun')}`}
             </span>
           </div>
           <Badge variant="outline">{t(`type.${slot.type}`)}</Badge>
@@ -592,15 +623,23 @@ function EpisodeTable({
   episodes,
   pending,
   canEdit,
+  canManage,
+  timezone,
   onEdit,
+  onRerun,
 }: {
   episodes: Episode[] | undefined;
   pending: boolean;
   canEdit: boolean;
+  /** Scheduling a rerun adds a slot: programmers only. */
+  canManage: boolean;
+  timezone: string;
   onEdit(episode: Episode): void;
+  onRerun(episode: Episode): void;
 }) {
   const t = useShowT();
   const { locale } = useI18n();
+  const today = localDateOf(new Date(), timezone);
   if (pending) return <ListSkeleton rows={3} />;
   if (!episodes || episodes.length === 0) {
     return <p className="text-muted-foreground">{t('episodes.empty')}</p>;
@@ -614,6 +653,7 @@ function EpisodeTable({
           <TableHead>{t('episode.kind')}</TableHead>
           <TableHead>{t('episode.occurrence')}</TableHead>
           <TableHead>{t('episodes.status')}</TableHead>
+          {canManage && <TableHead className="w-0" />}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -643,6 +683,21 @@ function EpisodeTable({
             <TableCell>
               <EpisodeStatusBadge status={episode.status} episodeId={episode.id} />
             </TableCell>
+            {canManage && (
+              <TableCell className="text-right">
+                {canScheduleRerun(episode, today) && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-label={t('rerun.scheduleLabel', { number: episode.number })}
+                    onClick={() => onRerun(episode)}
+                  >
+                    <Repeat2Icon data-icon="inline-start" />
+                    {t('rerun.schedule')}
+                  </Button>
+                )}
+              </TableCell>
+            )}
           </TableRow>
         ))}
       </TableBody>

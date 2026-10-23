@@ -1,15 +1,18 @@
 import { type AssetActivity, type AssetDetail, CUE_FIELDS, type Permission } from '@ondes/shared';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckIcon, CircleDashedIcon, LockIcon } from 'lucide-react';
-import { type ReactNode, useCallback, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { CheckIcon, CircleDashedIcon, LockIcon, PencilIcon } from 'lucide-react';
+import { type ReactNode, useCallback, useEffect, useId, useState } from 'react';
+import { toast } from 'sonner';
 import { Badge } from '@/ui/badge';
+import { Button } from '@/ui/button';
 import { Separator } from '@/ui/separator';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/ui/sheet';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
-import { ListSkeleton } from '../../app/pending.tsx';
+import { DelayedSpinner, ListSkeleton } from '../../app/pending.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
-import { activityQuery, assetQuery, invalidateLibrary } from './api.ts';
+import { activityQuery, assetQuery, invalidateLibrary, libraryApi, tagsQuery } from './api.ts';
+import { type TagRow, TagRows } from './bulk-actions.tsx';
 import {
   type AssetDrawerSectionId,
   type AssetDrawerSlot,
@@ -28,8 +31,8 @@ import {
 } from './format.ts';
 import { type LibraryT, useLibraryT } from './messages.ts';
 
-// The asset drawer (#23): everything stored about one asset, read-only, plus the sections
-// other features plug in through drawer-slots.ts (the cue editor, #24).
+// The asset drawer (#23): everything stored about one asset, read-only except its tags, plus
+// the sections other features plug in through drawer-slots.ts (the cue editor, #24).
 
 export function AssetDrawer({
   stationId,
@@ -157,6 +160,14 @@ function DrawerBody({
                 refresh={refresh}
                 onDirtyChange={onDirtyChange}
               />
+            ) : entry.id === 'tags' ? (
+              <TagsSection
+                stationId={stationId}
+                asset={asset}
+                canWrite={allowed('library:write')}
+                onDirtyChange={onDirtyChange}
+                t={t}
+              />
             ) : (
               <BuiltinSection id={entry.id} asset={asset} activity={activity.data} t={t} />
             )}
@@ -216,6 +227,115 @@ function Rows({ rows }: { rows: [label: string, value: ReactNode][] }) {
   );
 }
 
+function TagList({ asset, t }: { asset: AssetDetail; t: LibraryT }) {
+  return asset.tags.length === 0 ? (
+    <p className="text-muted-foreground">{t('bulk.tags.none')}</p>
+  ) : (
+    <div className="flex flex-wrap gap-1">
+      {asset.tags.map((tag) => (
+        <Badge key={tag.id} variant="secondary">
+          <span className="text-muted-foreground">{t(`tagKey.${tag.key}`)}:</span>
+          {tag.value}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
+const TAGS_SLOT = 'builtin:tags';
+
+const sameRows = (a: readonly TagRow[], b: readonly TagRow[]) =>
+  a.length === b.length && a.every((r, i) => r.key === b[i]?.key && r.value === b[i]?.value);
+
+/** The asset's tags; with `library:write`, edited in place (the whole set is saved at once). */
+function TagsSection({
+  stationId,
+  asset,
+  canWrite,
+  onDirtyChange,
+  t,
+}: {
+  stationId: string;
+  asset: AssetDetail;
+  canWrite: boolean;
+  onDirtyChange: (slotId: string, dirty: boolean) => void;
+  t: LibraryT;
+}) {
+  const queryClient = useQueryClient();
+  const vocabulary = useQuery({ ...tagsQuery(stationId), enabled: canWrite }).data?.tags ?? [];
+  const listId = useId();
+  const saved: TagRow[] = asset.tags.map(({ key, value }) => ({ key, value }));
+  const [rows, setRows] = useState<TagRow[] | null>(null);
+  const clean = (list: TagRow[]) =>
+    list.map((r) => ({ ...r, value: r.value.trim() })).filter((r) => r.value !== '');
+  const dirty = rows !== null && !sameRows(clean(rows), saved);
+  useEffect(() => onDirtyChange(TAGS_SLOT, dirty), [onDirtyChange, dirty]);
+  useEffect(() => () => onDirtyChange(TAGS_SLOT, false), [onDirtyChange]);
+  const save = useMutation({
+    mutationFn: (tags: TagRow[]) => libraryApi.setTags(stationId, asset.id, { tags }),
+    onSuccess: async () => {
+      setRows(null);
+      await invalidateLibrary(queryClient, stationId);
+      toast.success(t('drawer.tags.saved'));
+    },
+  });
+
+  if (rows === null) {
+    return (
+      <div className="flex flex-col gap-2">
+        <TagList asset={asset} t={t} />
+        {canWrite && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="self-start"
+            onClick={() => {
+              save.reset();
+              setRows(saved.length > 0 ? saved : [{ key: 'genre', value: '' }]);
+            }}
+          >
+            <PencilIcon data-icon="inline-start" />
+            {t('drawer.tags.edit')}
+          </Button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <form
+      className="flex flex-col gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        save.mutate(clean(rows));
+      }}
+    >
+      <datalist id={listId}>
+        {[...new Set(vocabulary.map((v) => v.value))].map((v) => (
+          <option key={v} value={v} />
+        ))}
+      </datalist>
+      <TagRows
+        label={t('drawer.tags')}
+        hideLegend
+        rows={rows}
+        onChange={setRows}
+        listId={listId}
+        t={t}
+      />
+      {save.error && <FormAlert error={save.error} />}
+      <div className="flex gap-2">
+        <Button type="submit" size="sm" disabled={save.isPending}>
+          <DelayedSpinner when={save.isPending} data-icon="inline-start" />
+          {t('drawer.tags.save')}
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={() => setRows(null)}>
+          {t('upload.cancel')}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 function BuiltinSection({
   id,
   asset,
@@ -254,18 +374,7 @@ function BuiltinSection({
       );
     }
     case 'tags':
-      return asset.tags.length === 0 ? (
-        <p className="text-muted-foreground">{t('bulk.tags.none')}</p>
-      ) : (
-        <div className="flex flex-wrap gap-1">
-          {asset.tags.map((tag) => (
-            <Badge key={tag.id} variant="secondary">
-              <span className="text-muted-foreground">{t(`tagKey.${tag.key}`)}:</span>
-              {tag.value}
-            </Badge>
-          ))}
-        </div>
-      );
+      return <TagList asset={asset} t={t} />;
     case 'loudness': {
       const gain = asset.playoutGain;
       const gainLabel = `${formatDb(gain.gainDb)} (${t(`drawer.gain.${gain.source}`)}${

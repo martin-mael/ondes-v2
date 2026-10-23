@@ -58,6 +58,18 @@ export function combos(): Combo[] {
       ],
     },
   });
+  // Harbor pool (#64): one input, no return file; four inputs with Shoutcast and a return file.
+  out.push({
+    name: 'live-pool-1',
+    settings: { ...base, live: { inputs: 1 } },
+  });
+  out.push({
+    name: 'live-pool-4_icy_return-file',
+    settings: {
+      ...base,
+      live: { inputs: 4, icy: true, returnFile: '/media/retour "x" #{y}.flac' },
+    },
+  });
   out.push({
     name: 'no-events-url',
     settings: { ...base, eventsUrl: undefined, live: { enabled: true, port: 8100 } },

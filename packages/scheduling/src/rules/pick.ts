@@ -65,6 +65,13 @@ export interface PickSnapshot {
   /** Last airing per asset older than `history` (song rest, rotation order). */
   lastPlayedAt?: ReadonlyMap<string, Date>;
   seed?: string;
+  /**
+   * `false`: callers that only want the pick (the log generator) skip the full explanation.
+   * Candidates are checked in rotation order until the pick is found, so `ranked` holds only
+   * those; the pick and `relaxed` are the same as with `true`. When the ladder has to relax a
+   * rule, every candidate is checked as usual. Default `true`.
+   */
+  explain?: boolean;
 }
 
 export interface PickSlot<C extends PickCandidate = PickCandidate> {
@@ -196,6 +203,29 @@ function separationCheck(
   return null;
 }
 
+/** A candidate's lookup keys, computed once per candidate object (picks reuse the members). */
+interface CandidateKeys {
+  title: string;
+  album: string | null;
+  artists: string[];
+  primaryArtists: string[];
+}
+const candidateKeysCache = new WeakMap<PickCandidate, CandidateKeys>();
+
+function candidateKeys(asset: PickCandidate): CandidateKeys {
+  let keys = candidateKeysCache.get(asset);
+  if (!keys) {
+    keys = {
+      title: normalizeTitle(asset.title),
+      album: asset.album?.trim() ? normalizeName(asset.album) : null,
+      artists: artistKeys(asset.artists, true),
+      primaryArtists: artistKeys(asset.artists, false),
+    };
+    candidateKeysCache.set(asset, keys);
+  }
+  return keys;
+}
+
 function check(
   rule: RotationRule,
   asset: PickCandidate,
@@ -251,7 +281,8 @@ function check(
       const kind = rule.includeFeatured ? 'artist' : 'primaryArtist';
       let minutes = Number.POSITIVE_INFINITY;
       let items = Number.POSITIVE_INFINITY;
-      for (const key of artistKeys(asset.artists, rule.includeFeatured)) {
+      const keys = candidateKeys(asset);
+      for (const key of rule.includeFeatured ? keys.artists : keys.primaryArtists) {
         const clash = nearest(history, history.positions(kind, key), at);
         if (!clash) continue;
         minutes = Math.min(minutes, clash.minutes);
@@ -263,14 +294,14 @@ function check(
     case 'title_separation':
       return separationCheck(
         rule,
-        nearest(history, history.positions('title', normalizeTitle(asset.title)), at),
+        nearest(history, history.positions('title', candidateKeys(asset).title), at),
         'title',
       );
     case 'album_separation':
       if (!asset.album?.trim()) return null;
       return separationCheck(
         rule,
-        nearest(history, history.positions('album', normalizeName(asset.album)), at),
+        nearest(history, history.positions('album', candidateKeys(asset).album as string), at),
         'album',
       );
     case 'same_hour_yesterday': {
@@ -358,11 +389,27 @@ function idOrder(a: PickCandidate, b: PickCandidate): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
+/**
+ * Each candidate's rank in id order (`idOrder`), computed once per candidate list: ties in the
+ * rotation order compare numbers instead of strings.
+ */
+const idRankCache = new WeakMap<readonly PickCandidate[], Map<PickCandidate, number>>();
+
+function idRanks(candidates: readonly PickCandidate[]): Map<PickCandidate, number> {
+  let ranks = idRankCache.get(candidates);
+  if (!ranks) {
+    ranks = new Map([...candidates].sort(idOrder).map((c, rank) => [c, rank]));
+    idRankCache.set(candidates, ranks);
+  }
+  return ranks;
+}
+
 /** Members in rotation order, with their last play before the slot. */
 function rotationOrder<C extends PickCandidate>(
   members: readonly C[],
   category: PickCategory,
   lastPlayedAt: (id: string) => Date | null,
+  ranks: ReadonlyMap<PickCandidate, number>,
 ): C[] {
   if (category.rotationOrder === 'sequential') {
     // Round-robin in candidate order, starting after the member that played last.
@@ -377,12 +424,15 @@ function rotationOrder<C extends PickCandidate>(
     });
     return [...members.slice(lastIndex + 1), ...members.slice(0, lastIndex + 1)];
   }
-  // Least recently played first, never played before anything; ties by id.
-  return [...members].sort((a, b) => {
-    const ta = lastPlayedAt(a.id)?.getTime() ?? Number.NEGATIVE_INFINITY;
-    const tb = lastPlayedAt(b.id)?.getTime() ?? Number.NEGATIVE_INFINITY;
-    return ta === tb ? idOrder(a, b) : ta - tb;
-  });
+  // Least recently played first, never played before anything; ties by id. Each member's time
+  // is looked up once, not on every comparison.
+  const keyed = members.map((m) => ({
+    m,
+    t: lastPlayedAt(m.id)?.getTime() ?? Number.NEGATIVE_INFINITY,
+    r: ranks.get(m) as number,
+  }));
+  keyed.sort((a, b) => (a.t === b.t ? a.r - b.r : a.t - b.t));
+  return keyed.map((k) => k.m);
 }
 
 /** Idle time used as the `weighted_random` weight: never played counts as a week. */
@@ -416,16 +466,204 @@ function choose<C extends PickCandidate>(
 
 /** Last play strictly before the slot: the history's, else the snapshot's older record. */
 function lastPlayedLookup(snapshot: PickSnapshot, history: SlotHistory, at: Date) {
-  const fromHistory = new Map<string, Date>();
-  for (const item of history.preceding(history.insertAt)) {
-    if (item.assetId) fromHistory.set(item.assetId, item.at);
-  }
   return (id: string): Date | null => {
-    const recent = fromHistory.get(id);
+    const recent = history.lastBefore(id)?.at;
     if (recent) return recent;
     const older = snapshot.lastPlayedAt?.get(id);
     return older && older < at ? older : null;
   };
+}
+
+/** The schedulable members in rotation order, computed afresh. */
+function orderFor<C extends PickCandidate>(
+  snapshot: PickSnapshot,
+  slot: PickSlot<C>,
+  history: SlotHistory,
+  lastPlayedAt: (id: string) => Date | null,
+): C[] {
+  const { category, at } = slot;
+  const members = slot.candidates.filter(
+    (c) => c.type === category.assetType && isSchedulable(c, at),
+  );
+  const ordered = rotationOrder(members, category, lastPlayedAt, idRanks(slot.candidates));
+  if (snapshot.explain === false && category.rotationOrder !== 'sequential') {
+    orderCache.set(slot.candidates, {
+      source: history.source,
+      lastPlayedAt: snapshot.lastPlayedAt,
+      category,
+      at: at.getTime(),
+      consumed: history.items.length,
+      allPrecede: history.allPrecede,
+      order: ordered,
+      keys: new Map(
+        ordered.map((m) => [m, lastPlayedAt(m.id)?.getTime() ?? Number.NEGATIVE_INFINITY]),
+      ),
+    });
+  }
+  return ordered;
+}
+
+/**
+ * The rotation order of the previous pick from the same candidates, brought up to date, when
+ * that gives exactly what `orderFor` would (the fast path only, `least_recently_played` and
+ * `weighted_random` orders):
+ * - same history (it only grew, and every item precedes both slots), same older airings, same
+ *   category, a later slot;
+ * - no member's schedule window (`startAt`, `killAt`) nor older airing falls between the two
+ *   slots, so the same members are schedulable and every other member keeps its time.
+ * Then only the members played since move: each is taken out and put back at its new time.
+ * Null when it doesn't apply.
+ */
+function reusedOrder<C extends PickCandidate>(
+  snapshot: PickSnapshot,
+  slot: PickSlot<C>,
+  history: SlotHistory,
+  lastPlayedAt: (id: string) => Date | null,
+): C[] | null {
+  const cached = orderCache.get(slot.candidates) as OrderCache<C> | undefined;
+  const at = slot.at.getTime();
+  if (
+    !cached ||
+    cached.source !== history.source ||
+    cached.lastPlayedAt !== snapshot.lastPlayedAt ||
+    cached.category !== slot.category ||
+    !cached.allPrecede ||
+    !history.allPrecede ||
+    at < cached.at ||
+    history.items.length < cached.consumed ||
+    crossesBoundary(slot.candidates, snapshot.lastPlayedAt, cached.at, at)
+  ) {
+    return null;
+  }
+  const ranks = idRanks(slot.candidates);
+  const byId = candidatesById(slot.candidates);
+  const { order, keys } = cached;
+  for (let i = cached.consumed; i < history.items.length; i++) {
+    const id = history.items[i]?.assetId;
+    const member = id ? (byId.get(id) as C | undefined) : undefined;
+    if (!member || !keys.has(member)) continue;
+    const t = lastPlayedAt(member.id)?.getTime() ?? Number.NEGATIVE_INFINITY;
+    if (keys.get(member) === t) continue;
+    order.splice(order.indexOf(member), 1);
+    const r = ranks.get(member) as number;
+    // First position whose member sorts after this one: (time, id rank).
+    let lo = 0;
+    let hi = order.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      const other = order[mid] as C;
+      const ot = keys.get(other) as number;
+      if (ot < t || (ot === t && (ranks.get(other) as number) < r)) lo = mid + 1;
+      else hi = mid;
+    }
+    order.splice(lo, 0, member);
+    keys.set(member, t);
+  }
+  cached.at = at;
+  cached.consumed = history.items.length;
+  return order;
+}
+
+interface OrderCache<C extends PickCandidate = PickCandidate> {
+  source: object;
+  lastPlayedAt: ReadonlyMap<string, Date> | undefined;
+  category: PickCategory;
+  at: number;
+  consumed: number;
+  allPrecede: boolean;
+  /** The schedulable members in rotation order. */
+  order: C[];
+  /** The time each was ordered by. */
+  keys: Map<C, number>;
+}
+const orderCache = new WeakMap<readonly PickCandidate[], OrderCache>();
+
+const byIdCache = new WeakMap<readonly PickCandidate[], Map<string, PickCandidate>>();
+function candidatesById(candidates: readonly PickCandidate[]): Map<string, PickCandidate> {
+  let map = byIdCache.get(candidates);
+  if (!map) {
+    map = new Map(candidates.map((c) => [c.id, c]));
+    byIdCache.set(candidates, map);
+  }
+  return map;
+}
+
+/** The candidates' schedule-window bounds and older airings, sorted (per older-airings map). */
+const boundaryCache = new WeakMap<
+  readonly PickCandidate[],
+  Map<ReadonlyMap<string, Date> | undefined, number[]>
+>();
+
+/** Whether any bound or older airing lies in `[from, to]`. */
+function crossesBoundary(
+  candidates: readonly PickCandidate[],
+  older: ReadonlyMap<string, Date> | undefined,
+  from: number,
+  to: number,
+): boolean {
+  let byOlder = boundaryCache.get(candidates);
+  if (!byOlder) {
+    byOlder = new Map();
+    boundaryCache.set(candidates, byOlder);
+  }
+  let bounds = byOlder.get(older);
+  if (!bounds) {
+    bounds = [];
+    for (const c of candidates) {
+      if (c.startAt) bounds.push(c.startAt.getTime());
+      if (c.killAt) bounds.push(c.killAt.getTime());
+      const o = older?.get(c.id);
+      if (o) bounds.push(o.getTime());
+    }
+    bounds.sort((a, b) => a - b);
+    byOlder.set(older, bounds);
+  }
+  let lo = 0;
+  let hi = bounds.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if ((bounds[mid] as number) < from) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < bounds.length && (bounds[lo] as number) <= to;
+}
+
+/**
+ * The pick without relaxing anything, checking candidates in rotation order only as far as
+ * needed: the first that breaks no rule (preferring one that meets the soft goal), or, for
+ * `weighted_random`, the draw among every eligible one. With `search_depth` active, nothing past
+ * the depth is eligible, so the scan stops there. Null when no candidate is eligible: the caller
+ * runs the full ladder, which gives the same pick and reasons as always.
+ */
+function quickPick<C extends PickCandidate>(
+  ordered: readonly C[],
+  enabled: readonly RotationRule[],
+  depth: number,
+  verdict: (asset: C, position: number) => CandidateVerdict<C>,
+  slot: PickSlot<C>,
+  seed: string,
+): PickResult<C> | null {
+  const limit = enabled.some((r) => r.kind === 'search_depth')
+    ? Math.min(ordered.length, depth)
+    : ordered.length;
+  const weighted = slot.category.rotationOrder === 'weighted_random';
+  const ranked: CandidateVerdict<C>[] = [];
+  const eligible: CandidateVerdict<C>[] = [];
+  let pick: CandidateVerdict<C> | undefined;
+  for (let position = 0; position < limit; position++) {
+    const v = verdict(ordered[position] as C, position);
+    ranked.push(v);
+    if (v.violations.length > 0) continue;
+    eligible.push(v);
+    if (!weighted && v.notes.length === 0) {
+      pick = v;
+      break;
+    }
+  }
+  pick ??= weighted ? choose(eligible, slot, seed) : eligible[0];
+  if (!pick) return null;
+  pick.picked = true;
+  return { asset: pick.asset, relaxed: [], unfilled: null, ranked };
 }
 
 /** Fill one slot: the best candidate, the rules relaxed to get it, and every verdict. */
@@ -436,10 +674,9 @@ export function pickForSlot<C extends PickCandidate>(
   const { category, at } = slot;
   const history = new SlotHistory(snapshot.history, category.assetType, at);
   const lastPlayedAt = lastPlayedLookup(snapshot, history, at);
-  const members = slot.candidates.filter(
-    (c) => c.type === category.assetType && isSchedulable(c, at),
-  );
-  const ordered = rotationOrder(members, category, lastPlayedAt);
+  const ordered =
+    (snapshot.explain === false && reusedOrder(snapshot, slot, history, lastPlayedAt)) ||
+    orderFor(snapshot, slot, history, lastPlayedAt);
   const localDate = zonedParts(at, snapshot.timeZone).date;
   const monday = weekStart(localDate);
   const ctx: SlotContext = {
@@ -460,7 +697,7 @@ export function pickForSlot<C extends PickCandidate>(
   };
 
   const enabled = snapshot.rules.filter((r) => r.enabled);
-  const ranked: CandidateVerdict<C>[] = ordered.map((asset, position) => {
+  const verdict = (asset: C, position: number): CandidateVerdict<C> => {
     const violations: RuleViolation[] = [];
     const notes: RuleViolation[] = [];
     for (const rule of enabled) {
@@ -475,12 +712,17 @@ export function pickForSlot<C extends PickCandidate>(
       notes,
       picked: false,
     };
-  });
+  };
+  const seed = snapshot.seed ?? 'ondes';
+  if (snapshot.explain === false) {
+    const quick = quickPick(ordered, enabled, ctx.depth, verdict, slot, seed);
+    if (quick) return quick;
+  }
+  const ranked: CandidateVerdict<C>[] = ordered.map(verdict);
 
   const ladder = relaxationOrder(enabled);
   const relaxedIds = new Set<string>();
   const relaxed: RelaxedRule[] = [];
-  const seed = snapshot.seed ?? 'ondes';
   for (let step = 0; step <= ladder.length; step++) {
     if (step > 0) {
       const rule = ladder[step - 1] as RotationRule;

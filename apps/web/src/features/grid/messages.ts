@@ -7,7 +7,7 @@ import type { Locale } from '../../app/i18n/messages.ts';
 const en = {
   title: 'Weekly grid',
   description:
-    'Which clock airs in each hour of the week. Pick a clock, then click or drag across the hours to paint it. Shift-click paints the rectangle from the last hour you clicked.',
+    'Which clock airs in each hour of the week. Pick a clock, then click or drag across the hours to assign it to them. Shift-click assigns it to the rectangle from the last hour you clicked.',
   stationTime: 'Hours in station time ({timezone}).',
   forbidden: "You don't have access to this station's grid.",
   save: 'Save grid',
@@ -19,22 +19,22 @@ const en = {
   'conflict.loadConfirm': 'Load their version? Your unsaved changes will be lost.',
   'conflict.keep': 'Keep my changes',
   unknownClock: 'Some hours use clocks that no longer exist. Reload the grid.',
-  noClocks: 'No clock yet. Create a clock first, then paint it on the grid.',
+  noClocks: 'No clock yet. Create a clock first, then assign it on the grid.',
   createClock: 'Create a clock',
 
-  'brush.title': 'Paint with',
+  'brush.title': 'Clock to assign',
   'brush.default': 'Default clock',
   'brush.defaultHelp': 'Clears hours back to the default clock.',
   'default.label': 'Default clock',
-  'default.help': 'Airs in every hour you haven’t painted.',
+  'default.help': 'Airs in every hour without a clock of its own.',
   'default.none': 'None',
   'default.missing':
     '{count} hours have no clock yet: they’ll have no music until a clock or a default clock covers them. Setting a default clock fills them all.',
   'default.missingOne':
     '1 hour has no clock yet: it’ll have no music until a clock or a default clock covers it. Setting a default clock fills it.',
-  'touch.paint': 'Drag to paint',
+  'touch.paint': 'Drag to assign',
   'touch.help':
-    'On a touch screen a drag scrolls and a tap paints one hour. Turn this on to paint by dragging.',
+    'On a touch screen a drag scrolls and a tap assigns one hour. Turn this on to assign by dragging.',
 
   'cell.label': '{day} {hour}: {clock}',
   'cell.default': 'default ({clock})',
@@ -42,12 +42,12 @@ const en = {
 
   'dayparts.title': 'Dayparts',
   'dayparts.help':
-    'Named ranges of hours. Apply one to paint all its hours with the selected clock.',
+    'Named ranges of hours. Apply one to assign the selected clock to all its hours.',
   'dayparts.empty': 'No daypart yet.',
   'dayparts.new': 'New daypart',
-  'dayparts.apply': 'Paint',
-  'dayparts.applyTo': 'Paint {daypart} with {clock}',
-  'dayparts.applied': '{daypart} painted. Save the grid to keep it.',
+  'dayparts.apply': 'Assign',
+  'dayparts.applyTo': 'Assign {clock} to {daypart}',
+  'dayparts.applied': '{daypart} assigned. Save the grid to keep it.',
   'dayparts.edit': 'Edit',
   'dayparts.delete': 'Delete',
   'dayparts.deleteConfirm': 'Delete the daypart “{name}”? The grid keeps its hours.',
@@ -99,7 +99,7 @@ type GridMessageKey = keyof typeof en;
 const fr: Record<GridMessageKey, string> = {
   title: 'Grille hebdomadaire',
   description:
-    'L’horloge diffusée à chaque heure de la semaine. Choisissez une horloge, puis cliquez ou glissez sur les heures pour la peindre. Maj-clic peint le rectangle depuis la dernière heure cliquée.',
+    'L’horloge diffusée à chaque heure de la semaine. Choisissez une horloge, puis cliquez ou glissez sur les heures pour la leur assigner. Maj-clic l’assigne au rectangle depuis la dernière heure cliquée.',
   stationTime: 'Heures de la station ({timezone}).',
   forbidden: 'Vous n’avez pas accès à la grille de cette station.',
   save: 'Enregistrer la grille',
@@ -114,19 +114,19 @@ const fr: Record<GridMessageKey, string> = {
   noClocks: 'Aucune horloge. Créez d’abord une horloge, puis peignez-la sur la grille.',
   createClock: 'Créer une horloge',
 
-  'brush.title': 'Peindre avec',
+  'brush.title': 'Horloge à assigner',
   'brush.default': 'Horloge par défaut',
   'brush.defaultHelp': 'Remet les heures sur l’horloge par défaut.',
   'default.label': 'Horloge par défaut',
-  'default.help': 'Diffusée à toutes les heures non peintes.',
+  'default.help': 'Diffusée à toutes les heures sans horloge assignée.',
   'default.none': 'Aucune',
   'default.missing':
     '{count} heures n’ont pas encore d’horloge : elles resteront sans musique tant qu’une horloge ou l’horloge par défaut ne les couvre pas. Choisir une horloge par défaut les remplit toutes.',
   'default.missingOne':
     '1 heure n’a pas encore d’horloge : elle restera sans musique tant qu’une horloge ou l’horloge par défaut ne la couvre pas. Choisir une horloge par défaut la remplit.',
-  'touch.paint': 'Glisser pour peindre',
+  'touch.paint': 'Glisser pour assigner',
   'touch.help':
-    'Sur un écran tactile, glisser fait défiler et toucher peint une heure. Activez ceci pour peindre en glissant.',
+    'Sur un écran tactile, glisser fait défiler et toucher assigne une heure. Activez ceci pour assigner en glissant.',
 
   'cell.label': '{day} {hour} : {clock}',
   'cell.default': 'par défaut ({clock})',
@@ -134,12 +134,12 @@ const fr: Record<GridMessageKey, string> = {
 
   'dayparts.title': 'Tranches horaires',
   'dayparts.help':
-    'Des plages d’heures nommées. Appliquez-en une pour peindre toutes ses heures avec l’horloge choisie.',
+    'Des plages d’heures nommées. Appliquez-en une pour assigner l’horloge choisie à toutes ses heures.',
   'dayparts.empty': 'Aucune tranche horaire.',
   'dayparts.new': 'Nouvelle tranche',
-  'dayparts.apply': 'Peindre',
-  'dayparts.applyTo': 'Peindre {daypart} avec {clock}',
-  'dayparts.applied': '{daypart} peinte. Enregistrez la grille pour la garder.',
+  'dayparts.apply': 'Assigner',
+  'dayparts.applyTo': 'Assigner {clock} à {daypart}',
+  'dayparts.applied': '{daypart} assignée. Enregistrez la grille pour la garder.',
   'dayparts.edit': 'Modifier',
   'dayparts.delete': 'Supprimer',
   'dayparts.deleteConfirm': 'Supprimer la tranche « {name} » ? La grille garde ses heures.',

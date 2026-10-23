@@ -4,6 +4,7 @@ import { asRunEntrySchema } from './asrun.ts';
 import type { Permission } from './auth.ts';
 import { engineSourceSchema } from './engine.ts';
 import { assetIngestedDataSchema, uploadUpdatedDataSchema } from './library-jobs.ts';
+import { liveSessionEndReasonSchema, liveSessionTriggerSchema } from './live.ts';
 import {
   localDateSchema,
   logItemChangeSchema,
@@ -89,6 +90,9 @@ export const engineTrackStartedEventSchema = z.object({
     rid: z.string().nullable(),
     /** The live session on air, for `source: live`; absent until the engine sends it. */
     liveSessionId: z.string().nullable().optional(),
+    /** For `source: live`: the streamer and harbor input on air (#64). */
+    liveStreamerId: z.string().nullable().optional(),
+    liveInput: z.int().nullable().optional(),
   }),
 });
 
@@ -111,20 +115,36 @@ export const engineLiveConnectedEventSchema = z.object({
   ...envelope,
   type: z.literal('engine.live.connected'),
   /** The DJ software's HTTP headers (never Authorization). */
-  data: z.object({ ...engineOrigin, headers: z.array(z.tuple([z.string(), z.string()])) }),
+  data: z.object({
+    ...engineOrigin,
+    headers: z.array(z.tuple([z.string(), z.string()])),
+    /** The harbor input (#64) and the streamer the auth webhook accepted there, if known. */
+    input: z.int().nullable().optional(),
+    streamerId: z.string().nullable().optional(),
+  }),
 });
 
 export const engineLiveDisconnectedEventSchema = z.object({
   ...envelope,
   type: z.literal('engine.live.disconnected'),
-  data: z.object(engineOrigin),
+  data: z.object({
+    ...engineOrigin,
+    input: z.int().nullable().optional(),
+    streamerId: z.string().nullable().optional(),
+  }),
 });
 
 /** Node opened or closed the live gate. */
 export const engineLiveGateEventSchema = z.object({
   ...envelope,
   type: z.literal('engine.live.gate'),
-  data: z.object({ ...engineOrigin, enabled: z.boolean() }),
+  data: z.object({
+    ...engineOrigin,
+    enabled: z.boolean(),
+    /** The selected harbor input (null: the first ready one) and the live session (#64). */
+    input: z.int().nullable().optional(),
+    sessionId: z.string().nullable().optional(),
+  }),
 });
 
 /** Silence on the output for longer than the station's blank threshold. */
@@ -454,6 +474,36 @@ export const segueRealtimeEventSchema = z.discriminatedUnion('type', [
 ]);
 export type SegueRealtimeEvent = z.infer<typeof segueRealtimeEventSchema>;
 
+// ---------------------------------------------------------------------------------------
+// Live switching (#64). Published by the api when it opens or closes a live session (Node's
+// decision), next to the engine's own `engine.live.*` events (what the engine saw).
+
+const liveSessionData = {
+  sessionId: z.uuid(),
+  streamerId: z.uuid().nullable(),
+  input: z.int().min(1),
+};
+
+/** A DJ went on air: the gate opened on their input (`trigger`), or a handover. */
+export const liveSessionStartedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('live.session.started'),
+  data: z.object({ ...liveSessionData, trigger: liveSessionTriggerSchema }),
+});
+
+/** A live session ended: back to automation, another input took the air, … */
+export const liveSessionEndedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('live.session.ended'),
+  data: z.object({ ...liveSessionData, reason: liveSessionEndReasonSchema }),
+});
+
+export const liveRealtimeEventSchema = z.discriminatedUnion('type', [
+  liveSessionStartedEventSchema,
+  liveSessionEndedEventSchema,
+]);
+export type LiveRealtimeEvent = z.infer<typeof liveRealtimeEventSchema>;
+
 export const realtimeEventSchema = z.discriminatedUnion('type', [
   ...engineRealtimeEventSchema.options,
   ...logRealtimeEventSchema.options,
@@ -463,6 +513,7 @@ export const realtimeEventSchema = z.discriminatedUnion('type', [
   ...feederRealtimeEventSchema.options,
   ...segueRealtimeEventSchema.options,
   ...stationRealtimeEventSchema.options,
+  ...liveRealtimeEventSchema.options,
 ]);
 export type RealtimeEvent = z.infer<typeof realtimeEventSchema>;
 export type RealtimeEventType = RealtimeEvent['type'];
@@ -496,9 +547,11 @@ export const realtimeEventPermissions = {
   'alert.acknowledged': 'alert:read',
   'alert.resolved': 'alert:read',
   'alert.silence_settings.updated': 'alert:read',
-  // Library (#18): new assets for every reader; upload progress only for those who upload.
+  // Library (#18): new assets and upload progress for every reader. Upload progress is what
+  // `GET …/uploads` already shows readers, and presenters (`library:read` only) wait on it for
+  // the episodes (#45) and voice tracks (#59) they upload.
   'asset.ingested': 'library:read',
-  'upload.updated': 'library:write',
+  'upload.updated': 'library:read',
   'asset.updated': 'library:read',
   'asset.deleted': 'library:read',
   // As-run (#30): history and now playing, for everyone who reads the log.
@@ -512,6 +565,9 @@ export const realtimeEventPermissions = {
   'island.removed': 'voice_track:read',
   // Stations: settings screens refetch.
   'station.updated': 'station:read',
+  // Live switching (#64): the Live page and the dashboard's on-air state.
+  'live.session.started': 'engine:read',
+  'live.session.ended': 'engine:read',
 } as const satisfies Record<RealtimeEventType, Permission>;
 
 /** Permission needed to receive `type` over SSE; `null` for types the contract doesn't declare. */

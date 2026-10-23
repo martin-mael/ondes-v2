@@ -24,6 +24,7 @@ import { episodesQuery, invalidateShows, showsApi } from './api.ts';
 import { EpisodeStatusBadge, UploadAudioButton } from './episode-dialog.tsx';
 import { formatDay, formatDuration, formatTime } from './format.ts';
 import { useShowError, useShowT } from './messages.ts';
+import { RerunOf } from './rerun-dialog.tsx';
 import { useEpisodeUpload } from './upload.ts';
 
 // One calendar entry: an occurrence (its episode, audio, move, cancel) or a cancelled one
@@ -256,7 +257,9 @@ export function OccurrenceDialog({
                   )}
                 </div>
               ) : occurrence.type === 'rerun' ? (
-                <p className="text-muted-foreground">{t('upcoming.rerun')}</p>
+                <p>
+                  <RerunOf occurrence={occurrence} />
+                </p>
               ) : editable ? (
                 <div className="flex flex-wrap items-center gap-2">
                   {occurrence.type === 'prerecorded' && (
