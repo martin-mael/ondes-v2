@@ -7,9 +7,11 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
   asRunEntry,
+  computeCacheReadiness,
   createAsset,
   createOrganization,
   createStation,
+  listCacheHorizon,
   logDay,
   logItem,
   markCacheFileReady,
@@ -87,6 +89,7 @@ const pushes: (EnginePushItem | EnginePushSegment)[] = [];
 let ids: { x: string; a: string; b: string; c: string; d: string; e: string };
 let voice: { assetId: string };
 let islandHashAB: string;
+let islandFileSha: string;
 
 async function freePort(): Promise<number> {
   const probe = createNetServer();
@@ -294,6 +297,7 @@ beforeAll(async () => {
   islandHashAB = island.hash;
   // A stand-in render of the right length (the template test checks a real one's splice).
   const sha256 = await placeInCache(tone(700, island.lengthSamples), 'flac');
+  islandFileSha = sha256;
   await markIslandRendered(tdb.db, scope, {
     hash: island.hash,
     storageKey: islandStorageKey(scope.orgId, island.hash),
@@ -313,6 +317,23 @@ afterAll(async () => {
 }, 60_000);
 
 describe('islands against Liquidsoap', () => {
+  it('keeps the island render and the voices on the engine’s disk with the item before them', async () => {
+    const range = { from: new Date(Date.now() - 60_000), to: new Date(Date.now() + 3_600_000) };
+    const horizon = await listCacheHorizon(tdb.db, scope, range);
+    const afterA = horizon.slice(horizon.findIndex((h) => h.logItemId === ids.a));
+    expect(afterA.slice(0, 3).map((h) => [h.logItemId, h.transition ?? false])).toEqual([
+      [ids.a, false],
+      [ids.a, true],
+      [ids.a, true],
+    ]);
+    expect(afterA.slice(1, 3).map((h) => h.sha256)).toContain(islandFileSha);
+    // C's pending island has no render; its voice is still kept for the fallback.
+    expect(horizon.filter((h) => h.logItemId === ids.c && h.transition)).toHaveLength(1);
+    // Readiness counts items, not their transition files.
+    const ready = computeCacheReadiness(horizon, new Map(), new Set(), range);
+    expect(ready.items).toBe(horizon.filter((h) => !h.transition).length);
+  });
+
   it('airs a ready island as one segment, and a pending one as the fallback', async () => {
     const adapter = station.adapter;
     feeder = createStationFeeder({
