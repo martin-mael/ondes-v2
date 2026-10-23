@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { type History, historyReducer, initialHistory } from './history.ts';
 import {
   addPoint,
+  addRecordedVoice,
   addVoice,
   applyDuck,
   clipsOf,
@@ -241,5 +242,26 @@ describe('view', () => {
     const at = ticks({ fromSample: -s(10), toSample: s(10) }, 800);
     expect(at).toContain(0);
     expect(at.every((x) => x % s(1) === 0)).toBe(true);
+  });
+});
+
+describe('recorded voices (#59)', () => {
+  it('places a take where it was recorded, from its first sample', () => {
+    const lanes = addVoice(emptyLanes(), 'vt-1');
+    const next = addRecordedVoice(lanes, 'take', -s(4.5));
+    expect(next.voices[1]).toEqual({
+      assetId: 'take',
+      start: -s(4.5),
+      cueIn: 0,
+      gainDb: 0,
+      envelope: [],
+    });
+    // Without a place (no pre-roll): where a new voice goes.
+    expect(addRecordedVoice(emptyLanes(), 'take', null).voices[0]).toMatchObject({
+      start: -s(3),
+      cueIn: 0,
+    });
+    // Clamped to the api's ±10 minutes.
+    expect(addRecordedVoice(emptyLanes(), 'take', -s(3600)).voices[0]?.start).toBe(-s(600));
   });
 });

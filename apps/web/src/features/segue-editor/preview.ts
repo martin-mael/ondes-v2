@@ -173,6 +173,14 @@ export class SeguePlayer {
     return 'playing';
   }
 
+  /**
+   * When the playback started: the context time `at` that axis position `from` sounds (before
+   * the output latency). The VT recorder (#59) aligns its takes on it; null when stopped.
+   */
+  startedAt(): { at: number; from: number } | null {
+    return this.started && { at: this.started.at, from: this.started.from };
+  }
+
   /** The axis position playing now, or null when stopped. */
   position(): number | null {
     if (!this.started || !this.ctx) return null;

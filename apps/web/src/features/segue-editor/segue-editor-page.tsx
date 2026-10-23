@@ -1,12 +1,13 @@
 import { type LocalDate, type LogItem, rolePermissions, type Segue } from '@ondes/shared';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { getRouteApi, Link } from '@tanstack/react-router';
+import { getRouteApi, Link, useNavigate } from '@tanstack/react-router';
 import { cn } from 'cn';
 import {
   ArrowLeftIcon,
   MaximizeIcon,
   MicIcon,
   PlayIcon,
+  PlusIcon,
   Redo2Icon,
   RewindIcon,
   SlidersHorizontalIcon,
@@ -56,10 +57,12 @@ import { hasSegue } from '../log-timeline/item-row.tsx';
 import { PreviewProvider } from '../log-timeline/preview.tsx';
 import { formatClock } from '../log-timeline/time.ts';
 import { segueApi, segueKey, segueMediaQuery, segueQuery } from './api.ts';
+import { peekDraft, stashDraft, takeDraft } from './draft.ts';
 import { useHistory } from './history.ts';
 import { Lane, type LaneStyle } from './lane.tsx';
 import { type SegueMessageKey, type SegueT, useSegueT } from './messages.ts';
 import {
+  addRecordedVoice,
   addVoice,
   applyDuck,
   applyFadeOut,
@@ -199,6 +202,9 @@ export function SegueEditorPage() {
         b={b}
         segue={segue.data}
         back={back}
+        date={date}
+        placed={search.voice ? { assetId: search.voice, at: search.at ?? null } : null}
+        resume={!!search.resume}
       />
     </PreviewProvider>
   );
@@ -220,6 +226,9 @@ function Editor({
   b,
   segue,
   back,
+  date,
+  placed,
+  resume,
 }: {
   stationId: string;
   timeZone: string;
@@ -228,23 +237,36 @@ function Editor({
   b: LogItem;
   segue: Segue | null;
   back: React.ReactNode;
+  date: LocalDate;
+  /** A take just recorded (#59): added as a new voice once, then dropped from the URL. */
+  placed: { assetId: string; at: number | null } | null;
+  /** Back from the recorder without a take: restore the draft handed over to it. */
+  resume: boolean;
 }) {
   const t = useSegueT();
   const queryClient = useQueryClient();
-  const history = useHistory<Lanes>(lanesOf(segue));
+  const navigate = useNavigate();
+  // Back from the recorder (#59): the draft handed over before leaving, with its reference.
+  // Any other way in drops it (draft.ts).
+  const [stashed] = useState(() => (placed || resume ? peekDraft(stationId, a.id, b.id) : null));
+  useEffect(() => void takeDraft(stationId, a.id, b.id), [stationId, a.id, b.id]);
+  const history = useHistory<Lanes>(stashed?.lanes ?? lanesOf(segue));
   const lanes = history.state.present;
   // What the api has: the dirty check's reference and the version a save sends back.
   const [saved, setSaved] = useState<{
     lanes: Lanes;
     segueId: string | null;
     version: number | null;
-  }>(() => ({
-    lanes: lanesOf(segue),
-    segueId: segue?.id ?? null,
-    version: segue?.version ?? null,
-  }));
+  }>(
+    () =>
+      stashed?.saved ?? {
+        lanes: lanesOf(segue),
+        segueId: segue?.id ?? null,
+        version: segue?.version ?? null,
+      },
+  );
   const dirty = !sameLanes(lanes, saved.lanes);
-  const { guard } = useUnsavedChanges(dirty);
+  const { guard, allowLeave } = useUnsavedChanges(dirty);
 
   const media = useQuery({
     ...segueMediaQuery(
@@ -511,6 +533,55 @@ function Editor({
   // --- Voices ----------------------------------------------------------------------------
   const [picking, setPicking] = useState(false);
 
+  // A take back from the recorder: one new voice (undoable), then off the URL so a reload or
+  // a back navigation doesn't add it twice.
+  const placing = useRef(placed);
+  const resuming = useRef(resume);
+  useEffect(() => {
+    const take = placing.current;
+    if (!take && !resuming.current) return;
+    placing.current = null;
+    resuming.current = false;
+    void navigate({
+      to: '/stations/$stationId/log/segue',
+      params: { stationId },
+      search: { date, from: a.id, to: b.id },
+      replace: true,
+      // Same page, same draft: not a leave for the unsaved-changes guard.
+      ignoreBlocker: true,
+    });
+    if (!take) return;
+    if (!canWrite || lanes.voices.some((v) => v.assetId === take.assetId)) return;
+    if (lanes.voices.length >= 4) {
+      toast.warning(t('record.full'));
+      return;
+    }
+    const next = addRecordedVoice(lanes, take.assetId, take.at);
+    history.change(next);
+    setSelection({ lane: voiceKey(next.voices.length - 1), point: null });
+  });
+
+  /** Opens the recorder; the draft goes with it and comes back with the take. */
+  const record = () => {
+    if (phase !== 'idle') stop();
+    stashDraft(stationId, a.id, b.id, { lanes, saved });
+    allowLeave();
+    void navigate({
+      to: '/stations/$stationId/log/segue/record',
+      params: { stationId },
+      search: { date, from: a.id, to: b.id },
+    });
+  };
+
+  // A voice's loudness is measured after its ingest: refetch the media for its playout gain.
+  useSseEvent('asset.updated', (e) => {
+    if (lanes.voices.some((v) => v.assetId === e.data.assetId)) {
+      void queryClient.invalidateQueries({
+        queryKey: ['stations', stationId, 'segues', 'media', a.id, b.id],
+      });
+    }
+  });
+
   // --- Station time ----------------------------------------------------------------------
   const aEnd = laneMedia.from
     ? Date.parse(a.plannedStart) + ((laneMedia.from.cueOut - laneMedia.from.cueIn) / SR) * 1000
@@ -660,6 +731,7 @@ function Editor({
         onZoom={zoom}
         onFit={fit}
         onAddVoice={() => setPicking(true)}
+        onRecord={record}
         canAddVoice={lanes.voices.length < 4}
         onDuck={(i) => {
           const preset = DUCK_PRESETS[i];
@@ -828,6 +900,7 @@ function Toolbar(props: {
   onZoom(factor: number): void;
   onFit(): void;
   onAddVoice(): void;
+  onRecord(): void;
   canAddVoice: boolean;
   onDuck(index: number): void;
   onFadeOut(): void;
@@ -921,8 +994,12 @@ function Toolbar(props: {
             </DropdownMenuContent>
           </DropdownMenu>
           <Button variant="outline" onClick={props.onAddVoice} disabled={!props.canAddVoice}>
-            <MicIcon data-icon="inline-start" />
+            <PlusIcon data-icon="inline-start" />
             {t('toolbar.addVoice')}
+          </Button>
+          <Button onClick={props.onRecord} disabled={!props.canAddVoice}>
+            <MicIcon data-icon="inline-start" />
+            {t('toolbar.record')}
           </Button>
         </div>
       )}

@@ -303,6 +303,22 @@ export function addVoice(lanes: Lanes, assetId: string): Lanes {
   return { ...lanes, voices: [...lanes.voices, { assetId, start, gainDb: 0, envelope: [] }] };
 }
 
+/**
+ * A take just recorded (#59): placed where it was recorded over the pre-roll (`start`, else
+ * where {@link addVoice} puts a voice) and played from its first sample (`cueIn` 0), so a
+ * cue-in found later by autocue never shifts it off the music it was spoken over.
+ */
+export function addRecordedVoice(lanes: Lanes, assetId: string, start: number | null): Lanes {
+  const next = addVoice(lanes, assetId);
+  const i = next.voices.length - 1;
+  return {
+    ...next,
+    voices: next.voices.map((v, j) =>
+      j === i ? { ...v, start: start === null ? v.start : clampOffset(start), cueIn: 0 } : v,
+    ),
+  };
+}
+
 export const removeVoice = (lanes: Lanes, index: number): Lanes => ({
   ...lanes,
   voices: lanes.voices.filter((_, i) => i !== index),
