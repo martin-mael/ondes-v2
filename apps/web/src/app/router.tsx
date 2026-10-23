@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { EditClockPage, NewClockPage } from '../features/clocks/clock-editor-page.tsx';
 import { ClocksPage } from '../features/clocks/clocks-page.tsx';
 import { CueEditorPage, cueEditorSearchSchema } from '../features/cue-editor/cue-editor-page.tsx';
+import { DashboardPage } from '../features/dashboard/dashboard-page.tsx';
 import { GridPage } from '../features/grid/grid-page.tsx';
 import { librarySearchParamsSchema } from '../features/library/filters.ts';
 import { LibraryPage } from '../features/library/library-page.tsx';
@@ -39,7 +40,6 @@ import { ForgotPasswordPage, ResetPasswordPage } from './auth/password-pages.tsx
 import { findStation, homeStation, meQuery, orgsQuery, resetSession } from './auth/session.ts';
 import { SignupPage } from './auth/signup-page.tsx';
 import { VerifyEmailPage } from './auth/verify-email-page.tsx';
-import { DashboardPage } from './dashboard/dashboard-page.tsx';
 import { isGlobalApiError, setApiErrorHandler } from './errors.ts';
 import { translate } from './i18n/i18n.tsx';
 import type { Locale } from './i18n/messages.ts';

@@ -26,6 +26,7 @@ import { librarySearchRoutes } from './modules/library/search-routes.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { type LivePluginOptions, livePlugin } from './modules/live/plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
+import { onAirRoutes } from './modules/onair/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
 import { rotationRoutes } from './modules/rotation/routes.ts';
 import { rotationRulesRoutes } from './modules/rotation/rules/routes.ts';
@@ -118,6 +119,8 @@ export async function buildApp(options: AppOptions) {
   // As-run (#30): `GET …/asrun`, engine track events -> as-run entries (durable queue).
   await app.register(asRunPlugin, options.asrun ?? {});
   await app.register(showsRoutes, { prefix: '/api/v1' });
+  // On air (#70): the dashboard's snapshot of the air.
+  await app.register(onAirRoutes, { prefix: '/api/v1' });
   // Segues and islands (#55): routes, and log/asset events -> island re-sync (durable queue).
   await app.register(seguesPlugin, options.segues ?? {});
   await app.register(rotationRoutes, { prefix: '/api/v1' });
