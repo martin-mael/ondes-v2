@@ -31,6 +31,7 @@ const en = {
   'status.safety': 'Safety playlist',
   'status.emergency': 'Emergency file',
   'status.unplanned': 'Off plan',
+  'status.transition': 'Transition',
 
   'outcome.cut': 'Cut',
   'outcome.skipped': 'Skipped',
@@ -43,6 +44,7 @@ const en = {
   'fallback.clock_music': 'music',
 
   plannedAs: 'Planned: {title}',
+  voices: 'Voice: {titles}',
   replacedBy: 'Its slot went to: {what}',
   wasPlanned: 'Was planned at {time} (log changed since)',
   untitled: 'Untitled',
@@ -82,6 +84,7 @@ const fr: Record<HistoryMessageKey, string> = {
   'status.safety': 'Playlist de secours',
   'status.emergency': 'Fichier d’urgence',
   'status.unplanned': 'Hors conducteur',
+  'status.transition': 'Enchaînement',
 
   'outcome.cut': 'Coupé',
   'outcome.skipped': 'Sauté',
@@ -94,6 +97,7 @@ const fr: Record<HistoryMessageKey, string> = {
   'fallback.clock_music': 'musique',
 
   plannedAs: 'Prévu : {title}',
+  voices: 'Voix : {titles}',
   replacedBy: 'Son créneau est allé à : {what}',
   wasPlanned: 'Prévu à {time} (conducteur modifié depuis)',
   untitled: 'Sans titre',

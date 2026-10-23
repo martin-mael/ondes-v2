@@ -272,6 +272,13 @@ function RowNote({
       .filter((e): e is AsRunEntry => !!e)
       .map((e) => `${entryTitle(t, e)} (${formatClock(e.startedAt, timeZone)})`);
     note = t('replacedBy', { what: what.join(', ') });
+  } else if (row.status === 'transition' && entry) {
+    // The voices of a rendered island (#57's `transition`; read defensively until it lands).
+    const voices =
+      (entry as { transition?: { voices?: { title: string | null }[] } | null }).transition
+        ?.voices ?? [];
+    const titles = voices.flatMap((v) => (v.title ? [v.title] : []));
+    if (titles.length > 0) note = t('voices', { titles: titles.join(', ') });
   } else if (row.status === 'unplanned' && entry?.plannedStart) {
     note = t('wasPlanned', { time: formatClock(entry.plannedStart, timeZone) });
   }

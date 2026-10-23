@@ -158,6 +158,26 @@ describe('buildOverlay', () => {
     expect(overlay([seg], [e])[0]).toMatchObject({ status: 'aired' });
   });
 
+  it('a rendered island (#57) is the transition between its items, never off-plan', () => {
+    const a = item('10:00:00');
+    const b = item('10:03:00');
+    const ea = ended('10:00:00', '10:02:50', { logItemId: a.id });
+    // #57's `transition` isn't in the contract yet: set it as the recorder will.
+    const island = {
+      ...ended('10:02:50', '10:03:10', { title: 'B' }),
+      transition: { rendered: true, voices: [{ title: 'VT' }] },
+    } as AsRunEntry;
+    const eb = ended('10:03:10', '10:06:00', { logItemId: b.id });
+    const rows = overlay([a, b], [ea, island, eb]);
+    expect(rows.map((r) => r.status)).toEqual(['aired', 'transition', 'aired']);
+    // A missed item next to it isn't "replaced" by the transition.
+    expect(overlay([a, b], [ea, island]).map((r) => r.status)).toEqual([
+      'aired',
+      'transition',
+      'missed',
+    ]);
+  });
+
   it('an item aired twice (again after a restart) has a repeat row', () => {
     const a = item('10:00:00');
     const first = ended('10:00:00', '10:01:00', { logItemId: a.id, outcome: 'interrupted' });

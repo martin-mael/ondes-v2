@@ -16,7 +16,9 @@ import {
 //    item, so an id match is exact. An island part matches its part (or its segment, when the
 //    engine reports the segment as one item);
 // 2. a `live` entry with no log item takes the live slot it overlaps;
-// 3. everything else is off-plan (safety, emergency, live outside a slot, unplanned pushes).
+// 3. a rendered island (#57: no log item, `transition.rendered`) is the planned transition
+//    between the items around it;
+// 4. everything else is off-plan (safety, emergency, live outside a slot, unplanned pushes).
 // A plan item nothing aired for is `pending` while its slot isn't over, `replaced` when
 // off-plan audio held its slot, else `missed`.
 
@@ -58,6 +60,14 @@ const OFF_PLAN: Record<AsRunEntry['source'], AsRunOverlayStatus> = {
   emergency: 'emergency',
   live: 'live',
 };
+
+/**
+ * A rendered island's entry (#57): the transition between two log items, aired as one engine
+ * item with no log item of its own. Read defensively: `transition` lands with #57's contract.
+ */
+export const isRenderedTransition = (entry: AsRunEntry) =>
+  !entry.logItemId &&
+  (entry as { transition?: { rendered?: boolean } | null }).transition?.rendered === true;
 
 const overlapMs = (a: { start: number; end: number }, b: { start: number; end: number }) =>
   Math.min(a.end, b.end) - Math.max(a.start, b.start);
@@ -106,9 +116,11 @@ export function buildOverlay({ items, entries, from, to, now }: OverlayInput): A
     if (!unit) {
       // Off-plan audio of a neighbouring day belongs to that day.
       if (start < from || start >= to) continue;
-      offPlan.push({ entry, ...span });
+      const transition = isRenderedTransition(entry);
+      // A transition is planned audio: it never holds a missed item's slot.
+      if (!transition) offPlan.push({ entry, ...span });
       rows.push({
-        status: OFF_PLAN[entry.source],
+        status: transition ? 'transition' : OFF_PLAN[entry.source],
         at: entry.startedAt,
         plan: null,
         entry,

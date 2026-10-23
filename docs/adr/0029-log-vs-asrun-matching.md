@@ -27,7 +27,10 @@ The as-run is append-only and keeps snapshots of the plan (`planned_start`,
      A plan item with several entries (aired again after an engine restart) gets a row per
      entry; later ones are `repeat`.
   2. **Live by time.** A `live` entry with no log item takes the `live_slot` it overlaps.
-  3. **Everything else is off-plan:** `live` (outside any slot), `safety`, `emergency`, or
+  3. **Rendered transitions.** An entry with no log item whose `transition.rendered` is true
+     (#57) is the voice-track island between two log items: a `transition` row, part of the
+     plan. It never holds a missed item's slot.
+  4. **Everything else is off-plan:** `live` (outside any slot), `safety`, `emergency`, or
      `unplanned` (from the log, but no item of the current plan matches it: the day was
      regenerated or the item deleted; the entry's plan snapshot still says when it was due).
 - **A plan item with no entry** is `pending` while its slot hasn't ended (against the api's
@@ -49,8 +52,14 @@ The as-run is append-only and keeps snapshots of the plan (`planned_start`,
   by their offset.
 
 ## Assumptions about work landing in parallel
-- **Islands (#57).** Whether the engine reports an island as one item (the segment) or one per
-  part, both match (rule 1). A segment counts as aired as soon as any of its parts did; parts
+- **Islands (#57).** A voice-track transition between log items A and B airs as three
+  entries: A's body (log item A), the rendered island (no log item, `transition.rendered`,
+  B's title) and B's body (log item B). The bodies match by id (rule 1); the island is rule 3.
+  When the island isn't ready, A and B air as normal items and A's entry carries
+  `transition.rendered = false`: nothing changes for matching. `AsRunEntry.transition` comes
+  with #57's contract; until then the overlay reads it defensively and the web view shows the
+  voices once the field is in the contract. The older `segment` log items still match by their
+  segment or part ids (rule 1): a segment counts as aired as soon as any part did, and parts
   never get rows of their own when nothing aired.
 - **Live (#64).** Expected: one `source = live` entry per session (connect to disconnect), with
   `liveSessionId`. A live entry per metadata change also works (each takes the slot it

@@ -60,8 +60,9 @@ regulators can ask years later, see `docs/research/07-compliance-royalties-loggi
 `GET /api/v1/stations/:stationId/asrun/overlay?date` (`log:read`, #53): the station-local day's
 plan with what aired laid over it, one row per entry plus one per plan item that never aired:
 `aired`, `replaced`, `fallback`, `missed`, `pending`, `live`, `safety`, `emergency`,
-`unplanned` (`asRunOverlaySchema`). Matching (`overlay.ts`, pure): by log item id, live entries
-by the live slot they overlap, the rest off-plan. Decisions: ADR 0029.
+`unplanned`, `transition` (`asRunOverlaySchema`). Matching (`overlay.ts`, pure): by log item id,
+live entries by the live slot they overlap, rendered islands (#57) as the transition between
+their items, the rest off-plan. Decisions: ADR 0029.
 
 ## For later consumers (`index.ts`)
 - `lastAiredByAsset(db, scope, assetIds, before)`, `lastAiredByArtist(db, scope, artists, since, before)` (#38);

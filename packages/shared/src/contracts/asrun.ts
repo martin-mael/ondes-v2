@@ -148,7 +148,9 @@ export type AsRunList = z.infer<typeof asRunListSchema>;
  * - `safety` / `emergency`: the station's safety playlist or emergency file (the engine's own
  *   fallbacks when the log ran dry or the engine failed);
  * - `unplanned`: aired from the log, but no item of today's plan matches it (the day was
- *   regenerated, or the item deleted); the entry's own plan snapshot says what it was.
+ *   regenerated, or the item deleted); the entry's own plan snapshot says what it was;
+ * - `transition`: a rendered island (#57): the voice-track transition between the two log items
+ *   around it. It has no log item of its own and is part of the plan.
  */
 export const asRunOverlayStatusSchema = z.enum([
   'aired',
@@ -160,6 +162,7 @@ export const asRunOverlayStatusSchema = z.enum([
   'safety',
   'emergency',
   'unplanned',
+  'transition',
 ]);
 export type AsRunOverlayStatus = z.infer<typeof asRunOverlayStatusSchema>;
 

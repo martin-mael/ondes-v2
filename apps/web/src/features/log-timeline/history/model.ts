@@ -8,7 +8,12 @@ import type { HourSlot } from '../time.ts';
 export const DRIFT_WARN_MS = 30_000;
 
 /** Statuses where what aired is what was planned. */
-const ON_PLAN: ReadonlySet<AsRunOverlayStatus> = new Set(['aired', 'pending', 'live']);
+const ON_PLAN: ReadonlySet<AsRunOverlayStatus> = new Set([
+  'aired',
+  'pending',
+  'live',
+  'transition',
+]);
 
 export const isOffPlan = (row: AsRunOverlayRow) =>
   !ON_PLAN.has(row.status) ||
@@ -69,6 +74,7 @@ export function statusTone(row: AsRunOverlayRow): string {
         ? 'bg-amber-500'
         : 'bg-emerald-500';
     case 'live':
+    case 'transition':
       return 'bg-sky-500';
     case 'pending':
       return 'bg-muted-foreground/30';

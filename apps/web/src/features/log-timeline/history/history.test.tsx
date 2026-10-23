@@ -70,6 +70,20 @@ const rows = [
     replacedBy: [safety.id],
   }),
   row({
+    status: 'transition',
+    at: '2026-10-20T10:07:00.000Z',
+    entry: {
+      ...asRunEntry({
+        title: 'Pentes',
+        startedAt: '2026-10-20T10:07:00.000Z',
+        endedAt: '2026-10-20T10:07:12.000Z',
+        durationMs: 12_000,
+        outcome: 'complete',
+      }),
+      transition: { rendered: true, voices: [{ title: 'VT: la suite' }] },
+    } as AsRunOverlayRow['entry'],
+  }),
+  row({
     status: 'missed',
     at: '2026-10-20T11:00:00.000Z',
     plan: plan('2026-10-20T11:00:00.000Z', 'Pentes'),
@@ -167,6 +181,10 @@ describe('log vs as-run', () => {
     expect(within(saone).getByText('Replaced')).toBeInTheDocument();
     expect(within(saone).getByText('Its slot went to: Safety Loop (12:03:30)')).toBeInTheDocument();
     expect(within(noon).getByText('2 off plan')).toBeInTheDocument();
+    // A rendered island (#57) is the planned transition. Its voice tracks (`transition.voices`)
+    // show once #57 adds the field to the contract: until then the client's parse strips it.
+    const island = within(noon).getByText('Transition').closest('li') as HTMLElement;
+    expect(within(island).getByText('Pentes')).toBeInTheDocument();
 
     const one = screen.getByRole('region', { name: '13:00' });
     expect(within(one).getByText('Not aired')).toBeInTheDocument();
@@ -200,8 +218,8 @@ describe('groupByHour', () => {
     const hours = dayHours(DATE, 'Europe/Paris');
     const groups = groupByHour(rows, hours);
     const noon = groups.find((g) => g.label === '12:00');
-    expect(noon?.rows).toHaveLength(3);
-    expect(noon?.aired).toBe(2);
+    expect(noon?.rows).toHaveLength(4);
+    expect(noon?.aired).toBe(3);
     expect(noon?.offPlan).toBe(2);
     expect(noon?.driftMs).toBe(4_000);
   });
