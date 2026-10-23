@@ -5,6 +5,7 @@ import {
   type Executor,
   episode,
   feederPush,
+  liveSession,
   logItem,
   logItemFallback,
   type StationScope,
@@ -58,6 +59,10 @@ export function toEntry(row: Row): AsRunEntry {
     episode:
       row.episodeId && row.showId && row.episodeNumber !== null
         ? { id: row.episodeId, showId: row.showId, number: row.episodeNumber, rerun: row.rerun }
+        : null,
+    live:
+      row.source === 'live' && row.liveSessionId
+        ? { sessionId: row.liveSessionId, djName: row.liveDjName, title: row.liveTitle }
         : null,
     transition: row.transition,
     bootId: row.bootId,
@@ -299,6 +304,24 @@ async function byEventId(db: Executor, scope: StationScope, eventId: string) {
   return row;
 }
 
+/**
+ * A live entry's snapshot from its session (#65): the live slot's show and episode, the DJ's
+ * name and what they aired for. Empty for a session that isn't this station's.
+ */
+async function resolveLive(db: Executor, scope: StationScope, sessionId: string | null) {
+  if (!sessionId) return {};
+  const [row] = await db
+    .select()
+    .from(liveSession)
+    .where(and(whereStation(liveSession, scope), eq(liveSession.id, sessionId)));
+  if (!row) return {};
+  const episode =
+    row.episodeId && row.showId && row.episodeNumber !== null
+      ? { episodeId: row.episodeId, showId: row.showId, episodeNumber: row.episodeNumber }
+      : {};
+  return { ...episode, liveDjName: row.streamerName, liveTitle: row.title };
+}
+
 /** Records an item going on air (a redelivery returns the entry recorded the first time). */
 export async function recordStart(
   db: Executor,
@@ -308,6 +331,8 @@ export async function recordStart(
   const resolved = await resolveItem(db, scope, input);
   const source = asRunSourceOf(input.source);
   const pushed = source === 'log' ? await pushedPart(db, scope, input) : null;
+  const liveSessionId = source === 'live' ? asUuid(input.liveSessionId ?? null) : null;
+  const live = source === 'live' ? await resolveLive(db, scope, liveSessionId) : {};
   const [row] = await db
     .insert(asRunEntry)
     .values({
@@ -322,7 +347,8 @@ export async function recordStart(
       // A body of an island chain is planned to its island, not to the log item's own end.
       plannedDurationMs: pushed?.expectedMs ?? resolved.plannedDurationMs,
       transition: pushed?.transition ?? null,
-      liveSessionId: source === 'live' ? asUuid(input.liveSessionId ?? null) : null,
+      liveSessionId,
+      ...live,
       startedAt: input.at,
     })
     .onConflictDoNothing()

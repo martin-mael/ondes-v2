@@ -12,6 +12,7 @@ import { createTestDatabase } from '@ondes/db/testing';
 import type {
   Actor,
   LiveConnectionInfo,
+  LiveEvent,
   Show,
   StreamerList,
   StreamerWithPassword,
@@ -196,11 +197,11 @@ beforeAll(async () => {
 
 afterAll(() => t?.close());
 
-async function auditRows(entityId: string) {
+async function auditRows(entityId: string, entityType = 'streamer') {
   return t.tdb.db
     .select()
     .from(auditLog)
-    .where(and(eq(auditLog.entityType, 'streamer'), eq(auditLog.entityId, entityId)));
+    .where(and(eq(auditLog.entityType, entityType), eq(auditLog.entityId, entityId)));
 }
 
 describe('streamers API', () => {
@@ -640,5 +641,63 @@ describe('streamers API', () => {
       new Date('2026-11-05T19:30:00Z'),
     );
     expect(result).toMatchObject({ ok: false, reason: 'unknown' });
+  });
+});
+
+describe('events and ad-hoc requests (#65)', () => {
+  it('writes events (managers only, audited) and lets their DJs connect around them', async () => {
+    const created = await call('manager', 'POST', '/streamers', {
+      displayName: 'Gig',
+      username: 'gig',
+      password: 'gig-password-123',
+    });
+    const gigId = created.json<StreamerWithPassword>().streamer.id;
+    const body = {
+      title: 'Concert',
+      startsAt: '2030-02-01T20:00:00Z',
+      endsAt: '2030-02-01T22:00:00Z',
+      streamerIds: [gigId],
+    };
+    expect((await call('presenter', 'POST', '/events', body)).statusCode).toBe(403);
+    expect(
+      (await call('manager', 'POST', '/events', { ...body, endsAt: '2030-02-02T21:00:00Z' }))
+        .statusCode,
+    ).toBe(400);
+    const res = await call('manager', 'POST', '/events', body);
+    expect(res.statusCode, res.body).toBe(201);
+    const event = res.json<LiveEvent>();
+    expect(event.streamers).toEqual([{ id: gigId, displayName: 'Gig' }]);
+    expect((await auditRows(event.id, 'live_event')).map((a) => a.action)).toEqual([
+      'live_event.create',
+    ]);
+    // Another station's member sees nothing of it.
+    expect((await call('outsider', 'GET', '/events')).statusCode).toBe(404);
+    const listed = await call('presenter', 'GET', '/events');
+    expect(listed.json<{ events: LiveEvent[] }>().events.map((e) => e.id)).toContain(event.id);
+
+    const login = { username: 'gig', password: 'gig-password-123' };
+    const at = (iso: string) => checkLiveLogin(t.tdb.db, scope.stationId, login, new Date(iso));
+    expect(await at('2030-02-01T19:40:00Z')).toMatchObject({ ok: false, reason: 'outside_slot' });
+    expect((await at('2030-02-01T19:50:00Z')).ok).toBe(true);
+    expect((await at('2030-02-01T21:59:00Z')).ok).toBe(true);
+    expect(await at('2030-02-01T22:00:00Z')).toMatchObject({ ok: false, reason: 'outside_slot' });
+
+    const moved = await call('manager', 'PATCH', `/events/${event.id}`, {
+      endsAt: '2030-02-01T19:00:00Z',
+    });
+    expect(moved.statusCode).toBe(422);
+    expect((await call('manager', 'DELETE', `/events/${event.id}`)).statusCode).toBe(204);
+    expect((await auditRows(event.id, 'live_event')).map((a) => a.action)).toContain(
+      'live_event.delete',
+    );
+  });
+
+  it('lists pending requests for readers, and only engine:control decides', async () => {
+    const listed = await call('presenter', 'GET', '/requests');
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toEqual({ requests: [] });
+    const unknown = '01a15ddf-0000-7000-8000-00000000ffff';
+    expect((await call('presenter', 'POST', `/requests/${unknown}/approve`)).statusCode).toBe(403);
+    expect((await call('manager', 'POST', `/requests/${unknown}/refuse`)).statusCode).toBe(404);
   });
 });

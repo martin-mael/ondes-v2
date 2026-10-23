@@ -137,6 +137,20 @@ export const asRunEntrySchema = z.object({
    */
   episode: asRunEpisodeSchema.nullable().optional(),
   /**
+   * A live entry (#65): who was on air and what for, snapshotted from its live session when it
+   * aired. `djName` is the streamer's display name (null for the shared password); `title` an
+   * event's title, or the show's name for a live slot (its episode is in `episode`). Null for
+   * anything but live. Optional so older api versions' payloads still parse.
+   */
+  live: z
+    .object({
+      sessionId: uuidSchema,
+      djName: z.string().nullable(),
+      title: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
+  /**
    * The segue transition this entry carries (#57): the island it is, or the voices laid over
    * its crossfade out. Optional so older api versions' payloads still parse.
    */

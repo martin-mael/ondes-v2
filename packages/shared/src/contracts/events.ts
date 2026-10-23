@@ -4,7 +4,11 @@ import { asRunEntrySchema } from './asrun.ts';
 import type { Permission } from './auth.ts';
 import { engineSourceSchema } from './engine.ts';
 import { assetIngestedDataSchema, uploadUpdatedDataSchema } from './library-jobs.ts';
-import { liveSessionEndReasonSchema, liveSessionTriggerSchema } from './live.ts';
+import {
+  liveRequestStatusSchema,
+  liveSessionEndReasonSchema,
+  liveSessionTriggerSchema,
+} from './live.ts';
 import {
   localDateSchema,
   logItemChangeSchema,
@@ -498,9 +502,30 @@ export const liveSessionEndedEventSchema = z.object({
   data: z.object({ ...liveSessionData, reason: liveSessionEndReasonSchema }),
 });
 
+/** A DJ who needs approval connected outside their slots (#65): the dashboard's prompt. */
+export const liveRequestCreatedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('live.request.created'),
+  data: z.object({
+    requestId: z.uuid(),
+    streamerId: z.uuid(),
+    displayName: z.string(),
+    input: z.int().min(1),
+  }),
+});
+
+/** A request was approved, refused or cancelled: the prompt goes away. */
+export const liveRequestDecidedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('live.request.decided'),
+  data: z.object({ requestId: z.uuid(), status: liveRequestStatusSchema }),
+});
+
 export const liveRealtimeEventSchema = z.discriminatedUnion('type', [
   liveSessionStartedEventSchema,
   liveSessionEndedEventSchema,
+  liveRequestCreatedEventSchema,
+  liveRequestDecidedEventSchema,
 ]);
 export type LiveRealtimeEvent = z.infer<typeof liveRealtimeEventSchema>;
 
@@ -568,6 +593,9 @@ export const realtimeEventPermissions = {
   // Live switching (#64): the Live page and the dashboard's on-air state.
   'live.session.started': 'engine:read',
   'live.session.ended': 'engine:read',
+  // Ad-hoc live (#65): the approval prompt.
+  'live.request.created': 'engine:read',
+  'live.request.decided': 'engine:read',
 } as const satisfies Record<RealtimeEventType, Permission>;
 
 /** Permission needed to receive `type` over SSE; `null` for types the contract doesn't declare. */

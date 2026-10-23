@@ -478,12 +478,18 @@ describe('show page', () => {
     await user.selectOptions(dialog.getByLabelText('Repeats'), 'once');
     fireEvent.change(dialog.getByLabelText('Date'), { target: { value: '2026-12-31' } });
     fireEvent.change(dialog.getByLabelText('Time'), { target: { value: '23:00' } });
+    // Its live settings (#65): wait 10 min for the DJ, who goes on air as soon as they connect.
+    fireEvent.change(dialog.getByLabelText('Wait for the DJ (minutes)'), {
+      target: { value: '10' },
+    });
+    await user.selectOptions(dialog.getByLabelText('DJ connected early'), 'go_live');
     await user.click(dialog.getByRole('button', { name: 'Add the slot' }));
     await waitFor(() => expect(created).toHaveLength(2));
     expect(created[1]).toEqual({
       type: 'live',
       durationMs: 3_600_000,
       rule: { freq: 'once', date: '2026-12-31', time: '23:00' },
+      live: { graceMs: 600_000, earlyConnect: 'go_live' },
     });
   });
 

@@ -35,6 +35,7 @@ const streamer = (overrides: Partial<Streamer> = {}): Streamer => ({
   // 22:30 in Paris.
   expiresAt: new Date('2026-11-05T21:30:00Z'),
   anyTime: false,
+  adHoc: 'approval',
   shows: [{ id: showId, name: 'Night Shift', colour: '#ff00aa' }],
   status: 'active',
   lastConnectedAt: null,
@@ -61,6 +62,8 @@ const as = (
   ...signedIn(),
   'GET /orgs': [200, { orgs: withRole(role) }],
   [`GET ${base}/connection`]: [200, connection],
+  [`GET ${base}/events`]: [200, { events: [] }],
+  [`GET ${base}/requests`]: [200, { requests: [] }],
   ...routes,
 });
 
@@ -136,6 +139,7 @@ describe('live page', () => {
       enabled: true,
       expiresAt: null,
       anyTime: true,
+      adHoc: 'approval',
       showIds: [],
     });
   });
@@ -168,5 +172,107 @@ describe('live page', () => {
       as('presenter', { [`GET ${base}/streamers`]: [200, { streamers: [] }] }),
     );
     expect(await screen.findByText(/You have no live credentials/)).toBeTruthy();
+  });
+
+  it('asks a manager to put a DJ connected outside their slot on air (#65)', async () => {
+    const requestId = '01a15ddf-0000-7000-8000-0000000006c1';
+    const sessionId = '01a15ddf-0000-7000-8000-0000000006d1';
+    const pending = {
+      id: requestId,
+      streamer: { id: streamerId, displayName: 'DJ Nova' },
+      input: 2,
+      status: 'pending',
+      // 09:05 in Paris.
+      requestedAt: '2026-10-20T07:05:00.000Z',
+      decidedAt: null,
+    };
+    const { screen, user, calls } = renderApp(
+      base,
+      as('station_manager', {
+        [`GET ${base}/streamers`]: [200, { streamers: [streamer()] }],
+        [`GET ${base}/requests`]: [200, { requests: [pending] }],
+        [`POST ${base}/requests/${requestId}/approve`]: [
+          200,
+          {
+            id: sessionId,
+            streamer: { id: streamerId, displayName: 'DJ Nova' },
+            input: 2,
+            trigger: 'ad_hoc',
+            startedAt: at,
+            endedAt: null,
+            endReason: null,
+          },
+        ],
+      }),
+    );
+    expect(
+      await screen.findByText('DJ Nova is connected (input 2). Put them on air?'),
+    ).toBeTruthy();
+    expect(screen.getByText(/since 9:05\s?AM/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Put on air' }));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) => c.method === 'POST' && c.path === `${base}/requests/${requestId}/approve`,
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it('shows no prompt to a presenter, who may not put anyone on air', async () => {
+    const { screen, calls } = renderApp(
+      base,
+      as('presenter', { [`GET ${base}/streamers`]: [200, { streamers: [] }] }),
+    );
+    expect(await screen.findByText(/You have no live credentials/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Put on air' })).toBeNull();
+    expect(calls.some((c) => c.path === `${base}/requests`)).toBe(false);
+  });
+
+  it('creates an event in station time (#65)', async () => {
+    const eventId = '01a15ddf-0000-7000-8000-0000000006e1';
+    const { screen, user, calls } = renderApp(
+      base,
+      as('station_manager', {
+        [`GET ${base}/streamers`]: [200, { streamers: [streamer()] }],
+        [`POST ${base}/events`]: [
+          201,
+          {
+            id: eventId,
+            stationId,
+            title: 'Fête de la musique',
+            startsAt: '2026-06-21T16:00:00.000Z',
+            endsAt: '2026-06-21T20:00:00.000Z',
+            streamers: [{ id: streamerId, displayName: 'DJ Nova' }],
+            createdAt: at,
+            updatedAt: at,
+          },
+        ],
+      }),
+    );
+    expect(await screen.findByText('No upcoming event.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'New event' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    await user.type(dialog.getByLabelText('Title'), 'Fête de la musique');
+    // Typed in station time (Europe/Paris, CEST in June).
+    await user.type(
+      dialog.getByLabelText('Starts', { selector: 'input[type=date]' }),
+      '2026-06-21',
+    );
+    await user.type(dialog.getByLabelText('Starts', { selector: 'input[type=time]' }), '18:00');
+    await user.type(dialog.getByLabelText('Ends', { selector: 'input[type=date]' }), '2026-06-21');
+    await user.type(dialog.getByLabelText('Ends', { selector: 'input[type=time]' }), '22:00');
+    await user.click(await dialog.findByText('DJ Nova'));
+    await user.click(dialog.getByRole('button', { name: 'Create' }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === 'POST' && c.path === `${base}/events`)).toBe(true),
+    );
+    const post = calls.find((c) => c.method === 'POST' && c.path === `${base}/events`);
+    expect(post?.body).toEqual({
+      title: 'Fête de la musique',
+      startsAt: '2026-06-21T16:00:00.000Z',
+      endsAt: '2026-06-21T20:00:00.000Z',
+      streamerIds: [streamerId],
+    });
   });
 });
