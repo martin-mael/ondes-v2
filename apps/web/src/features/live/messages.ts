@@ -104,6 +104,48 @@ const en = {
   'error.streamer_username_taken': 'This username is already used on this station.',
   'error.invalid_show': 'One of the shows isn’t on this station any more.',
   'error.invalid_user': 'This person isn’t a member of the station.',
+
+  'field.adHoc': 'Outside their slots',
+  'field.adHoc.approval': 'Ask a manager before going on air',
+  'field.adHoc.allowed': 'On air as soon as they connect',
+  'field.adHocHelp':
+    'When this DJ connects outside their shows’ live slots and events (ad-hoc live). With “on air”, they take the air unless another DJ is on.',
+  'streamers.adHocAllowed': 'Ad-hoc live allowed',
+
+  'requests.title': 'Waiting to go on air',
+  'requests.prompt': '{name} is connected (input {input}). Put them on air?',
+  'requests.since': 'since {time}',
+  'requests.approve': 'Put on air',
+  'requests.refuse': 'Refuse',
+  'requests.approved': '{name} is on air.',
+  'requests.refused': 'Refused: {name} stays connected, off air.',
+
+  'events.title': 'Events',
+  'events.description':
+    'One-off live blocks with a title, outside the shows: a concert, a festival stage. Their DJs connect up to {minutes} minutes before and go on air at the start.',
+  'events.new': 'New event',
+  'events.empty': 'No upcoming event.',
+  'events.anyStreamer': 'Any streamer',
+  'events.edit': 'Edit',
+  'events.delete': 'Delete',
+  'events.deleteConfirm': 'Delete the event “{title}”?',
+  'events.deleted': 'Event deleted.',
+  'events.now': 'Now',
+  'eventForm.newTitle': 'New event',
+  'eventForm.editTitle': 'Edit the event',
+  'eventForm.description': 'Times are the station’s.',
+  'eventForm.title': 'Title',
+  'eventForm.starts': 'Starts',
+  'eventForm.ends': 'Ends',
+  'eventForm.spanInvalid': 'It ends after it starts, at most 24 hours later.',
+  'eventForm.streamers': 'Streamers',
+  'eventForm.streamersHelp': 'None ticked: any of the station’s streamers.',
+  'eventForm.noStreamers': 'This station has no streamer yet.',
+
+  'error.live_request_decided': 'Someone already answered this request.',
+  'error.live_input_not_connected': 'The DJ is no longer connected.',
+  'error.invalid_streamer': 'One of the streamers isn’t on this station any more.',
+  'error.invalid_span': 'An event ends after it starts, at most 24 hours later.',
 };
 
 const fr: typeof en = {
@@ -210,6 +252,48 @@ const fr: typeof en = {
   'error.streamer_username_taken': 'Cet identifiant est déjà utilisé sur cette station.',
   'error.invalid_show': 'Une des émissions n’est plus sur cette station.',
   'error.invalid_user': 'Cette personne n’est pas membre de la station.',
+
+  'field.adHoc': 'En dehors de ses créneaux',
+  'field.adHoc.approval': 'Demander à un responsable avant l’antenne',
+  'field.adHoc.allowed': 'À l’antenne dès la connexion',
+  'field.adHocHelp':
+    'Quand ce DJ se connecte en dehors des créneaux en direct de ses émissions et des événements (direct improvisé). Avec « à l’antenne », il prend l’antenne sauf si un autre DJ y est.',
+  'streamers.adHocAllowed': 'Direct improvisé autorisé',
+
+  'requests.title': 'En attente d’antenne',
+  'requests.prompt': '{name} est connecté (entrée {input}). Le mettre à l’antenne ?',
+  'requests.since': 'depuis {time}',
+  'requests.approve': 'Mettre à l’antenne',
+  'requests.refuse': 'Refuser',
+  'requests.approved': '{name} est à l’antenne.',
+  'requests.refused': 'Refusé : {name} reste connecté, hors antenne.',
+
+  'events.title': 'Événements',
+  'events.description':
+    'Des blocs en direct ponctuels, avec un titre, en dehors des émissions : un concert, une scène de festival. Leurs DJ se connectent jusqu’à {minutes} minutes avant et passent à l’antenne au début.',
+  'events.new': 'Nouvel événement',
+  'events.empty': 'Aucun événement à venir.',
+  'events.anyStreamer': 'Tous les streamers',
+  'events.edit': 'Modifier',
+  'events.delete': 'Supprimer',
+  'events.deleteConfirm': 'Supprimer l’événement « {title} » ?',
+  'events.deleted': 'Événement supprimé.',
+  'events.now': 'En cours',
+  'eventForm.newTitle': 'Nouvel événement',
+  'eventForm.editTitle': 'Modifier l’événement',
+  'eventForm.description': 'Les heures sont celles de la station.',
+  'eventForm.title': 'Titre',
+  'eventForm.starts': 'Début',
+  'eventForm.ends': 'Fin',
+  'eventForm.spanInvalid': 'Il finit après son début, au plus 24 heures plus tard.',
+  'eventForm.streamers': 'Streamers',
+  'eventForm.streamersHelp': 'Aucun coché : tous les streamers de la station.',
+  'eventForm.noStreamers': 'Cette station n’a pas encore de streamer.',
+
+  'error.live_request_decided': 'Quelqu’un a déjà répondu à cette demande.',
+  'error.live_input_not_connected': 'Le DJ n’est plus connecté.',
+  'error.invalid_streamer': 'Un des streamers n’est plus sur cette station.',
+  'error.invalid_span': 'Un événement finit après son début, au plus 24 heures plus tard.',
 };
 
 export type LiveMessageKey = keyof typeof en;
