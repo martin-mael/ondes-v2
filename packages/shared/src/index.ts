@@ -17,6 +17,7 @@ export * from './contracts/library-jobs.ts';
 export * from './contracts/library-search.ts';
 export * from './contracts/live.ts';
 export * from './contracts/log.ts';
+export * from './contracts/log-generate.ts';
 export * from './contracts/loudness.ts';
 export * from './contracts/orgs.ts';
 export * from './contracts/peaks.ts';

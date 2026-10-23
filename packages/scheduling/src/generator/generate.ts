@@ -9,6 +9,7 @@ import {
   localDayBounds,
   logKindForSlot,
   type SlotReference,
+  zonedParts,
 } from '@ondes/shared';
 import { expandGrid } from '../grid/index.ts';
 import { retime } from '../log/index.ts';
@@ -63,6 +64,30 @@ export function generateDay(
 ): GeneratedDay {
   const [day] = generateDays(snapshot, [localDate], options);
   return day as GeneratedDay;
+}
+
+/**
+ * Music from one clock for `[startsAt, startsAt + durationMs)`, whatever the grid says: the
+ * missing-episode fallback's "clock music" (ADR 0022, `ClockMusicSource`). The clock starts at
+ * `startsAt` and again at every hour after it; items are planned like a day's, against the
+ * snapshot's history (the day around it, as planned). Without the clock, nothing.
+ */
+export function planClockMusic(
+  snapshot: GeneratorSnapshot,
+  request: { clockId: string; startsAt: Date; durationMs: number },
+  options: GenerateOptions = {},
+): { items: PlannedItem[]; issues: GeneratorIssue[] } {
+  if (!snapshot.clocks.has(request.clockId) || request.durationMs <= 0) {
+    return { items: [], issues: [] };
+  }
+  const local = zonedParts(request.startsAt, snapshot.timeZone).date;
+  const builder = new DayBuilder(
+    { ...snapshot, grid: { defaultClockId: request.clockId, cells: [], overrides: [] } },
+    local,
+    [...snapshot.history],
+    { seed: options.seed ?? `${snapshot.stationId}:${request.startsAt.toISOString()}`, ...options },
+  );
+  return builder.fillRange(request.startsAt.getTime(), request.startsAt.getTime() + request.durationMs);
 }
 
 /**
@@ -228,6 +253,13 @@ class DayBuilder {
     this.cursor = this.startsAt.getTime();
     this.seed = options.seed ?? `${snapshot.stationId}:${localDate}`;
     this.extensions = options.extensions ?? {};
+  }
+
+  /** Music only, for `[from, to)`: the items as planned (not retimed), and the issues. */
+  fillRange(from: number, to: number): { items: PlannedItem[]; issues: GeneratorIssue[] } {
+    this.cursor = from;
+    this.fillWindow(from, to);
+    return { items: this.items, issues: this.issues };
   }
 
   build(previousEnd: Date | null): GeneratedDay {

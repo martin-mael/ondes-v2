@@ -15,6 +15,7 @@
     "drizzle-kit": "0.31.11"
   },
   "dependencies": {
+    "@ondes/scheduling": "workspace:*",
     "@ondes/shared": "workspace:*",
     "@ondes/storage": "workspace:*",
     "drizzle-orm": "0.45.4",
