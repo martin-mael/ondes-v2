@@ -155,16 +155,14 @@ beforeAll(async () => {
     .returning({ id: category.id });
   if (!music) throw new Error('no category');
   musicId = music.id;
-  await db
-    .insert(categoryMember)
-    .values(
-      songIds.map((assetId) => ({
-        ...base,
-        categoryId: musicId,
-        assetId,
-        mode: 'include' as const,
-      })),
-    );
+  await db.insert(categoryMember).values(
+    songIds.map((assetId) => ({
+      ...base,
+      categoryId: musicId,
+      assetId,
+      mode: 'include' as const,
+    })),
+  );
   const [c] = await db
     .insert(clock)
     .values({ ...base, name: 'Hour', targetDurationMs: HOUR })
@@ -342,8 +340,8 @@ describe('apply', () => {
       seed: 'fresh',
       status: 'published',
     });
-    expect((enqueued[0]?.payload as { localDates: string[] }).localDates).toHaveLength(14);
-    expect((enqueued[1]?.payload as { localDates: string[] }).localDates).toHaveLength(2);
+    const lengths = enqueued.map((j) => (j.payload as { localDates: string[] }).localDates.length);
+    expect(lengths).toEqual([14, 2]);
     expect(await audits('log_day.regenerate')).toHaveLength(1);
   });
 
