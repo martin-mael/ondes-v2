@@ -239,7 +239,6 @@ Live studios / remote DJs / voice tracks ───────┘               
   - Console integration (DHD, Lawo, Axia, Wheatstone via Ember+).
   - Cloud disaster recovery.
   - Group and remote voice tracking.
-  - AI voice tracks (ENCO AITrack).
   - Audio logger and stream monitor.
   - EAS/DTMF triggers.
 - **UX to copy:**
