@@ -129,7 +129,7 @@ export type Recorded = { entry: AsRunEntry; fresh: boolean };
 async function resolveItem(
   db: Executor,
   scope: StationScope,
-  input: Pick<StartInput, 'itemId' | 'title' | 'artist' | 'filename'>,
+  input: Pick<StartInput, 'itemId' | 'title' | 'artist' | 'filename' | 'at'>,
 ) {
   const itemId = asUuid(input.itemId);
   const [item] = itemId
@@ -147,6 +147,7 @@ async function resolveItem(
           // The show episode it airs (#48): number and premiere slot, for the rerun flag.
           episode: { id: episode.id, showId: episode.showId, number: episode.number },
           premiereSlotId: episode.slotId,
+          airedAt: episode.airedAt,
         })
         .from(logItem)
         // Only while the item still plays what the fallback put there (not swapped by hand).
@@ -198,7 +199,7 @@ async function resolveItem(
     plannedStart: item?.plannedStart ?? null,
     plannedDurationMs: item?.plannedDurationMs ?? null,
     fallback: item?.fallback ?? null,
-    ...episodeSnapshot(item),
+    ...episodeSnapshot(item, input.at),
     assetId,
     fileSha256,
     title: input.title ?? item?.title ?? a?.title ?? null,
@@ -208,8 +209,11 @@ async function resolveItem(
 }
 
 /**
- * The episode columns of an entry (#48). It airs again when it stands in for a missing
- * episode, or when the show slot it was planned for isn't its premiere's (a rerun slot).
+ * The episode columns of an entry (#48, ADR 0028). It airs again when:
+ * - it stands in for a missing episode (#47's mark);
+ * - it was planned in another show slot than its premiere's (a rerun slot);
+ * - otherwise (no premiere slot, or added by hand), when it already aired before.
+ * Its own premiere slot never makes it a rerun, so an item replayed after a restart isn't one.
  */
 function episodeSnapshot(
   item:
@@ -218,16 +222,35 @@ function episodeSnapshot(
         originShowSlotId: string | null;
         episode: { id: string; showId: string; number: number } | null;
         premiereSlotId: string | null;
+        airedAt: Date | null;
       }
     | undefined,
+  at: Date,
 ) {
   const e = item?.episode;
   if (!item || !e) return { episodeId: null, showId: null, episodeNumber: null, rerun: false };
-  const rerun =
-    item.fallback === 'latest_episode' ||
-    item.fallback === 'episode' ||
-    (item.originShowSlotId !== null && item.originShowSlotId !== item.premiereSlotId);
+  let rerun: boolean;
+  if (item.fallback === 'latest_episode' || item.fallback === 'episode') rerun = true;
+  else if (item.originShowSlotId !== null && item.originShowSlotId === item.premiereSlotId) {
+    rerun = false;
+  } else if (item.originShowSlotId !== null && item.premiereSlotId !== null) rerun = true;
+  else rerun = item.airedAt !== null && item.airedAt < at;
   return { episodeId: e.id, showId: e.showId, episodeNumber: e.number, rerun };
+}
+
+/**
+ * An episode's first airing (not a rerun) marks it `aired` (#48): what makes it rerunnable. Its
+ * `aired_at` is the first one's start; a later replay keeps it.
+ */
+async function markAired(db: Executor, scope: StationScope, entry: Row) {
+  if (!entry.episodeId || entry.rerun) return;
+  await db
+    .update(episode)
+    .set({
+      status: 'aired',
+      airedAt: sql`coalesce(${episode.airedAt}, ${entry.startedAt.toISOString()}::timestamptz)`,
+    })
+    .where(and(whereStation(episode, scope), eq(episode.id, entry.episodeId)));
 }
 
 async function byEventId(db: Executor, scope: StationScope, eventId: string) {
@@ -262,9 +285,15 @@ export async function recordStart(
     })
     .onConflictDoNothing()
     .returning();
-  if (row) return { entry: toEntry(row), fresh: true };
+  if (row) {
+    await markAired(db, scope, row);
+    return { entry: toEntry(row), fresh: true };
+  }
   const existing = await byEventId(db, scope, input.eventId);
-  return existing ? { entry: toEntry(existing), fresh: false } : null;
+  if (!existing) return null;
+  // Idempotent: a redelivery finishes a mark the first delivery didn't get to.
+  await markAired(db, scope, existing);
+  return { entry: toEntry(existing), fresh: false };
 }
 
 export type EndInput = {
@@ -346,6 +375,7 @@ export async function recordEnd(
     title: null,
     artist: null,
     filename: null,
+    at: input.startedAt,
   });
   const [row] = await db
     .insert(asRunEntry)
@@ -365,7 +395,10 @@ export async function recordEnd(
     })
     .onConflictDoNothing()
     .returning();
-  if (row) return { entry: toEntry(row), fresh: true };
+  if (row) {
+    await markAired(db, scope, row);
+    return { entry: toEntry(row), fresh: true };
+  }
   const existing = await byEventId(db, scope, input.eventId);
   return existing ? { entry: toEntry(existing), fresh: false } : null;
 }

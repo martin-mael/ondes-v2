@@ -983,7 +983,12 @@ export async function getOccurrences(
   const reruns = await resolveReruns(
     db,
     scope,
-    occurrences.map((o) => ({ slotId: o.slot.id, slot: o.slot, occurrenceDate: o.date })),
+    occurrences.map((o) => ({
+      slotId: o.slot.id,
+      slot: o.slot,
+      occurrenceDate: o.date,
+      startsAt: o.startsAt,
+    })),
   );
   const summary = (e: EpisodeRow) => ({
     id: e.id,

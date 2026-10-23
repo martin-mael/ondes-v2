@@ -18,6 +18,19 @@ An episode's audio is one asset, and an asset belongs to one episode (ADR 0014),
 can't be a copy of the episode.
 
 ## Decision
+- **Only aired episodes are rerunnable.** "Aired by an occurrence" (`airedBy` in
+  `packages/db/src/repos/reruns.ts`) means the episode has audio and either:
+  - its status is `aired` and its `aired_at` is before the occurrence starts (or unknown, for
+    an episode marked aired by hand); or
+  - its status is `ready` and its premiere is planned on an earlier local date than the
+    occurrence's: by the time the rerun airs, the premiere has. This is what lets a log planned
+    days ahead rerun this week's episode on Sunday.
+
+  An unscheduled episode that never aired, a `missing` one, or one premiering on the same day
+  or later never qualifies, under either strategy and for #47's fallbacks too.
+  - **The as-run marks episodes aired.** The status the contract promised since #44 ("`aired`:
+    went out, as-run sets it") had no writer. On `track.started`, an entry that airs an episode
+    and isn't a rerun sets it `aired`, with `aired_at` = the first such start (kept on replays).
 - **The strategy lives on the slot.** `show_slot.rerun_strategy` (`latest_episode` |
   `episode`) and `show_slot.rerun_episode_id`, set only on `rerun` slots. The contract exposes
   them as `ShowSlot.rerun: { strategy: 'latest_episode' } | { strategy: 'episode', episodeId } |
@@ -30,24 +43,33 @@ can't be a copy of the episode.
     fallback.
   - Changing a slot to `rerun` without a strategy picks `latest_episode`; changing it away
     drops the strategy. Only rerun slots accept one (422 `not_a_rerun_slot`).
+  - `{ strategy: 'episode', episodeId: null }` may also be written: the programmer chose "a
+    chosen episode" but hasn't picked one yet. It is saved as such (never silently turned into
+    `latest_episode`), airs the latest one meanwhile, and the UI says so.
 - **One resolver for reruns and fallbacks.** "Which earlier episode airs" was #47's
   `latestEpisode` query inside the api. It moved to `@ondes/db` (`repos/reruns.ts`):
   `pickEpisode` (strategy → episode with audio) and `latestAiredEpisode`. #47's
   `resolveFallback` delegates its `latest_episode` and `episode` policies to `pickEpisode`, and
   the worker's log generator (#50), which can't import the api, calls `resolveRerun(db, scope,
   { slotId, occurrenceDate })`.
-  - "Latest" is the highest-numbered episode with audio that has already gone out before the
-    occurrence's date: aired, unscheduled, or premiered on an earlier date. A ready premiere
-    planned for later is not burned as a rerun.
-  - "Episode N" airs that episode while it has audio, else the latest one.
+  - "Latest" is the highest-numbered episode aired by the occurrence (the rule above). A ready
+    premiere planned for later is not burned as a rerun.
+  - "Episode N" airs that episode once it has aired by the occurrence; before that, or without
+    audio, the latest one airs.
+  - `resolveRerun(db, scope, { slotId, occurrenceDate, startsAt })`: the start is needed for
+    the `aired_at` comparison.
 - **"Schedule a rerun" makes a one-off rerun slot.**
   `POST …/shows/:showId/episodes/:episodeId/reruns { date, time, durationMs? }` creates a
   `{ freq: 'once' }` slot with `{ strategy: 'episode', episodeId }`.
   - No new table or occurrence kind: the rerun shows in the grid, the calendar and the
     upcoming airings, can be moved, cancelled or deleted like any slot, and #50 plans it like
     any rerun slot.
-  - It needs `show:write` (it changes the grid), the episode must have audio (422 `no_audio`),
-    and the date can't be before the episode's premiere date (422 `before_premiere`).
+  - It needs `show:write` (it changes the grid). The episode must have audio (422 `no_audio`)
+    and have aired by the rerun's start, by the rule above: 422 `before_premiere` when its
+    premiere is that day or later, else 422 `not_aired`. The rerun's start is the date and time
+    on the station's clock, so a rerun earlier on the day the episode first aired is refused.
+  - The web app offers the action on aired episodes, or ready ones whose premiere day is past,
+    and checks the same rule (date and time in the station zone) before sending.
   - The length defaults to the premiere slot's, then the show's usual length, then the audio's
     rounded up to the minute.
   - Audited as `show_slot.create`.
@@ -63,8 +85,10 @@ can't be a copy of the episode.
   exposed as `AsRunEntry.episode: { id, showId, number, rerun } | null` on `GET …/asrun` and the
   `asrun.started` / `asrun.ended` events (now playing).
   - `rerun` is true when the item stands in for a missing episode (#47's mark,
-    `latest_episode` or `episode`), or when the show slot it was planned for isn't the
-    episode's premiere slot. An item added by hand with no show slot is not a rerun.
+    `latest_episode` or `episode`), or when it was planned in another show slot than the
+    episode's premiere slot. Planned in its own premiere slot, it is never a rerun (a replay
+    after an engine restart stays the premiere). Otherwise (no premiere slot, or an item added
+    by hand), it is a rerun when the episode already aired before (`aired_at` earlier).
   - Snapshots, like the rest of the as-run (ADR 0015): history keeps the number the episode had
     when it aired, after a renumbering or a regenerated log day.
   - Deriving the flag from the log item avoids a "rerun" column on `log_item` that every
@@ -78,8 +102,11 @@ can't be a copy of the episode.
   `AsRunEntry.episode` (optional).
 - The engine's own metadata (what listeners' players show) is unchanged; a public now-playing
   endpoint (#75) can read `AsRunEntry.episode`.
-- Resolving `rerunOf` costs one query per distinct (show, strategy, date) in the range read.
-  Ranges are capped at 92 days; that's fine for a station's grid.
+- Resolving `rerunOf` costs one query per distinct (show, strategy, occurrence) in the range
+  read, run in parallel. Ranges are capped at 92 days; that's fine for a station's grid.
+- A premiere planned earlier counts as aired for a later occurrence even if it ends up not
+  airing (cancelled the same day, engine down). Cancelling detaches it, so it stops counting;
+  an outage is covered by the episode-check alerts, not by this rule.
 - A "rerun of a rerun" doesn't exist: a rerun always points at the original episode.
 
 ## Code

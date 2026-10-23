@@ -29,6 +29,7 @@ import { useUnsavedChanges } from '../../app/unsaved.tsx';
 import { episodesQuery, invalidateShows, showsApi } from './api.ts';
 import { formatDay, formatDuration, weekdayName, weekdays } from './format.ts';
 import { useShowT } from './messages.ts';
+import { rerunnable } from './rerun-dialog.tsx';
 
 // Create or edit a slot: when the show airs (weekly, every N weeks, or once) and its
 // exceptions. Changing the rule or the type can detach the episodes planned in occurrences that
@@ -70,8 +71,9 @@ function draftOf(show: Show, slot: ShowSlot | undefined, today: string): Draft {
 /** What the api is sent for the slot's type: a strategy goes with rerun slots only. */
 function rerunOf(draft: Draft) {
   if (draft.type !== 'rerun') return {};
-  return draft.rerunStrategy === 'episode' && draft.rerunEpisodeId
-    ? { rerun: { strategy: 'episode' as const, episodeId: draft.rerunEpisodeId } }
+  // A chosen-episode strategy is kept even before an episode is picked (saved incomplete).
+  return draft.rerunStrategy === 'episode'
+    ? { rerun: { strategy: 'episode' as const, episodeId: draft.rerunEpisodeId || null } }
     : { rerun: { strategy: 'latest_episode' as const } };
 }
 
@@ -253,10 +255,13 @@ export function SlotEditorDialog({
                     >
                       <NativeSelectOption value="">{t('rerun.episodeNone')}</NativeSelectOption>
                       {episodes.data?.items
-                        .filter((e) => e.assetId || e.id === draft.rerunEpisodeId)
+                        .filter((e) => rerunnable(e) || e.id === draft.rerunEpisodeId)
                         .map((e) => (
                           <NativeSelectOption key={e.id} value={e.id}>
                             {`#${e.number}${e.title ? ` · ${e.title}` : ''}`}
+                            {e.status !== 'aired' && e.occurrenceDate && e.occurrenceDate >= today
+                              ? ` (${t('rerun.premieres', { date: formatDay(e.occurrenceDate, locale) })})`
+                              : ''}
                           </NativeSelectOption>
                         ))}
                     </NativeSelect>

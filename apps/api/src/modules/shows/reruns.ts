@@ -51,6 +51,8 @@ export async function rerunColumns(
   if (!rerun || rerun.strategy === 'latest_episode') {
     return { rerunStrategy: 'latest_episode', rerunEpisodeId: null };
   }
+  // Chosen, but not picked yet: saved as is (the latest one airs until then).
+  if (rerun.episodeId === null) return { rerunStrategy: 'episode', rerunEpisodeId: null };
   const [row] = await tx
     .select({ id: episode.id })
     .from(episode)
@@ -68,40 +70,46 @@ export async function rerunColumns(
 export type RerunOccurrence = {
   slotId: string;
   slot: Pick<SlotRow, 'showId' | 'type'> & RerunColumns;
-  /** The occurrence's original local date: episodes premiered before it count as aired. */
+  /** The occurrence's original local date: episodes premiering before it count as aired. */
   occurrenceDate: LocalDate;
+  startsAt: Date;
 };
 
 /**
  * The episode each rerun occurrence airs now (null: nothing to rerun yet), keyed
- * `slotId/date`. Occurrences that resolve the same way (same show, strategy and date) are
- * resolved once.
+ * `slotId/date`. Occurrences that resolve the same way are resolved once, all in parallel.
  */
 export async function resolveReruns(
   db: Executor,
   scope: StationScope,
   occurrences: RerunOccurrence[],
 ): Promise<Map<string, typeof episode.$inferSelect | null>> {
-  const out = new Map<string, string | null>();
   const memo = new Map<string, Promise<{ episodeId: string } | null>>();
+  const pending: [string, Promise<{ episodeId: string } | null>][] = [];
   for (const o of occurrences) {
     const rerun = toSlotRerun(o.slot);
     if (!rerun) continue;
     const episodeId = rerun.strategy === 'episode' ? rerun.episodeId : null;
-    const key = `${o.slot.showId}/${rerun.strategy}/${episodeId}/${o.occurrenceDate}`;
-    let pending = memo.get(key);
-    if (!pending) {
-      pending = pickEpisode(db, scope, {
+    const key = `${o.slot.showId}/${rerun.strategy}/${episodeId}/${o.occurrenceDate}/${o.startsAt.getTime()}`;
+    let picked = memo.get(key);
+    if (!picked) {
+      picked = pickEpisode(db, scope, {
         showId: o.slot.showId,
         strategy: rerun.strategy,
         episodeId,
         excludeEpisodeId: null,
         occurrenceDate: o.occurrenceDate,
+        startsAt: o.startsAt,
       });
-      memo.set(key, pending);
+      memo.set(key, picked);
     }
-    out.set(`${o.slotId}/${o.occurrenceDate}`, (await pending)?.episodeId ?? null);
+    pending.push([`${o.slotId}/${o.occurrenceDate}`, picked]);
   }
+  const out = new Map<string, string | null>(
+    await Promise.all(
+      pending.map(async ([k, picked]) => [k, (await picked)?.episodeId ?? null] as const),
+    ),
+  );
   const ids = [...new Set([...out.values()].filter((id): id is string => id !== null))];
   const rows = ids.length
     ? await db

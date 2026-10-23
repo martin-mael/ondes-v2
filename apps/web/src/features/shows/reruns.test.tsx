@@ -79,7 +79,22 @@ const episode = (overrides: Partial<Episode> = {}): Episode => ({
   ...overrides,
 });
 
-const episodes = [episode(), episode({ id: plannedId, number: 12, title: null, assetId: null })];
+const unscheduledId = '01a15ddf-0000-7000-8000-0000000048c3';
+const episodes = [
+  episode(),
+  episode({ id: plannedId, number: 12, title: null, assetId: null, status: 'planned' }),
+  // Audio, but never aired nor planned: not rerunnable.
+  episode({
+    id: unscheduledId,
+    number: 13,
+    title: 'Pilot',
+    assetId: '01a15ddf-0000-7000-8000-0000000048e2',
+    status: 'ready',
+    airedAt: null,
+    slotId: null,
+    occurrenceDate: null,
+  }),
+];
 
 const occurrence = (days: number, overrides: Partial<ShowOccurrence> = {}): ShowOccurrence => {
   const startsAt = new Date(Date.now() + days * DAY);
@@ -166,17 +181,27 @@ describe('reruns', () => {
         ],
       }),
     );
-    // No audio, nothing to air again.
+    // Only aired episodes: not one without audio, nor one that never aired.
     await screen.findByRole('button', { name: 'Schedule a rerun of episode 11' });
     expect(screen.queryByRole('button', { name: 'Schedule a rerun of episode 12' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Schedule a rerun of episode 13' })).toBeNull();
 
     await user.click(screen.getByRole('button', { name: 'Schedule a rerun of episode 11' }));
     const dialog = within(await screen.findByRole('dialog'));
     expect(dialog.getByText(/Europe\/Paris/)).toBeVisible();
-    // Before the premiere: explained, not sent.
-    fireEvent.change(dialog.getByLabelText('Date'), { target: { value: '2026-10-10' } });
-    expect(dialog.getByText(/before the episode’s premiere/)).toBeVisible();
+    // Before its first airing (08:00Z = 10:00 in Paris, that day): explained, not sent.
+    fireEvent.change(dialog.getByLabelText('Date'), { target: { value: '2026-10-20' } });
+    fireEvent.change(dialog.getByLabelText('Time'), { target: { value: '09:30' } });
+    expect(dialog.getByText(/first aired on .* 10:00/)).toBeVisible();
     expect(dialog.getByRole('button', { name: 'Schedule' })).toBeDisabled();
+    // Later that day is fine.
+    fireEvent.change(dialog.getByLabelText('Time'), { target: { value: '10:30' } });
+    expect(dialog.queryByText(/first aired on/)).toBeNull();
+    // Lengths are whole minutes, said so.
+    fireEvent.change(dialog.getByLabelText('Length (minutes)'), { target: { value: '0.5' } });
+    expect(dialog.getByText('A whole number of minutes, from 1 to 1440.')).toBeVisible();
+    expect(dialog.getByRole('button', { name: 'Schedule' })).toBeDisabled();
+    fireEvent.change(dialog.getByLabelText('Length (minutes)'), { target: { value: '' } });
 
     fireEvent.change(dialog.getByLabelText('Date'), { target: { value: '2026-12-26' } });
     fireEvent.change(dialog.getByLabelText('Time'), { target: { value: '14:00' } });
@@ -209,9 +234,10 @@ describe('reruns', () => {
     await user.selectOptions(dialog.getByLabelText('Episode to air again'), 'episode');
     // Not chosen yet: a calm note, saving still works.
     expect(dialog.getByText(/the latest one airs until you pick one/)).toBeVisible();
-    // Only episodes with audio can air again.
+    // Only aired episodes can air again.
     expect(await dialog.findByRole('option', { name: '#11 · Best of' })).toBeInTheDocument();
     expect(dialog.queryByRole('option', { name: '#12' })).toBeNull();
+    expect(dialog.queryByRole('option', { name: '#13 · Pilot' })).toBeNull();
     await user.selectOptions(dialog.getByLabelText('Episode'), airedId);
     await user.click(dialog.getByRole('button', { name: 'Add the slot' }));
     await waitFor(() => expect(created).toHaveLength(1));
@@ -219,5 +245,78 @@ describe('reruns', () => {
       type: 'rerun',
       rerun: { strategy: 'episode', episodeId: airedId },
     });
+  });
+
+  it('saves a chosen-episode strategy before the episode is picked', async () => {
+    const created: unknown[] = [];
+    const { screen, user } = renderApp(
+      showBase,
+      routes('programmer', {
+        [`POST ${showBase}/slots`]: (body) => {
+          created.push(body);
+          return [201, slot()];
+        },
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Add a slot' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    await user.selectOptions(dialog.getByLabelText('Type'), 'rerun');
+    await user.selectOptions(dialog.getByLabelText('Episode to air again'), 'episode');
+    await user.click(dialog.getByRole('button', { name: 'Add the slot' }));
+    await waitFor(() => expect(created).toHaveLength(1));
+    expect(created[0]).toMatchObject({ rerun: { strategy: 'episode', episodeId: null } });
+  });
+
+  it('edits an existing rerun slot’s strategy', async () => {
+    const { screen, user, calls } = renderApp(
+      showBase,
+      routes('programmer', {
+        [`PATCH ${showBase}/slots/${rerunSlotId}`]: [
+          200,
+          {
+            slot: slot({ id: rerunSlotId, type: 'rerun', rerun: { strategy: 'latest_episode' } }),
+            detachedEpisodeIds: [],
+          },
+        ],
+      }),
+    );
+    await screen.findByText(/Reruns episode 11/);
+    // The show's Edit is in the header; the rerun slot's comes last.
+    const edits = screen.getAllByRole('button', { name: 'Edit' });
+    await user.click(edits[edits.length - 1] as HTMLElement);
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByLabelText('Episode to air again')).toHaveValue('episode');
+    expect(await dialog.findByLabelText('Episode')).toHaveValue(airedId);
+    await user.selectOptions(dialog.getByLabelText('Episode to air again'), 'latest_episode');
+    await user.click(dialog.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === 'PATCH')?.body).toMatchObject({
+        type: 'rerun',
+        rerun: { strategy: 'latest_episode' },
+      }),
+    );
+  });
+
+  it('says when a chosen-episode slot has no episode (none picked, or deleted)', async () => {
+    const { screen } = renderApp(
+      showBase,
+      routes('presenter', {
+        [`GET ${showBase}/slots`]: [
+          200,
+          {
+            items: [
+              slot({
+                id: rerunSlotId,
+                type: 'rerun',
+                rerun: { strategy: 'episode', episodeId: null },
+              }),
+            ],
+          },
+        ],
+      }),
+    );
+    expect(
+      await screen.findByText(/Reruns the latest episode: no episode chosen \(or it was deleted\)/),
+    ).toBeVisible();
   });
 });

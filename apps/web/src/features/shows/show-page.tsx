@@ -39,7 +39,7 @@ import {
 } from './episode-dialog.tsx';
 import { formatDay, formatDuration, formatTime, ruleSummary } from './format.ts';
 import { useShowError, useShowT } from './messages.ts';
-import { RerunDialog, RerunOf } from './rerun-dialog.tsx';
+import { canScheduleRerun, RerunDialog, RerunOf } from './rerun-dialog.tsx';
 import { ShowFormDialog } from './show-form.tsx';
 import { ShowArtwork } from './shows-page.tsx';
 import { SlotEditorDialog } from './slot-editor.tsx';
@@ -243,6 +243,7 @@ export function ShowPage() {
           pending={episodes.isPending}
           canEdit={canEdit}
           canManage={access.canManage}
+          timezone={access.timezone}
           onEdit={(episode) => setEpisodeEdit({ episodeId: episode.id })}
           onRerun={(episode) => setRerunOf(episode.id)}
         />
@@ -623,6 +624,7 @@ function EpisodeTable({
   pending,
   canEdit,
   canManage,
+  timezone,
   onEdit,
   onRerun,
 }: {
@@ -631,11 +633,13 @@ function EpisodeTable({
   canEdit: boolean;
   /** Scheduling a rerun adds a slot: programmers only. */
   canManage: boolean;
+  timezone: string;
   onEdit(episode: Episode): void;
   onRerun(episode: Episode): void;
 }) {
   const t = useShowT();
   const { locale } = useI18n();
+  const today = localDateOf(new Date(), timezone);
   if (pending) return <ListSkeleton rows={3} />;
   if (!episodes || episodes.length === 0) {
     return <p className="text-muted-foreground">{t('episodes.empty')}</p>;
@@ -681,7 +685,7 @@ function EpisodeTable({
             </TableCell>
             {canManage && (
               <TableCell className="text-right">
-                {episode.assetId && (
+                {canScheduleRerun(episode, today) && (
                   <Button
                     size="sm"
                     variant="ghost"

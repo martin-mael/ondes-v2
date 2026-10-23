@@ -109,6 +109,7 @@ export async function resolveFallback(
         episodeId: row.episodeId,
         excludeEpisodeId: request.missingEpisodeId,
         occurrenceDate: request.occurrenceDate,
+        startsAt: request.startsAt,
       });
       return {
         policy,

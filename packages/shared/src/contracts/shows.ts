@@ -144,14 +144,20 @@ export type EpisodeFallbackKind = z.infer<typeof episodeFallbackKindSchema>;
 export const rerunStrategySchema = z.enum(['latest_episode', 'episode']);
 export type RerunStrategy = z.infer<typeof rerunStrategySchema>;
 
-/** A rerun slot's strategy, as written. The episode must be one of the slot's show. */
+/**
+ * A rerun slot's strategy, as written. The episode must be one of the slot's show; null saves
+ * the choice before an episode is picked (the latest one airs until then).
+ */
 export const slotRerunInputSchema = z.discriminatedUnion('strategy', [
   z.object({ strategy: z.literal('latest_episode') }),
-  z.object({ strategy: z.literal('episode'), episodeId: uuidSchema }),
+  z.object({ strategy: z.literal('episode'), episodeId: uuidSchema.nullable() }),
 ]);
 export type SlotRerunInput = z.input<typeof slotRerunInputSchema>;
 
-/** As read: `episodeId` is null once the chosen episode was deleted (the latest one airs). */
+/**
+ * As read: `episodeId` is null when no episode was picked yet, or the chosen one was deleted
+ * (the latest one airs).
+ */
 export const slotRerunSchema = z.discriminatedUnion('strategy', [
   z.object({ strategy: z.literal('latest_episode') }),
   z.object({ strategy: z.literal('episode'), episodeId: uuidSchema.nullable() }),
@@ -428,8 +434,10 @@ export type EpisodeList = z.infer<typeof episodeListSchema>;
 
 /**
  * `POST …/shows/:showId/episodes/:episodeId/reruns`: airs an episode again, once, as a one-off
- * `rerun` slot at a station-local `date` and `time`. `durationMs` defaults to the premiere
- * slot's, then the show's default, then the episode's audio rounded up to the minute.
+ * `rerun` slot at a station-local `date` and `time`. The episode must have aired by then (see
+ * ADR 0028: marked aired before that time, or premiering on an earlier date). `durationMs`
+ * defaults to the premiere slot's, then the show's default, then the episode's audio rounded up
+ * to the minute.
  */
 export const scheduleRerunSchema = z.object({
   date: localDateSchema,

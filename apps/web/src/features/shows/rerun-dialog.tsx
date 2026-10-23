@@ -1,4 +1,10 @@
-import { type Episode, localDateOf, type ShowOccurrence, scheduleRerunSchema } from '@ondes/shared';
+import {
+  type Episode,
+  localDateOf,
+  type ShowOccurrence,
+  scheduleRerunSchema,
+  zonedInstant,
+} from '@ondes/shared';
 import { useQueryClient } from '@tanstack/react-query';
 import { type FormEvent, useEffect, useState } from 'react';
 import { toast } from 'sonner';
@@ -17,12 +23,27 @@ import { useI18n } from '../../app/i18n/i18n.tsx';
 import { DelayedSpinner } from '../../app/pending.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
 import { invalidateShows, showsApi } from './api.ts';
-import { formatDay } from './format.ts';
+import { formatDay, formatTime } from './format.ts';
 import { useShowError, useShowT } from './messages.ts';
 
 // "Schedule a rerun" (#48): an episode with audio airs again once, at a station-local date and
 // time. The api makes it a one-off rerun slot on that episode, which then shows in the slots,
 // the upcoming airings and the calendar like any other.
+
+/**
+ * An episode a rerun can air (ADR 0028): with audio, and aired, or with its premiere planned
+ * (it airs again after it). Unscheduled episodes that never aired don't qualify.
+ */
+export function rerunnable(episode: Episode): boolean {
+  if (!episode.assetId) return false;
+  return episode.status === 'aired' || (episode.status === 'ready' && !!episode.occurrenceDate);
+}
+
+/** "Schedule a rerun" is offered once the episode has aired, or its premiere day is past. */
+export function canScheduleRerun(episode: Episode, today: string): boolean {
+  if (!rerunnable(episode)) return false;
+  return episode.status === 'aired' || (!!episode.occurrenceDate && episode.occurrenceDate < today);
+}
 
 interface Draft {
   date: string;
@@ -70,19 +91,32 @@ export function RerunDialog({
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
 
+  // The api's rule (ADR 0028): after the episode first aired, on the station's clock, or on a
+  // later day than its premiere when it hasn't aired yet.
   const premiere = episode?.occurrenceDate ?? null;
-  const beforePremiere = premiere !== null && draft.date !== '' && draft.date < premiere;
+  const airedAt = episode?.status === 'aired' ? episode.airedAt : null;
+  const startsAt = draft.date && draft.time ? zonedInstant(draft.date, draft.time, timezone) : null;
+  const beforePremiere =
+    startsAt !== null &&
+    (airedAt
+      ? startsAt.getTime() <= airedAt.getTime()
+      : premiere !== null && draft.date <= premiere);
+  const durationInvalid =
+    draft.durationMin.trim() !== '' &&
+    !(
+      Number.isInteger(Number(draft.durationMin)) &&
+      Number(draft.durationMin) >= 1 &&
+      Number(draft.durationMin) <= 1440
+    );
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!episode || beforePremiere) return;
+    if (!episode || beforePremiere || durationInvalid) return;
     const minutes = Number(draft.durationMin);
     const body = {
       date: draft.date,
       time: draft.time,
-      ...(draft.durationMin.trim() && minutes > 0
-        ? { durationMs: Math.round(minutes * 60_000) }
-        : {}),
+      ...(draft.durationMin.trim() ? { durationMs: minutes * 60_000 } : {}),
     };
     if (!scheduleRerunSchema.safeParse(body).success) {
       setError(t('field.required'));
@@ -139,14 +173,20 @@ export function RerunDialog({
                 />
               </Field>
             </div>
-            {beforePremiere && premiere && (
+            {beforePremiere && (airedAt || premiere) && (
               <FieldError
                 errors={[
-                  { message: t('rerun.beforePremiere', { date: formatDay(premiere, locale) }) },
+                  {
+                    message: airedAt
+                      ? t('rerun.beforeAired', {
+                          when: `${formatDay(localDateOf(airedAt, timezone), locale)} ${formatTime(airedAt, timezone, locale)}`,
+                        })
+                      : t('rerun.beforePremiere', { date: formatDay(premiere ?? '', locale) }),
+                  },
                 ]}
               />
             )}
-            <Field>
+            <Field data-invalid={durationInvalid ? true : undefined}>
               <FieldLabel htmlFor="rerun-duration">{t('rerun.duration')}</FieldLabel>
               <Input
                 id="rerun-duration"
@@ -158,10 +198,13 @@ export function RerunDialog({
                 onChange={(e) => set('durationMin', e.target.value)}
               />
               <FieldDescription>{t('rerun.durationHelp')}</FieldDescription>
+              <FieldError
+                errors={durationInvalid ? [{ message: t('rerun.durationInvalid') }] : undefined}
+              />
             </Field>
             <FieldError errors={error ? [{ message: error }] : undefined} />
             <DialogFooter>
-              <Button type="submit" disabled={pending || beforePremiere}>
+              <Button type="submit" disabled={pending || beforePremiere || durationInvalid}>
                 <DelayedSpinner when={pending} data-icon="inline-start" />
                 {t('rerun.submit')}
               </Button>

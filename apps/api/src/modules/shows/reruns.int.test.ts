@@ -11,6 +11,7 @@ import {
   resolveRerun,
   resolveStationScope,
   type StationScope,
+  showSlot,
 } from '@ondes/db';
 import type {
   Actor,
@@ -91,9 +92,16 @@ async function newSlot(showId: string, body: object): Promise<ShowSlot> {
 
 async function newEpisode(
   showId: string,
-  extra: { slotId?: string; occurrenceDate?: string; audio?: boolean; durationMs?: number } = {},
+  extra: {
+    slotId?: string;
+    occurrenceDate?: string;
+    audio?: boolean;
+    durationMs?: number;
+    /** Marked aired at this time (what the as-run does on its first airing). */
+    airedAt?: string;
+  } = {},
 ): Promise<Episode> {
-  const { audio = true, durationMs, ...occurrence } = extra;
+  const { audio = true, durationMs, airedAt, ...occurrence } = extra;
   const assetId = audio
     ? (
         await createAsset(
@@ -104,10 +112,16 @@ async function newEpisode(
       ).id
     : null;
   return ok<Episode>(
-    await call('POST', `/shows/${showId}/episodes`, { assetId, ...occurrence }),
+    await call('POST', `/shows/${showId}/episodes`, {
+      assetId,
+      ...occurrence,
+      ...(airedAt ? { status: 'aired', airedAt } : {}),
+    }),
     201,
   );
 }
+
+const longAgo = '2026-01-01T12:00:00Z';
 
 async function occurrences(showId: string, from: string, to: string) {
   return ok<ShowOccurrencesResponse>(
@@ -202,6 +216,71 @@ describe('rerun slots', () => {
     ]);
   });
 
+  it('reads a rerun slot stored without a strategy (before #48) as the latest episode', async () => {
+    const s = await newShow('Legacy');
+    const slot = await newSlot(s.id, {
+      type: 'rerun',
+      rule: weekly('2027-01-04', ['mo'], '10:00'),
+    });
+    await t.tdb.db
+      .update(showSlot)
+      .set({ rerunStrategy: null, rerunEpisodeId: null })
+      .where(eq(showSlot.id, slot.id));
+    const slots = await ok<{ items: ShowSlot[] }>(await call('GET', `/shows/${s.id}/slots`));
+    expect(slots.items.find((x) => x.id === slot.id)?.rerun).toEqual({
+      strategy: 'latest_episode',
+    });
+    const ep = await newEpisode(s.id, { airedAt: longAgo });
+    const res = await occurrences(s.id, '2027-01-04T00:00:00Z', '2027-01-05T00:00:00Z');
+    expect(res.occurrences.find((o) => o.slotId === slot.id)?.rerunOf?.id).toBe(ep.id);
+  });
+
+  it('saves a chosen-episode strategy before the episode is picked', async () => {
+    const s = await newShow('Incomplete');
+    const ep = await newEpisode(s.id, { airedAt: longAgo });
+    const slot = await newSlot(s.id, {
+      type: 'rerun',
+      rule: weekly('2027-01-04', ['mo'], '10:00'),
+      rerun: { strategy: 'episode', episodeId: null },
+    });
+    expect(slot.rerun).toEqual({ strategy: 'episode', episodeId: null });
+    // The latest one airs until then.
+    const res = await occurrences(s.id, '2027-01-04T00:00:00Z', '2027-01-05T00:00:00Z');
+    expect(res.occurrences.find((o) => o.slotId === slot.id)?.rerunOf?.id).toBe(ep.id);
+  });
+
+  it('never airs a chosen episode before it has aired: the latest aired one airs instead', async () => {
+    const s = await newShow('Too early');
+    const premieres = await newSlot(s.id, {
+      type: 'prerecorded',
+      rule: weekly('2027-01-04', ['mo'], '20:00'),
+    });
+    const old = await newEpisode(s.id, { airedAt: longAgo });
+    const later = await newEpisode(s.id, { slotId: premieres.id, occurrenceDate: '2027-01-11' });
+    const neverAired = await newEpisode(s.id);
+    const before = await newSlot(s.id, {
+      type: 'rerun',
+      rule: { freq: 'once', date: '2027-01-06', time: '10:00' },
+      rerun: { strategy: 'episode', episodeId: later.id },
+    });
+    const after = await newSlot(s.id, {
+      type: 'rerun',
+      rule: { freq: 'once', date: '2027-01-13', time: '10:00' },
+      rerun: { strategy: 'episode', episodeId: later.id },
+    });
+    const unscheduled = await newSlot(s.id, {
+      type: 'rerun',
+      rule: { freq: 'once', date: '2027-01-13', time: '12:00' },
+      rerun: { strategy: 'episode', episodeId: neverAired.id },
+    });
+    const res = await occurrences(s.id, '2027-01-06T00:00:00Z', '2027-01-14T00:00:00Z');
+    const of = (slotId: string) => res.occurrences.find((o) => o.slotId === slotId)?.rerunOf?.id;
+    expect(of(before.id)).toBe(old.id);
+    expect(of(after.id)).toBe(later.id);
+    // A never-aired choice: the latest aired one by then (`later` premiered on the 11th).
+    expect(of(unscheduled.id)).toBe(later.id);
+  });
+
   it('reruns the latest episode that already went out, or the chosen one', async () => {
     const s = await newShow('Resolve');
     const premieres = await newSlot(s.id, {
@@ -210,8 +289,9 @@ describe('rerun slots', () => {
     });
     const ep1 = await newEpisode(s.id, { slotId: premieres.id, occurrenceDate: '2027-01-04' });
     const ep2 = await newEpisode(s.id, { slotId: premieres.id, occurrenceDate: '2027-01-11' });
-    // No audio: never rerun.
+    // No audio, or never aired (unscheduled): never rerun.
     await newEpisode(s.id, { audio: false });
+    await newEpisode(s.id);
     const latest = await newSlot(s.id, {
       type: 'rerun',
       rule: weekly('2027-01-05', ['tu'], '10:00'),
@@ -235,10 +315,18 @@ describe('rerun slots', () => {
 
     // The log generator's entry point agrees.
     expect(
-      await resolveRerun(t.tdb.db, scope, { slotId: latest.id, occurrenceDate: '2027-01-12' }),
+      await resolveRerun(t.tdb.db, scope, {
+        slotId: latest.id,
+        occurrenceDate: '2027-01-12',
+        startsAt: new Date('2027-01-12T09:00:00Z'),
+      }),
     ).toEqual({ kind: 'latest_episode', episodeId: ep2.id, assetId: ep2.assetId });
     expect(
-      await resolveRerun(t.tdb.db, scope, { slotId: premieres.id, occurrenceDate: '2027-01-11' }),
+      await resolveRerun(t.tdb.db, scope, {
+        slotId: premieres.id,
+        occurrenceDate: '2027-01-11',
+        startsAt: new Date('2027-01-11T19:00:00Z'),
+      }),
     ).toBeNull();
 
     // The chosen episode deleted: the slot keeps its strategy and the latest airs.
@@ -264,7 +352,7 @@ describe('rerun slots', () => {
 
   it('airs a 02:30 rerun after the March gap and at the first 02:30 in October', async () => {
     const s = await newShow('Night');
-    await newEpisode(s.id);
+    await newEpisode(s.id, { airedAt: longAgo });
     const slot = await newSlot(s.id, {
       type: 'rerun',
       rule: weekly('2027-03-01', ['su'], '02:30'),
@@ -315,7 +403,7 @@ describe('schedule a rerun', () => {
 
   it('falls back to the episode audio’s length, rounded up to the minute', async () => {
     const s = await ok<Show>(await call('POST', '/shows', { name: 'No default' }), 201);
-    const ep = await newEpisode(s.id, { durationMs: 59 * 60_000 + 1 });
+    const ep = await newEpisode(s.id, { durationMs: 59 * 60_000 + 1, airedAt: longAgo });
     const slot = await ok<ShowSlot>(
       await call('POST', `/shows/${s.id}/episodes/${ep.id}/reruns`, {
         date: '2027-02-06',
@@ -356,6 +444,30 @@ describe('schedule a rerun', () => {
     );
     expect(presenter.statusCode).toBe(403);
 
+    // Never aired: unscheduled, or marked aired only after the rerun would start.
+    const unscheduled = await newEpisode(s.id);
+    const notAired = await call('POST', `/shows/${s.id}/episodes/${unscheduled.id}/reruns`, {
+      date: '2027-02-10',
+      time: '14:00',
+    });
+    expect(notAired.statusCode).toBe(422);
+    expect(notAired.json().error).toBe('not_aired');
+    const airsLater = await newEpisode(s.id, { airedAt: '2027-02-10T15:00:00Z' });
+    const sameDay = await call('POST', `/shows/${s.id}/episodes/${airsLater.id}/reruns`, {
+      date: '2027-02-10',
+      time: '14:00',
+    });
+    expect(sameDay.json().error).toBe('not_aired');
+    // 17:00 in Paris is after 15:00Z: fine.
+    expect(
+      (
+        await call('POST', `/shows/${s.id}/episodes/${airsLater.id}/reruns`, {
+          date: '2027-02-10',
+          time: '17:00',
+        })
+      ).statusCode,
+    ).toBe(201);
+
     const unknown = await call('POST', `/shows/${s.id}/episodes/${randomUUID()}/reruns`, {
       date: '2027-02-10',
       time: '14:00',
@@ -368,7 +480,7 @@ describe('now playing', () => {
   async function itemFor(
     episodeId: string,
     assetId: string,
-    originShowSlotId: string,
+    originShowSlotId: string | null,
     plannedStart: Date,
   ) {
     const [day] = await t.tdb.db
@@ -394,7 +506,7 @@ describe('now playing', () => {
         plannedDurationMs: 2 * H,
         assetId,
         episodeId,
-        originType: 'show',
+        originType: originShowSlotId ? 'show' : 'manual',
         originShowSlotId,
       })
       .returning({ id: logItem.id });
@@ -419,6 +531,31 @@ describe('now playing', () => {
     if (!recorded) throw new Error('not recorded');
     return recorded.entry;
   }
+
+  it('marks an unscheduled episode aired on its first airing, and a rerun after', async () => {
+    const s = await newShow('By hand');
+    const ep = await newEpisode(s.id);
+    const first = await airs(
+      await itemFor(ep.id, ep.assetId as string, null, new Date('2027-05-01T10:00:00Z')),
+      new Date('2027-05-01T10:00:00Z'),
+    );
+    expect(first.episode?.rerun).toBe(false);
+    const aired = await ok<Episode>(await call('GET', `/shows/${s.id}/episodes/${ep.id}`));
+    expect(aired.status).toBe('aired');
+    expect(new Date(aired.airedAt as unknown as string).toISOString()).toBe(
+      '2027-05-01T10:00:00.000Z',
+    );
+    const again = await airs(
+      await itemFor(ep.id, ep.assetId as string, null, new Date('2027-05-08T10:00:00Z')),
+      new Date('2027-05-08T10:00:00Z'),
+    );
+    expect(again.episode?.rerun).toBe(true);
+    // The first airing stays the episode's.
+    const still = await ok<Episode>(await call('GET', `/shows/${s.id}/episodes/${ep.id}`));
+    expect(new Date(still.airedAt as unknown as string).toISOString()).toBe(
+      '2027-05-01T10:00:00.000Z',
+    );
+  });
 
   it('shows the original episode number and the rerun flag', async () => {
     const s = await newShow('Now playing');

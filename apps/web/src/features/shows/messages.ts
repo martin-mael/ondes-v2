@@ -86,11 +86,13 @@ const en = {
   'rerun.episode': 'A chosen episode',
   'rerun.episodeField': 'Episode',
   'rerun.episodeNone': 'Choose an episode',
-  'rerun.help': 'The latest episode is the most recent one with audio that has already aired.',
-  'rerun.episodeMissing': 'No episode chosen yet: the latest one airs until you pick one.',
+  'rerun.help':
+    'Only aired episodes air again. The latest is the most recent one aired by then (a premiere planned earlier counts).',
+  'rerun.episodeMissing':
+    'No episode chosen yet: you can save, and the latest one airs until you pick one.',
   'rerun.slotLatest': 'Reruns the latest episode',
   'rerun.slotEpisode': 'Reruns episode {number}',
-  'rerun.slotEpisodeGone': 'Reruns the latest episode (the chosen one was deleted)',
+  'rerun.slotEpisodeGone': 'Reruns the latest episode: no episode chosen (or it was deleted)',
   'rerun.schedule': 'Schedule a rerun',
   'rerun.scheduleLabel': 'Schedule a rerun of episode {number}',
   'rerun.dialogTitle': 'Rerun episode {number}',
@@ -101,6 +103,9 @@ const en = {
   'rerun.durationHelp':
     'Empty: the premiere’s length, else the show’s usual one, else the audio’s.',
   'rerun.beforePremiere': 'This is before the episode’s premiere ({date}): pick a later date.',
+  'rerun.beforeAired': 'The episode first aired on {when}: a rerun comes after that.',
+  'rerun.durationInvalid': 'A whole number of minutes, from 1 to 1440.',
+  'rerun.premieres': 'premieres {date}',
   'rerun.submit': 'Schedule',
   'rerun.done': 'Rerun of episode {number} scheduled for {when}.',
   'upcoming.noEpisode': 'No episode yet.',
@@ -256,6 +261,7 @@ const en = {
   'error.duration_required': 'Give the slot a length: the show has no usual length.',
   'error.no_audio': 'This episode has no audio to air again.',
   'error.before_premiere': 'A rerun comes after the episode’s premiere.',
+  'error.not_aired': 'Only an episode that has aired can be rerun.',
   'error.not_a_rerun_slot': 'Only a rerun slot has an episode to air again.',
   'error.unknown_episode': 'This episode is not one of the show’s.',
   'error.invalid_host': 'A host is not a member of this station.',
@@ -355,11 +361,14 @@ const fr: Record<ShowMessageKey, string> = {
   'rerun.episode': 'Un épisode choisi',
   'rerun.episodeField': 'Épisode',
   'rerun.episodeNone': 'Choisir un épisode',
-  'rerun.help': 'Le dernier épisode est le plus récent déjà diffusé qui a de l’audio.',
-  'rerun.episodeMissing': 'Pas encore d’épisode choisi : le dernier passe en attendant.',
+  'rerun.help':
+    'Seuls les épisodes déjà diffusés repassent. Le dernier est le plus récent diffusé d’ici là (une première diffusion prévue avant compte).',
+  'rerun.episodeMissing':
+    'Pas encore d’épisode choisi : vous pouvez enregistrer, le dernier passe en attendant.',
   'rerun.slotLatest': 'Rediffuse le dernier épisode',
   'rerun.slotEpisode': 'Rediffuse l’épisode {number}',
-  'rerun.slotEpisodeGone': 'Rediffuse le dernier épisode (celui choisi a été supprimé)',
+  'rerun.slotEpisodeGone':
+    'Rediffuse le dernier épisode : aucun épisode choisi (ou il a été supprimé)',
   'rerun.schedule': 'Programmer une rediffusion',
   'rerun.scheduleLabel': 'Programmer une rediffusion de l’épisode {number}',
   'rerun.dialogTitle': 'Rediffuser l’épisode {number}',
@@ -371,6 +380,10 @@ const fr: Record<ShowMessageKey, string> = {
     'Vide : la durée de la première diffusion, sinon celle de l’émission, sinon celle de l’audio.',
   'rerun.beforePremiere':
     'C’est avant la première diffusion de l’épisode ({date}) : choisissez une date plus tardive.',
+  'rerun.beforeAired':
+    'L’épisode a été diffusé pour la première fois le {when} : une rediffusion vient après.',
+  'rerun.durationInvalid': 'Un nombre entier de minutes, de 1 à 1440.',
+  'rerun.premieres': 'première diffusion le {date}',
   'rerun.submit': 'Programmer',
   'rerun.done': 'Rediffusion de l’épisode {number} programmée le {when}.',
   'upcoming.noEpisode': 'Pas encore d’épisode.',
@@ -532,6 +545,7 @@ const fr: Record<ShowMessageKey, string> = {
     'Donnez une durée au créneau : l’émission n’a pas de durée habituelle.',
   'error.no_audio': 'Cet épisode n’a pas d’audio à rediffuser.',
   'error.before_premiere': 'Une rediffusion vient après la première diffusion de l’épisode.',
+  'error.not_aired': 'Seul un épisode déjà diffusé peut être rediffusé.',
   'error.not_a_rerun_slot': 'Seul un créneau de rediffusion a un épisode à rediffuser.',
   'error.unknown_episode': 'Cet épisode n’appartient pas à l’émission.',
   'error.invalid_host': 'Un animateur n’est pas membre de cette station.',
