@@ -30,7 +30,8 @@ apps/
     plugins/            # fastify plugins: db, auth, rabbit, sse, errors
     modules/<module>/   # routes.ts, service.ts, repo.ts, *.test.ts
                         # auth, orgs, stations, library, engine, asrun, rotation,
-                        # clocks, shows, log, public, jobs, alerts, cache, segues, live
+                        # clocks, shows, log, public, jobs, alerts, cache, segues, live,
+                        # listeners, prelisten
   worker/src/
     jobs/<job>/         # one folder per job type: ingest, loudness, autocue, analysis,
                         # peaks, dedupe, cache-sync (+ cache-fetch, its urgent
@@ -40,7 +41,7 @@ apps/
     app/                # shell, routing (router.tsx), auth pages, layout, api client,
                         # SSE client (sse/), i18n
     features/<feature>/ # library, cue-editor, rotation, clocks, grid, shows,
-                        # log-timeline, segue-editor, live, dashboard, settings
+                        # log-timeline, segue-editor, live, dashboard, alerts, settings
     ui/                 # shared design-system components (shadcn/ui on Base UI)
 packages/
   shared/src/
