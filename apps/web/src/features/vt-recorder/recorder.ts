@@ -81,6 +81,47 @@ const browserDeps: RecorderDeps = {
   },
 };
 
+let defaultDeps: RecorderDeps = browserDeps;
+
+/** Tests: the platform the page's recorders get (fakes); no argument puts the browser back. */
+export function setRecorderDeps(deps?: RecorderDeps): void {
+  defaultDeps = deps ?? browserDeps;
+}
+
+/**
+ * Longest take, in seconds. A take is held as float PCM until it is trimmed and uploaded
+ * (10 min at 48 kHz is about 115 MB, its WAV about 86 MB): the recorder stops there by itself,
+ * and the page warns a minute before. A VT is seconds long; this only bounds a forgotten Stop.
+ */
+export const MAX_TAKE_SECONDS = 600;
+
+/** The take's samples so far: grown by doubling, so stopping needs no copy. */
+class TakeBuffer {
+  private data: Float32Array;
+  length = 0;
+  constructor(initial: number) {
+    this.data = new Float32Array(Math.max(1, initial));
+  }
+  /** Appends up to `max` samples in total; returns false once full. */
+  push(samples: Float32Array, max: number): boolean {
+    const room = max - this.length;
+    const part = samples.length > room ? samples.subarray(0, room) : samples;
+    if (this.length + part.length > this.data.length) {
+      const next = new Float32Array(
+        Math.min(max, Math.max(this.data.length * 2, this.length + part.length)),
+      );
+      next.set(this.data.subarray(0, this.length));
+      this.data = next;
+    }
+    this.data.set(part, this.length);
+    this.length += part.length;
+    return this.length < max;
+  }
+  samples(): Float32Array {
+    return this.data.subarray(0, this.length);
+  }
+}
+
 /** The music under a take: the segue's clips from axis position `from`. */
 export interface Preroll {
   clips: readonly Clip[];
@@ -91,25 +132,35 @@ export class VtRecorder {
   private ctx: AudioContext | null = null;
   private player: SeguePlayer | null = null;
   private capture: Capture | null = null;
+  private capturing: Promise<Capture> | null = null;
   private stream: MediaStream | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private analyser: AnalyserNode | null = null;
   private meterBuffer: Float32Array<ArrayBuffer> | null = null;
   private recording: {
     startFrame: number;
-    chunks: Float32Array[];
+    buffer: TakeBuffer;
+    max: number;
     preroll: Preroll | null;
+    /** Read when the take starts: what the presenter heard against what was captured. */
+    latency: number;
+    onLimit: (() => void) | undefined;
   } | null = null;
+  /** Bumped by every `open()`, `record()`, `stop()` and `close()`: awaits check they're current. */
+  private openGeneration = 0;
+  private recordGeneration = 0;
+  private closed = false;
   private take: AudioBufferSourceNode | null = null;
   private readonly stationId: string;
   private readonly deps: RecorderDeps;
 
-  constructor(stationId: string, deps: RecorderDeps = browserDeps) {
+  constructor(stationId: string, deps: RecorderDeps = defaultDeps) {
     this.stationId = stationId;
     this.deps = deps;
   }
 
   private context(): AudioContext {
+    if (this.closed) throw new Error('recorder closed');
     if (!this.ctx) {
       const ctx = this.deps.createContext();
       this.ctx = ctx;
@@ -127,8 +178,14 @@ export class VtRecorder {
     return (await this.deps.enumerateDevices()).filter((d) => d.kind === 'audioinput');
   }
 
-  /** Opens (or switches to) a microphone; the meter reads it from now on. Returns its id. */
-  async open(deviceId?: string): Promise<string | null> {
+  /**
+   * Opens (or switches to) a microphone; the meter reads it from now on. Resolves with the
+   * device's id, or `superseded` when `close()` or a newer `open()` came during the permission
+   * prompt: that stream is stopped at once, never left live without an owner.
+   */
+  async open(deviceId?: string): Promise<{ deviceId: string | null } | 'superseded'> {
+    const generation = ++this.openGeneration;
+    const current = () => !this.closed && generation === this.openGeneration;
     const stream = await this.deps.getUserMedia({
       audio: {
         ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
@@ -138,19 +195,33 @@ export class VtRecorder {
         autoGainControl: false,
       },
     });
-    this.release();
-    this.stream = stream;
+    const drop = () => {
+      for (const track of stream.getTracks()) track.stop();
+      return 'superseded' as const;
+    };
+    if (!current()) return drop();
     const ctx = this.context();
     if (ctx.state === 'suspended') await ctx.resume().catch(() => {});
-    this.capture ??= await this.deps.createCapture(ctx);
-    this.capture.onChunk((frame, samples) => this.onChunk(frame, samples));
+    if (!current()) return drop();
+    if (!this.capturing) {
+      // One capture node per context, even when two opens race (a module registers once).
+      this.capturing = this.deps.createCapture(ctx).then((capture) => {
+        capture.onChunk((frame, samples) => this.onChunk(frame, samples));
+        return capture;
+      });
+    }
+    const capture = await this.capturing;
+    if (!current()) return drop();
+    this.capture = capture;
+    this.release();
+    this.stream = stream;
     this.source = ctx.createMediaStreamSource(stream);
     this.analyser = ctx.createAnalyser();
     this.analyser.fftSize = 2048;
     this.meterBuffer = new Float32Array(this.analyser.fftSize);
     this.source.connect(this.analyser);
     this.source.connect(this.capture.node);
-    return stream.getAudioTracks()[0]?.getSettings().deviceId ?? deviceId ?? null;
+    return { deviceId: stream.getAudioTracks()[0]?.getSettings().deviceId ?? deviceId ?? null };
   }
 
   get isOpen(): boolean {
@@ -168,22 +239,41 @@ export class VtRecorder {
 
   /**
    * Starts a take. With a pre-roll, the music starts first and the take begins with it; the
-   * promise resolves once both run (`cancelled` when `stop()` came first).
+   * promise resolves once both run, or `cancelled` when `stop()` or `close()` came first (while
+   * the context resumed or the music loaded): then nothing records.
+   * `onLimit` runs once the take reached {@link MAX_TAKE_SECONDS}; capture has stopped by then.
    */
-  async record(preroll: Preroll | null, onPrerollEnd?: () => void): Promise<PlayResult> {
+  async record(
+    preroll: Preroll | null,
+    { onPrerollEnd, onLimit }: { onPrerollEnd?: () => void; onLimit?: () => void } = {},
+  ): Promise<PlayResult> {
     const ctx = this.context();
     if (!this.capture) throw new Error('no microphone open');
+    const generation = ++this.recordGeneration;
+    const current = () => !this.closed && generation === this.recordGeneration;
     if (ctx.state === 'suspended') await ctx.resume();
+    if (!current()) return 'cancelled';
     this.stopPlayback();
     let at = ctx.currentTime;
     if (preroll) {
       const player = this.player as SeguePlayer;
       const result = await player.play(preroll.clips, preroll.from, () => onPrerollEnd?.());
       const started = player.startedAt();
+      if (!current()) {
+        player.stop();
+        return 'cancelled';
+      }
       if (result === 'cancelled' || !started) return 'cancelled';
       at = started.at;
     }
-    this.recording = { startFrame: Math.round(at * ctx.sampleRate), chunks: [], preroll };
+    this.recording = {
+      startFrame: Math.round(at * ctx.sampleRate),
+      buffer: new TakeBuffer(30 * ctx.sampleRate),
+      max: MAX_TAKE_SECONDS * ctx.sampleRate,
+      preroll,
+      latency: this.latency(),
+      onLimit,
+    };
     return 'playing';
   }
 
@@ -193,13 +283,25 @@ export class VtRecorder {
 
   private onChunk(frame: number, samples: Float32Array) {
     const rec = this.recording;
-    if (!rec) return;
+    if (!rec || rec.buffer.length >= rec.max) return;
     const skip = rec.startFrame - frame;
     if (skip >= samples.length) return;
-    rec.chunks.push(skip > 0 ? samples.subarray(skip) : samples);
+    if (!rec.buffer.push(skip > 0 ? samples.subarray(skip) : samples, rec.max)) {
+      this.player?.stop();
+      rec.onLimit?.();
+    }
   }
 
-  /** Total latency between what the presenter hears and what is captured, in seconds. */
+  /**
+   * Seconds between the music the presenter hears and the mic frames captured with it:
+   * - `inputLatency`: mic to the context (the track's `latency`, where the browser reports it);
+   * - `baseLatency`: the context's own buffering between its destination node and the
+   *   platform's audio subsystem;
+   * - `outputLatency`: the audio subsystem to the speakers. The Web Audio spec counts it from
+   *   where `baseLatency` ends, so the two add up: a sound scheduled at context time T is heard
+   *   at T + base + output.
+   * Read once when a take starts, the moment the presenter starts hearing the pre-roll.
+   */
   latency(): number {
     const ctx = this.ctx;
     if (!ctx) return 0;
@@ -212,21 +314,15 @@ export class VtRecorder {
 
   /** Ends the take (and its pre-roll). Null when nothing was recording. */
   stop(): Take | null {
+    this.recordGeneration++;
     const rec = this.recording;
     this.recording = null;
     this.player?.stop();
     if (!rec || !this.ctx) return null;
-    const length = rec.chunks.reduce((n, c) => n + c.length, 0);
-    const samples = new Float32Array(length);
-    let at = 0;
-    for (const chunk of rec.chunks) {
-      samples.set(chunk, at);
-      at += chunk.length;
-    }
     return {
-      samples,
+      samples: rec.buffer.samples(),
       sampleRate: this.ctx.sampleRate,
-      axisStart: rec.preroll ? rec.preroll.from - Math.round(this.latency() * AXIS_RATE) : null,
+      axisStart: rec.preroll ? rec.preroll.from - Math.round(rec.latency * AXIS_RATE) : null,
     };
   }
 
@@ -296,6 +392,9 @@ export class VtRecorder {
 
   /** Stops everything, frees the mic and the audio context. */
   close(): void {
+    this.closed = true;
+    this.openGeneration++;
+    this.recordGeneration++;
     this.recording = null;
     this.stopPlayback();
     this.player?.stop();
@@ -304,5 +403,6 @@ export class VtRecorder {
     this.ctx = null;
     this.player = null;
     this.capture = null;
+    this.capturing = null;
   }
 }

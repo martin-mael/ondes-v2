@@ -4,6 +4,9 @@ import type { Lanes } from './model.ts';
 // (precision trim), so the editor hands its unsaved lanes over before leaving: the recorder
 // plays them as the pre-roll, and the editor gets them back, with the new voice, on return.
 // In memory only, per transition: a reload drops it (the editor then starts from the api).
+// The editor restores it only when the recorder sends it back (`resume`, or a placed take) and
+// drops it on any other visit, so a draft left behind never comes back over a segue that
+// moved on. Leaving the recorder elsewhere asks first (its unsaved guard counts the draft).
 
 export interface SegueDraft {
   lanes: Lanes;

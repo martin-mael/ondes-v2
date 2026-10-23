@@ -69,8 +69,10 @@ function uploadWriteGuard(app: FastifyInstance): preHandlerAsyncHookHandler {
           try {
             await g.call(app, request, reply);
             return true;
-          } catch {
-            // Not this one: try the next.
+          } catch (failure) {
+            // Missing that permission: try the next. Anything else (db down, 2FA required,
+            // not a member of the station) is the answer.
+            if (!(failure instanceof HttpError && failure.code === 'forbidden')) throw failure;
           }
         }
         return false;

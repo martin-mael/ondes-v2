@@ -127,13 +127,16 @@ export function encodeWav(samples: Float32Array, sampleRate: number, trim?: Trim
   const frames = Math.max(0, to - from);
   const bytesPerSample = 3;
   const dataBytes = frames * bytesPerSample;
-  const out = new Uint8Array(44 + dataBytes);
+  // RIFF chunks are word-aligned: an odd-sized data chunk is followed by a pad byte, which the
+  // RIFF size counts (the data chunk's own size doesn't).
+  const pad = dataBytes % 2;
+  const out = new Uint8Array(44 + dataBytes + pad);
   const view = new DataView(out.buffer);
   const ascii = (at: number, text: string) => {
     for (let i = 0; i < text.length; i++) out[at + i] = text.charCodeAt(i);
   };
   ascii(0, 'RIFF');
-  view.setUint32(4, 36 + dataBytes, true);
+  view.setUint32(4, 36 + dataBytes + pad, true);
   ascii(8, 'WAVE');
   ascii(12, 'fmt ');
   view.setUint32(16, 16, true);

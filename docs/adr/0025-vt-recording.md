@@ -42,6 +42,10 @@ lanes' media). The recorder only warns, calmly and without blocking, when the ke
   rate). The trimmed take is encoded as mono 24-bit WAV: lossless, so ingest's measurement and
   its 44.1 kHz FLAC playout copy come from what was recorded, and 24 bits keep a quiet take's
   detail when the playout gain raises it. A 3-minute take is about 26 MB at 48 kHz.
+- A take is at most **10 minutes** (`MAX_TAKE_SECONDS`): until it is trimmed and uploaded it is
+  float PCM in memory (about 115 MB at 48 kHz, 86 MB as WAV). The recorder warns a minute
+  before and stops by itself there; a VT is seconds long, so this only bounds a forgotten Stop.
+  Samples go into one buffer grown by doubling, so stopping makes no extra full-size copy.
 - Trimming happens in the browser before the upload: the asset is the voice, not the silence
   around it. The recorder suggests a trim (from 150 ms before the first sound above −45 dBFS
   to 300 ms after the last) on a full-page waveform.
@@ -57,8 +61,14 @@ and the music heard then was scheduled `baseLatency + outputLatency` earlier. So
     take.axisStart = preroll.from − round((inputLatency + baseLatency + outputLatency) × 44 100)
     voice.start    = take.axisStart + trim.from × 44 100 / take.sampleRate
 
-`inputLatency` is the track's `latency` setting where the browser reports it (0 otherwise);
-anything left is a small constant offset the presenter nudges in the editor.
+`inputLatency` is the track's `latency` setting where the browser reports it (0 otherwise).
+`baseLatency` is the context's own buffering between its destination and the platform's audio
+subsystem, and `outputLatency` runs from there to the speakers: the Web Audio spec defines the
+second from where the first ends, so a sound scheduled at context time T is heard at
+T + base + output, and both are added. The latencies are read once, when the take starts (the
+moment the presenter starts hearing the pre-roll), not at Stop, when a device switch or a
+Bluetooth renegotiation may have changed them. Anything left is a small constant offset the
+presenter nudges in the editor.
 
 Back in the editor the take becomes a new voice lane at `voice.start` with `cueIn: 0`. An
 explicit cue-in matters: a VT's asset cue-in may later be set by autocue (leading silence),
@@ -83,4 +93,13 @@ their own `write_own` check.
 - Latency compensation is as good as the browser's latency report. A per-device offset setting
   is possible later if presenters see a consistent drift.
 - The editor's draft hand-over is in memory: reloading the recorder page drops it (the editor
-  then starts from the saved segue; an uploaded take stays in the library).
+  then starts from the saved segue; an uploaded take stays in the library). The editor
+  restores it only when the recorder sends it back (its back link, or a placed take), and
+  drops it on any other visit, so a draft left behind never comes back over a segue that has
+  changed since. Leaving the recorder any other way asks first: its unsaved guard counts the
+  draft. A draft that does come back carries the version it was based on, so a save over a
+  segue changed meanwhile is a 409 and the editor's conflict dialog.
+- Opening the mic, starting a take and closing the page race with permission prompts and
+  `AudioContext.resume()`: each step checks it is still current after its awaits, a stream
+  granted after the page closed (or after a newer choice) is stopped at once, and a Stop during
+  the start leaves nothing recording.

@@ -80,4 +80,13 @@ describe('take', () => {
     expect(fine?.values[1]).toBeGreaterThan(60);
     expect(fine?.values[0]).toBeLessThan(-60);
   });
+
+  it('pads an odd-sized data chunk to a word, as RIFF wants', () => {
+    const wav = encodeWav(new Float32Array(3), RATE);
+    const view = new DataView(wav.buffer);
+    expect(view.getUint32(40, true)).toBe(9);
+    expect(wav.length).toBe(44 + 9 + 1);
+    expect(view.getUint32(4, true)).toBe(wav.length - 8);
+    expect(encodeWav(new Float32Array(2), RATE).length).toBe(44 + 6);
+  });
 });

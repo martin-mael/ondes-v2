@@ -32,11 +32,12 @@ import {
   clipsOf,
   emptyLanes,
   type Lanes,
+  sameLanes,
   transitionStart,
 } from '../segue-editor/model.ts';
 import { type TakeUploadPhase, takeFilename, uploadTake } from './api.ts';
 import { useVtT, type VtT } from './messages.ts';
-import { VtRecorder } from './recorder.ts';
+import { MAX_TAKE_SECONDS, VtRecorder } from './recorder.ts';
 import {
   AXIS_RATE,
   CLIP_DBFS,
@@ -104,7 +105,9 @@ export function SegueRecorderPage() {
     enabled: valid && lanes !== null,
   });
 
-  const back = (
+  // Back to the editor carries the draft back (`resume`); `beforeLeave` lets it through the
+  // unsaved guard when only the draft is unsaved, since it isn't lost.
+  const back = (beforeLeave?: () => void) => (
     <Button
       variant="ghost"
       size="sm"
@@ -113,7 +116,8 @@ export function SegueRecorderPage() {
         <Link
           to="/stations/$stationId/log/segue"
           params={{ stationId }}
-          search={{ date: search.date, from: search.from, to: search.to }}
+          search={{ date: search.date, from: search.from, to: search.to, resume: true }}
+          onClick={beforeLeave}
         />
       }
     >
@@ -123,7 +127,7 @@ export function SegueRecorderPage() {
   );
   const problem = (message: React.ReactNode) => (
     <div className="flex flex-col items-start gap-4 p-6">
-      {back}
+      {back()}
       {message}
     </div>
   );
@@ -155,6 +159,7 @@ export function SegueRecorderPage() {
       subtitle={`${titleOf(a)} → ${titleOf(b)}`}
       defaultName={t('save.defaultName', { from: titleOf(a), to: titleOf(b) })}
       back={back}
+      draftDirty={!!draft && !sameLanes(draft.lanes, draft.saved.lanes)}
       preroll={music && { clips: music, transitionStart: transitionStart(lanes) }}
       prerollMissing={!music}
       saveLabel={t('save.place')}
@@ -177,7 +182,7 @@ export function VtRecorderPage() {
   const { stationId } = standaloneRoute.useParams();
   const navigate = useNavigate();
   const { timeZone, canRecord } = useStation(stationId);
-  const back = (
+  const back = () => (
     <Button
       variant="ghost"
       size="sm"
@@ -191,7 +196,7 @@ export function VtRecorderPage() {
   if (!canRecord) {
     return (
       <div className="flex flex-col items-start gap-4 p-6">
-        {back}
+        {back()}
         <p className="text-sm text-muted-foreground">{t('forbidden')}</p>
       </div>
     );
@@ -203,6 +208,7 @@ export function VtRecorderPage() {
       title={t('title')}
       defaultName={t('save.defaultStandalone', { date: now.date, time: now.time })}
       back={back}
+      draftDirty={false}
       preroll={null}
       prerollMissing={false}
       saveLabel={t('save.library')}
@@ -232,6 +238,7 @@ function Recorder({
   subtitle,
   defaultName,
   back,
+  draftDirty,
   preroll,
   prerollMissing,
   saveLabel,
@@ -241,7 +248,10 @@ function Recorder({
   title: string;
   subtitle?: string;
   defaultName: string;
-  back: React.ReactNode;
+  /** The back link; `beforeLeave` runs on its click. */
+  back: (beforeLeave?: () => void) => React.ReactNode;
+  /** The segue editor's draft that came along is unsaved: leaving elsewhere loses it. */
+  draftDirty: boolean;
   /** The segue's clips and where its transition starts, or null to record without music. */
   preroll: { clips: readonly Clip[]; transitionStart: number } | null;
   prerollMissing: boolean;
@@ -250,18 +260,27 @@ function Recorder({
 }) {
   const t = useVtT();
   const errorMessage = useErrorMessage();
-  const recorder = useMemo(() => new VtRecorder(stationId), [stationId]);
-  useEffect(() => () => recorder.close(), [recorder]);
+  // Made in an effect, not a memo: a closed recorder stays closed, and StrictMode's remount
+  // must get a fresh one.
+  const [recorder, setRecorder] = useState<VtRecorder | null>(null);
+  useEffect(() => {
+    const next = new VtRecorder(stationId);
+    setRecorder(next);
+    return () => next.close();
+  }, [stationId]);
 
   // --- Microphone ------------------------------------------------------------------------
   const supported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia;
   const [mic, setMic] = useState<MicState>({ status: 'closed' });
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const openMic = async (deviceId?: string) => {
+    if (!recorder) return;
     setMic({ status: 'opening' });
     try {
-      const id = await recorder.open(deviceId);
-      setMic({ status: 'open', deviceId: id });
+      const opened = await recorder.open(deviceId);
+      // Closed (left the page) or a newer choice won: that one sets the state.
+      if (opened === 'superseded') return;
+      setMic({ status: 'open', deviceId: opened.deviceId });
       setDevices(await recorder.devices().catch(() => []));
     } catch (error) {
       const denied =
@@ -292,7 +311,7 @@ function Recorder({
   }, [phase]);
 
   const finish = () => {
-    const next = recorder.stop();
+    const next = recorder?.stop();
     setPhase('idle');
     if (!next) return;
     setTake(next);
@@ -300,7 +319,11 @@ function Recorder({
     setView(fullView(next.samples.length));
   };
 
+  const finishRef = useRef(finish);
+  finishRef.current = finish;
+
   const start = async () => {
+    if (!recorder) return;
     stopTake();
     setElapsed(0);
     setPhase('starting');
@@ -309,7 +332,12 @@ function Recorder({
         clips: preroll.clips,
         from: preroll.transitionStart - prerollS * AXIS_RATE,
       };
-      const result = await recorder.record(music);
+      const result = await recorder.record(music, {
+        onLimit: () => {
+          finishRef.current();
+          toast.info(t('record.limitReached', { minutes: MAX_TAKE_SECONDS / 60 }));
+        },
+      });
       if (result === 'playing') setPhase('recording');
     } catch {
       recorder.stop();
@@ -321,11 +349,11 @@ function Recorder({
   // --- Take playback ---------------------------------------------------------------------
   const [listening, setListening] = useState<'take' | 'music' | null>(null);
   const stopTake = () => {
-    recorder.stopPlayback();
+    recorder?.stopPlayback();
     setListening(null);
   };
   const listen = async (withMusic: boolean) => {
-    if (!take) return;
+    if (!take || !recorder) return;
     stopTake();
     setListening(withMusic ? 'music' : 'take');
     try {
@@ -346,7 +374,8 @@ function Recorder({
   const [name, setName] = useState(defaultName);
   const [upload, setUpload] = useState<TakeUploadPhase | null>(null);
   const uploading = upload !== null;
-  const { guard, allowLeave } = useUnsavedChanges(take !== null || phase !== 'idle');
+  const holdsWork = take !== null || phase !== 'idle';
+  const { guard, allowLeave } = useUnsavedChanges(holdsWork || draftDirty);
   useSseEvent('upload.updated', (e) => wakers.get(e.data.id)?.());
   const abort = useRef<AbortController | null>(null);
   useEffect(() => () => abort.current?.abort(), []);
@@ -402,7 +431,10 @@ function Recorder({
     <div className="flex flex-col gap-4 p-4 sm:p-6">
       {guard}
       <div className="flex flex-wrap items-center gap-3">
-        {back}
+        {back(() => {
+          // Only the draft is unsaved: it goes back with this link, nothing is lost.
+          if (!holdsWork) allowLeave();
+        })}
         <h1 className="font-heading text-xl font-semibold">{title}</h1>
         {subtitle && <p className="min-w-0 truncate text-sm text-muted-foreground">{subtitle}</p>}
       </div>
@@ -497,6 +529,11 @@ function Recorder({
           <span className="flex items-center gap-2 text-sm tabular-nums" role="status">
             <span className="size-2 rounded-full bg-destructive" />
             {t('record.recording', { time: formatTime(elapsed) })}
+          </span>
+        )}
+        {phase === 'recording' && elapsed >= MAX_TAKE_SECONDS - 60 && (
+          <span className="text-sm text-muted-foreground">
+            {t('record.limitSoon', { time: formatTime(MAX_TAKE_SECONDS) })}
           </span>
         )}
       </div>

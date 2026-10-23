@@ -30,6 +30,8 @@ const en = {
   'record.stop': 'Stop',
   'record.retake': 'Retake',
   'record.recording': 'Recording {time}',
+  'record.limitSoon': 'The take stops by itself at {time}.',
+  'record.limitReached': 'Recording stopped at the {minutes}-minute limit.',
   'record.loading': 'Loading the music…',
   'record.noMusic': 'The music of this segue isn’t ready yet: you can record without pre-roll.',
   'record.audioError': 'The music could not be loaded for the pre-roll.',
@@ -95,6 +97,8 @@ const fr: Record<VtMessageKey, string> = {
   'record.stop': 'Arrêter',
   'record.retake': 'Refaire',
   'record.recording': 'Enregistrement {time}',
+  'record.limitSoon': 'La prise s’arrête d’elle-même à {time}.',
+  'record.limitReached': 'Enregistrement arrêté à la limite de {minutes} minutes.',
   'record.loading': 'Chargement de la musique…',
   'record.noMusic':
     'La musique de cet enchaînement n’est pas encore prête : vous pouvez enregistrer sans pré-écoute.',

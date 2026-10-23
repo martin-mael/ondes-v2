@@ -21,7 +21,11 @@ export type TakeUploadPhase = { phase: 'uploading'; pct: number } | { phase: 'pr
 
 export interface TakeUploadOptions {
   signal?: AbortSignal;
-  /** Resolves after `ms`, or sooner when the upload changed (an `upload.updated` event). */
+  /**
+   * Resolves after `ms`, or sooner when the upload changed: an `upload.updated` event, which
+   * reaches every `library:read` holder, presenters included, once #169 is in. Until then
+   * presenters get no event and this is a plain wait, so the poll is what finds the result.
+   */
   waitForChange?: (uploadId: string, ms: number, signal?: AbortSignal) => Promise<void>;
   processingTimeoutMs?: number;
   pollMs?: number;

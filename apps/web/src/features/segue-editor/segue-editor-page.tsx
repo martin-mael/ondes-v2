@@ -204,6 +204,7 @@ export function SegueEditorPage() {
         back={back}
         date={date}
         placed={search.voice ? { assetId: search.voice, at: search.at ?? null } : null}
+        resume={!!search.resume}
       />
     </PreviewProvider>
   );
@@ -227,6 +228,7 @@ function Editor({
   back,
   date,
   placed,
+  resume,
 }: {
   stationId: string;
   timeZone: string;
@@ -238,12 +240,15 @@ function Editor({
   date: LocalDate;
   /** A take just recorded (#59): added as a new voice once, then dropped from the URL. */
   placed: { assetId: string; at: number | null } | null;
+  /** Back from the recorder without a take: restore the draft handed over to it. */
+  resume: boolean;
 }) {
   const t = useSegueT();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   // Back from the recorder (#59): the draft handed over before leaving, with its reference.
-  const [stashed] = useState(() => peekDraft(stationId, a.id, b.id));
+  // Any other way in drops it (draft.ts).
+  const [stashed] = useState(() => (placed || resume ? peekDraft(stationId, a.id, b.id) : null));
   useEffect(() => void takeDraft(stationId, a.id, b.id), [stationId, a.id, b.id]);
   const history = useHistory<Lanes>(stashed?.lanes ?? lanesOf(segue));
   const lanes = history.state.present;
@@ -531,10 +536,12 @@ function Editor({
   // A take back from the recorder: one new voice (undoable), then off the URL so a reload or
   // a back navigation doesn't add it twice.
   const placing = useRef(placed);
+  const resuming = useRef(resume);
   useEffect(() => {
     const take = placing.current;
-    if (!take) return;
+    if (!take && !resuming.current) return;
     placing.current = null;
+    resuming.current = false;
     void navigate({
       to: '/stations/$stationId/log/segue',
       params: { stationId },
@@ -543,6 +550,7 @@ function Editor({
       // Same page, same draft: not a leave for the unsaved-changes guard.
       ignoreBlocker: true,
     });
+    if (!take) return;
     if (!canWrite || lanes.voices.some((v) => v.assetId === take.assetId)) return;
     if (lanes.voices.length >= 4) {
       toast.warning(t('record.full'));

@@ -1,7 +1,10 @@
 import type { Upload } from '@ondes/shared';
+import { waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderApp, signedIn, stationId } from '../../app/testing/render.tsx';
 import { takeFilename, uploadTake } from './api.ts';
+import { setRecorderDeps } from './recorder.ts';
+import { fakeRecorder } from './testing.ts';
 
 // The standalone recorder page and the take's upload against a fake api: the page asks for
 // the mic and says when it's blocked; the upload is a `vt` upload whose ingest it waits for.
@@ -33,6 +36,7 @@ const upload = (overrides: Partial<Upload> = {}) => ({
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  setRecorderDeps();
   Reflect.deleteProperty(navigator, 'mediaDevices');
 });
 
@@ -51,6 +55,47 @@ describe('VT recorder page', () => {
     await user.click(screen.getByRole('button', { name: 'Use the microphone' }));
     expect(await screen.findByText(/The microphone is blocked/)).toBeInTheDocument();
     expect(getUserMedia).toHaveBeenCalledOnce();
+  });
+});
+
+describe('standalone VT', () => {
+  it('records without pre-roll and uploads the take to the library', async () => {
+    const fake = fakeRecorder();
+    setRecorderDeps(fake.deps);
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getUserMedia: fake.getUserMedia },
+      configurable: true,
+    });
+    const created = vi.fn((_body: unknown): [number, unknown] => [201, upload()]);
+    const { screen, user, history } = renderApp(`${base}/voice-tracks/record`, {
+      ...signedIn(),
+      [`POST ${base}/uploads`]: created,
+      [`POST ${base}/uploads/${uploadId}/parts`]: [
+        200,
+        { parts: [{ partNumber: 1, url: 'https://s3.test/part/1' }], expiresIn: 3600 },
+      ],
+      'PUT /part/1': [200],
+      [`POST ${base}/uploads/${uploadId}/complete`]: [202, upload({ status: 'queued' })],
+      [`GET ${base}/uploads/${uploadId}`]: [200, upload({ status: 'ingested', assetId })],
+    });
+    await user.click(await screen.findByRole('button', { name: 'Use the microphone' }));
+    await screen.findByRole('combobox', { name: 'Input' });
+    // No music to hear: no pre-roll choice, no headphones hint.
+    expect(screen.queryByRole('combobox', { name: 'Pre-roll' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Record' }));
+    await screen.findByRole('status');
+    fake.deliver(fake.startFrame(false), 1, 0.3);
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    const name = await screen.findByRole('textbox', { name: 'Name' });
+    expect(screen.queryByRole('button', { name: 'Play over the music' })).not.toBeInTheDocument();
+    await user.clear(name);
+    await user.type(name, 'Promo Le Sonic');
+    await user.click(screen.getByRole('button', { name: 'Upload to the library' }));
+    await waitFor(() => expect(history.location.pathname).toBe(`${base}/library`));
+    expect(created.mock.calls[0]?.[0]).toMatchObject({
+      filename: 'Promo Le Sonic.wav',
+      assetType: 'vt',
+    });
   });
 });
 
