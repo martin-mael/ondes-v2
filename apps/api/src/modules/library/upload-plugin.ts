@@ -75,29 +75,26 @@ function uploadWriteGuard(app: FastifyInstance): preHandlerAsyncHookHandler {
         }
         return false;
       };
+      // The scope (and `request.permissions`) exist once one of these guards passed.
       const params = paramsSchema.safeParse(request.params);
-      const scope = stationScopeOf(request);
-      let assetType: unknown;
       if (!params.success) {
         const body = request.body as { assetType?: unknown; showId?: unknown } | undefined;
-        assetType = body?.assetType;
-        if (assetType === 'episode' && (await holds(showWriteOwn))) {
-          const showId = uuidSchema.safeParse(body?.showId);
-          if (showId.success) {
-            if (request.permissions?.has('show:write')) return;
-            if (await isHost(app.db, scope, showId.data, auth.user.id)) return;
-          }
+        if (body?.assetType === 'vt' && (await holds(voiceWriteOwn, voiceWrite))) return;
+        const showId = uuidSchema.safeParse(body?.showId);
+        if (body?.assetType === 'episode' && showId.success && (await holds(showWriteOwn))) {
+          if (request.permissions?.has('show:write')) return;
+          const scope = stationScopeOf(request);
+          if (await isHost(app.db, scope, showId.data, auth.user.id)) return;
         }
-      } else {
-        const found = await getUpload(app.db, scope, params.data.uploadId);
-        assetType = found.assetType;
-        if (found.createdBy === auth.user.id) {
-          if (assetType === 'episode' && (await holds(showWriteOwn))) return;
-          if (assetType === 'vt' && (await holds(voiceWriteOwn, voiceWrite))) return;
-        }
-        throw error;
+      } else if (await holds(showWriteOwn, voiceWriteOwn, voiceWrite)) {
+        const found = await getUpload(app.db, stationScopeOf(request), params.data.uploadId);
+        const held = request.permissions;
+        const may =
+          (found.assetType === 'episode' && held?.has('show:write_own')) ||
+          (found.assetType === 'vt' &&
+            (held?.has('voice_track:write_own') || held?.has('voice_track:write')));
+        if (may && found.createdBy === auth.user.id) return;
       }
-      if (assetType === 'vt' && (await holds(voiceWriteOwn, voiceWrite))) return;
       throw error;
     }
   };
