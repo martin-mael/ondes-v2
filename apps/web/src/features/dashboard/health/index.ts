@@ -1,17 +1,6 @@
-// Health, listeners and alerts (#71). Placeholders until the panels land.
+// Health, listeners and alerts (#71): the dashboard's panels, listed in ../widgets.tsx.
 
-export function EngineStatusPanel(_props: { stationId: string }) {
-  return null;
-}
-
-export function LiveSourcesPanel(_props: { stationId: string }) {
-  return null;
-}
-
-export function ListenersPanel(_props: { stationId: string }) {
-  return null;
-}
-
-export function AlertsPanel(_props: { stationId: string }) {
-  return null;
-}
+export { AlertsPanel } from './alerts-panel.tsx';
+export { EngineStatusPanel } from './engine-status-panel.tsx';
+export { ListenersPanel } from './listeners-panel.tsx';
+export { LiveSourcesPanel } from './live-sources-panel.tsx';
