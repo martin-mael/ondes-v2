@@ -62,7 +62,7 @@ export type ListListenerStatsQuery = z.input<typeof listListenerStatsQuerySchema
  */
 export const currentListenersSchema = z.object({
   /** Newest bucket among the mounts; null when there is no recent data. */
-  at: z.date().nullable(),
+  sampledAt: z.date().nullable(),
   total: z.int().min(0),
   mounts: z.array(
     z.object({
@@ -72,7 +72,8 @@ export const currentListenersSchema = z.object({
       listenersMax: z.int().min(0),
       /** The engine fed the mount for most of the bucket (otherwise listeners got its fallback). */
       sourceConnected: z.boolean(),
-      at: z.date(),
+      /** Start of the minute bucket read. */
+      sampledAt: z.date(),
     }),
   ),
 });
@@ -89,15 +90,15 @@ export type ListenerHistoryQuery = z.input<typeof listenerHistoryQuerySchema>;
  * 5 min over 24 h), per mount and in total. A step without any sample is null (no data), not 0.
  */
 export const listenerHistorySchema = z.object({
-  from: z.date(),
-  to: z.date(),
+  startsAt: z.date(),
+  endsAt: z.date(),
   stepSeconds: z.int().positive(),
   /** Mounts with data in the range, sorted. */
   mounts: z.array(streamMountSchema),
   points: z.array(
     z.object({
       /** Start of the step, UTC. */
-      at: z.date(),
+      startsAt: z.date(),
       total: z.number().min(0).nullable(),
       /** Mount -> average listeners; mounts without data in the step are absent. */
       byMount: z.record(z.string(), z.number().min(0)),

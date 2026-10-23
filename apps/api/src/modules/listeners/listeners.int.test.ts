@@ -96,7 +96,7 @@ describe('listeners', () => {
     ]);
     const current = await currentListeners(tdb.db, scope, now);
     expect(currentListenersSchema.parse(current)).toEqual({
-      at: new Date('2026-10-23T12:00:00Z'),
+      sampledAt: new Date('2026-10-23T12:00:00Z'),
       total: 17,
       mounts: [
         {
@@ -104,20 +104,20 @@ describe('listeners', () => {
           listeners: 5,
           listenersMax: 6,
           sourceConnected: false,
-          at: new Date('2026-10-23T12:00:00Z'),
+          sampledAt: new Date('2026-10-23T12:00:00Z'),
         },
         {
           mount: '/l/mp3',
           listeners: 12,
           listenersMax: 13,
           sourceConnected: true,
-          at: new Date('2026-10-23T12:00:00Z'),
+          sampledAt: new Date('2026-10-23T12:00:00Z'),
         },
       ],
     });
     // No recent data: unknown, not zero.
     expect(await currentListeners(tdb.db, scope, new Date('2026-10-24T00:00:00Z'))).toEqual({
-      at: null,
+      sampledAt: null,
       total: 0,
       mounts: [],
     });
@@ -137,18 +137,18 @@ describe('listeners', () => {
     const history = listenerHistorySchema.parse(await listenerHistory(tdb.db, scope, 24, now));
     expect(history.stepSeconds).toBe(300);
     expect(history.points).toHaveLength(288);
-    expect(history.to).toEqual(new Date('2026-10-23T12:05:00Z'));
-    expect(history.from).toEqual(new Date('2026-10-22T12:05:00Z'));
+    expect(history.endsAt).toEqual(new Date('2026-10-23T12:05:00Z'));
+    expect(history.startsAt).toEqual(new Date('2026-10-22T12:05:00Z'));
     expect(history.mounts).toEqual(['/l/aac', '/l/mp3']);
-    const at = (iso: string) => history.points.find((p) => p.at.toISOString() === iso);
+    const at = (iso: string) => history.points.find((p) => p.startsAt.toISOString() === iso);
     expect(at('2026-10-23T11:50:00.000Z')).toEqual({
-      at: new Date('2026-10-23T11:50:00Z'),
+      startsAt: new Date('2026-10-23T11:50:00Z'),
       total: 18,
       byMount: { '/l/mp3': 15, '/l/aac': 3 },
     });
     expect(at('2026-10-22T13:00:00.000Z')?.total).toBe(7);
     expect(at('2026-10-23T12:00:00.000Z')).toEqual({
-      at: new Date('2026-10-23T12:00:00Z'),
+      startsAt: new Date('2026-10-23T12:00:00Z'),
       total: null,
       byMount: {},
     });
@@ -168,7 +168,7 @@ describe('listeners', () => {
       });
     const now = await get(scope.stationId, 'listeners');
     expect(now.statusCode).toBe(200);
-    expect(now.json()).toEqual({ at: null, total: 0, mounts: [] });
+    expect(now.json()).toEqual({ sampledAt: null, total: 0, mounts: [] });
     const history = await get(scope.stationId, 'listeners/history?hours=6');
     expect(history.statusCode).toBe(200);
     expect(history.json().points).toHaveLength(180);

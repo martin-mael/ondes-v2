@@ -117,6 +117,7 @@ const en = {
   'account.recovery.done': "I've saved them",
 
   'shell.nav.dashboard': 'Dashboard',
+  'shell.nav.alerts': 'Alerts',
   'shell.nav.calendar': 'Calendar',
   'shell.nav.shows': 'Shows',
   'shell.nav.recordVt': 'Record a VT',
@@ -276,6 +277,7 @@ const fr: Messages = {
   'account.recovery.done': 'Je les ai enregistrés',
 
   'shell.nav.dashboard': 'Tableau de bord',
+  'shell.nav.alerts': 'Alertes',
   'shell.nav.calendar': 'Calendrier',
   'shell.nav.shows': 'Émissions',
   'shell.nav.recordVt': 'Enregistrer une voix',

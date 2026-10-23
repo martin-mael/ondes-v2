@@ -113,10 +113,15 @@ async function newStation() {
 type Station = Awaited<ReturnType<typeof newStation>>;
 
 /** Waits for the station's `alert.*` event of `type` and checks it came within 5 s of `since`. */
-async function seen(s: Station, type: AlertRealtimeEvent['type'], alertType: string, since: number) {
+async function seen(
+  s: Station,
+  type: Exclude<AlertRealtimeEvent['type'], 'alert.silence_settings.updated'>,
+  alertType: string,
+  since: number,
+) {
   const event = await waitFor(`${type} ${alertType}`, () =>
     alertEvents.find(
-      (e) =>
+      (e): e is Extract<typeof e, { data: { alertId: string } }> =>
         e.type === type &&
         e.stationId === s.scope.stationId &&
         (e.data as { type?: string }).type === alertType,
@@ -172,7 +177,9 @@ describe('engine restarts (engine.restarted)', () => {
     const engineAlerts = (restartStableMs: number) =>
       createEngineAlerts({ db: tdb.db, alerts: app.alerts, restartStableMs, logger: app.log });
     await engineAlerts(30 * 60_000).reconcile();
-    expect((await s.alerts(`status=all&type=${alertTypes.engineRestarted}`))[0]?.status).toBe('open');
+    expect((await s.alerts(`status=all&type=${alertTypes.engineRestarted}`))[0]?.status).toBe(
+      'open',
+    );
     await engineAlerts(0).reconcile();
     expect((await s.alerts(`status=all&type=${alertTypes.engineRestarted}`))[0]).toMatchObject({
       status: 'resolved',
@@ -184,7 +191,11 @@ describe('engine restarts (engine.restarted)', () => {
 describe('failed renders (island.render_failed)', () => {
   let days = 0;
   /** A log item airing in `inMs` and an island headed by it (each on its own log day). */
-  async function islandAiring(s: Station, inMs: number, extra: Partial<typeof island.$inferInsert>) {
+  async function islandAiring(
+    s: Station,
+    inMs: number,
+    extra: Partial<typeof island.$inferInsert>,
+  ) {
     const start = Date.now() + inMs;
     const [day] = await tdb.db
       .insert(logDay)

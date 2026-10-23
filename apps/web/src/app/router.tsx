@@ -11,6 +11,7 @@ import {
 } from '@tanstack/react-router';
 import { toast } from 'sonner';
 import { z } from 'zod';
+import { AlertsPage, alertsSearchSchema } from '../features/alerts/alerts-page.tsx';
 import { EditClockPage, NewClockPage } from '../features/clocks/clock-editor-page.tsx';
 import { ClocksPage } from '../features/clocks/clocks-page.tsx';
 import { CueEditorPage, cueEditorSearchSchema } from '../features/cue-editor/cue-editor-page.tsx';
@@ -276,6 +277,14 @@ const showRoute = createRoute({
   component: ShowPage,
 });
 
+// Alerts (#71): open by default, `?status=open|resolved|all&type=<alert type>`.
+const alertsRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'alerts',
+  validateSearch: alertsSearchSchema,
+  component: AlertsPage,
+});
+
 const safetySettingsRoute = createRoute({
   getParentRoute: () => stationRoute,
   path: '/settings/safety',
@@ -349,6 +358,7 @@ const routeTree = rootRoute.addChildren([
     accountRoute,
     stationRoute.addChildren([
       dashboardRoute,
+      alertsRoute,
       libraryRoute,
       cueEditorRoute,
       categoriesRoute,

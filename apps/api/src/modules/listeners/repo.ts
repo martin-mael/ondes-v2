@@ -39,10 +39,13 @@ export async function currentListeners(
     listeners: Math.round(r.listenersSum / r.samples),
     listenersMax: r.listenersMax,
     sourceConnected: r.sourceSamples * 2 > r.samples,
-    at: r.at,
+    sampledAt: r.at,
   }));
-  const at = mounts.reduce<Date | null>((max, m) => (max && max >= m.at ? max : m.at), null);
-  return { at, total: mounts.reduce((sum, m) => sum + m.listeners, 0), mounts };
+  const sampledAt = mounts.reduce<Date | null>(
+    (max, m) => (max && max >= m.sampledAt ? max : m.sampledAt),
+    null,
+  );
+  return { sampledAt, total: mounts.reduce((sum, m) => sum + m.listeners, 0), mounts };
 }
 
 /** Step for `hours` of history: whole minutes, {@link HISTORY_POINTS} steps at most. */
@@ -87,12 +90,12 @@ export async function listenerHistory(
   for (let at = from.getTime(); at < to.getTime(); at += stepMs) {
     const byMount = byStep.get(at);
     points.push({
-      at: new Date(at),
+      startsAt: new Date(at),
       total: byMount
         ? Math.round(Object.values(byMount).reduce((sum, n) => sum + n, 0) * 10) / 10
         : null,
       byMount: byMount ?? {},
     });
   }
-  return { from, to, stepSeconds, mounts: [...mounts].sort(), points };
+  return { startsAt: from, endsAt: to, stepSeconds, mounts: [...mounts].sort(), points };
 }

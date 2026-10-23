@@ -39,7 +39,6 @@ export async function listenerRoutes(app: FastifyInstance) {
         response: { 200: listenerHistorySchema },
       },
     },
-    async (request) =>
-      repo.listenerHistory(app.db, stationScopeOf(request), request.query.hours),
+    async (request) => repo.listenerHistory(app.db, stationScopeOf(request), request.query.hours),
   );
 }
