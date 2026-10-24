@@ -77,6 +77,12 @@ export const asRunEntry = pgTable(
     showId: uuid('show_id'),
     episodeNumber: integer('episode_number'),
     rerun: boolean('rerun').notNull().default(false),
+    /**
+     * A live entry (#65): the DJ's name and what they aired for (an event's title, or the
+     * show's name), snapshotted from its live session. Its episode is in `episode_id`.
+     */
+    liveDjName: text('live_dj_name'),
+    liveTitle: text('live_title'),
     /** The segue transition it carries (#57): the island it is, or the voices over its crossfade. */
     transition: jsonb('transition').$type<AsRunTransition>(),
     /** The api's clock when it was recorded. */

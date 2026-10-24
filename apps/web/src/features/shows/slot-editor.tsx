@@ -1,6 +1,8 @@
 import {
   createShowSlotSchema,
   isoWeekday,
+  LIVE_SLOT_DEFAULTS,
+  type LiveEarlyConnect,
   localDateOf,
   type RerunStrategy,
   type Show,
@@ -48,6 +50,9 @@ interface Draft {
   /** Rerun slots (#48): which episode airs again. */
   rerunStrategy: RerunStrategy;
   rerunEpisodeId: string;
+  /** Live slots (#65): minutes to wait for the DJ, and what an early DJ gets. */
+  graceMin: string;
+  earlyConnect: LiveEarlyConnect;
 }
 
 function draftOf(show: Show, slot: ShowSlot | undefined, today: string): Draft {
@@ -65,6 +70,19 @@ function draftOf(show: Show, slot: ShowSlot | undefined, today: string): Draft {
     durationMin: String(Math.round(durationMs / 60_000)),
     rerunStrategy: slot?.rerun?.strategy ?? 'latest_episode',
     rerunEpisodeId: (slot?.rerun?.strategy === 'episode' && slot.rerun.episodeId) || '',
+    graceMin: String(Math.round((slot?.live?.graceMs ?? LIVE_SLOT_DEFAULTS.graceMs) / 60_000)),
+    earlyConnect: slot?.live?.earlyConnect ?? LIVE_SLOT_DEFAULTS.earlyConnect,
+  };
+}
+
+/** Live settings go with live slots only. */
+function liveOf(draft: Draft) {
+  if (draft.type !== 'live') return {};
+  return {
+    live: {
+      graceMs: Math.round(Number(draft.graceMin) * 60_000),
+      earlyConnect: draft.earlyConnect,
+    },
   };
 }
 
@@ -165,6 +183,7 @@ export function SlotEditorDialog({
       rule: ruleOf(draft),
       durationMs: Math.round(Number(draft.durationMin) * 60_000),
       ...rerunOf(draft),
+      ...liveOf(draft),
     };
     const parsed = createShowSlotSchema.safeParse(body);
     if (!parsed.success) {
@@ -272,6 +291,42 @@ export function SlotEditorDialog({
                     ? t('rerun.episodeMissing')
                     : t('rerun.help')}
                 </FieldDescription>
+              </div>
+            )}
+
+            {draft.type === 'live' && (
+              <div className="grid grid-cols-2 gap-4">
+                <Field data-invalid={invalid.has('graceMs') ? true : undefined}>
+                  <FieldLabel htmlFor="slot-grace">{t('live.grace')}</FieldLabel>
+                  <Input
+                    id="slot-grace"
+                    type="number"
+                    min={0}
+                    max={60}
+                    value={draft.graceMin}
+                    onChange={(e) => set('graceMin', e.target.value)}
+                    aria-invalid={invalid.has('graceMs') ? true : undefined}
+                  />
+                  <FieldError
+                    errors={
+                      invalid.has('graceMs') ? [{ message: t('live.graceInvalid') }] : undefined
+                    }
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="slot-early">{t('live.early')}</FieldLabel>
+                  <NativeSelect
+                    id="slot-early"
+                    value={draft.earlyConnect}
+                    onChange={(e) => set('earlyConnect', e.target.value as LiveEarlyConnect)}
+                  >
+                    <NativeSelectOption value="wait">{t('live.early.wait')}</NativeSelectOption>
+                    <NativeSelectOption value="go_live">
+                      {t('live.early.go_live')}
+                    </NativeSelectOption>
+                  </NativeSelect>
+                </Field>
+                <FieldDescription className="col-span-2">{t('live.help')}</FieldDescription>
               </div>
             )}
 

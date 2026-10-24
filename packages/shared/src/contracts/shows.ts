@@ -164,6 +164,36 @@ export const slotRerunSchema = z.discriminatedUnion('strategy', [
 ]);
 export type SlotRerun = z.infer<typeof slotRerunSchema>;
 
+// --- Live slots (#65, ADR 0033) -----------------------------------------------------------
+
+/**
+ * What a DJ who connects before their live slot gets (ADR 0023 lets them connect
+ * `LIVE_EARLY_CONNECT_MS` early):
+ * - `wait`: connected, not on air; they take the air at the slot's start;
+ * - `go_live`: on air as soon as they connect (from 15 min before the start).
+ */
+export const liveEarlyConnectSchema = z.enum(['wait', 'go_live']);
+export type LiveEarlyConnect = z.infer<typeof liveEarlyConnectSchema>;
+
+/** Longest grace period: an hour. */
+export const LIVE_GRACE_MAX_MS = 60 * 60 * 1000;
+export const LIVE_SLOT_DEFAULTS = { graceMs: 5 * 60 * 1000, earlyConnect: 'wait' } as const;
+
+/**
+ * A live slot's settings. `graceMs`: how long after the start the slot waits for its DJ before
+ * the show's fallback (ADR 0022 `fallbackPolicy`) airs for the rest of it; a DJ who connects
+ * later still takes the air. The safety playlist covers the wait.
+ */
+export const slotLiveSchema = z.object({
+  graceMs: z.int().min(0).max(LIVE_GRACE_MAX_MS),
+  earlyConnect: liveEarlyConnectSchema,
+});
+export type SlotLive = z.infer<typeof slotLiveSchema>;
+
+/** As written: either field may be left out (the defaults, or the slot's current value). */
+export const slotLiveInputSchema = slotLiveSchema.partial();
+export type SlotLiveInput = z.input<typeof slotLiveInputSchema>;
+
 // --- Show --------------------------------------------------------------------------------
 
 export const showHostSchema = z.object({ userId: uuidSchema, name: z.string() });
@@ -265,6 +295,11 @@ export const showSlotSchema = z.object({
    * versions' payloads still parse; the api always sends it.
    */
   rerun: slotRerunSchema.nullable().optional(),
+  /**
+   * Set exactly on `live` slots (#65): grace period and early-connect behaviour. Optional so
+   * older api versions' payloads still parse; the api always sends it.
+   */
+  live: slotLiveSchema.nullable().optional(),
   /** Ordered by date. */
   exceptions: z.array(slotExceptionSchema),
   createdAt: z.date(),
@@ -275,12 +310,14 @@ export type ShowSlot = z.infer<typeof showSlotSchema>;
 /**
  * `type` defaults to the show's `defaultSlotType`, `durationMs` to its `defaultDurationMs`.
  * `rerun` goes with `type: 'rerun'` only, and defaults to `{ strategy: 'latest_episode' }`.
+ * `live` goes with `type: 'live'` only, and defaults to `LIVE_SLOT_DEFAULTS`.
  */
 export const createShowSlotSchema = z.object({
   type: slotTypeSchema.optional(),
   rule: slotRuleSchema,
   durationMs: showDurationSchema.optional(),
   rerun: slotRerunInputSchema.optional(),
+  live: slotLiveInputSchema.optional(),
 });
 export type CreateShowSlot = z.input<typeof createShowSlotSchema>;
 
@@ -288,6 +325,8 @@ export type CreateShowSlot = z.input<typeof createShowSlotSchema>;
  * Exceptions on dates the new rule no longer has are dropped. Premieres on occurrences that no
  * longer exist (or on every occurrence, for a change to `rerun`) are detached. A change to
  * `rerun` without `rerun` reruns the latest episode; a change away from it drops the strategy.
+ * The same goes for `live`: a change to `live` gets the defaults for what it leaves out, a
+ * change away from it drops the settings.
  */
 export const updateShowSlotSchema = patchOf(
   z.object({
@@ -295,6 +334,7 @@ export const updateShowSlotSchema = patchOf(
     rule: slotRuleSchema,
     durationMs: showDurationSchema,
     rerun: slotRerunInputSchema,
+    live: slotLiveInputSchema,
   }),
 );
 export type UpdateShowSlot = z.input<typeof updateShowSlotSchema>;
@@ -487,6 +527,8 @@ export const showOccurrenceSchema = z.object({
    * rerun yet). Absent on other slot types.
    */
   rerunOf: occurrenceEpisodeSchema.nullable().optional(),
+  /** A live occurrence (#65): its slot's settings. Absent on other slot types. */
+  live: slotLiveSchema.optional(),
 });
 export type ShowOccurrence = z.infer<typeof showOccurrenceSchema>;
 

@@ -253,6 +253,13 @@
       "when": 1792873847373,
       "tag": "20261024203047_promo-vts",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1792873876622,
+      "tag": "20261024203116_live-slots",
+      "breakpoints": true
     }
   ]
 }

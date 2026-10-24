@@ -1,5 +1,6 @@
 import {
   createStreamerSchema,
+  type LiveAdHocPolicy,
   type LocalDate,
   type LocalTime,
   type Streamer,
@@ -43,6 +44,7 @@ interface Draft {
   expiresDate: string;
   expiresTime: string;
   anyTime: boolean;
+  adHoc: LiveAdHocPolicy;
   showIds: string[];
 }
 
@@ -57,6 +59,7 @@ function draftOf(streamer: Streamer | undefined, timezone: string): Draft {
     expiresDate: expires?.date ?? '',
     expiresTime: expires?.time ?? '',
     anyTime: streamer?.anyTime ?? false,
+    adHoc: streamer?.adHoc ?? 'approval',
     showIds: streamer?.shows.map((s) => s.id) ?? [],
   };
 }
@@ -118,6 +121,7 @@ export function StreamerDialog({
       enabled: draft.enabled,
       expiresAt,
       anyTime: draft.anyTime,
+      adHoc: draft.adHoc,
       showIds: draft.showIds,
     };
     const body = streamer
@@ -259,6 +263,20 @@ export function StreamerDialog({
               </label>
               <FieldDescription>{t('field.anyTimeHelp')}</FieldDescription>
             </FieldSet>
+            <Field>
+              <FieldLabel htmlFor="streamer-ad-hoc">{t('field.adHoc')}</FieldLabel>
+              <NativeSelect
+                id="streamer-ad-hoc"
+                value={draft.adHoc}
+                onChange={(e) => set('adHoc', e.target.value as LiveAdHocPolicy)}
+              >
+                <NativeSelectOption value="approval">
+                  {t('field.adHoc.approval')}
+                </NativeSelectOption>
+                <NativeSelectOption value="allowed">{t('field.adHoc.allowed')}</NativeSelectOption>
+              </NativeSelect>
+              <FieldDescription>{t('field.adHocHelp')}</FieldDescription>
+            </Field>
             <FieldSet disabled={draft.anyTime}>
               <FieldLegend variant="label">{t('field.shows')}</FieldLegend>
               {shows.isSuccess && showList.length === 0 ? (

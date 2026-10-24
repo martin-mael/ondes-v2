@@ -93,6 +93,7 @@ async function toStreamers(db: Executor, rows: StreamerRow[]): Promise<Streamer[
     enabled: r.enabled,
     expiresAt: r.expiresAt,
     anyTime: r.anyTime,
+    adHoc: r.adHoc,
     shows: shows
       .filter((s) => s.streamerId === r.id)
       .map(({ id, name, colour }) => ({ id, name, colour })),
@@ -246,6 +247,7 @@ export async function createStreamer(
         enabled: body.enabled ?? true,
         expiresAt: body.expiresAt ?? null,
         anyTime: body.anyTime ?? false,
+        adHoc: body.adHoc ?? 'approval',
       })
       .returning();
     if (!row) throw new Error('insert returned nothing');

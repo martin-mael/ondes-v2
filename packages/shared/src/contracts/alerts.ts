@@ -93,6 +93,14 @@ export const alertTypes = {
    * `details.i18n` is `{ key: 'logRegen.issues', params: { localDate, total } }`.
    */
   logGenerationIssues: 'log.generation_issues',
+  /**
+   * A live slot's DJ wasn't on air by the slot's start + grace period (#65): `warning`, the
+   * show's fallback airs for the rest of the slot (`details.fallback`, or `critical` when none
+   * could). One per occurrence (`details.slotId`, `occurrenceDate`); resolved `dj_on_air` when
+   * a DJ of the show goes on air in it, or `occurrence_ended`. `details.i18n` as above
+   * (`liveSlotMissed.fallback` / `.noFallback`).
+   */
+  liveSlotMissed: 'live.slot_missed',
 } as const;
 
 /**

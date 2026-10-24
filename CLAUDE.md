@@ -32,6 +32,9 @@ apps/
                         # auth, orgs, stations, library, engine, asrun, rotation,
                         # clocks, shows, log, public, jobs, alerts, cache, segues, live,
                         # promos
+                        # (live/: switching, standing, slot-check, requests, events;
+                        #  live/testing/: the in-memory engine pool for its tests;
+                        #  shows/live-slots.ts: live slot settings and live episodes)
   worker/src/
     jobs/<job>/         # one folder per job type: ingest, loudness, autocue, analysis,
                         # peaks, dedupe, cache-sync (+ cache-fetch, its urgent
