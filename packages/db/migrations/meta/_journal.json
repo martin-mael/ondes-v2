@@ -239,6 +239,13 @@
       "when": 1792762562693,
       "tag": "20261023133602_live-switching",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1792776155156,
+      "tag": "20261023172235_slot-start-policy",
+      "breakpoints": true
     }
   ]
 }

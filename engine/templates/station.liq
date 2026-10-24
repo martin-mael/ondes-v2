@@ -12,8 +12,9 @@
 # settings combination in engine/tests/template/combos.ts and runs `liquidsoap --check`.
 #
 # Source chain, highest priority first:
-#   live (a pool of input.harbor, one selected by Node) > return file (once, after live)
-#   > queue (segments pushed by Node)
+#   live (a pool of input.harbor, one selected by Node)
+#   > scheduled (a hard start, gated on the audio timeline, #46)
+#   > return file (once, after live) > queue (segments pushed by Node)
 #   > safety playlist > emergency loop > mksafe (silence)
 # with the station crossfade and the voice overlay (the island fallback, #57) under live,
 # then: processing (compressor, limiter) > as-run > mksafe > blank.detect > outputs.
@@ -458,6 +459,164 @@ overlay.on_frame(
 auto = overlay
 
 # ---------------------------------------------------------------------------------------
+# Hard starts (#46, ADR 0031, after spike #14 / ADR 0003): an item that must start exactly
+# at its time (a pre-recorded episode at HH:00:00). Node schedules it ahead of time with
+# POST /v1/schedule {item_id, uri, at, ...}; the gate opens on the engine's own audio
+# timeline, so the start is frame-accurate whatever Node's timers or the clock thread's
+# jitter do. Taking the air fades the automation out over `fade_out` seconds (default 1)
+# under the item, which starts at full level; the interrupted track is then skipped so it
+# doesn't resume after the item. The item reports `source: queue` (`ondes_source`), like
+# every log item. When it ends, the automation (Node has queued what follows) takes over.
+# Above the automation, below live: a DJ on air at the time keeps it.
+#
+# The audio timeline: the clock thread computes each frame at time() plus a jittery delay
+# (45-60 ms median, spikes to 0.8 s), while the audio is a steady stream: frame n plays at
+# origin + n x frame duration. `clock_origin` is estimated from the least delayed frame
+# (Liquidsoap sleeps when ahead, so a frame is never computed early). The gate opens one
+# frame early (the switch takes effect one frame after its predicate holds) and half a
+# frame early again, to take the frame nearest to `at`.
+#
+# One item at a time: a new schedule posted while the scheduled item is on air waits until
+# that item has ended (or until its own time comes, which cuts the one on air), so posting
+# the next hard start never disturbs the current one; nor does DELETE.
+#
+# Threads: harbor handlers only write the request (`schedule_*`) and bump `schedule_seq`
+# last; the clock thread applies it (`apply_schedule`, before every frame) and alone writes
+# the scheduled queue, `scheduled_*`, `clock_origin` and `frame_pos`.
+scheduled = request.queue(id="scheduled")
+scheduled_at = ref(infinity)
+scheduled_item = ref("")
+scheduled_fade = ref(1.)
+# The scheduled item is on air: the gate stays open until it ends.
+scheduled_on_air = ref(false)
+schedule_seq = ref(0)
+applied_seq = ref(0)
+schedule_at = ref(infinity)
+schedule_item = ref("")
+schedule_fade = ref(1.)
+schedule_requests = ref([])
+clock_origin = ref(infinity)
+frame_pos = ref(0.)
+frame_duration = settings.frame.duration()
+
+def due(t) =
+  clock_origin() != infinity and clock_origin() + frame_pos() >= t - 1.5 * frame_duration
+end
+
+def scheduled_gate() =
+  scheduled_on_air() or due(scheduled_at())
+end
+
+# The item on air from `scheduled` ends with its last frame (`remaining`; a request.queue
+# stays "ready" once empty, so `is_ready` can't tell): the gate shuts then, and the
+# automation takes the air back. A request from the handlers is applied once nothing plays
+# from `scheduled`, or right away when its own time has come (it then cuts the one on air,
+# without a fade: two hard starts that overlap).
+def apply_schedule() =
+  if
+    scheduled_on_air()
+    and
+      (not scheduled.is_ready()
+       or
+         (scheduled.remaining() >= 0. and scheduled.remaining() <= frame_duration))
+  then
+    scheduled_on_air := false
+    scheduled_at := infinity
+  end
+  if
+    schedule_seq() > applied_seq()
+  then
+    playing = scheduled_on_air()
+    if
+      not playing or (not list.is_empty(schedule_requests()) and due(schedule_at()))
+    then
+      applied_seq := schedule_seq()
+      scheduled_at := schedule_at()
+      scheduled_fade := schedule_fade()
+      scheduled_item := schedule_item()
+      scheduled.set_queue(schedule_requests())
+      if playing then scheduled.skip() end
+    end
+  end
+end
+
+scheduled_gated =
+  switch(id="scheduled_gate", track_sensitive=false, [(scheduled_gate, scheduled)])
+
+# The outgoing side of a transition fades out without metadata: the as-run must not see
+# the item it leaves start again.
+def quiet(s) =
+  metadata.map(strip=true, update=false, fun (_) -> [], s)
+end
+
+# The as-run's source on air (set below, where the as-run is defined).
+source_on_air = ref(fun () -> "")
+
+def cut_to_scheduled(a, b) =
+  fade_s = scheduled_fade()
+  # The interrupted queue segment ends as a whole (its island, B body, never resume), and
+  # the voices of the item it ends never start. The fade keeps pulling it until then.
+  # Only that segment: by then Node has queued what follows the hard start, and the
+  # interrupted entry may already have ended on its own during the fade. When safety was
+  # on air, the current segment is one that already ended: nothing to skip.
+  interrupted = current_segment()
+  on_air_source = source_on_air()
+  from_queue = on_air_source() == "queue"
+  thread.run(
+    delay=fade_s + 0.2,
+    fun () ->
+      begin
+        voice_epoch := voice_epoch() + 1
+        if
+          from_queue and current_segment().id == interrupted.id
+        then
+          interrupted.aborted := true
+          queue.skip()
+        end
+      end
+  )
+  add(normalize=false, [(b : source), (fade.out(duration=fade_s, quiet(a)) : source)])
+end
+
+def back_to_automation(a, b) =
+  add(normalize=false, [fade.in(duration=1., b), fade.out(duration=1., quiet(a))])
+end
+
+auto =
+  fallback(
+    id="hardstart",
+    track_sensitive=false,
+    # When the automation takes the air back, its current track's metadata is replayed:
+    # the item queued after the hard start (often taken while the cut's fade still pulled
+    # the automation) is reported when it really goes on air.
+    replay_metadata=true,
+    transitions=[cut_to_scheduled, back_to_automation],
+    [scheduled_gated, auto]
+  )
+
+auto.on_frame(
+  synchronous=true,
+  before=true,
+  fun () ->
+    begin
+      frame_pos := source.time(auto)
+      clock_origin := min(clock_origin(), time() - frame_pos())
+      apply_schedule()
+    end
+)
+
+# Once the scheduled item is on air it is no longer "scheduled" (GET /v1/state), and the
+# gate stays open while it plays: closing it would hand the air back to the automation.
+scheduled.on_track(
+  synchronous=true,
+  fun (_) ->
+    begin
+      scheduled_on_air := true
+      scheduled_item := ""
+    end
+)
+
+# ---------------------------------------------------------------------------------------
 # Live input: a pool of harbor inputs and an on-air selector driven by Node (#64, ADR 0027).
 #
 # `live_inputs` input.harbor sources on live_port, one per mount: `live_mount`, then
@@ -880,6 +1039,7 @@ current_key = ref("")
 current_item = ref("")
 current_segment_id = ref(json.value(null))
 current_source = ref("")
+source_on_air := fun () -> current_source()
 current_started = ref(0.)
 
 def air_key(m) =
@@ -1104,6 +1264,24 @@ def requests_json(rs) =
   "[" ^ string.concat(separator=",", items) ^ "]"
 end
 
+# The item waiting for its time (POST /v1/schedule), or null.
+def scheduled_json() =
+  # A request the clock thread hasn't applied yet wins over what it holds.
+  pending = schedule_seq() > applied_seq()
+  item = if pending then schedule_item() else scheduled_item() end
+  starts_at = if pending then schedule_at() else scheduled_at() end
+  if
+    item == ""
+  then
+    json.value(null)
+  else
+    d = json.object()
+    d.add("item_id", item)
+    d.add("at", starts_at)
+    json.value(d)
+  end
+end
+
 def state_json() =
   s = json.object()
   s.add("boot_id", boot_id)
@@ -1119,6 +1297,7 @@ def state_json() =
   if current_started() > 0. then on_air.add("elapsed", time() - current_started()) end
   s.add("on_air", on_air)
   s.add("queue", list.map(request_json, pending_requests()))
+  s.add("scheduled", scheduled_json())
   l = json.object()
   l.add("enabled", live_enabled())
   l.add("connected", live_connected())
@@ -1401,6 +1580,67 @@ def drop_segments(keep) =
   list.fold(fun (n, s) -> n + list.length(s.requests), 0, dropped)
 end
 
+# POST /v1/schedule: the item that must start at `at` (epoch seconds), on the engine's
+# audio timeline (see "Hard starts"). Replaces the one scheduled before, if any. Its fade-in
+# and cue points apply as on a push; `fade_out` is how long the automation it interrupts
+# fades out under it (default 1 s).
+def handle_schedule(req, res) =
+  if
+    authorized(req, res)
+  then
+    try
+      let json.parse (
+        p :
+          {
+            item_id: string,
+            uri: string,
+            at: float,
+            fade_out: float?,
+            cue_in: float?,
+            cue_out: float?,
+            fade_in: float?,
+            amplify_db: float?,
+            title: string?,
+            artist: string?
+          }
+      ) = req.body()
+      t = {fade_in=p.fade_in, cross_in=null}
+      let (r, problem) = make_request(p, "", into_annotations(t))
+      if
+        problem != ""
+      then
+        fail(res, 422, "cannot resolve #{problem}")
+      else
+        # Applied by the clock thread (`apply_schedule`): the sequence number goes last.
+        schedule_at := p.at
+        schedule_fade := null.get(default=1., p.fade_out)
+        schedule_item := p.item_id
+        schedule_requests := [r]
+        schedule_seq := schedule_seq() + 1
+        reply(res, 201, request_json(r).stringify(compact=true))
+      end
+    catch err do
+      fail(res, 400, "invalid schedule: #{err.message}")
+    end
+  end
+end
+
+# DELETE /v1/schedule: cancels the scheduled item, if it hasn't started. One on air keeps
+# playing.
+def handle_unschedule(req, res) =
+  if
+    authorized(req, res)
+  then
+    pending = schedule_seq() > applied_seq()
+    had = (if pending then schedule_item() else scheduled_item() end) != ""
+    schedule_at := infinity
+    schedule_item := ""
+    schedule_requests := []
+    schedule_seq := schedule_seq() + 1
+    reply(res, 200, json.stringify({cancelled=had}))
+  end
+end
+
 # DELETE /v1/queue/:id: removes every queued entry whose item_id or segment_id is `id`.
 # A segment can't be split: naming one of its parts removes all of it.
 def handle_remove(req, res) =
@@ -1566,6 +1806,8 @@ harbor.http.register(port=control_port, method="POST", "/v1/segment", handle_seg
 harbor.http.register(port=control_port, method="DELETE", "/v1/queue", handle_clear)
 harbor.http.register(port=control_port, method="DELETE", "/v1/queue/:id", handle_remove)
 harbor.http.register(port=control_port, method="POST", "/v1/skip", handle_skip)
+harbor.http.register(port=control_port, method="POST", "/v1/schedule", handle_schedule)
+harbor.http.register(port=control_port, method="DELETE", "/v1/schedule", handle_unschedule)
 harbor.http.register(port=control_port, method="POST", "/v1/live", handle_live)
 harbor.http.register(
   port=control_port, method="POST", "/v1/live/disconnect", handle_live_disconnect

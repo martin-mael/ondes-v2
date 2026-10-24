@@ -7,7 +7,7 @@ import {
   type WrittenDay,
   writeGeneratedDay,
 } from '@ondes/db';
-import { type GeneratorIssue, generateDays } from '@ondes/scheduling';
+import { backTiming, type GeneratorIssue, generateDays } from '@ondes/scheduling';
 import {
   type Actor,
   type LogGenerateJobPayload,
@@ -17,7 +17,8 @@ import {
 import { announce, type PublishEvent } from '../_events/asset-updated.ts';
 
 // One `log-generate` job (#50, ADR 0026): load the station's snapshot once for all the days,
-// generate them in order with @ondes/scheduling (each day's picks count for the next), write
+// generate them in order with @ondes/scheduling (each day's picks count for the next, the music
+// before every hard start back-timed, #46), write
 // each day in its own transaction, then publish `log.updated` (cause `generate`) for what was
 // written. Deterministic: the same snapshot and seed write the same items, so a retried job
 // rewrites the same days.
@@ -49,11 +50,11 @@ export async function runLogGenerate(
     ...(deps.rerun ? { rerun: deps.rerun } : {}),
   });
   if (!loaded) return null;
-  const generated = generateDays(
-    loaded.snapshot,
-    payload.localDates,
-    payload.seed ? { seed: payload.seed } : {},
-  );
+  const generated = generateDays(loaded.snapshot, payload.localDates, {
+    ...(payload.seed ? { seed: payload.seed } : {}),
+    // Hard starts: the music before each one ends on time (#46).
+    extensions: { ...backTiming(loaded.snapshot) },
+  });
   const days: WrittenDay[] = [];
   for (const day of generated) {
     days.push(

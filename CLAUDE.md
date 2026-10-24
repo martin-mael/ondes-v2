@@ -56,7 +56,8 @@ packages/
   queue/                   # RabbitMQ job framework
   scheduling/              # pure, side-effect-free: rules engine, category picker,
                            # clock expansion, log generator (generator/), log timing
-                           # (log/: retime), back-timing
+                           # (log/: retime), back-timing (backtiming/: the generator's
+                           # beforeAnchor); test fixtures at `@ondes/scheduling/testing`
 engine/
   templates/               # Liquidsoap script templates (pinned 2.4.x)
   tests/                   # engine fixtures, seam/timing tests
