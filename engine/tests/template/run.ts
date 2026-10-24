@@ -525,6 +525,7 @@ async function main() {
         engineStateSchema.parse(await (await call('GET', '/state')).json()).on_air.item_id === 'H';
     }
     check(onAirH, 'H goes on air');
+    // Longer than the station crossfade, like any song after an episode.
     writeWav(join(work, 'k.wav'), tone(330, 8, 0.3));
     await call('POST', '/queue', { item_id: 'K', uri: inContainer(join(work, 'k.wav')) });
     const afterH = engineStateSchema.parse(await (await call('GET', '/state')).json());
@@ -675,9 +676,6 @@ async function main() {
       'hard start: H at full level from its start to its end',
     );
     check(g(1.5) < 0.01 && g(5) < 0.01, 'hard start: G faded out under H, and does not resume');
-    console.log(
-      `     K/G/H: ${[-2, 0, 2, 4, 4.5, 5, 6, 7, 8, 9].map((t) => `${t}:${k(t).toFixed(2)}/${g(t).toFixed(2)}/${h(t).toFixed(2)}`).join(' ')} len ${(output.length - hStart) / SAMPLE_RATE}`,
-    );
     const kMax = Math.max(...[4.2, 4.6, 5, 5.4, 5.8, 6.2].map(k));
     check(kMax > 0.2, `hard start: K, queued after H, airs after it (${kMax.toFixed(3)})`);
   } finally {
