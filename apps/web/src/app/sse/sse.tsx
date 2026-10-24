@@ -26,6 +26,8 @@ export interface SseConnection {
   onStatus(listener: () => void): () => void;
   /** Server time minus local time, in ms, from the last `server.clock` (0 before). */
   clockOffset(): number;
+  /** Whether a `server.clock` has arrived on this connection yet. */
+  clockSynced(): boolean;
   close(): void;
 }
 
@@ -43,6 +45,7 @@ export function connectSse(
   const statusListeners = new Set<() => void>();
   let status: SseStatus = 'connecting';
   let offset = 0;
+  let synced = false;
   let source: EventSource | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let attempts = 0;
@@ -78,7 +81,10 @@ export function connectSse(
       const parsed = streamEventSchema.safeParse(data);
       // Events this build doesn't know yet (a newer api) are skipped, not fatal.
       if (!parsed.success) return;
-      if (parsed.data.type === 'server.clock') offset = Date.parse(parsed.data.at) - Date.now();
+      if (parsed.data.type === 'server.clock') {
+        offset = Date.parse(parsed.data.at) - Date.now();
+        synced = true;
+      }
       for (const listener of listeners) listener(parsed.data);
     };
     es.onerror = () => {
@@ -124,6 +130,7 @@ export function connectSse(
       return () => statusListeners.delete(listener);
     },
     clockOffset: () => offset,
+    clockSynced: () => synced,
     close() {
       closed = true;
       clearTimeout(retryTimer);
@@ -204,4 +211,16 @@ export function useServerClock(): Date | null {
   }, [synced]);
   if (!synced) return null;
   return new Date(now + connection.clockOffset());
+}
+
+/**
+ * Server time minus local time, in ms, as of the last `server.clock` of the open stream, or
+ * `null` before the first. Known at once by a component mounted after the stream synced;
+ * re-renders on every `server.clock`.
+ */
+export function useClockOffset(): number | null {
+  const connection = useConnection();
+  const [, setTicks] = useState(0);
+  useSseEvent('server.clock', () => setTicks((n) => n + 1));
+  return connection?.clockSynced() ? connection.clockOffset() : null;
 }

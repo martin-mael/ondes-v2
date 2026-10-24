@@ -20,6 +20,7 @@ export * from './contracts/log.ts';
 export * from './contracts/log-generate.ts';
 export * from './contracts/log-regen.ts';
 export * from './contracts/loudness.ts';
+export * from './contracts/on-air.ts';
 export * from './contracts/orgs.ts';
 export * from './contracts/peaks.ts';
 export * from './contracts/promos.ts';

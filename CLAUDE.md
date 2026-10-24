@@ -30,7 +30,7 @@ apps/
     plugins/            # fastify plugins: db, auth, rabbit, sse, errors
     modules/<module>/   # routes.ts, service.ts, repo.ts, *.test.ts
                         # auth, orgs, stations, library, engine, asrun, rotation,
-                        # clocks, shows, log, public, jobs, alerts, cache, segues, live,
+                        # clocks, shows, log, onair, public, jobs, alerts, cache, segues, live,
                         # promos
                         # (live/: switching, standing, slot-check, requests, events;
                         #  live/testing/: the in-memory engine pool for its tests;
