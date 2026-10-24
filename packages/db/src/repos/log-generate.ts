@@ -1,4 +1,6 @@
 import {
+  type CurrentDay,
+  type CurrentItem,
   type ExpandableSlot,
   expandSlots,
   type GeneratedDay,
@@ -9,13 +11,18 @@ import {
   type GeneratorOccurrence,
   type GeneratorSnapshot,
   itemLengthMs,
+  type KeepPolicy,
   type KeptItem,
+  type KeptPin,
   type KeptReason,
+  keepReasons,
+  keptStart,
   type PlayedItem,
   planClockMusic,
   resolveCategory,
   retime,
   type SlotException,
+  sameDay,
 } from '@ondes/scheduling';
 import {
   type AssetType,
@@ -52,17 +59,18 @@ import {
   or,
   sql,
 } from 'drizzle-orm';
-import { type MutationContext, withAudit } from '../audit.ts';
+import { type MutationContext, withAudit, writeAudit } from '../audit.ts';
 import type { Db, Executor, Tx } from '../client.ts';
 import { asRunEntry } from '../schema/asrun.ts';
 import { clock, clockGrid, clockGridCell, clockGridOverride, clockSlot } from '../schema/clocks.ts';
 import { logItemFallback } from '../schema/episode-check.ts';
 import { asset, assetAnalysis, assetCues, assetTag, tag } from '../schema/library.ts';
 import { logDay, logItem } from '../schema/log.ts';
+import { logItemPin } from '../schema/regen.ts';
 import { category, categoryMember, rotationRules } from '../schema/rotation.ts';
 import { segue } from '../schema/segues.ts';
 import { episode, show, showSlot, showSlotException } from '../schema/shows.ts';
-import { station } from '../schema/tenancy.ts';
+import { auditLog, station } from '../schema/tenancy.ts';
 import { type StationScope, whereStation } from '../tenant.ts';
 import { resolveRerun } from './reruns.ts';
 
@@ -105,12 +113,21 @@ export interface GeneratorLoadOptions {
   /** Items left out of the history (`around`: the empty item clock music replaces). */
   ignoreItemIds?: readonly string[];
   rerun?: RerunResolver;
+  /**
+   * `regenerate` only: what else is kept beyond locked items, segue ends and fallback marks
+   * (#101's policy: items before the freeze point, manual edits, `regenPolicy`).
+   */
+  keep?: KeepPolicy;
 }
 
 export interface LoadedSnapshot {
   snapshot: GeneratorSnapshot;
   /** The existing log days among `dates`. */
   days: Map<LocalDate, { id: string; status: LogDayStatus; version: number }>;
+  /** `regenerate` only: the existing days as they are (items in position order), for diffs. */
+  current: Map<LocalDate, CurrentDay>;
+  /** `regenerate` only: why each kept item stays. */
+  keptReasons: Map<string, KeptReason[]>;
 }
 
 /** Loads the generator's snapshot for `dates`. Null when the station is gone. */
@@ -146,6 +163,8 @@ export async function loadGeneratorSnapshot(
         status: logDay.status,
         version: logDay.version,
         startsAt: logDay.startsAt,
+        seed: logDay.seed,
+        generatorVersion: logDay.generatorVersion,
       })
       .from(logDay)
       .where(and(whereStation(logDay, scope), inArray(logDay.localDate, [...dates])))
@@ -174,7 +193,9 @@ export async function loadGeneratorSnapshot(
       excluded,
       options.ignoreItemIds ?? [],
     ),
-    mode === 'regenerate' ? loadKept(db, scope, byId, dayRows) : new Map<LocalDate, KeptItem[]>(),
+    mode === 'regenerate'
+      ? loadKept(db, scope, byId, dayRows, options.keep)
+      : { kept: new Map<LocalDate, KeptItem[]>(), current: new Map(), reasons: new Map() },
     olderAirings(db, scope, historyFrom, span + OLDER_MARGIN_MS),
     previousEnd(db, scope, from),
   ]);
@@ -191,10 +212,12 @@ export async function loadGeneratorSnapshot(
       history,
       lastPlayedAt,
       occurrences,
-      kept,
+      kept: kept.kept,
       previousDayEnd,
     },
     days,
+    current: kept.current,
+    keptReasons: kept.reasons,
   };
 }
 
@@ -654,16 +677,27 @@ async function previousEnd(db: Executor, scope: StationScope, dayStart: Date) {
 
 /**
  * The items of the days being regenerated that survive with their ids: locked ones, both ends
- * of every segue (new ids would detach it, ADR 0017), those with a fallback mark (ADR 0022).
- * A kept segment keeps its parts.
+ * of every segue (new ids would detach it, ADR 0017), those with a fallback mark (ADR 0022),
+ * and what `policy` adds (#101). A kept segment keeps its parts. Kept items are planned around
+ * their pin while they haven't moved since the last regeneration (`keptStart`). Also returns
+ * the days as they are, for the dry-run's diff.
  */
 async function loadKept(
   db: Executor,
   scope: StationScope,
   library: Map<string, GeneratorAsset>,
-  days: { id: string; localDate: LocalDate }[],
-): Promise<Map<LocalDate, KeptItem[]>> {
-  const out = new Map<LocalDate, KeptItem[]>();
+  days: {
+    id: string;
+    localDate: LocalDate;
+    seed: string | null;
+    generatorVersion: string | null;
+  }[],
+  policy: KeepPolicy = {},
+) {
+  const kept = new Map<LocalDate, KeptItem[]>();
+  const current = new Map<LocalDate, CurrentDay>();
+  const reasons = new Map<string, KeptReason[]>();
+  const out = { kept, current, reasons };
   if (days.length === 0) return out;
   const dayIds = days.map((d) => d.id);
   const items = await db
@@ -671,34 +705,63 @@ async function loadKept(
     .from(logItem)
     .where(and(whereStation(logItem, scope), inArray(logItem.logDayId, dayIds)))
     .orderBy(asc(logItem.logDayId), asc(logItem.position));
-  if (items.length === 0) return out;
-  const { reasonsOf, markSlot } = await keepMarks(db, scope, items);
   const dateOf = new Map(days.map((d) => [d.id, d.localDate]));
-  const keptHeads = new Set<string>();
-  for (const item of items) {
-    if (item.segmentId !== null) continue;
-    const reasons = reasonsOf(item);
-    if (reasons.length === 0) continue;
-    keptHeads.add(item.id);
-    const list = out.get(dateOf.get(item.logDayId) as LocalDate) ?? [];
-    list.push(keptOf(item, reasons, markSlot.get(item.id) ?? null, library));
+  const currentItems = new Map<LocalDate, CurrentItem[]>(days.map((d) => [d.localDate, []]));
+  for (const item of items)
+    currentItems.get(dateOf.get(item.logDayId) as LocalDate)?.push(currentItemOf(item));
+  for (const d of days) {
+    current.set(d.localDate, {
+      seed: d.seed,
+      generatorVersion: d.generatorVersion,
+      items: currentItems.get(d.localDate) ?? [],
+    });
+  }
+  if (items.length === 0) return out;
+  const { reasonsOf, markSlot } = await keepMarks(db, scope, items, policy);
+  const heads = items.filter((item) => item.segmentId === null && reasonsOf(item).length > 0);
+  const headIds = new Set(heads.map((h) => h.id));
+  const keptRows = items.filter(
+    (i) => headIds.has(i.id) || (i.segmentId !== null && headIds.has(i.segmentId)),
+  );
+  const pins = await loadPins(
+    db,
+    scope,
+    keptRows.map((r) => r.id),
+  );
+  for (const item of heads) {
+    const why = reasonsOf(item);
+    const date = dateOf.get(item.logDayId) as LocalDate;
+    const list = kept.get(date) ?? [];
+    reasons.set(item.id, why);
+    list.push(keptOf(item, why, markSlot.get(item.id) ?? null, library, pins.get(item.id)));
     // Its parts follow it.
     for (const part of items.filter((p) => p.segmentId === item.id)) {
-      list.push(keptOf(part, reasons, null, library));
+      reasons.set(part.id, why);
+      list.push(keptOf(part, why, null, library, pins.get(part.id)));
     }
-    out.set(dateOf.get(item.logDayId) as LocalDate, list);
+    kept.set(date, list);
   }
   return out;
+}
+
+async function loadPins(db: Executor, scope: StationScope, ids: string[]) {
+  if (ids.length === 0) return new Map<string, KeptPin>();
+  const rows = await db
+    .select()
+    .from(logItemPin)
+    .where(and(whereStation(logItemPin, scope), inArray(logItemPin.logItemId, ids)));
+  return new Map(rows.map((r) => [r.logItemId, { start: r.start, settledStart: r.settledStart }]));
 }
 
 /** Why each of these items must survive a regeneration (none: it may be rewritten). */
 async function keepMarks(
   db: Executor,
   scope: StationScope,
-  items: { id: string; locked: boolean }[],
+  items: { id: string; locked: boolean; plannedStart: Date; originType: LogItemOrigin['type'] }[],
+  policy: KeepPolicy = {},
 ) {
   const ids = items.map((i) => i.id);
-  const [segueEnds, marks] = ids.length
+  const [segueEnds, marks, moves] = ids.length
     ? await Promise.all([
         db
           .select({ from: segue.fromItemId, to: segue.toItemId })
@@ -715,18 +778,71 @@ async function keepMarks(
           .where(
             and(whereStation(logItemFallback, scope), inArray(logItemFallback.logItemId, ids)),
           ),
+        // Generated items moved by hand (#101): the move's audit row is the record of it.
+        policy.manual
+          ? db
+              .selectDistinct({ itemId: auditLog.entityId })
+              .from(auditLog)
+              .where(
+                and(
+                  eq(auditLog.stationId, scope.stationId),
+                  eq(auditLog.entityType, 'log_item'),
+                  eq(auditLog.action, 'log_item.move'),
+                  inArray(auditLog.entityId, ids),
+                ),
+              )
+          : Promise.resolve([]),
       ])
-    : [[], []];
+    : [[], [], []];
+  const moved = new Set(moves.map((m) => m.itemId));
   const inSegue = new Set(segueEnds.flatMap((s) => [s.from, s.to]).filter((x) => x !== null));
   const markSlot = new Map(marks.map((m) => [m.itemId, m.slotId]));
-  const reasonsOf = (item: { id: string; locked: boolean }): KeptReason[] => {
-    const reasons: KeptReason[] = [];
-    if (item.locked) reasons.push('locked');
-    if (inSegue.has(item.id)) reasons.push('segue');
-    if (markSlot.has(item.id)) reasons.push('fallback');
-    return reasons;
-  };
+  const reasonsOf = (item: (typeof items)[number]): KeptReason[] =>
+    keepReasons(
+      {
+        plannedStart: item.plannedStart,
+        originType: item.originType,
+        locked: item.locked,
+        inSegue: inSegue.has(item.id),
+        hasFallbackMark: markSlot.has(item.id),
+        movedByHand: moved.has(item.id),
+      },
+      policy,
+    );
   return { reasonsOf, markSlot };
+}
+
+function originOf(row: typeof logItem.$inferSelect): LogItemOrigin {
+  if (row.originType === 'clock') {
+    return { type: 'clock', clockId: row.originClockId, slotIndex: row.originSlotIndex ?? 0 };
+  }
+  if (row.originType === 'show') return { type: 'show', showSlotId: row.originShowSlotId };
+  return { type: 'manual' };
+}
+
+/** A stored item as `@ondes/scheduling`'s diff compares it. */
+function currentItemOf(row: typeof logItem.$inferSelect): CurrentItem {
+  return {
+    id: row.id,
+    position: row.position,
+    kind: row.kind,
+    plannedStart: row.plannedStart,
+    plannedDurationMs: row.plannedDurationMs,
+    assetId: row.assetId,
+    episodeId: row.episodeId,
+    liveSlotId: row.liveSlotId,
+    title: row.title,
+    cueOverrides: row.cueOverrides,
+    timing: row.timing,
+    anchorAt: row.anchorAt,
+    capMs: row.capMs,
+    origin: originOf(row),
+    locked: row.locked,
+    relaxedRules: row.relaxedRules,
+    segmentId: row.segmentId,
+    conflict:
+      row.conflictKind && row.conflictMs ? { kind: row.conflictKind, ms: row.conflictMs } : null,
+  };
 }
 
 /**
@@ -746,11 +862,13 @@ function keptOf(
   reasons: KeptReason[],
   fallbackSlot: string | null,
   library: Map<string, GeneratorAsset>,
+  pin?: KeptPin,
 ): KeptItem {
+  const plannedStart = keptStart(row.plannedStart, pin);
   return {
     id: row.id,
     kind: row.kind,
-    plannedStart: row.plannedStart,
+    plannedStart,
     plannedDurationMs: row.plannedDurationMs,
     timing: row.timing,
     anchorAt: row.anchorAt,
@@ -773,6 +891,8 @@ function keptOf(
 export interface WriteGeneratedDayOptions {
   /** Status of a day the write creates. An existing day keeps its own. Default `draft`. */
   status?: LogDayStatus;
+  /** The keep policy the snapshot was loaded with (#101): the stale check applies it too. */
+  keep?: KeepPolicy;
 }
 
 export interface WrittenDay {
@@ -781,6 +901,11 @@ export interface WrittenDay {
   version: number;
   itemCount: number;
   keptCount: number;
+  /**
+   * False when the generated day equals the day as it is (#101): nothing was written, no new
+   * version, no audit row. Regenerating with the same seed and inputs is a no-op.
+   */
+  changed: boolean;
   /** Planned range of the day's items (the day itself when empty). */
   range: { from: Date; to: Date };
   /** The following day, when its first item's conflict changed (its version was bumped). */
@@ -791,7 +916,8 @@ export interface WrittenDay {
  * Writes a generated day: creates the day if needed, deletes the items that aren't kept, keeps
  * the kept ones (same ids, new positions and times), inserts the new ones, bumps the version and
  * records the seed and generator version. The items are checked against the log contract. One
- * transaction, audited `log_day.generate`.
+ * transaction, audited `log_day.generate`. A day that would come out the same isn't written
+ * (`changed: false`). Kept items get a pin (`log_item_pin`): where they were planned around.
  */
 export async function writeGeneratedDay(
   db: Db,
@@ -818,7 +944,9 @@ export async function writeGeneratedDay(
     });
     return { parsed, origin: parsed.origin };
   });
-  return withAudit(db, ctx, async (tx, audit) => {
+  // Not `withAudit`: an unchanged day writes nothing, not even an audit row.
+  return db.transaction(async (tx) => {
+    const audit = (entry: Parameters<typeof writeAudit>[2]) => writeAudit(tx, ctx, entry);
     const day = await lockOrCreateDay(tx, scope, generated, options.status ?? 'draft');
     if (day.startsAt.getTime() !== generated.startsAt.getTime()) {
       throw new Error(`log day ${generated.localDate} doesn't start where the generator planned`);
@@ -829,12 +957,12 @@ export async function writeGeneratedDay(
     // them, wait for this transaction), so nothing can become kept between the check and the
     // delete.
     const current = await tx
-      .select({ id: logItem.id, locked: logItem.locked, segmentId: logItem.segmentId })
+      .select()
       .from(logItem)
       .where(and(whereStation(logItem, scope), eq(logItem.logDayId, day.id)))
       .orderBy(asc(logItem.position))
       .for('update');
-    const { reasonsOf } = await keepMarks(tx, scope, current);
+    const { reasonsOf } = await keepMarks(tx, scope, current, options.keep);
     const wanted = new Set(keptIds);
     const heads = new Set(
       current.filter((r) => r.segmentId === null && reasonsOf(r).length > 0).map((r) => r.id),
@@ -848,6 +976,34 @@ export async function writeGeneratedDay(
       ...keptIds.filter((id) => !present.has(id)),
     ];
     if (stale.length) throw new StaleGeneratorSnapshotError(generated.localDate, stale);
+    const top = generated.items.filter((i) => i.segmentId === null);
+    const ends = generated.items.map((i) => i.plannedStart.getTime() + i.plannedDurationMs);
+    const range = (dayStart: Date, dayEnd: Date) => ({
+      from: top[0]?.plannedStart ?? dayStart,
+      to: new Date(Math.max(dayEnd.getTime(), ...ends)),
+    });
+    const unchanged =
+      !day.created &&
+      sameDay(
+        {
+          seed: day.seed,
+          generatorVersion: day.generatorVersion,
+          items: current.map(currentItemOf),
+        },
+        generated,
+      );
+    if (unchanged) {
+      return {
+        logDayId: day.id,
+        localDate: generated.localDate,
+        version: day.version,
+        itemCount: generated.items.length,
+        keptCount: keptIds.length,
+        changed: false,
+        range: range(day.startsAt, day.endsAt),
+        following: null,
+      };
+    }
     await tx
       .delete(logItem)
       .where(
@@ -904,6 +1060,32 @@ export async function writeGeneratedDay(
     for (let i = 0; i < inserts.length; i += 500) {
       await tx.insert(logItem).values(inserts.slice(i, i + 500));
     }
+    // Where each kept item was planned around, and where it landed (`keptStart`, #101).
+    const pins = generated.items.flatMap((item) =>
+      item.keptId === null
+        ? []
+        : [
+            {
+              logItemId: item.keptId,
+              orgId: scope.orgId,
+              stationId: scope.stationId,
+              start: item.start,
+              settledStart: item.plannedStart,
+            },
+          ],
+    );
+    if (pins.length) {
+      await tx
+        .insert(logItemPin)
+        .values(pins)
+        .onConflictDoUpdate({
+          target: logItemPin.logItemId,
+          set: {
+            start: sql`excluded.start`,
+            settledStart: sql`excluded.settled_start`,
+          },
+        });
+    }
     const [updated] = await tx
       .update(logDay)
       .set({
@@ -915,7 +1097,6 @@ export async function writeGeneratedDay(
       .where(and(whereStation(logDay, scope), eq(logDay.id, day.id)))
       .returning();
     if (!updated) throw new Error(`log day ${generated.localDate} vanished`);
-    const top = generated.items.filter((i) => i.segmentId === null);
     const last = top.at(-1);
     const end = last ? new Date(last.plannedStart.getTime() + last.plannedDurationMs) : null;
     const following = await refreshFollowing(tx, scope, updated.endsAt, end);
@@ -931,17 +1112,14 @@ export async function writeGeneratedDay(
         version: { from: day.created ? null : day.version, to: updated.version },
       },
     });
-    const ends = generated.items.map((i) => i.plannedStart.getTime() + i.plannedDurationMs);
     return {
       logDayId: day.id,
       localDate: generated.localDate,
       version: updated.version,
       itemCount: generated.items.length,
       keptCount: keptIds.length,
-      range: {
-        from: top[0]?.plannedStart ?? updated.startsAt,
-        to: new Date(Math.max(updated.endsAt.getTime(), ...ends)),
-      },
+      changed: true,
+      range: range(updated.startsAt, updated.endsAt),
       following,
     };
   });

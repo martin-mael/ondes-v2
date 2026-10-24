@@ -11,6 +11,7 @@ import {
   logItemSchema,
   logUpdateCauseSchema,
 } from './log.ts';
+import { logGeneratedDataSchema } from './log-regen.ts';
 import {
   islandStatusSchema,
   segueChangeSchema,
@@ -223,9 +224,20 @@ export const logItemChangedEventSchema = z.object({
   }),
 });
 
+/**
+ * The generator wrote (or found unchanged) these days, with what it couldn't do. The api turns
+ * the issues into `log.generation_issues` alerts (durable queue). Follows the `log.updated`.
+ */
+export const logGeneratedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('log.generated'),
+  data: logGeneratedDataSchema,
+});
+
 export const logRealtimeEventSchema = z.discriminatedUnion('type', [
   logUpdatedEventSchema,
   logItemChangedEventSchema,
+  logGeneratedEventSchema,
 ]);
 export type LogRealtimeEvent = z.infer<typeof logRealtimeEventSchema>;
 // Alerts (#33). `data` is a snapshot of the alert after the change (API shape in
@@ -540,6 +552,7 @@ export const realtimeEventPermissions = {
   // Log (#100): the timeline refetches the changed range.
   'log.updated': 'log:read',
   'log.item.changed': 'log:read',
+  'log.generated': 'log:read',
   // Alerts (#33): the dashboard and alert list.
   'alert.raised': 'alert:read',
   'alert.reopened': 'alert:read',
