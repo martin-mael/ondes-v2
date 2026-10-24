@@ -246,6 +246,13 @@
       "when": 1792779509623,
       "tag": "20261023181829_log-regen",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1792873847373,
+      "tag": "20261024203047_promo-vts",
+      "breakpoints": true
     }
   ]
 }

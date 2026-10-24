@@ -23,7 +23,8 @@ import type { EngineSource, LogItemKind, LogItemTiming } from '@ondes/shared';
 // - `live_slot`: nothing to push; the entries after it are held until the slot's end.
 // - `marker`: a timing point only (its anchor applies), nothing to push.
 
-export type SkipReason = 'not_cached' | 'unresolvable' | 'no_media_file';
+/** `expired`: a voice track outside its asset's validity (a promo past its kill date, #60). */
+export type SkipReason = 'not_cached' | 'unresolvable' | 'no_media_file' | 'expired';
 
 /** A top-level log item, as the planner sees it. */
 export type FeedEntry = {

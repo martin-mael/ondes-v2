@@ -4,15 +4,19 @@ import {
   type GeneratorLoadOptions,
   type LoadedSnapshot,
   loadGeneratorSnapshot,
+  loadPromoSnapshot,
   type StationScope,
   type WrittenDay,
   writeGeneratedDay,
+  writePromoPlacements,
 } from '@ondes/db';
 import {
+  createPromoPlacer,
   type GeneratorExtensions,
   type GeneratorIssue,
   generateDays,
   issueCounts,
+  type PromoIssue,
   regenPolicy,
 } from '@ondes/scheduling';
 import {
@@ -59,6 +63,8 @@ export interface LogGenerateDeps {
 export interface LogGenerateReport {
   days: WrittenDay[];
   issues: { localDate: string; issues: GeneratorIssue[] }[];
+  /** Promo slots that placed nothing (#60), and why. */
+  promoIssues: PromoIssue[];
 }
 
 export async function runLogGenerate(
@@ -76,13 +82,27 @@ export async function runLogGenerate(
     ...(deps.rerun ? { rerun: deps.rerun } : {}),
   });
   if (!loaded) return null;
-  const extensions = deps.extensions ? await deps.extensions(loaded, scope) : undefined;
+  // Promo slots (#60, ADR 0032): the placer picks a promo of the slot's pool; each day's
+  // placements are written after the day, and the api makes their segues on `log.updated`.
+  const promos = createPromoPlacer(
+    await loadPromoSnapshot(deps.db, scope, {
+      timeZone: loaded.snapshot.timeZone,
+      dates: payload.localDates,
+    }),
+    { seed: payload.seed ?? scope.stationId, clocks: loaded.snapshot.clocks },
+  );
+  // The generator's hooks: the caller's (#46's back-timing), then the promo placer.
+  const extensions: GeneratorExtensions = {
+    ...(deps.extensions ? await deps.extensions(loaded, scope) : {}),
+    placeVoiceTrack: promos.placeVoiceTrack,
+  };
   const generated = generateDays(loaded.snapshot, payload.localDates, {
     ...(payload.seed ? { seed: payload.seed } : {}),
-    ...(extensions ? { extensions } : {}),
+    extensions,
   });
   const write = deps.writeDay ?? writeGeneratedDay;
   const days: WrittenDay[] = [];
+  const promoIssues: PromoIssue[] = [...promos.issues];
   // Each day commits on its own. If a later one fails, what was written is announced before
   // the error goes up: the retry finds those days unchanged and would announce nothing.
   const announceWritten = async () => {
@@ -96,8 +116,18 @@ export async function runLogGenerate(
   };
   try {
     for (const day of generated) {
-      days.push(
-        await write(deps.db, { actor: ACTOR, scope }, day, { status: payload.status, keep }),
+      const written = await write(deps.db, { actor: ACTOR, scope }, day, {
+        status: payload.status,
+        keep,
+      });
+      days.push(written);
+      const resolved = promos.resolve(day);
+      promoIssues.push(...resolved.issues);
+      await writePromoPlacements(
+        deps.db,
+        { actor: ACTOR, scope },
+        { logDayId: written.logDayId, localDate: written.localDate },
+        resolved.placed,
       );
     }
   } catch (error) {
@@ -108,6 +138,7 @@ export async function runLogGenerate(
   return {
     days,
     issues: generated.map((d) => ({ localDate: d.localDate, issues: d.issues })),
+    promoIssues,
   };
 }
 
@@ -183,6 +214,10 @@ export function issueSummary(report: LogGenerateReport): Record<string, number> 
   const counts: Record<string, number> = {};
   for (const day of report.issues) {
     for (const issue of day.issues) counts[issue.code] = (counts[issue.code] ?? 0) + 1;
+  }
+  for (const issue of report.promoIssues) {
+    const code = `promo_${issue.code}`;
+    counts[code] = (counts[code] ?? 0) + 1;
   }
   return counts;
 }

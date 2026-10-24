@@ -9,6 +9,7 @@ import {
   NotFoundError,
   type StationScope,
   type Tx,
+  vtPool,
   whereStation,
   withAudit,
 } from '@ondes/db';
@@ -35,6 +36,7 @@ import {
   estimateClock,
   type SlotReference,
   slotCategoryId,
+  slotPoolId,
   type UpdateClock,
   updateClockSchema,
 } from '@ondes/shared';
@@ -73,7 +75,9 @@ function toSlot(row: SlotRow): ClockSlot {
     ...(['category', 'jingle', 'fill', 'vt'].includes(row.kind)
       ? { categoryId: row.categoryId }
       : {}),
-    ...(row.kind === 'vt' ? { mode: row.vtMode } : {}),
+    ...(row.kind === 'vt'
+      ? { mode: row.vtMode, ...(row.poolId ? { poolId: row.poolId } : {}) }
+      : {}),
     ...(row.kind === 'marker'
       ? { timing: row.timing, offsetMs: row.offsetMs, capMs: row.capMs }
       : {}),
@@ -93,6 +97,7 @@ function toSlotRow(slot: ClockSlot, position: number, clockId: string, scope: St
     categoryId: slotCategoryId(slot),
     assetId: slot.kind === 'asset' ? slot.assetId : null,
     vtMode: slot.kind === 'vt' ? slot.mode : null,
+    poolId: slotPoolId(slot),
     timing: slot.kind === 'marker' ? slot.timing : null,
     offsetMs: slot.kind === 'marker' ? slot.offsetMs : null,
     capMs: slot.kind === 'marker' ? slot.capMs : null,
@@ -145,6 +150,8 @@ async function loadRow(db: Db | Tx, scope: StationScope, id: string): Promise<Cl
 interface References {
   categories: Map<string, SlotReference>;
   assets: Map<string, SlotReference>;
+  /** VT pools of promo slots (#60): a promo is voiced over a transition, so no length. */
+  pools: Map<string, SlotReference>;
 }
 
 /**
@@ -160,7 +167,8 @@ async function loadReferences(
   const assetIds = [
     ...new Set(slots.flatMap((s) => (s.kind === 'asset' && s.assetId ? [s.assetId] : []))),
   ];
-  const [categories, assets] = await Promise.all([
+  const poolIds = [...new Set(slots.map(slotPoolId).filter((id) => id !== null))];
+  const [categories, assets, pools] = await Promise.all([
     categoryIds.length === 0 ? [] : categoryAverages(db, scope, categoryIds),
     assetIds.length === 0
       ? []
@@ -168,8 +176,17 @@ async function loadReferences(
           .select({ id: asset.id, type: asset.type, durationMs: asset.durationMs })
           .from(asset)
           .where(and(whereStation(asset, scope), inArray(asset.id, assetIds))),
+    poolIds.length === 0
+      ? []
+      : db
+          .select({ id: vtPool.id })
+          .from(vtPool)
+          .where(and(whereStation(vtPool, scope), inArray(vtPool.id, poolIds))),
   ]);
   return {
+    pools: new Map(
+      pools.map((p) => [p.id, { exists: true, durationMs: 0, assetType: 'vt' as const }]),
+    ),
     categories: new Map(categories),
     assets: new Map(
       assets.map((a) => [a.id, { exists: true, durationMs: a.durationMs, assetType: a.type }]),
@@ -213,6 +230,8 @@ const missing: SlotReference = { exists: false, durationMs: null, assetType: nul
 function referenceOf(refs: References, slot: ClockSlot): SlotReference | undefined {
   if (slot.kind === 'asset')
     return slot.assetId ? (refs.assets.get(slot.assetId) ?? missing) : undefined;
+  const poolId = slotPoolId(slot);
+  if (poolId) return refs.pools.get(poolId) ?? missing;
   const id = slotCategoryId(slot);
   return id ? (refs.categories.get(id) ?? missing) : undefined;
 }
@@ -436,7 +455,7 @@ async function mutate<T>(db: Db, ctx: StationContext, fn: Parameters<typeof with
   }
 }
 
-/** Slots may only name categories and assets of this station. */
+/** Slots may only name categories, assets and VT pools of this station. */
 async function checkReferences(tx: Tx, scope: StationScope, slots: readonly ClockSlot[]) {
   const refs = await loadReferences(tx, scope, slots);
   const categoryIds = slots.map(slotCategoryId).filter((id) => id !== null);
@@ -444,6 +463,13 @@ async function checkReferences(tx: Tx, scope: StationScope, slots: readonly Cloc
   if (unknownCategories.length > 0) {
     throw new HttpError(400, 'unknown_category', 'some slots name unknown categories', {
       categoryIds: unknownCategories,
+    });
+  }
+  const poolIds = slots.map(slotPoolId).filter((id) => id !== null);
+  const unknownPools = [...new Set(poolIds.filter((id) => !refs.pools.has(id)))];
+  if (unknownPools.length > 0) {
+    throw new HttpError(400, 'unknown_pool', 'some slots name unknown VT pools', {
+      poolIds: unknownPools,
     });
   }
   const assetIds = slots.flatMap((s) => (s.kind === 'asset' && s.assetId ? [s.assetId] : []));

@@ -11,6 +11,7 @@ export * from './repos/library.ts';
 export * from './repos/log-generate.ts';
 export * from './repos/log-regen.ts';
 export * from './repos/peaks.ts';
+export * from './repos/promos.ts';
 export * from './repos/reruns.ts';
 export * from './repos/safety.ts';
 export * from './repos/storage.ts';

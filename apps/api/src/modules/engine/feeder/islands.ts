@@ -6,6 +6,7 @@ import {
   type LogItem,
   PLAYOUT_SAMPLE_RATE,
   playoutPath,
+  promoValidOnAir,
 } from '@ondes/shared';
 import type { SkipReason } from './plan.ts';
 import {
@@ -48,6 +49,8 @@ export type IslandLayoutInput = {
   locked: ReadonlySet<string>;
   /** Engine-side cache root. */
   engineRoot?: string | undefined;
+  /** The feeder's clock: a voice is checked against its validity from then on (#60). */
+  nowMs?: number | undefined;
 };
 
 export type FeedChain = {
@@ -106,6 +109,12 @@ export function layoutIslands(input: IslandLayoutInput): IslandLayout {
   };
 
   for (const island of sorted) {
+    // A voice that may not air then (a promo past its kill date, #60): the transition airs as
+    // a plain crossfade, without the island or its overlay.
+    if (voiceOutOfValidity(island, input, index)) {
+      flush();
+      continue;
+    }
     const items = coveredItems(island, input, index);
     if (items && chainable(island, items, input)) {
       const last = run.at(-1);
@@ -229,6 +238,38 @@ function buildChain(
     transitions,
     fileIds: [...fileIds],
   };
+}
+
+/**
+ * Whether a voice of the island would air outside its asset's validity (`promoValidOnAir`, the
+ * generator's and the api's check). Each voice airs at its own place on the segue axis (0 = the
+ * head item's end, as the fallback overlay times it), from the head's planned end, or now if
+ * the log runs late.
+ */
+function voiceOutOfValidity(
+  island: FeedIsland,
+  input: IslandLayoutInput,
+  index: ReadonlyMap<string, number>,
+): boolean {
+  const head = input.items[index.get(island.plan.head.itemId) ?? -1];
+  if (!head) return false;
+  const transition = new Date(
+    Math.max(input.nowMs ?? -Infinity, Date.parse(head.plannedStart) + head.plannedDurationMs),
+  );
+  const { files, spec } = island.plan;
+  const a = spec.sources.find(
+    (s) => s.at === 0 && files[s.sha256]?.assetId === island.plan.head.assetId,
+  );
+  const aEnd = a ? a.to - a.from : 0;
+  return voicesOf(island, input).some(({ source, media }) => {
+    if (!media?.validity) return false;
+    return !promoValidOnAir(
+      media.validity,
+      transition,
+      samplesToMs(source.to - source.from),
+      ((source.at - aEnd) * 1000) / PLAYOUT_SAMPLE_RATE,
+    );
+  });
 }
 
 /** The island's sources that aren't one of its log items: its voices. */

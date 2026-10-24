@@ -28,6 +28,7 @@ import { type LivePluginOptions, livePlugin } from './modules/live/plugin.ts';
 import { type RegenPluginOptions, regenPlugin } from './modules/log/regen-plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
+import { type PromosPluginOptions, promosPlugin } from './modules/promos/plugin.ts';
 import { rotationRoutes } from './modules/rotation/routes.ts';
 import { rotationRulesRoutes } from './modules/rotation/rules/routes.ts';
 import { type SeguesPluginOptions, seguesPlugin } from './modules/segues/plugin.ts';
@@ -57,6 +58,8 @@ export interface AppOptions {
   asrun?: AsRunPluginOptions;
   /** Segues (#55): the durable queue name (tests). */
   segues?: SeguesPluginOptions;
+  /** Promo VTs (#60): the durable queue name, event sink and jobs (tests). */
+  promos?: PromosPluginOptions;
   /** Playout cache (#31): readiness API and cache alerts. */
   cache?: CachePluginOptions;
   /** Safety playlist and emergency file (#34): alert interval, event queue (tests). */
@@ -123,6 +126,8 @@ export async function buildApp(options: AppOptions) {
   await app.register(showsRoutes, { prefix: '/api/v1' });
   // Segues and islands (#55): routes, and log/asset events -> island re-sync (durable queue).
   await app.register(seguesPlugin, options.segues ?? {});
+  // Promo VTs and VT pools (#60): routes, and log/asset events -> promo segues (durable queue).
+  await app.register(promosPlugin, options.promos ?? {});
   await app.register(rotationRoutes, { prefix: '/api/v1' });
   await app.register(rotationRulesRoutes, { prefix: '/api/v1' });
   await app.register(clocksRoutes, { prefix: '/api/v1' });

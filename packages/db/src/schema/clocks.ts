@@ -15,6 +15,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { asset } from './library.ts';
+import { vtPool } from './promos.ts';
 import { category } from './rotation.ts';
 import { station } from './tenancy.ts';
 
@@ -75,6 +76,8 @@ export const clockSlot = pgTable(
     assetId: uuid('asset_id').references(() => asset.id, { onDelete: 'set null' }),
     /** `vt` slots only. */
     vtMode: text('vt_mode').$type<VtSlotMode>(),
+    /** `vt` slots in `promo` mode only: the VT pool (#60). Set null like the other references. */
+    poolId: uuid('pool_id').references(() => vtPool.id, { onDelete: 'set null' }),
     /** `marker` slots only. */
     timing: text('timing').$type<MarkerTiming>(),
     offsetMs: integer('offset_ms'),
@@ -89,6 +92,7 @@ export const clockSlot = pgTable(
     }).onDelete('cascade'),
     index('clock_slot_category_id_idx').on(t.categoryId),
     index('clock_slot_asset_id_idx').on(t.assetId),
+    index('clock_slot_pool_id_idx').on(t.poolId),
     check(
       'clock_slot_kind_check',
       sql`${t.kind} in ('category', 'asset', 'vt', 'jingle', 'marker', 'fill', 'live')`,

@@ -8,6 +8,7 @@ import {
   logKindForSlot,
   type SlotReference,
   slotCategoryId,
+  slotPoolId,
   updateClockSchema,
 } from './clocks.ts';
 
@@ -239,5 +240,32 @@ describe('estimateClock', () => {
     ]);
     expect(e.totalMs).toBe(40 * MIN);
     expect(e.warnings).toEqual([]);
+  });
+});
+
+describe('promo slots with a VT pool (#60)', () => {
+  const pool = '0199f6a0-0000-7000-8000-0000000000f1';
+  const slot = (input: ClockSlotInput) => clockSlotSchema.parse(input);
+  const promo = slot({ kind: 'vt', mode: 'promo', poolId: pool, categoryId: cat });
+
+  it('draws from the pool, not the category', () => {
+    expect(slotPoolId(promo)).toBe(pool);
+    expect(slotCategoryId(promo)).toBeNull();
+    const legacy = slot({ kind: 'vt', mode: 'promo', categoryId: cat });
+    expect(slotPoolId(legacy)).toBeNull();
+    expect(slotCategoryId(legacy)).toBe(cat);
+    expect(slotPoolId(slot({ kind: 'vt', mode: 'placeholder', poolId: pool }))).toBeNull();
+  });
+
+  it('takes no time in the estimate (voiced over a transition), and warns without its pool', () => {
+    const clock = (exists: boolean) =>
+      estimateClock({ targetDurationMs: 60 * MIN, slots: [promo] }, () => ({
+        exists,
+        durationMs: 0,
+        assetType: 'vt',
+      }));
+    expect(clock(true).slots[0]).toEqual({ startMs: 0, durationMs: 0, source: 'default' });
+    expect(clock(true).warnings.some((w) => w.code === 'missing_reference')).toBe(false);
+    expect(clock(false).warnings).toContainEqual({ code: 'missing_reference', slotIndex: 0 });
   });
 });

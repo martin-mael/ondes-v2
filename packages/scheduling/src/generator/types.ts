@@ -161,7 +161,8 @@ export interface GeneratedItem extends PlannedItem {
  * - `occurrence_dropped`: an occurrence lost to another one at the same time (or to a kept item).
  * - `occurrence_overlap`: two occurrences overlap in part; both are planned, and retiming
  *   reports the overrun on the later one.
- * - `vt_placeholder`: a voice-track placeholder slot nothing placed (#60's extension point).
+ * - `vt_placeholder`: a voice-track slot (placeholder, or promo with a VT pool) nothing placed
+ *   (#60's extension point).
  */
 export type GeneratorIssueCode =
   | 'no_clock'
@@ -206,11 +207,13 @@ export interface AnchorContext {
   runEndsAt: Date;
 }
 
-/** A `vt` placeholder slot of a clock (`mode: 'placeholder'`). */
+/** A `vt` slot of a clock the hook places: a placeholder, or a promo slot with a VT pool. */
 export interface VtPlacementContext {
   clockId: string;
   slotIndex: number;
   mode: VtSlotMode;
+  /** `promo` slots: the VT pool to draw from (#60). Null for a placeholder. */
+  poolId: string | null;
   /** Where the slot falls. */
   at: Date;
   /** The item before it in the run, if any. */

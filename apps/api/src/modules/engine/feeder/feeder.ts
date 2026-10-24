@@ -13,6 +13,7 @@ import {
   type PlayoutGainStation,
   type RaiseAlert,
   type RealtimeEvent,
+  validThroughout,
 } from '@ondes/shared';
 import type { EngineAdapter } from '../adapter/adapter.ts';
 import { EngineNotQueuedError, EngineUnresolvableError } from '../adapter/errors.ts';
@@ -295,6 +296,15 @@ export function createStationFeeder(deps: FeederDeps) {
     } else if (isMediaKind(item.kind)) {
       const media = item.assetId ? window.media.get(item.assetId) : undefined;
       unplayable = mediaReason(media);
+      // A voice track outside its validity (a promo past its kill date, #60) never airs.
+      if (item.kind === 'vt' && media?.validity) {
+        const from = Math.max(now(), Date.parse(item.plannedStart));
+        if (
+          !validThroughout(media.validity, new Date(from), new Date(from + item.plannedDurationMs))
+        ) {
+          unplayable = 'expired';
+        }
+      }
       if (media) {
         const source = partSource(item, media);
         b = {
@@ -735,6 +745,7 @@ export function createStationFeeder(deps: FeederDeps) {
             refused: (sha) => (unresolvable.get(`island:${sha}`) ?? 0) > now(),
             locked,
             engineRoot: opts.engineRoot,
+            nowMs: at,
           })
         : null;
       const { entries, built } = toEntries(window, layout, chainOnAir);
