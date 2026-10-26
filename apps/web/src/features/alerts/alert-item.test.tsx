@@ -1,13 +1,21 @@
 import type { Alert } from '@ondes/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../app/i18n/i18n.tsx';
 import { AlertItem } from './alert-item.tsx';
 
 // The alerts in French (#71): texts from `details.i18n`, type labels, station-time instants.
 
 const at = new Date('2026-10-23T12:05:00.000Z');
+
+// Times print with their date when they aren't today's: the tests run on the fixtures' day.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-23T12:10:00.000Z') });
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function alert(over: Partial<Alert>): Alert {
   return {

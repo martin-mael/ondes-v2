@@ -1,6 +1,6 @@
 import type { MyOrg } from '@ondes/shared';
 import { act, waitFor, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeEventSource } from '../../app/testing/fake-event-source.ts';
 import { type ApiRoute, orgs, renderApp, signedIn, stationId } from '../../app/testing/render.tsx';
 
@@ -8,6 +8,14 @@ const url = `/stations/${stationId}/alerts`;
 const api = `/stations/${stationId}/alerts`;
 // 14:05 in Paris (UTC+2 until the 25th).
 const raisedAt = '2026-10-23T12:05:00.000Z';
+
+// Times print with their date when they aren't today's: the tests run on the fixtures' day.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-23T12:10:00.000Z') });
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function alert(id: string, over: Record<string, unknown> = {}) {
   return {
