@@ -1,5 +1,6 @@
 import type { Permission } from '@ondes/shared';
 import type { ComponentType } from 'react';
+import { LiveRequestPrompt } from '../live/live-requests.tsx';
 import {
   AlertsPanel,
   EngineStatusPanel,
@@ -22,6 +23,13 @@ export interface DashboardWidget {
 }
 
 export const dashboardWidgets: DashboardWidget[] = [
+  // Ad-hoc live requests (#65): "DJ X is connected, put on air?", for those who can decide.
+  {
+    id: 'live-requests',
+    Component: LiveRequestPrompt,
+    permission: 'engine:control',
+    width: 'full',
+  },
   // On air (#70): clock, mode, current and next items, next hard event, show block.
   { id: 'on-air', Component: OnAirWidget, permission: 'dashboard:read', width: 'full' },
   // Health, listeners and alerts (#71).
