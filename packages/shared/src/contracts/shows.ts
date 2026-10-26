@@ -43,6 +43,38 @@ export type SlotType = z.infer<typeof slotTypeSchema>;
 /** What a show's new slots default to. A show can't default to reruns. */
 export const defaultSlotTypeSchema = z.enum(['prerecorded', 'live']);
 
+// --- Start policy (#46, ADR 0031) --------------------------------------------------------
+
+/**
+ * How an occurrence takes the air when the music before it runs late (ADR 0003):
+ * - `hard`: exactly at its start; the engine fades out whatever is on air (the default);
+ * - `soft`: the item on air finishes first, but the occurrence starts at most `startCapMs`
+ *   late (`SOFT_START_DEFAULT_CAP_MS` when null).
+ * Back-timing (#46) plans the music to end on time either way.
+ */
+export const slotStartModeSchema = z.enum(['hard', 'soft']);
+export type SlotStartMode = z.infer<typeof slotStartModeSchema>;
+
+/** How late a `soft` start may be when its slot doesn't say (ADR 0003's measured cap). */
+export const SOFT_START_DEFAULT_CAP_MS = 30_000;
+/** Longest cap a `soft` start may have: 10 min. */
+export const SOFT_START_MAX_CAP_MS = 600_000;
+export const slotStartCapSchema = z.int().min(0).max(SOFT_START_MAX_CAP_MS);
+
+/** The cap a slot's occurrences get: null for `hard`, the default for a `soft` one without. */
+export function slotStartCapMs(slot: {
+  startMode?: SlotStartMode | undefined;
+  startCapMs?: number | null | undefined;
+}): number | null {
+  if (slot.startMode !== 'soft') return null;
+  return slot.startCapMs ?? SOFT_START_DEFAULT_CAP_MS;
+}
+
+const startCapOnlySoft = {
+  message: 'startCapMs only applies to a soft start',
+  path: ['startCapMs'],
+};
+
 // --- Recurrence (ADR 0014) ---------------------------------------------------------------
 
 /** Longest gap a weekly rule may have between airings: a year. */
@@ -300,6 +332,13 @@ export const showSlotSchema = z.object({
    * older api versions' payloads still parse; the api always sends it.
    */
   live: slotLiveSchema.nullable().optional(),
+  /**
+   * How its occurrences start (#46). Optional so older api versions' payloads still parse
+   * (`hard`, no cap); the api always sends them.
+   */
+  startMode: slotStartModeSchema.optional(),
+  /** `soft` only: how late it may start; null = `SOFT_START_DEFAULT_CAP_MS`. */
+  startCapMs: z.int().nullable().optional(),
   /** Ordered by date. */
   exceptions: z.array(slotExceptionSchema),
   createdAt: z.date(),
@@ -312,13 +351,18 @@ export type ShowSlot = z.infer<typeof showSlotSchema>;
  * `rerun` goes with `type: 'rerun'` only, and defaults to `{ strategy: 'latest_episode' }`.
  * `live` goes with `type: 'live'` only, and defaults to `LIVE_SLOT_DEFAULTS`.
  */
-export const createShowSlotSchema = z.object({
-  type: slotTypeSchema.optional(),
-  rule: slotRuleSchema,
-  durationMs: showDurationSchema.optional(),
-  rerun: slotRerunInputSchema.optional(),
-  live: slotLiveInputSchema.optional(),
-});
+export const createShowSlotSchema = z
+  .object({
+    type: slotTypeSchema.optional(),
+    rule: slotRuleSchema,
+    durationMs: showDurationSchema.optional(),
+    rerun: slotRerunInputSchema.optional(),
+    live: slotLiveInputSchema.optional(),
+    /** Default `hard`. */
+    startMode: slotStartModeSchema.optional(),
+    startCapMs: slotStartCapSchema.nullable().optional(),
+  })
+  .refine((s) => s.startCapMs == null || s.startMode === 'soft', startCapOnlySoft);
 export type CreateShowSlot = z.input<typeof createShowSlotSchema>;
 
 /**
@@ -335,8 +379,14 @@ export const updateShowSlotSchema = patchOf(
     durationMs: showDurationSchema,
     rerun: slotRerunInputSchema,
     live: slotLiveInputSchema,
+    startMode: slotStartModeSchema,
+    /**
+     * `soft` slots only: a cap on a slot that stays `hard` is a 422 (`start_cap_on_hard`). A slot
+     * made `hard` drops its cap.
+     */
+    startCapMs: slotStartCapSchema.nullable(),
   }),
-);
+).refine((s) => s.startCapMs == null || s.startMode !== 'hard', startCapOnlySoft);
 export type UpdateShowSlot = z.input<typeof updateShowSlotSchema>;
 
 export const showSlotListSchema = z.object({ items: z.array(showSlotSchema) });

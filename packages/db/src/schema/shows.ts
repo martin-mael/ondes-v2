@@ -5,6 +5,7 @@ import type {
   LiveEarlyConnect,
   RerunStrategy,
   SlotRule,
+  SlotStartMode,
   SlotType,
   TracklistEntry,
 } from '@ondes/shared';
@@ -171,6 +172,10 @@ export const showSlot = pgTable(
      */
     liveGraceMs: integer('live_grace_ms'),
     liveEarlyConnect: text('live_early_connect').$type<LiveEarlyConnect>(),
+    /** How its occurrences start (#46, ADR 0031): `hard` at their time, or `soft`. */
+    startMode: text('start_mode').$type<SlotStartMode>().notNull().default('hard'),
+    /** `soft` only: how late it may start; null = `SOFT_START_DEFAULT_CAP_MS`. */
+    startCapMs: integer('start_cap_ms'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -194,6 +199,11 @@ export const showSlot = pgTable(
         and (${t.liveGraceMs} is null or ${t.type} = 'live')
         and (${t.liveGraceMs} is null or ${t.liveGraceMs} between 0 and 3600000)
         and (${t.liveEarlyConnect} is null or ${t.liveEarlyConnect} in ('wait', 'go_live'))`,
+    ),
+    check(
+      'show_slot_start_check',
+      sql`${t.startMode} in ('hard', 'soft')
+        and (${t.startCapMs} is null or (${t.startMode} = 'soft' and ${t.startCapMs} between 0 and 600000))`,
     ),
     index('show_slot_rerun_episode_idx')
       .on(t.rerunEpisodeId)

@@ -349,6 +349,8 @@ async function toSlots(db: Executor, rows: SlotRow[]): Promise<ShowSlot[]> {
     durationMs: r.durationMs,
     rerun: toSlotRerun(r),
     live: toSlotLive(r),
+    startMode: r.startMode,
+    startCapMs: r.startCapMs,
     exceptions: exceptions.get(r.id) ?? [],
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
@@ -417,6 +419,8 @@ export async function createSlot(
         durationMs,
         ...(await rerunColumns(tx, ctx.scope, showId, type, parsed.rerun)),
         ...liveColumns(type, parsed.live),
+        startMode: parsed.startMode ?? 'hard',
+        startCapMs: parsed.startCapMs ?? null,
       })
       .returning();
     if (!row) throw new Error('insert returned no row');
@@ -440,8 +444,22 @@ export async function updateSlot(
   return withAudit(db, ctx, async (tx, audit) => {
     const before = await slotRow(tx, ctx.scope, showId, slotId);
     const rule = parsed.rule ?? before.rule;
-    const { rerun, live, ...fields } = parsed;
+    const { rerun, live, startMode, startCapMs, ...fields } = parsed;
     const type = parsed.type ?? before.type;
+    // A cap only goes with a soft start: a slot made hard drops it, and a cap alone on a hard
+    // slot is refused rather than silently dropped.
+    const mode = startMode ?? before.startMode;
+    if (mode === 'hard' && startCapMs != null) {
+      throw new HttpError(422, 'start_cap_on_hard', 'startCapMs only applies to a soft start');
+    }
+    const startFields =
+      startMode !== undefined || startCapMs !== undefined
+        ? {
+            startMode: mode,
+            startCapMs:
+              mode === 'soft' ? (startCapMs === undefined ? before.startCapMs : startCapMs) : null,
+          }
+        : {};
     // The strategy is rewritten when it's given or the type changes; else a rerun slot keeps its.
     const rerunFields =
       rerun !== undefined || type !== before.type
@@ -456,6 +474,7 @@ export async function updateSlot(
         ...fields,
         ...rerunFields,
         ...liveFields,
+        ...startFields,
         ...(parsed.rule ? { startsOn: ruleStartDate(rule), endsOn: ruleEndDate(rule) } : {}),
       })
       .where(and(eq(showSlot.id, slotId), whereStation(showSlot, ctx.scope)))

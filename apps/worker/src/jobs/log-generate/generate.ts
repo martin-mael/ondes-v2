@@ -11,6 +11,7 @@ import {
   writePromoPlacements,
 } from '@ondes/db';
 import {
+  backTiming,
   createPromoPlacer,
   type GeneratorExtensions,
   type GeneratorIssue,
@@ -30,7 +31,8 @@ import {
 import { announce, type PublishEvent } from '../_events/asset-updated.ts';
 
 // One `log-generate` job (#50, ADR 0026): load the station's snapshot once for all the days,
-// generate them in order with @ondes/scheduling (each day's picks count for the next), write
+// generate them in order with @ondes/scheduling (each day's picks count for the next, the music
+// before every hard start back-timed, #46), write
 // each day in its own transaction, then publish `log.updated` (cause `generate`) for what was
 // written. Deterministic: the same snapshot and seed write the same items, so a retried job
 // rewrites the same days.
@@ -91,9 +93,11 @@ export async function runLogGenerate(
     }),
     { seed: payload.seed ?? scope.stationId, clocks: loaded.snapshot.clocks },
   );
-  // The generator's hooks: the caller's (#46's back-timing), then the promo placer.
+  // The generator's hooks: the caller's, back-timing before hard starts (#46), then the
+  // promo placer (#60).
   const extensions: GeneratorExtensions = {
     ...(deps.extensions ? await deps.extensions(loaded, scope) : {}),
+    ...backTiming(loaded.snapshot),
     placeVoiceTrack: promos.placeVoiceTrack,
   };
   const generated = generateDays(loaded.snapshot, payload.localDates, {

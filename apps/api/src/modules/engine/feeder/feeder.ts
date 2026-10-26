@@ -4,6 +4,7 @@ import {
   alertTypes,
   type EnginePushItem,
   type EnginePushSegment,
+  type EngineSchedule,
   type EngineSegmentPart,
   type EngineState,
   type FeederItemPassedOverEvent,
@@ -18,6 +19,7 @@ import {
 import type { EngineAdapter } from '../adapter/adapter.ts';
 import { EngineNotQueuedError, EngineUnresolvableError } from '../adapter/errors.ts';
 import { type Logger, silentLogger } from '../adapter/logger.ts';
+import { scheduleAction, scheduleBody, slotFit } from './hardstart.ts';
 import { type FeedChain, type FeedOverlay, type IslandLayout, layoutIslands } from './islands.ts';
 import {
   DEFAULT_PLAN_OPTIONS,
@@ -62,7 +64,7 @@ import type { FeedIslands, FeedWindow } from './repo.ts';
  */
 export type FeederEngine = Pick<
   EngineAdapter,
-  'state' | 'push' | 'pushSegment' | 'remove' | 'clear'
+  'state' | 'push' | 'pushSegment' | 'remove' | 'clear' | 'schedule' | 'unschedule'
 >;
 
 export type FeederOptions = Partial<PlanOptions> & {
@@ -70,6 +72,8 @@ export type FeederOptions = Partial<PlanOptions> & {
   lookbackMs?: number;
   /** Shortest a flexible item may be trimmed to. Default 30 s. */
   minKeepMs?: number;
+  /** How long the automation fades out under a hard start the engine cuts to. Default 1 s. */
+  cutFadeSeconds?: number;
   /** A queued entry whose trim differs by less than this is kept. Default 250 ms. */
   trimToleranceMs?: number;
   /** A file the engine refused is skipped this long before being tried again. Default 60 s. */
@@ -168,6 +172,8 @@ type BuiltEntry = Built & {
   crossOutMs: number | undefined;
   /** The log items it covers (more than one for an island chain). */
   itemIds: string[];
+  /** What back-timing cut off its end in the log (`slotFit`): pushed as a trim. */
+  slotCutMs?: number;
 };
 
 /** What the feeder remembers of an entry it pushed during this boot. */
@@ -194,6 +200,11 @@ export function createStationFeeder(deps: FeederDeps) {
   const unresolvableRetryMs = opts.unresolvableRetryMs ?? 60_000;
   const requestCooldownMs = opts.requestCooldownMs ?? 60_000;
 
+  /** The body this feeder last scheduled with the engine (`POST /v1/schedule`) in this boot. */
+  let scheduledSent: string | null = null;
+  /** The engine answered 404 to `POST /v1/schedule` (rendered before #46): re-plan only. */
+  let scheduleUnsupported = false;
+
   /** What this feeder pushed during the current boot: body fingerprint and trim. */
   let bootId: string | null = null;
   const pushed = new Map<string, PushRecord>();
@@ -216,6 +227,7 @@ export function createStationFeeder(deps: FeederDeps) {
 
   /** A new engine boot (or a feeder taking over): its queue, from the store. */
   async function enterBoot(id: string) {
+    scheduledSent = null;
     pushed.clear();
     aired.clear();
     reported.clear();
@@ -274,6 +286,7 @@ export function createStationFeeder(deps: FeederDeps) {
   function plainEntry(item: LogItem, window: FeedWindow, layout: IslandLayout | null) {
     let unplayable: SkipReason | null = null;
     let flexMs = 0;
+    let stretchMs = 0;
     let b: BuiltEntry | null = null;
     const overlay = layout?.overlays.get(item.id) ?? null;
     if (item.kind === 'segment') {
@@ -307,14 +320,19 @@ export function createStationFeeder(deps: FeederDeps) {
       }
       if (media) {
         const source = partSource(item, media);
+        const crossOutMs = crossOutMsOf(source);
+        // A flexible item lasts its log slot: back-timing may have cut it (#46).
+        const fit = slotFit(item.kind, item.plannedDurationMs, playLengthMs(source), crossOutMs);
         b = {
           kind: 'item',
           source,
           fileIds: [media.fileId],
           overlay,
-          crossOutMs: crossOutMsOf(source),
+          crossOutMs,
           itemIds: [item.id],
+          slotCutMs: fit.cutMs,
         };
+        stretchMs = fit.stretchMs;
         if (isFlexibleKind(item.kind)) {
           const length = Math.min(item.plannedDurationMs, playLengthMs(source) ?? Infinity);
           flexMs = Math.max(0, length - minKeepMs);
@@ -332,6 +350,7 @@ export function createStationFeeder(deps: FeederDeps) {
       parts: item.parts.map((p) => ({ id: p.id, durationMs: p.plannedDurationMs })),
       unplayable,
       flexMs,
+      stretchMs,
     };
     return { entry, built: b };
   }
@@ -526,6 +545,82 @@ export function createStationFeeder(deps: FeederDeps) {
       out.push({ id, fingerprint: known?.fingerprint ?? null, trimMs: known?.trimMs ?? 0 });
     }
     return out;
+  }
+
+  /**
+   * Hands the plan's next `hard` item to the engine (`POST /v1/schedule`, #46, ADR 0031): it
+   * starts it at its anchor on its own audio timeline and fades out what's on air. Sent once
+   * per boot and body (again after a restart: a new boot has lost it), cancelled when the log
+   * no longer starts that item hard.
+   */
+  async function syncSchedule(
+    engine: FeederEngine,
+    state: EngineState,
+    plan: FeedPlan,
+    built: Map<string, BuiltEntry>,
+    window: FeedWindow,
+    entries: readonly FeedEntry[],
+  ) {
+    if (!engine.schedule || scheduleUnsupported) return;
+    let wanted: { itemId: string; atMs: number; fingerprint: string; body: EngineSchedule } | null =
+      null;
+    const b = plan.scheduled ? built.get(plan.scheduled.entry.id) : undefined;
+    if (plan.scheduled && b?.kind === 'item') {
+      const push = buildPushItem(b.source, {
+        station: window.station,
+        engineRoot: opts.engineRoot,
+      });
+      const payload = scheduleBody(push, plan.scheduled.atMs, opts.cutFadeSeconds ?? 1);
+      wanted = {
+        itemId: push.item_id,
+        atMs: plan.scheduled.atMs,
+        fingerprint: fingerprintOf(payload),
+        body: payload,
+      };
+    }
+    const held = state.scheduled
+      ? { itemId: state.scheduled.item_id, atMs: state.scheduled.at * 1000 }
+      : null;
+    const stillHard = !!held && entries.some((e) => e.id === held.itemId && e.timing === 'hard');
+    const action = scheduleAction({
+      nowMs: now(),
+      engine: held,
+      wanted,
+      sent: scheduledSent,
+      stillHard,
+    });
+    if (action === 'schedule' && wanted) {
+      await assertOwner();
+      try {
+        await engine.schedule(wanted.body);
+        scheduledSent = wanted.fingerprint;
+        logger.info(
+          { stationId: scope.stationId, itemId: wanted.itemId, at: new Date(wanted.atMs) },
+          'Hard start scheduled with the engine',
+        );
+      } catch (error) {
+        if (error instanceof EngineNotQueuedError) {
+          scheduleUnsupported = true;
+          logger.warn(
+            { stationId: scope.stationId },
+            'Engine has no POST /v1/schedule: hard starts are re-planned only',
+          );
+        } else if (error instanceof EngineUnresolvableError) {
+          for (const fileId of b?.fileIds ?? [])
+            unresolvable.set(fileId, now() + unresolvableRetryMs);
+          logger.warn(
+            { stationId: scope.stationId, itemId: wanted.itemId, err: error },
+            'Engine refused the hard start file',
+          );
+        } else {
+          throw error;
+        }
+      }
+    } else if (action === 'unschedule' && engine.unschedule) {
+      await assertOwner();
+      await engine.unschedule();
+      scheduledSent = null;
+    }
   }
 
   /** Before every engine mutation: stopped, or no longer the station's feeder, aborts the run. */
@@ -764,7 +859,7 @@ export function createStationFeeder(deps: FeederDeps) {
           : null,
         entries,
         aired,
-        options: planOptions,
+        options: { ...planOptions, engineCut: !!engine.schedule && !scheduleUnsupported },
       });
       result.plan = plan;
 
@@ -782,7 +877,7 @@ export function createStationFeeder(deps: FeederDeps) {
           trimMs: w.trimMs,
           built: b,
           crossInMs,
-          fingerprint: fingerprintOf(body(b, window.station, crossInMs, 0)),
+          fingerprint: fingerprintOf(body(b, window.station, crossInMs, b.slotCutMs ?? 0)),
         };
       });
       const actions = diffQueue(queuedOf(state), wanted, plan.need, trimToleranceMs);
@@ -811,7 +906,12 @@ export function createStationFeeder(deps: FeederDeps) {
         const w = wanted[index];
         if (!w) break;
         await assertOwner();
-        const payload = body(w.built, window.station, w.crossInMs, w.trimMs);
+        const payload = body(
+          w.built,
+          window.station,
+          w.crossInMs,
+          (w.built.slotCutMs ?? 0) + w.trimMs,
+        );
         try {
           if ('parts' in payload) await engine.pushSegment(payload);
           else await engine.push(payload as EnginePushItem);
@@ -851,6 +951,7 @@ export function createStationFeeder(deps: FeederDeps) {
         result.pushed.push(w.id);
       }
       if (refused) continue;
+      await syncSchedule(engine, state, plan, built, window, entries);
 
       await requestFetches(plan, built, layout?.missingFiles ?? []);
       await updateAlerts(plan, state, items);

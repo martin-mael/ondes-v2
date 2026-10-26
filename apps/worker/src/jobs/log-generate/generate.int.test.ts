@@ -25,7 +25,7 @@ import {
   writeGeneratedDay,
 } from '@ondes/db';
 import { createTestDatabase, type TestDatabase } from '@ondes/db/testing';
-import { type GeneratedDay, generateDays } from '@ondes/scheduling';
+import { GENERATOR_VERSION, type GeneratedDay, generateDays } from '@ondes/scheduling';
 import {
   type Actor,
   type LocalDate,
@@ -214,7 +214,7 @@ describe('log-generate job', () => {
     expect(report?.days.map((d) => d.localDate)).toEqual([DATE, '2026-11-05']);
 
     const { day, rows } = await items(DATE);
-    expect(day).toMatchObject({ status: 'draft', version: 1, generatorVersion: '1' });
+    expect(day).toMatchObject({ status: 'draft', version: 1, generatorVersion: GENERATOR_VERSION });
     expect(day?.seed).toBe(`${scope.stationId}:${DATE}`);
     expect(rows[0]?.plannedStart).toEqual(localDayBounds(DATE, TZ).startsAt);
     expect(rows.map((r) => r.position)).toEqual(rows.map((_, i) => i));
@@ -469,6 +469,34 @@ describe('log-generate job', () => {
       plannedStart: zonedInstant(date, '21:00', TZ),
     });
   });
+  it('plans a soft slot soft, with its cap (#46)', async () => {
+    const date: LocalDate = '2026-11-09';
+    const [softSlot] = await tdb.db
+      .insert(showSlot)
+      .values({
+        ...base(),
+        showId,
+        type: 'live',
+        rule: { freq: 'once', date, time: '16:00' },
+        startsOn: date,
+        endsOn: date,
+        durationMs: HOUR,
+        startMode: 'soft',
+        startCapMs: 45_000,
+      })
+      .returning({ id: showSlot.id });
+    await runLogGenerate(deps(), scope, { localDates: [date], status: 'draft' });
+    const { rows } = await items(date);
+    expect(rows.find((r) => r.originShowSlotId === softSlot?.id)).toMatchObject({
+      kind: 'live_slot',
+      timing: 'soft',
+      capMs: 45_000,
+      anchorAt: zonedInstant(date, '16:00', TZ),
+    });
+    // The other slots stay hard.
+    expect(rows.find((r) => r.originShowSlotId === slotId)).toMatchObject({ timing: 'hard' });
+  });
+
   it('refuses to write over an item that became kept after the snapshot was loaded', async () => {
     const date: LocalDate = '2026-11-10';
     await runLogGenerate(deps(), scope, { localDates: [date], status: 'draft' });

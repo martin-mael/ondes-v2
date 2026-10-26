@@ -43,6 +43,8 @@ import {
   logDayItemInputSchema,
   type RotationRule,
   rotationRulesSchema,
+  type SlotStartMode,
+  slotStartCapMs,
   type TagKey,
 } from '@ondes/shared';
 import {
@@ -411,6 +413,8 @@ type SlotRow = ExpandableSlot & {
   showId: string;
   showName: string;
   type: GeneratorOccurrence['type'];
+  startMode: SlotStartMode;
+  startCapMs: number | null;
 };
 
 /** Show occurrences overlapping `range`, with the episode each airs (#44, #48). */
@@ -433,6 +437,8 @@ async function loadOccurrences(
       type: showSlot.type,
       rule: showSlot.rule,
       durationMs: showSlot.durationMs,
+      startMode: showSlot.startMode,
+      startCapMs: showSlot.startCapMs,
     })
     .from(showSlot)
     .innerJoin(show, eq(show.id, showSlot.showId))
@@ -506,6 +512,7 @@ async function loadOccurrences(
       durationMs: o.durationMs,
       special: o.moved || o.slot.rule.freq === 'once',
       episode: episodeRow ? episodeOf(episodeRow) : null,
+      startPolicy: { mode: o.slot.startMode, capMs: slotStartCapMs(o.slot) },
     });
   }
   return out;

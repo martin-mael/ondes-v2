@@ -44,6 +44,8 @@ All under `/v1`, JSON bodies, schemas in `packages/shared/src/contracts/engine.t
 | `DELETE /v1/queue` | – | `{removed}` (clears the queue) |
 | `POST /v1/skip` | – | `{skipped}`: ends whatever is on air (a whole segment, if one plays) |
 | `POST /v1/live` | `{enabled}` | opens or closes the live gate; `409` if live is disabled in the station settings |
+| `POST /v1/schedule` | `{item_id, uri, at, fade_out?, cue_in?, cue_out?, fade_in?, amplify_db?, title?, artist?}` | `201 {rid, item_id, uri, status}`, `422` if the file can't be resolved, `400` on a bad body. Added by #46 (ADR 0031): the hard start the engine plays at `at` (epoch s) on its audio timeline, fading out what's on air over `fade_out` s (default 1). Replaces any previous one. `GET /v1/state` reports it as `scheduled: {item_id, at}` until it starts |
+| `DELETE /v1/schedule` | – | `{cancelled}`: drops the scheduled hard start, if it hasn't started |
 
 Notes:
 - **Push resolves synchronously.** The handler calls `request.resolve` before `queue.push`, so a 201 means the file is local and decodable. A missing file in the playout cache is reported to Node at push time, not discovered on air. A push costs about 30 ms.
