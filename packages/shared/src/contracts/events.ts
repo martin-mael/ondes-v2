@@ -181,6 +181,28 @@ export const engineRestartStormEventSchema = z.object({
   }),
 });
 
+/**
+ * The engine lifecycle's supervisor (#35) saw the station's engine restart on its own: Docker
+ * restarted the crashed container, or the lifecycle replaced a dead one (#71). Restarts asked
+ * for by a person or a settings change don't count. A crash loop ends in
+ * `engine.restart_storm`.
+ */
+export const engineRestartedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('engine.restarted'),
+  data: z.object({
+    /** Last boot the health monitor saw before the restart, if any. */
+    bootId: z.string().nullable(),
+    /** Restarts seen by this check. */
+    restarts: z.int().positive(),
+    /** Restarts counted in the storm guard's window so far. */
+    inWindow: z.int().positive(),
+    windowSeconds: z.int().positive(),
+    /** The container was found dead (not restarting by itself) and recreated. */
+    crashed: z.boolean(),
+  }),
+});
+
 export const engineRealtimeEventSchema = z.discriminatedUnion('type', [
   engineUpEventSchema,
   engineDownEventSchema,
@@ -193,6 +215,7 @@ export const engineRealtimeEventSchema = z.discriminatedUnion('type', [
   engineBlankDetectedEventSchema,
   engineBlankRecoveredEventSchema,
   engineRestartStormEventSchema,
+  engineRestartedEventSchema,
 ]);
 export type EngineRealtimeEvent = z.infer<typeof engineRealtimeEventSchema>;
 
@@ -575,6 +598,7 @@ export const realtimeEventPermissions = {
   'engine.blank.detected': 'engine:read',
   'engine.blank.recovered': 'engine:read',
   'engine.restart_storm': 'engine:read',
+  'engine.restarted': 'engine:read',
   // Log (#100): the timeline refetches the changed range.
   'log.updated': 'log:read',
   'log.item.changed': 'log:read',

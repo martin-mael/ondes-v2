@@ -52,3 +52,57 @@ export const listListenerStatsQuerySchema = z
     path: ['to'],
   });
 export type ListListenerStatsQuery = z.input<typeof listListenerStatsQuerySchema>;
+
+// --- Dashboard (#71) -----------------------------------------------------------------------
+
+/**
+ * `GET /api/v1/stations/:stationId/listeners`: listeners per mount now, from the newest minute
+ * bucket of each mount seen in the last 3 minutes (the poller samples every 15 s). Empty when
+ * the poller isn't running or Icecast can't be read: unknown is not zero.
+ */
+export const currentListenersSchema = z.object({
+  /** Newest bucket among the mounts; null when there is no recent data. */
+  sampledAt: z.date().nullable(),
+  total: z.int().min(0),
+  mounts: z.array(
+    z.object({
+      mount: streamMountSchema,
+      /** The bucket's average, rounded. */
+      listeners: z.int().min(0),
+      listenersMax: z.int().min(0),
+      /** The engine fed the mount for most of the bucket (otherwise listeners got its fallback). */
+      sourceConnected: z.boolean(),
+      /** Start of the minute bucket read. */
+      sampledAt: z.date(),
+    }),
+  ),
+});
+export type CurrentListeners = z.infer<typeof currentListenersSchema>;
+
+export const listenerHistoryQuerySchema = z.object({
+  /** Hours back from now. Default 24. */
+  hours: z.coerce.number().int().min(1).max(168).default(24),
+});
+export type ListenerHistoryQuery = z.input<typeof listenerHistoryQuerySchema>;
+
+/**
+ * `GET /api/v1/stations/:stationId/listeners/history`: average listeners per step (288 steps,
+ * 5 min over 24 h), per mount and in total. A step without any sample is null (no data), not 0.
+ */
+export const listenerHistorySchema = z.object({
+  startsAt: z.date(),
+  endsAt: z.date(),
+  stepSeconds: z.int().positive(),
+  /** Mounts with data in the range, sorted. */
+  mounts: z.array(streamMountSchema),
+  points: z.array(
+    z.object({
+      /** Start of the step, UTC. */
+      startsAt: z.date(),
+      total: z.number().min(0).nullable(),
+      /** Mount -> average listeners; mounts without data in the step are absent. */
+      byMount: z.record(z.string(), z.number().min(0)),
+    }),
+  ),
+});
+export type ListenerHistory = z.infer<typeof listenerHistorySchema>;

@@ -13,6 +13,7 @@ const engine = [
   'apps/api/src/modules/live/live-auth.engine.int.test.ts',
   // The harbor pool and live switching, recorded (#64).
   'apps/api/src/modules/live/live-switching.engine.int.test.ts',
+  'apps/api/src/modules/prelisten/prelisten.engine.int.test.ts',
 ];
 const worker = ['apps/worker/src/**/*.int.test.ts'];
 

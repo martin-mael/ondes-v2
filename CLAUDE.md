@@ -31,7 +31,7 @@ apps/
     modules/<module>/   # routes.ts, service.ts, repo.ts, *.test.ts
                         # auth, orgs, stations, library, engine, asrun, rotation,
                         # clocks, shows, log, onair, public, jobs, alerts, cache, segues, live,
-                        # promos
+                        # listeners, prelisten, promos
                         # (live/: switching, standing, slot-check, requests, events;
                         #  live/testing/: the in-memory engine pool for its tests;
                         #  shows/live-slots.ts: live slot settings and live episodes)
@@ -44,7 +44,8 @@ apps/
     app/                # shell, routing (router.tsx), auth pages, layout, api client,
                         # SSE client (sse/), i18n
     features/<feature>/ # library, cue-editor, rotation, clocks, grid, shows,
-                        # log-timeline, segue-editor, live, dashboard, settings, promos
+                        # log-timeline, segue-editor, live, dashboard, alerts, settings,
+                        # promos
     ui/                 # shared design-system components (shadcn/ui on Base UI)
 packages/
   shared/src/
