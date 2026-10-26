@@ -3,16 +3,14 @@ import {
   type Db,
   type GeneratorLoadOptions,
   type LoadedSnapshot,
+  loadGeneratorHooks,
   loadGeneratorSnapshot,
-  loadPromoSnapshot,
   type StationScope,
   type WrittenDay,
   writeGeneratedDay,
   writePromoPlacements,
 } from '@ondes/db';
 import {
-  backTiming,
-  createPromoPlacer,
   type GeneratorExtensions,
   type GeneratorIssue,
   generateDays,
@@ -84,21 +82,17 @@ export async function runLogGenerate(
     ...(deps.rerun ? { rerun: deps.rerun } : {}),
   });
   if (!loaded) return null;
-  // Promo slots (#60, ADR 0032): the placer picks a promo of the slot's pool; each day's
-  // placements are written after the day, and the api makes their segues on `log.updated`.
-  const promos = createPromoPlacer(
-    await loadPromoSnapshot(deps.db, scope, {
-      timeZone: loaded.snapshot.timeZone,
-      dates: payload.localDates,
-    }),
-    { seed: payload.seed ?? scope.stationId, clocks: loaded.snapshot.clocks },
-  );
-  // The generator's hooks: the caller's, back-timing before hard starts (#46), then the
-  // promo placer (#60).
+  // The generator's hooks (#46's back-timing, #60's promo placer), built as the regeneration
+  // preview builds them; each day's promo placements are written after the day, and the api
+  // makes their segues on `log.updated`.
+  const hooks = await loadGeneratorHooks(deps.db, scope, loaded, {
+    dates: payload.localDates,
+    seed: payload.seed,
+  });
+  const promos = hooks.promos;
   const extensions: GeneratorExtensions = {
     ...(deps.extensions ? await deps.extensions(loaded, scope) : {}),
-    ...backTiming(loaded.snapshot),
-    placeVoiceTrack: promos.placeVoiceTrack,
+    ...hooks.extensions,
   };
   const generated = generateDays(loaded.snapshot, payload.localDates, {
     ...(payload.seed ? { seed: payload.seed } : {}),

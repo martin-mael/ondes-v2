@@ -5,6 +5,7 @@ export * from './migrate.ts';
 export * from './repos/autocue.ts';
 export * from './repos/cache.ts';
 export * from './repos/episode-check.ts';
+export * from './repos/generator-hooks.ts';
 export * from './repos/islands.ts';
 export * from './repos/jobs.ts';
 export * from './repos/library.ts';

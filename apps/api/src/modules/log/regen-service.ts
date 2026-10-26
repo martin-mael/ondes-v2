@@ -4,6 +4,7 @@ import {
   type GeneratorLoadOptions,
   getRegenSettings,
   type LoadedSnapshot,
+  loadGeneratorHooks,
   loadGeneratorSnapshot,
   type StationScope,
   stationTimezone,
@@ -105,10 +106,16 @@ export async function previewRegen(
     ...(deps.rerun ? { rerun: deps.rerun } : {}),
   });
   if (!loaded) throw new HttpError(404, 'not_found', 'Station not found');
-  const extensions = deps.extensions ? await deps.extensions(loaded, scope) : undefined;
+  // The job's hooks (back-timing, promos), so the diff shows what it would write (nothing is
+  // written here: promo placements are only the job's).
+  const hooks = await loadGeneratorHooks(deps.db, scope, loaded, { dates, seed: request.seed });
+  const extensions: GeneratorExtensions = {
+    ...(deps.extensions ? await deps.extensions(loaded, scope) : {}),
+    ...hooks.extensions,
+  };
   const generated = generateDays(loaded.snapshot, dates, {
     ...(request.seed ? { seed: request.seed } : {}),
-    ...(extensions ? { extensions } : {}),
+    extensions,
   });
 
   const summary = (assetId: string | null): LogAssetSummary | null => {
