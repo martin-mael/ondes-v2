@@ -31,7 +31,8 @@ being one of them.
 - **Proxy guard**: filters bodies and targets.
   - Creates: only `<prefix>-<id>` names, the pinned image, the engine entrypoint, `ondes.*`
     labels with `ondes.engine=true`, the engine network, a read-only bind of
-    `<ENGINE_CACHE_ROOT>/<id>` at `/cache`, tmpfs `/tmp`, a read-only root, CPU/memory/pids
+    `<ENGINE_CACHE_ROOT>/<id>` at `/cache`, a read-write bind of
+    `<ENGINE_CACHE_ROOT>/<id>/recordings` at `/recordings` (live recording, #67), tmpfs `/tmp`, a read-only root, CPU/memory/pids
     limits, no swap, `CapDrop: ALL`, `no-new-privileges`, only the live port published. No
     privileged mode, binds, devices, added capabilities, host namespaces or volumes.
   - Inspect, start, stop, update (restart policy only) and remove: only engine containers (label
@@ -59,6 +60,11 @@ being one of them.
   `CapDrop: ALL`, `no-new-privileges`; json-file logs capped at 30 MB.
 - **Playout cache**: `<ENGINE_CACHE_ROOT>/<stationId>` bind-mounted read-only at `/cache`
   (ADR 0004), created if missing.
+- **Live recordings**: `<ENGINE_CACHE_ROOT>/<stationId>/recordings` bind-mounted read-write at
+  `/recordings` (ADR 0039), the only path the engine writes to. The worker creates it mode 0777
+  every 10 min (the engine runs as another user); a directory Docker created first is owned by
+  root, and the worker logs that it must be made writable (`chmod 0777`).
+  The template's `live.recordDir` points there.
 - **Network**: `ENGINE_NETWORK`, shared with the api and Icecast; the container is reachable as
   `<prefix>-<stationId>`. The control port is never published.
 - **Metrics**: the Prometheus server is off (it has no auth, and engines share a network). Turn

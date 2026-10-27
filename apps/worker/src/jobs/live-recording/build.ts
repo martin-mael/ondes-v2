@@ -11,6 +11,7 @@ import {
   type Db,
   deleteAsset,
   failLiveRecordingBuild,
+  findUploadByStagingKey,
   finishLiveRecordingBuild,
   getUpload,
   type LiveRecordingRow,
@@ -175,14 +176,20 @@ async function build(
   const durationMs = await durationOf(deps.tools, out, run.signal);
   const { size, sha256 } = await digest(out);
 
-  // 3. One upload per attempt: its staging object is deleted by ingest once stored.
-  const stagingKey = `${orgPrefix(scope.orgId)}uploads/${randomUUID()}`;
-  await deps.storage.put(stagingKey, createReadStream(out), {
-    contentType: 'audio/flac',
-    contentLength: size,
-    metadata: { sha256 },
-  });
-  const upload = await createLiveRecordingUpload(deps.db, ctx, {
+  // 3. One upload per version, found again by its staging key: a retried attempt resumes it
+  //    (ingest picks a `processing` upload up where it stopped) instead of leaving it behind.
+  //    Ingest deletes the staging object once the asset's files are stored.
+  const stagingKey = `${orgPrefix(scope.orgId)}uploads/live-${recording.id}-v${recording.version}`;
+  let upload = await findUploadByStagingKey(deps.db, scope, stagingKey);
+  const pending = !upload || upload.status === 'queued' || upload.status === 'processing';
+  if (pending && !(await deps.storage.head(stagingKey))) {
+    await deps.storage.put(stagingKey, createReadStream(out), {
+      contentType: 'audio/flac',
+      contentLength: size,
+      metadata: { sha256 },
+    });
+  }
+  upload ??= await createLiveRecordingUpload(deps.db, ctx, {
     filename: `${fileTitle(recording.title)} ${firstStart.toISOString().slice(0, 10)}.flac`,
     sizeBytes: size,
     assetType: recording.episodeId ? 'episode' : 'other',

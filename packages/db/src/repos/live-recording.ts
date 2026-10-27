@@ -609,6 +609,19 @@ export async function createLiveRecordingUpload(
   });
 }
 
+/** A build's upload, found again by its staging key (one per recording version). */
+export async function findUploadByStagingKey(
+  db: Executor,
+  scope: StationScope,
+  stagingKey: string,
+): Promise<UploadRecord | null> {
+  const [row] = await db
+    .select()
+    .from(upload)
+    .where(and(whereStation(upload, scope), eq(upload.stagingKey, stagingKey)));
+  return row ?? null;
+}
+
 /**
  * Makes `assetId` the episode's audio (audited as an episode update). A `planned` or
  * `missing` episode stays as it is but for the audio: it aired live, the as-run says so.

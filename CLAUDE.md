@@ -33,19 +33,21 @@ apps/
                         # clocks, shows, log, onair, public, jobs, alerts, cache, segues, live,
                         # listeners, prelisten, promos
                         # (live/: switching, standing, slot-check, requests, events;
+                        #  live/recording/: live sessions' audio into episodes (#67);
                         #  live/testing/: the in-memory engine pool for its tests;
                         #  shows/live-slots.ts: live slot settings and live episodes)
   worker/src/
     jobs/<job>/         # one folder per job type: ingest, loudness, autocue, analysis,
                         # peaks, dedupe, cache-sync (+ cache-fetch, its urgent
                         # one-file variant), episode-check, log-generate,
-                        # log-horizon, island-render, …
+                        # log-horizon, island-render, live-recording (+ its
+                        # live-recording-cleanup retention sweep), …
   web/src/
     app/                # shell, routing (router.tsx), auth pages, layout, api client,
                         # SSE client (sse/), i18n
     features/<feature>/ # library, cue-editor, rotation, clocks, grid, shows,
-                        # log-timeline, segue-editor, live, dashboard, alerts, settings,
-                        # promos
+                        # log-timeline, segue-editor, live, dashboard, alerts, settings
+                        # (safety, live-recording), promos
     ui/                 # shared design-system components (shadcn/ui on Base UI)
 packages/
   shared/src/
@@ -56,7 +58,7 @@ packages/
   db/
     src/schema/<domain>.ts # one file per domain: tenancy, library, engine, asrun,
                            # rotation, clocks, shows, log, regen, segues, live, alerts,
-                           # cache, safety, promos
+                           # cache, safety, promos, live-recording
     migrations/            # generated, timestamp-prefixed
   storage/                 # S3-compatible abstraction
   queue/                   # RabbitMQ job framework
@@ -124,7 +126,7 @@ Every PR must pass, locally and in CI:
   | Web build | `apps/web`, `packages/shared` |
   | Integration (core) | `apps/api`, `packages`, `deploy/compose.dev.yml`, `deploy/dev` |
   | Integration (engine) | same as core, plus everything that triggers the engine jobs |
-  | Integration (worker) | `apps/worker`, `apps/api/src/modules/library`, `packages`, `deploy/docker/worker.Dockerfile`, `deploy/compose.dev.yml`, `deploy/dev` |
+  | Integration (worker) | `apps/worker`, `apps/api/src/modules/library`, `packages`, `deploy/docker/worker.Dockerfile`, `deploy/compose.dev.yml`, `deploy/dev`, plus what the live recording test runs (`engine/templates`, the engine config and adapter, `live/recording`) |
   | Engine templates, Engine island splice | `engine`, `apps/api/src/modules/engine/config`, `apps/api/src/modules/engine/feeder/push.ts`, `apps/worker/src/jobs/island-render`, `packages/shared`, `deploy/compose.dev.yml` |
 
   Changes to `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.nvmrc`, `tsconfig.base.json` or `ci.yml` run every job. Skipped jobs report as skipped, not pending: **branch protection on `main` should require only the `CI ok` check** (never the individual jobs), which fails when any job failed or was cancelled. The repo has no branch protection rule yet. When you add a job, add it to `CI ok`'s `needs`; when you add a test folder, check the filters in the `changes` job cover it.
