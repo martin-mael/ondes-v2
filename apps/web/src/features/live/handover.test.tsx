@@ -147,7 +147,7 @@ describe('DJ handover controls', () => {
     await user.click(dialog.getByRole('button', { name: 'Schedule' }));
     const post = calls.find((c) => c.method === 'POST' && c.path === `${base}/handovers`);
     expect(post?.body).toMatchObject({ streamerId: kai.id, fadeMs: 0 });
-    const at = new Date((post?.body as { at: string }).at);
+    const at = new Date((post?.body as { at: string } | undefined)?.at ?? 0);
     expect(zonedParts(at, 'Europe/Paris')).toMatchObject({ date: target.date, time: target.time });
   });
 
