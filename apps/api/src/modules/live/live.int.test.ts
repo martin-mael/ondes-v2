@@ -13,6 +13,8 @@ import type {
   Actor,
   LiveConnectionInfo,
   LiveEvent,
+  LiveHandover,
+  LiveHandoverList,
   Show,
   StreamerList,
   StreamerWithPassword,
@@ -58,6 +60,11 @@ const engine = {
   async disconnectLive() {
     return false;
   },
+  muted: [] as [number, boolean][],
+  async muteLive(input: number, muted: boolean) {
+    this.muted.push([input, muted]);
+    return true;
+  },
 };
 
 async function buildTestApp(): Promise<TestApp> {
@@ -93,7 +100,7 @@ async function buildTestApp(): Promise<TestApp> {
 
 function call(
   who: keyof typeof cookies,
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   url: string,
   payload?: object,
   stationId = scope.stationId,
@@ -733,5 +740,71 @@ describe('events and ad-hoc requests (#65)', () => {
     const unknown = '01a15ddf-0000-7000-8000-00000000ffff';
     expect((await call('presenter', 'POST', `/requests/${unknown}/approve`)).statusCode).toBe(403);
     expect((await call('manager', 'POST', `/requests/${unknown}/refuse`)).statusCode).toBe(404);
+  });
+});
+
+describe('DJ handover (#66)', () => {
+  it('mutes an input for engine:control only, audited', async () => {
+    expect((await call('presenter', 'PUT', '/inputs/2/mute', { muted: true })).statusCode).toBe(
+      403,
+    );
+    const res = await call('manager', 'PUT', '/inputs/2/mute', { muted: true });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ connected: true, muted: true });
+    expect(engine.muted).toEqual([[2, true]]);
+    expect((await auditRows(scope.stationId, 'station')).map((r) => r.action)).toContain(
+      'live.input.mute',
+    );
+    expect((await call('manager', 'PUT', '/inputs/0/mute', { muted: true })).statusCode).toBe(400);
+  });
+
+  it('schedules, lists and cancels handovers; readers only list', async () => {
+    const created = await call('manager', 'POST', '/streamers', {
+      displayName: 'Next DJ',
+      username: 'next-dj',
+      anyTime: true,
+    });
+    expect(created.statusCode).toBe(201);
+    const streamerId = created.json<StreamerWithPassword>().streamer.id;
+    const at = new Date(Date.now() + 3600_000).toISOString();
+    expect((await call('presenter', 'POST', '/handovers', { streamerId, at })).statusCode).toBe(
+      403,
+    );
+    const scheduled = await call('manager', 'POST', '/handovers', { streamerId, at });
+    expect(scheduled.statusCode).toBe(201);
+    const handover = scheduled.json<LiveHandover>();
+    expect(handover).toMatchObject({
+      streamer: { id: streamerId, displayName: 'Next DJ' },
+      at,
+      fadeMs: 2000,
+      status: 'pending',
+    });
+    const listed = await call('presenter', 'GET', '/handovers');
+    expect(listed.json<LiveHandoverList>().handovers.map((x) => x.id)).toEqual([handover.id]);
+    expect((await call('outsider', 'GET', '/handovers')).statusCode).toBe(404);
+    expect(
+      (await call('manager', 'POST', '/handovers', { streamerId, at, fadeMs: 20_000 })).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await call('manager', 'POST', '/handovers', {
+          streamerId,
+          at: new Date(Date.now() - 1000).toISOString(),
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (await call('outsider', 'POST', '/handovers', { streamerId, at }, otherScope.stationId))
+        .statusCode,
+    ).toBe(404);
+
+    expect((await call('presenter', 'DELETE', `/handovers/${handover.id}`)).statusCode).toBe(403);
+    const cancelled = await call('manager', 'DELETE', `/handovers/${handover.id}`);
+    expect(cancelled.json<LiveHandover>().status).toBe('cancelled');
+    expect((await call('manager', 'DELETE', `/handovers/${handover.id}`)).statusCode).toBe(409);
+    expect((await auditRows(handover.id, 'live_handover')).map((r) => r.action).sort()).toEqual([
+      'live_handover.cancel',
+      'live_handover.create',
+    ]);
   });
 });

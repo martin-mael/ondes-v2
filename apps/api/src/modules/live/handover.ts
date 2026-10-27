@@ -45,6 +45,9 @@ type Logger = {
 };
 
 type Ctx = { actor: Actor; scope: StationScope };
+
+/** A row that left the expected status before this replica could update it. */
+class StatusMoved extends Error {}
 type HandoverRow = typeof liveHandover.$inferSelect;
 
 export type LiveHandoversOptions = {
@@ -150,18 +153,21 @@ export function createLiveHandovers(options: LiveHandoversOptions): LiveHandover
         })
         .where(and(eq(liveHandover.id, row.id), eq(liveHandover.status, from)))
         .returning();
-      if (updated) {
-        await audit({
-          action: to === 'done' ? 'live_handover.run' : 'live_handover.fail',
-          entity: { type: 'live_handover', id: row.id },
-          diff: {
-            status: { from, to },
-            ...(outcome.reason ? { reason: { from: null, to: outcome.reason } } : {}),
-            ...(outcome.sessionId ? { sessionId: { from: null, to: outcome.sessionId } } : {}),
-          },
-        });
-      }
+      // Ended meanwhile (another replica): nothing to write; the transaction rolls back.
+      if (!updated) throw new StatusMoved();
+      await audit({
+        action: to === 'done' ? 'live_handover.run' : 'live_handover.fail',
+        entity: { type: 'live_handover', id: row.id },
+        diff: {
+          status: { from, to },
+          ...(outcome.reason ? { reason: { from: null, to: outcome.reason } } : {}),
+          ...(outcome.sessionId ? { sessionId: { from: null, to: outcome.sessionId } } : {}),
+        },
+      });
       return updated;
+    }).catch((err: unknown) => {
+      if (err instanceof StatusMoved) return undefined;
+      throw err;
     });
     if (ended) await publish(scope, row.id, to);
     return !!ended;
@@ -319,7 +325,9 @@ export function createLiveHandovers(options: LiveHandoversOptions): LiveHandover
           .set({ status: 'cancelled', endedAt: now() })
           .where(and(eq(liveHandover.id, id), eq(liveHandover.status, 'pending')))
           .returning();
-        if (!updated) return undefined;
+        if (!updated) {
+          throw new HttpError(409, 'live_handover_ended', `the handover is ${existing.status}`);
+        }
         await audit({
           action: 'live_handover.cancel',
           entity: { type: 'live_handover', id },
@@ -327,9 +335,6 @@ export function createLiveHandovers(options: LiveHandoversOptions): LiveHandover
         });
         return updated;
       });
-      if (!row) {
-        throw new HttpError(409, 'live_handover_ended', `the handover is ${existing.status}`);
-      }
       clearTimeout(timers.get(id));
       timers.delete(id);
       await publish(ctx.scope, id, 'cancelled');
