@@ -61,9 +61,10 @@ being one of them.
 - **Playout cache**: `<ENGINE_CACHE_ROOT>/<stationId>` bind-mounted read-only at `/cache`
   (ADR 0004), created if missing.
 - **Live recordings**: `<ENGINE_CACHE_ROOT>/<stationId>/recordings` bind-mounted read-write at
-  `/recordings` (ADR 0039), the only path the engine writes to. The worker creates it mode 0777
-  every 10 min (the engine runs as another user); a directory Docker created first is owned by
-  root, and the worker logs that it must be made writable (`chmod 0777`).
+  `/recordings` (ADR 0039), the only path the engine writes to. The lifecycle creates it mode
+  0777 before creating the container (the engine runs as another user than the worker, and a
+  directory Docker creates is root's); the worker's sweep makes it too, and logs one it can't
+  make writable (`chmod 0777`).
   The template's `live.recordDir` points there.
 - **Network**: `ENGINE_NETWORK`, shared with the api and Icecast; the container is reachable as
   `<prefix>-<stationId>`. The control port is never published.

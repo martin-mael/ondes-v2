@@ -65,10 +65,14 @@ a second bind, `<ENGINE_CACHE_ROOT>/<station>/recordings` → `/recordings`, rea
 `live.recordDir` to it. The proxy guard allows exactly that bind (`<root>/<station>/recordings`
 at `/recordings`, read-write) and nothing else writable. The worker, which keeps the caches on
 the same host, reads the files there.
-- **Who creates the directory.** The engine runs as `liquidsoap` (uid 100), the worker as `node`:
-  the worker's cleanup sweep makes the directory every 10 min, mode 0777 (no sticky bit, so it
-  can delete the engine's files). A directory Docker created first (owned by root) fails that
-  `chmod` and the sweep logs what to fix; the recording itself then retries harmlessly.
+- **Who creates the directory.** The engine runs as `liquidsoap` (uid 100), the worker as `node`.
+  The lifecycle makes `<station>/recordings` itself, mode 0777 (no sticky bit, so the worker can
+  delete the engine's files), right before it creates the container. Left to Docker
+  (`CreateMountpoint`), the directory is root's on Linux: the engine can't write to it, and
+  neither the worker nor anything else running as a normal user can clean it up (the lifecycle
+  integration test's cleanup failed on exactly that in CI). An api that can't see the host's
+  cache root logs it and goes on; the worker's sweep also makes the directory every 10 min, and
+  logs a directory it can't make writable. The recording itself then just retries.
 - Streaming the audio to Node over HTTP, or a tmpfs, were rejected: a 2-hour file doesn't fit
   in the engine's memory limits, and a network push makes the archive depend on the api being
   up for the whole show.

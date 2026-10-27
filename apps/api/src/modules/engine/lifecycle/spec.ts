@@ -34,6 +34,7 @@ export {
   ENGINE_RECORDINGS_MOUNT,
   ENGINE_SCRIPT_ENV,
   ENGINE_TMPFS,
+  RECORDINGS_DIR,
 } from './container-policy.ts';
 
 /** Restart policy of a running engine: Docker retries a few crashes, then the guard decides. */

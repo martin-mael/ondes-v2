@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -254,6 +254,14 @@ describe('station engine lifecycle (real Docker)', () => {
     expect(inspected.Mounts).toContainEqual(
       expect.objectContaining({ Destination: '/cache', RW: false }),
     );
+    // Live recordings (#67): the one writable mount, a directory the lifecycle made itself
+    // (Docker would have made it root's: then nobody could clean it up).
+    expect(inspected.Mounts).toContainEqual(
+      expect.objectContaining({ Destination: '/recordings', RW: true }),
+    );
+    const recordings = statSync(join(cacheRoot, scope.stationId, 'recordings'));
+    expect(recordings.mode & 0o777).toBe(0o777);
+    if (process.getuid) expect(recordings.uid).toBe(process.getuid());
     expect(inspected.Config.Env.join('\n')).toContain('ENGINE_CONTROL_TOKEN=');
 
     // Its default output is live on Icecast, with the station's own source password (the
