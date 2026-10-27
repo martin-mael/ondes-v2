@@ -11,6 +11,7 @@ export * from './invitations.ts';
 export * from './jobs.ts';
 export * from './library.ts';
 export * from './live.ts';
+export * from './live-recording.ts';
 export * from './log.ts';
 export * from './promos.ts';
 export * from './regen.ts';

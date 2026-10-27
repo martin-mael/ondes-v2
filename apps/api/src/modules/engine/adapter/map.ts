@@ -88,6 +88,29 @@ export function toRealtimeEvent(e: EngineEvent): EngineRealtimeEvent {
           sessionId: e.data.session_id ?? null,
         },
       };
+    case 'live.recording.started':
+      return {
+        ...envelope,
+        type: 'engine.live.recording.started',
+        data: {
+          ...origin,
+          file: e.data.file,
+          sessionId: e.data.session_id,
+          startedAt: isoFromEpochSeconds(e.data.started_at),
+        },
+      };
+    case 'live.recording.closed':
+      return {
+        ...envelope,
+        type: 'engine.live.recording.closed',
+        data: {
+          ...origin,
+          file: e.data.file,
+          sessionId: e.data.session_id,
+          startedAt: isoFromEpochSeconds(e.data.started_at),
+          endedAt: isoFromEpochSeconds(e.data.ended_at),
+        },
+      };
     case 'blank.detected':
       return { ...envelope, type: 'engine.blank.detected', data: origin };
     case 'blank.recovered':
