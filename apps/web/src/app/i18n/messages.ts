@@ -130,6 +130,7 @@ const en = {
   'shell.nav.log': 'Log',
   'shell.nav.live': 'Live',
   'shell.nav.safety': 'Safety & emergency',
+  'shell.nav.liveRecording': 'Live recording',
   'shell.nav.account': 'Account',
   'unsaved.title': 'Leave without saving?',
   'unsaved.body': 'Your changes on this page are not saved. If you leave, they are lost.',
@@ -289,6 +290,7 @@ const fr: Messages = {
   'shell.nav.log': 'Conducteur',
   'shell.nav.live': 'Direct',
   'shell.nav.safety': 'Secours et urgence',
+  'shell.nav.liveRecording': 'Enregistrement des directs',
   'shell.nav.account': 'Compte',
   'unsaved.title': 'Quitter sans enregistrer ?',
   'unsaved.body':
