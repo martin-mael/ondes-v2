@@ -863,8 +863,10 @@ def live_gate_index() =
 end
 
 # DJ handover (#66, ADR 0038): the crossfade between two DJs, in seconds (`POST /v1/live`
-# `fade`; 0: a cut). Equal-power (sine) fades: two DJs are unrelated signals, so the summed
-# level stays flat through the overlap instead of dipping 3 dB in the middle.
+# `fade`; 0: a cut). Equal-power fades: two DJs are unrelated signals, so the summed level
+# stays flat through the overlap instead of dipping 3 dB in the middle (linear) or bumping
+# 3 dB (both at full level). Liquidsoap's `sin` is an S-curve (in + out = 1, not
+# in² + out² = 1); `log` with curve 6, ln(1 + 6x) / ln 7, keeps in² + out² within 0.15 dB of 1.
 live_handover_fade = ref(1.)
 
 def live_handover(a, b) =
@@ -879,7 +881,10 @@ def live_handover(a, b) =
   else
     add(
       normalize=false,
-      [fade.in(type="sin", duration=d, b), fade.out(type="sin", duration=d, a)]
+      [
+        fade.in(type="log", curve=6., duration=d, b),
+        fade.out(type="log", curve=6., duration=d, a)
+      ]
     )
   end
 end
