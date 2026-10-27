@@ -7,7 +7,7 @@ import {
   type UpdateLiveRecordingSettings,
 } from '@ondes/shared';
 import { and, asc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
-import { auditDiff, withAudit } from '../audit.ts';
+import { auditDiff, withAudit, writeAudit } from '../audit.ts';
 import type { Db, Executor } from '../client.ts';
 import { NotFoundError } from '../errors.ts';
 import { liveSession } from '../schema/live.ts';
@@ -16,8 +16,13 @@ import {
   liveRecordingPart,
   liveRecordingSettings,
 } from '../schema/live-recording.ts';
+import { logItem } from '../schema/log.ts';
+import { episode } from '../schema/shows.ts';
+import { station } from '../schema/tenancy.ts';
+import { upload } from '../schema/upload.ts';
 import { type StationScope, whereStation } from '../tenant.ts';
 import type { StationContext } from './tenancy.ts';
+import { toUpload, type UploadRecord } from './upload.ts';
 
 // Live recording (#67, ADR 0039): settings, the engine's files (parts) and the recordings
 // they are joined into. The api records parts from the engine's events
@@ -563,4 +568,106 @@ export async function knownLivePartFiles(db: Executor, scope: StationScope): Pro
     .from(liveRecordingPart)
     .where(and(whereStation(liveRecordingPart, scope), ne(liveRecordingPart.status, 'deleted')));
   return new Set(rows.map((r) => r.file));
+}
+
+// --- The build's writes (worker) ---------------------------------------------------------
+
+/**
+ * An upload row for a joined recording, already in the bucket under `stagingKey` and
+ * `queued` for ingest (no browser, no multipart upload). Ingest then treats it like any
+ * upload: playout copy, dedupe, `asset.ingested`.
+ */
+export async function createLiveRecordingUpload(
+  db: Db,
+  ctx: StationContext,
+  input: {
+    filename: string;
+    sizeBytes: number;
+    assetType: 'episode' | 'other';
+    stagingKey: string;
+  },
+): Promise<UploadRecord> {
+  return withAudit(db, ctx, async (tx, audit) => {
+    const [row] = await tx
+      .insert(upload)
+      .values({
+        ...ctx.scope,
+        ...input,
+        status: 'queued',
+        contentType: 'audio/flac',
+        partSize: Math.max(1, input.sizeBytes),
+        partCount: 1,
+      })
+      .returning();
+    if (!row) throw new Error('insert returned no row');
+    await audit({
+      action: 'upload.create',
+      entity: { type: 'upload', id: row.id },
+      diff: auditDiff(null, toUpload(row), ['orgId', 'stationId']),
+    });
+    return row;
+  });
+}
+
+/**
+ * Makes `assetId` the episode's audio (audited as an episode update). A `planned` or
+ * `missing` episode stays as it is but for the audio: it aired live, the as-run says so.
+ * False when the episode is gone.
+ */
+export async function attachLiveRecordingAsset(
+  db: Db,
+  ctx: StationContext,
+  episodeId: string,
+  assetId: string,
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [before] = await tx
+      .select({ assetId: episode.assetId })
+      .from(episode)
+      .where(and(whereStation(episode, ctx.scope), eq(episode.id, episodeId)))
+      .for('update');
+    if (!before) return false;
+    if (before.assetId === assetId) return true;
+    await tx
+      .update(episode)
+      .set({ assetId })
+      .where(and(whereStation(episode, ctx.scope), eq(episode.id, episodeId)));
+    await writeAudit(tx, ctx, {
+      action: 'episode.update',
+      entity: { type: 'episode', id: episodeId },
+      diff: auditDiff(before, { assetId }),
+    });
+    return true;
+  });
+}
+
+/**
+ * Whether the log still plans an asset to air after `after` (a rerun of the old audio, or of
+ * an expiring one): then it isn't deleted yet.
+ */
+export async function assetPlannedInLog(
+  db: Executor,
+  scope: StationScope,
+  assetId: string,
+  after: Date = new Date(),
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: logItem.id })
+    .from(logItem)
+    .where(
+      and(
+        whereStation(logItem, scope),
+        eq(logItem.assetId, assetId),
+        sql`${logItem.plannedStart} >= ${after.toISOString()}::timestamptz`,
+      ),
+    )
+    .limit(1);
+  return !!row;
+}
+
+/** Every station (any of them may record): the cleanup sweep's list. */
+export async function liveRecordingStations(
+  db: Executor,
+): Promise<{ orgId: string; stationId: string }[]> {
+  return db.select({ orgId: station.orgId, stationId: station.id }).from(station);
 }
