@@ -254,22 +254,26 @@ describe.skipIf(!enabled)('live recording on the real engine', () => {
 
   it('records a show with a handover and a reconnect into one rerun-ready episode', async () => {
     // The show and its episode, and the three sessions the switcher would open (#65, #66).
-    const [s] = await tdb.db
+    const [created] = await tdb.db
       .insert(show)
       .values({ ...scope, name: 'Matinale', defaultSlotType: 'live' })
       .returning();
-    const [ep] = await tdb.db
+    if (!created) throw new Error('no show');
+    const s = created;
+    const [createdEpisode] = await tdb.db
       .insert(episode)
-      .values({ ...scope, showId: s!.id, number: 7, kind: 'live', status: 'aired' })
+      .values({ ...scope, showId: s.id, number: 7, kind: 'live', status: 'aired' })
       .returning();
+    if (!createdEpisode) throw new Error('no episode');
+    const ep = createdEpisode;
     const [S1, S2, S3] = [randomUUID(), randomUUID(), randomUUID()];
     const session = (id: string, input: number) => ({
       ...scope,
       id,
       input,
       trigger: 'slot' as const,
-      showId: s!.id,
-      episodeId: ep!.id,
+      showId: s.id,
+      episodeId: ep.id,
       episodeNumber: 7,
       title: 'Matinale',
     });
@@ -342,7 +346,7 @@ describe.skipIf(!enabled)('live recording on the real engine', () => {
     const last = published.at(-1);
     expect(last?.type).toBe('live.recording.updated');
     if (last?.type !== 'live.recording.updated') throw new Error('no update');
-    expect(last.data).toMatchObject({ episodeId: ep!.id, status: 'pending', version: 3 });
+    expect(last.data).toMatchObject({ episodeId: ep.id, status: 'pending', version: 3 });
     const parts = await listLiveRecordingParts(tdb.db, scope, last.data.recordingId);
     expect(parts.map((p) => [p.sessionId, p.status])).toEqual([
       [S1, 'closed'],
@@ -381,7 +385,7 @@ describe.skipIf(!enabled)('live recording on the real engine', () => {
 
     const [after] = await tdb.sql<
       { asset_id: string }[]
-    >`select asset_id from episode where id = ${ep!.id}`;
+    >`select asset_id from episode where id = ${ep.id}`;
     expect(after?.asset_id).toBe(result.assetId);
     const row = await getLiveRecording(tdb.db, scope, payload.recordingId);
     expect(row).toMatchObject({ status: 'ready', builtVersion: 3, assetId: result.assetId });
@@ -400,7 +404,7 @@ describe.skipIf(!enabled)('live recording on the real engine', () => {
     const playout = files.find((f) => f.role === 'playout');
     expect(playout).toBeDefined();
     const flac = join(work, 'joined.flac');
-    const body = await storage.get(playout!.storageKey);
+    const body = await storage.get(playout?.storageKey ?? '');
     const chunks: Buffer[] = [];
     for await (const c of body.body as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
     writeFileSync(flac, Buffer.concat(chunks));
