@@ -172,6 +172,53 @@ describe('segue editor', () => {
     await waitFor(() => expect(save).toBeDisabled());
   });
 
+  it('resets to auto placement (#61): the voice ends on B’s intro end, B at its natural start', async () => {
+    const put = vi.fn((body: unknown): [number, unknown] => [200, segue(body as object)]);
+    // A's outro 12 s before its end, crossfade 7 s before; B's intro 8 s.
+    const marked = (assetId: string, markers: NonNullable<SegueMedia['markers']>) => ({
+      ...media(assetId, 200),
+      markers,
+    });
+    const { screen, user } = renderApp(
+      url,
+      routes(segue(), {
+        [`PUT ${base}/segues/${segue().id}`]: put,
+        [`GET ${base}/segues/media`]: [
+          200,
+          {
+            items: {
+              [a.id]: marked(a.assetId as string, {
+                introEnd: null,
+                outroStart: s(188),
+                crossStartNext: s(193),
+              }),
+              [b.id]: marked(b.assetId as string, {
+                introEnd: s(8),
+                outroStart: null,
+                crossStartNext: null,
+              }),
+            },
+            assets: { [vtAsset]: media(vtAsset, 5) },
+          },
+        ],
+      }),
+    );
+    await screen.findByText('Voice 1');
+    await user.click(screen.getByRole('button', { name: 'Envelopes' }));
+    await user.click(
+      await screen.findByRole('menuitem', {
+        name: 'Auto placement (voices, next start and ducking)',
+      }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(put).toHaveBeenCalledOnce());
+    expect(put.mock.calls[0]?.[0]).toMatchObject({
+      in: { start: -s(7) },
+      voices: [{ assetId: vtAsset, start: -s(7) + s(8) - s(5) }],
+      out: { envelope: [{ gainDb: 0 }, { at: -s(4), gainDb: -8 }] },
+    });
+  });
+
   it('creates the segue of a new transition', async () => {
     const post = vi.fn((body: unknown): [number, unknown] => [201, segue(body as object)]);
     const { screen, user } = renderApp(url, routes(null, { [`POST ${base}/segues`]: post }));
