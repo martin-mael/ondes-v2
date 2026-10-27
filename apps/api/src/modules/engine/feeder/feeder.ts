@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { StationScope } from '@ondes/db';
+import { resolveMarkers } from '@ondes/scheduling';
 import {
   alertTypes,
   type EnginePushItem,
@@ -477,7 +478,9 @@ export function createStationFeeder(deps: FeederDeps) {
       entries.push(entry);
       if (b) built.set(item.id, b);
     }
-    return { entries, built };
+    // A marker's timing goes to the item after it (#52): the planner and the engine cut then
+    // treat it like any anchored item.
+    return { entries: resolveMarkers(entries), built };
   }
 
   function body(

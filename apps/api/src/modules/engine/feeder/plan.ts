@@ -27,9 +27,14 @@ import { FLEXIBLE_KINDS, stretchTail } from './hardstart.ts';
 //   its anchor: a soft item starts when the music ends, not early. When the item on air itself
 //   runs past the cap, the engine cuts it there (`scheduled` at `anchor + cap`, with
 //   `engineCut`); without it, that is reported in `late`.
-// - `not_before`: held until its anchor when it would start more than `holdGapMs` early.
+// - `not_before`: never early (#52). A gap is closed by stretching the tail, aiming
+//   `cutOverlapMs` past the anchor like a soft one's;
+//   what is left holds the item until its anchor, when it is pushed (no `pushLeadMs`: it
+//   airs a push's latency late, never early). Never cut, nothing dropped: late is fine.
 // - `live_slot`: nothing to push; the entries after it are held until the slot's end.
-// - `marker`: a timing point only (its anchor applies), nothing to push.
+// - `marker`: nothing to push. The feeder hands a marker's timing to the item after it
+//   (`resolveMarkers`, @ondes/scheduling, ADR 0036) before planning; a marker that keeps its
+//   own (nothing to time after it) is a timing point: its anchor applies, as above.
 
 /** `expired`: a voice track outside its asset's validity (a promo past its kill date, #60). */
 export type SkipReason = 'not_cached' | 'unresolvable' | 'no_media_file' | 'expired';
@@ -77,7 +82,7 @@ export type PlanOptions = {
   lookaheadMs: number;
   /** Nothing of the log on air: an entry planned less than this ago still starts (late). */
   joinLateMs: number;
-  /** A gap before a hard or not-before item bigger than this holds the item. */
+  /** A gap before a hard or soft item bigger than this holds the item (not-before: any gap). */
   holdGapMs: number;
   /** A held item is pushed this long before its anchor (push + takeover latency). */
   pushLeadMs: number;
@@ -87,7 +92,7 @@ export type PlanOptions = {
   engineCut: boolean;
   /**
    * How far past a `hard` anchor the tail aims when the engine cuts (faded out under the item),
-   * and past a `soft` one always (its item waits for the end: never early).
+   * and past a `soft` or `not_before` one always (its item waits for the end: never early).
    */
   cutOverlapMs: number;
 };
@@ -190,6 +195,10 @@ export function planFeed(input: PlanInput): FeedPlan {
     t = nowMs;
     from = entries.findIndex((e) => e.plannedStartMs >= nowMs - o.joinLateMs && !aired.has(e.id));
     if (from < 0) from = entries.length;
+    // Never back before what aired: an entry dropped or skipped before it stays passed over
+    // (safety while a not-before item waits, #52, must not bring it back).
+    const lastAired = findLastIndex(entries, (e) => aired.has(e.id));
+    if (lastAired >= from) from = lastAired + 1;
     // The entry planned over `now`, if it started too long ago to join (a live slot, an
     // episode half-way through): what follows waits for its planned end, as it would on air.
     const current = findLastIndex(
@@ -249,10 +258,18 @@ export function planFeed(input: PlanInput): FeedPlan {
     return left;
   };
 
-  /** Waits for `anchor` if `t` is more than `holdGapMs` before it. False = hold here. */
-  const waitFor = (e: FeedEntry, anchor: number): boolean => {
-    if (t >= anchor - o.holdGapMs) return true;
-    const untilMs = anchor - o.pushLeadMs;
+  /**
+   * Waits for `anchor` if `t` is more than `gapMs` before it, pushing the item `leadMs` before
+   * it. False = hold here.
+   */
+  const waitFor = (
+    e: FeedEntry,
+    anchor: number,
+    gapMs = o.holdGapMs,
+    leadMs = o.pushLeadMs,
+  ): boolean => {
+    if (t >= anchor - gapMs) return true;
+    const untilMs = anchor - leadMs;
     if (nowMs < untilMs) {
       hold = { itemId: e.id, untilMs };
       return false;
@@ -306,7 +323,12 @@ export function planFeed(input: PlanInput): FeedPlan {
       if (aim - t > o.toleranceMs) t += stretchTail(wanted, tailFrom, aim - t);
       if (!waitFor(e, anchor)) break;
     } else if (anchor !== null && e.timing === 'not_before') {
-      if (!waitFor(e, anchor)) break;
+      // Never early: the tail stretches a little past the anchor (like a soft one's: the
+      // prediction is a frame or two off either way), and what it can't cover waits; a held
+      // item is pushed at its anchor, not before (it airs a push's latency late).
+      const aim = anchor + o.cutOverlapMs;
+      if (aim - t > o.toleranceMs) t += stretchTail(wanted, tailFrom, aim - t);
+      if (!waitFor(e, anchor, o.toleranceMs, 0)) break;
     }
     // The tail of the next anchor starts after this one (a marker or a live slot included).
     if (anchor !== null) tailFrom = wanted.length;

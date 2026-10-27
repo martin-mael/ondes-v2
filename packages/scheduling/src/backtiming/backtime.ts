@@ -31,7 +31,7 @@ import type {
 //
 // Kept items and segments are never touched; VTs and jingles of the tail stay, only moving
 // up when a song before them changes. Every `hard` and `soft` anchor is back-timed, clock
-// markers included (`isBackTimed` says why).
+// markers included, and `not_before` markers (`isBackTimed` says why).
 
 export interface BackTimingOptions {
   /** Below this, a residual is left to the feeder (re-plan, engine cut). */
@@ -75,10 +75,14 @@ interface FillSource {
  * wherever the music before it ended (the feeder only drops what would start after it), so an
  * hour that ends early makes every following hour early, up to the next hard start, by more
  * than its fill can stretch. Back-timing every hour keeps that drift to the runtime's own.
- * `not_before` anchors wait for their time: nothing to back-time.
+ * A `not_before` marker too (#52, ADR 0036): its item never starts early, so music that ends
+ * early leaves a wait; back-timed, the run ends at T. Other `not_before` items (a flow item
+ * after a hole, ADR 0026) wait on purpose: nothing to back-time.
  */
 export function isBackTimed(anchor: PlannedItem): boolean {
-  return anchor.anchorAt !== null && (anchor.timing === 'hard' || anchor.timing === 'soft');
+  if (anchor.anchorAt === null) return false;
+  if (anchor.timing === 'not_before') return anchor.kind === 'marker';
+  return anchor.timing === 'hard' || anchor.timing === 'soft';
 }
 
 /** The generator extension: `generateDay(snapshot, date, { extensions: backTiming(snapshot) })`. */

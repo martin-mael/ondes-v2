@@ -707,3 +707,131 @@ function candidate(
     picked,
   };
 }
+
+describe('log timeline: fixed-time markers (#52)', () => {
+  // 13:00 in Paris: a hard marker, the jingle it times (aired 0.4 s late), then a song.
+  const top = logItem({
+    kind: 'marker',
+    title: 'Top of hour',
+    plannedStart: '2026-10-21T11:00:00.000Z',
+    plannedDurationMs: 0,
+    timing: 'hard',
+    anchorAt: '2026-10-21T11:00:00.000Z',
+  });
+  const id = logItem({
+    kind: 'jingle',
+    title: 'Station ID',
+    plannedStart: '2026-10-21T11:00:00.000Z',
+    plannedDurationMs: 8_000,
+  });
+  const after = logItem({ title: 'Croix-Rousse', plannedStart: '2026-10-21T11:00:08.000Z' });
+  const markerRoutes = (extra: Record<string, ApiRoute> = {}) =>
+    routes('programmer', {
+      [`GET ${base}/log`]: [200, range([...items.filter((i) => i !== locked), top, id, after])],
+      [`GET ${base}/asrun`]: [
+        200,
+        asRun([
+          ...asRun().items,
+          asRunEntry({ logItemId: id.id, startedAt: '2026-10-21T11:00:00.400Z', driftMs: 400 }),
+        ]),
+      ],
+      ...extra,
+    });
+
+  it('shows the item a marker times, and how close to the marker it aired', async () => {
+    const { screen } = renderApp(`${base}/log`, markerRoutes());
+    await screen.findByText('Top of hour');
+    const marker = row('Top of hour');
+    expect(within(marker).getByText('Hard 13:00:00')).toBeInTheDocument();
+    expect(within(marker).getByText('Times: Station ID')).toBeInTheDocument();
+    expect(within(marker).getByText('Aired ±0 s')).toBeInTheDocument();
+  });
+
+  it('adds a soft marker before the first item at its time', async () => {
+    let body: unknown;
+    const { screen, user } = renderApp(
+      `${base}/log`,
+      markerRoutes({
+        [`POST ${base}/log/items`]: (b) => {
+          body = b;
+          return [201, { item: top, days: [day] }];
+        },
+      }),
+    );
+    await screen.findByText('Top of hour');
+    await user.click(screen.getByRole('button', { name: 'Add marker' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.selectOptions(
+      within(dialog).getByLabelText('Hour'),
+      within(dialog).getByRole('option', { name: '13:00' }),
+    );
+    await user.clear(within(dialog).getByLabelText('Minutes:seconds'));
+    await user.type(within(dialog).getByLabelText('Minutes:seconds'), '00:05');
+    await user.selectOptions(within(dialog).getByLabelText('Timing'), 'soft');
+    expect(within(dialog).getByText(/The item on air ends first/)).toBeInTheDocument();
+    await user.clear(within(dialog).getByLabelText('Cap (seconds)'));
+    await user.type(within(dialog).getByLabelText('Cap (seconds)'), '45');
+    await user.type(within(dialog).getByLabelText('Label'), 'News');
+    await user.click(within(dialog).getByRole('button', { name: 'Save marker' }));
+    await waitFor(() =>
+      expect(body).toEqual({
+        placement: { before: after.id },
+        item: {
+          kind: 'marker',
+          plannedDurationMs: 0,
+          title: 'News',
+          timing: 'soft',
+          anchorAt: '2026-10-21T11:00:05.000Z',
+          capMs: 45_000,
+        },
+      }),
+    );
+    expect(await screen.findByText('Marker added')).toBeInTheDocument();
+  });
+
+  it('edits a marker, moving it when its time moves past other items', async () => {
+    const calls: { path: string; body: unknown }[] = [];
+    const record = (path: string) => (b: unknown) => {
+      calls.push({ path, body: b });
+      return [...result(top)] as [number, unknown];
+    };
+    const { screen, user } = renderApp(
+      `${base}/log`,
+      markerRoutes({
+        [`PUT ${base}/log/items/${top.id}`]: record('replace'),
+        [`POST ${base}/log/items/${top.id}/move`]: record('move'),
+      }),
+    );
+    await screen.findByText('Top of hour');
+    await user.click(screen.getByRole('button', { name: 'Actions for Top of hour' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Edit marker…' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByLabelText('Minutes:seconds')).toHaveValue('00:00');
+    await user.clear(within(dialog).getByLabelText('Minutes:seconds'));
+    await user.type(within(dialog).getByLabelText('Minutes:seconds'), '00:10');
+    await user.click(within(dialog).getByRole('button', { name: 'Save marker' }));
+    await waitFor(() => expect(calls.map((c) => c.path)).toEqual(['replace', 'move']));
+    expect(calls[0]?.body).toMatchObject({
+      kind: 'marker',
+      timing: 'hard',
+      anchorAt: '2026-10-21T11:00:10.000Z',
+      title: 'Top of hour',
+      locked: false,
+    });
+    // Past the jingle and the song: at the end of the day's items.
+    expect(calls[1]?.body).toEqual({ placement: { after: after.id } });
+  });
+
+  it('refuses a time that has passed, inline', async () => {
+    const { screen, user } = renderApp(`${base}/log`, markerRoutes());
+    await screen.findByText('Top of hour');
+    await user.click(screen.getByRole('button', { name: 'Add marker' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.selectOptions(
+      within(dialog).getByLabelText('Hour'),
+      within(dialog).getByRole('option', { name: '11:00' }),
+    );
+    await user.click(within(dialog).getByRole('button', { name: 'Save marker' }));
+    expect(await within(dialog).findByText('This time has passed.')).toBeInTheDocument();
+  });
+});

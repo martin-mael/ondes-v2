@@ -459,6 +459,15 @@ class DayBuilder {
           tools: this.tools,
         });
         this.items.splice(this.runStart, run.length, ...replaced);
+        // A re-planned run ends where its new last item does: a `not_before` item starts at
+        // its anchor or there (#52). Hard and soft items start at their anchor anyway.
+        const changed = replaced.length !== run.length || replaced.some((x, n) => x !== run[n]);
+        if (changed) {
+          const end = replaced.at(-1);
+          this.cursor = end
+            ? end.start.getTime() + end.plannedDurationMs
+            : (run[0] ?? placed).start.getTime();
+        }
       }
       this.items.push(placed);
       this.runStart = this.items.length;

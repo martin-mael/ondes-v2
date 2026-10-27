@@ -12,6 +12,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CrosshairIcon,
+  FlagIcon,
   PlusIcon,
   RadioIcon,
 } from 'lucide-react';
@@ -44,6 +45,8 @@ import {
 import { DayStrip } from './day-strip.tsx';
 import { LogHistory, TimelineViewTabs, useTimelineView } from './history/history-view.tsx';
 import { type ItemAction, ItemRow, itemTitle } from './item-row.tsx';
+import { MarkerDialog, type MarkerValue } from './marker-dialog.tsx';
+import { markerInput, markerOutcome, markerPlacement, markerTarget } from './markers.ts';
 import { type TimelineMessageKey, type TimelineT, useTimelineT } from './messages.ts';
 import {
   asRunByItem,
@@ -79,6 +82,7 @@ type Editing =
   | { type: 'insert'; placement: LogPlacement; kind: PickKind }
   | { type: 'replace'; item: LogItem }
   | { type: 'delete'; item: LogItem }
+  | { type: 'marker'; item: LogItem | null }
   | null;
 
 const EDIT_ERRORS: Partial<Record<string, TimelineMessageKey>> = {
@@ -188,9 +192,26 @@ function Timeline() {
         | { type: 'replace'; item: LogItem; kind: PickKind; asset: PickedAsset }
         | { type: 'move'; item: LogItem; placement: LogPlacement }
         | { type: 'lock'; item: LogItem; locked: boolean }
-        | { type: 'delete'; item: LogItem },
+        | { type: 'delete'; item: LogItem }
+        | { type: 'marker'; item: LogItem | null; value: MarkerValue },
     ) => {
       switch (op.type) {
+        case 'marker': {
+          // Before the first item at or after its time: the item it times (#52).
+          const body = markerInput(op.value);
+          const placement = markerPlacement(items, op.value.anchorMs, date, op.item ?? undefined);
+          if (!op.item) {
+            return timelineApi.insert(stationId, {
+              placement: placement ?? { localDate: date },
+              item: body,
+            });
+          }
+          const replaced = await timelineApi.replace(stationId, op.item.id, {
+            ...body,
+            locked: op.item.locked,
+          });
+          return placement ? timelineApi.move(stationId, op.item.id, placement) : replaced;
+        }
         case 'insert':
         case 'replace': {
           const detail = await queryClient.fetchQuery(assetDetailQuery(stationId, op.asset.id));
@@ -223,18 +244,22 @@ function Timeline() {
     onSuccess: (result, op) => {
       setEditing(null);
       const key: TimelineMessageKey =
-        op.type === 'insert'
-          ? 'toast.inserted'
-          : op.type === 'replace'
-            ? 'toast.replaced'
-            : op.type === 'move'
-              ? 'toast.moved'
-              : op.type === 'lock'
-                ? op.locked
-                  ? 'toast.locked'
-                  : 'toast.unlocked'
-                : 'toast.deleted';
-      const item = 'item' in op ? op.item : undefined;
+        op.type === 'marker'
+          ? op.item
+            ? 'toast.markerSaved'
+            : 'toast.markerAdded'
+          : op.type === 'insert'
+            ? 'toast.inserted'
+            : op.type === 'replace'
+              ? 'toast.replaced'
+              : op.type === 'move'
+                ? 'toast.moved'
+                : op.type === 'lock'
+                  ? op.locked
+                    ? 'toast.locked'
+                    : 'toast.unlocked'
+                  : 'toast.deleted';
+      const item = 'item' in op ? (op.item ?? undefined) : undefined;
       done(key, result, nearAir(item) || nearAir(result.item ?? undefined));
     },
     onError: failed,
@@ -274,6 +299,8 @@ function Timeline() {
         return setEditing({ type: 'insert', placement: { after: item.id }, kind: 'song' });
       case 'replace':
         return setEditing({ type: 'replace', item });
+      case 'editMarker':
+        return setEditing({ type: 'marker', item });
       case 'moveUp':
         return prev && edit.mutate({ type: 'move', item, placement: { before: prev.id } });
       case 'moveDown':
@@ -378,13 +405,18 @@ function Timeline() {
           </Button>
         )}
         {canWrite && date >= today && (
-          <RegenButton
+          <Button
             className={day ? undefined : 'ml-auto'}
-            stationId={stationId}
-            date={date}
-            today={today}
-            timeZone={timeZone}
-          />
+            size="sm"
+            variant="outline"
+            onClick={() => setEditing({ type: 'marker', item: null })}
+          >
+            <FlagIcon data-icon="inline-start" />
+            {t('marker.add')}
+          </Button>
+        )}
+        {canWrite && date >= today && (
+          <RegenButton stationId={stationId} date={date} today={today} timeZone={timeZone} />
         )}
       </div>
 
@@ -463,6 +495,7 @@ function Timeline() {
                   const i = indexOf(item);
                   const prev = items[i - 1];
                   const next = items[i + 1];
+                  const timed = item.kind === 'marker' ? markerTarget(items, i) : null;
                   const prevFrozen = prev ? isFrozen(stateOf(prev)) : false;
                   const nextFrozen = next ? isFrozen(stateOf(next)) : false;
                   return (
@@ -483,6 +516,14 @@ function Timeline() {
                       canMoveUp={!!prev && !prevFrozen}
                       canMoveDown={!!next && !nextFrozen}
                       next={next}
+                      marker={
+                        item.kind === 'marker'
+                          ? {
+                              target: timed,
+                              outcome: timed ? markerOutcome(item, aired.get(timed.id)) : null,
+                            }
+                          : undefined
+                      }
                       canSegue={canSegue}
                       onAction={onAction}
                       onDropItem={onDropItem}
@@ -538,6 +579,23 @@ function Timeline() {
             edit.mutate({ type: 'replace', item: editing.item, kind, asset });
           }
         }}
+      />
+
+      <MarkerDialog
+        t={t}
+        open={editing?.type === 'marker'}
+        marker={editing?.type === 'marker' ? editing.item : null}
+        hours={hours}
+        now={live.now}
+        pending={edit.isPending}
+        onOpenChange={(open) => !open && setEditing(null)}
+        onSave={(value) =>
+          edit.mutateAsync({
+            type: 'marker',
+            item: editing?.type === 'marker' ? editing.item : null,
+            value,
+          })
+        }
       />
 
       <Dialog open={editing?.type === 'delete'} onOpenChange={(open) => !open && setEditing(null)}>

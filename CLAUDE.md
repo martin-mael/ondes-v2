@@ -64,10 +64,13 @@ packages/
                            # clock expansion, log generator (generator/), log timing
                            # (log/: retime), regeneration (regen/), promo placement
                            # (promos/), back-timing (backtiming/: the generator's
-                           # beforeAnchor); test fixtures at `@ondes/scheduling/testing`
+                           # beforeAnchor), fixed-time markers (markers/: what a
+                           # marker times, for the feeder); test fixtures at
+                           # `@ondes/scheduling/testing`
 engine/
   templates/               # Liquidsoap script templates (pinned 2.4.x)
-  tests/                   # engine fixtures, seam/timing tests
+  tests/                   # engine fixtures, seam/timing tests; markers/: the feeder's
+                           # fixed-time markers on the real engine (#52)
 deploy/                    # compose files, installer, Caddyfile
 docs/                      # research, ADRs (docs/adr/NNNN-title.md)
 ```
@@ -115,14 +118,14 @@ Every PR must pass, locally and in CI:
   - **Never run `pnpm dev:down`, `pnpm dev:reset` or `docker compose … down` from a session**, and don't restart or recreate its services. You'd cut off every other session mid-test. Stopping the stack is for the human.
   - Integration tests stay isolated on the shared stack: a throwaway database per test file (`createTestDatabase`), random queue prefixes, random S3 keys. Keep it that way in new tests.
   - If you need extra containers (e.g. a spike's own engine), use your own compose project name and your own ports, like `engine/spikes/control` does.
-- Integration tests are split into the projects of `vitest.integration.config.ts`: `core`, `engine` (tests that start their own Liquidsoap/Icecast compose project) and `worker` (worker jobs, which need the ffmpeg image above). `pnpm test:integration` runs all three; `pnpm test:integration --project worker` runs one. A new `*.int.test.ts` lands in `core` unless it's under `apps/worker/src` or `apps/api/src/modules/engine`; add it to `engine` in that config if it starts Liquidsoap. (e.g. `apps/api/src/modules/live/live-auth.engine.int.test.ts`, the harbor auth callback on the real template).
+- Integration tests are split into the projects of `vitest.integration.config.ts`: `core`, `engine` (tests that start their own Liquidsoap/Icecast compose project) and `worker` (worker jobs, which need the ffmpeg image above). `pnpm test:integration` runs all three; `pnpm test:integration --project worker` runs one. A new `*.int.test.ts` lands in `core` unless it's under `apps/worker/src` or `apps/api/src/modules/engine`; add it to `engine` in that config if it starts Liquidsoap. (e.g. `apps/api/src/modules/live/live-auth.engine.int.test.ts`, the harbor auth callback on the real template). `engine/tests/markers/*.int.test.ts` (#52, the feeder's markers on the real template) is in `engine` too; type-check it with `pnpm exec tsc --noEmit -p engine/tests/markers` (the engine integration job does).
 - CI (`.github/workflows/ci.yml`) runs only what a PR needs. A `changes` job (path filters) decides; on `main`, on manual runs and on a PR labelled `ci:full`, everything runs. To force a full run that gates a PR, add the `ci:full` label: it starts a new pull_request run on the PR head (other labels don't cancel the run in flight). `gh workflow run ci.yml --ref <branch>` is for ad-hoc runs only: it isn't the PR's pull_request run, so don't rely on it for the PR's `CI ok`.
 
   | Job | Runs on a PR when it touches |
   |---|---|
   | Lint, typecheck, unit tests | always |
   | Web build | `apps/web`, `packages/shared` |
-  | Integration (core) | `apps/api`, `packages`, `deploy/compose.dev.yml`, `deploy/dev` |
+  | Integration (core) | `apps/api`, `packages`, `engine/tests/markers`, `deploy/compose.dev.yml`, `deploy/dev` |
   | Integration (engine) | same as core, plus everything that triggers the engine jobs |
   | Integration (worker) | `apps/worker`, `apps/api/src/modules/library`, `packages`, `deploy/docker/worker.Dockerfile`, `deploy/compose.dev.yml`, `deploy/dev` |
   | Engine templates, Engine island splice | `engine`, `apps/api/src/modules/engine/config`, `apps/api/src/modules/engine/feeder/push.ts`, `apps/worker/src/jobs/island-render`, `packages/shared`, `deploy/compose.dev.yml` |
