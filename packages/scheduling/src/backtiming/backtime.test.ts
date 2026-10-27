@@ -1,7 +1,12 @@
 import { type LocalDate, logDayItemInputSchema } from '@ondes/shared';
 import { describe, expect, it } from 'vitest';
 import { generateDay, generateDays, itemLengthMs } from '../generator/generate.ts';
-import type { GeneratedDay, GeneratedItem, GeneratorSnapshot } from '../generator/types.ts';
+import type {
+  GeneratedDay,
+  GeneratedItem,
+  GeneratorSnapshot,
+  KeptItem,
+} from '../generator/types.ts';
 import { backTiming, DEFAULT_BACK_TIMING } from './backtime.ts';
 import { BEDS_CATEGORY_ID, datesFrom, HARD_START_SHOWS, hardStartSnapshot } from './fixture.ts';
 
@@ -159,6 +164,47 @@ describe('back-timing', () => {
         expect(members.some((m) => m.id === item.assetId)).toBe(true);
       }
     }
+  });
+
+  it('plans nothing before a regeneration freeze point, not even in a gap it left', () => {
+    // A regeneration (#101) keeps everything before its freeze point, anchors included. A gap
+    // back-timing left before an anchor the first time (a dropped song) must stay a gap: the
+    // generator plans nothing new before the freeze point.
+    // Without beds, some gaps before an anchor stay open: those are what a new song could fill.
+    const noBeds = hardStartSnapshot(dates, { beds: false });
+    const date = dates[0] as LocalDate;
+    const first = generateDay(noBeds, date, { extensions: backTiming(noBeds) });
+    const freeze = new Date(`${date}T10:00:00Z`).getTime();
+    const frozen = top(first).filter((i) => i.plannedStart.getTime() < freeze);
+    expect(frozen.some((i) => i.timing !== 'flow')).toBe(true);
+    // Leave out the last song of the run before an anchor: a gap a whole song fits in.
+    const anchor = frozen.findIndex((i, n) => i.timing !== 'flow' && n > 2);
+    const gapAt = frozen.findLastIndex((i, n) => n < anchor && i.kind === 'song');
+    expect(gapAt).toBeGreaterThanOrEqual(0);
+    const kept: KeptItem[] = frozen
+      .filter((_, n) => n !== gapAt)
+      .map((i, n) => ({
+        id: `kept-${n}`,
+        kind: i.kind,
+        plannedStart: i.plannedStart,
+        plannedDurationMs: i.plannedDurationMs,
+        timing: i.timing,
+        anchorAt: i.anchorAt,
+        segmentId: null,
+        crossOutMs: null,
+        showSlotId: i.origin.type === 'show' ? i.origin.showSlotId : null,
+        reasons: ['past'],
+        played: null,
+      }));
+    const again = generateDay(
+      { ...noBeds, kept: new Map([[date, kept]]), frozenUntil: new Date(freeze) },
+      date,
+      {
+        extensions: backTiming(noBeds),
+      },
+    );
+    const before = top(again).filter((i) => i.plannedStart.getTime() < freeze);
+    expect(before.map((i) => i.keptId)).toEqual(kept.map((k) => k.id));
   });
 
   it('is deterministic', () => {

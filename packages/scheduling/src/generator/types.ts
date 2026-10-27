@@ -119,6 +119,12 @@ export interface GeneratorSnapshot {
   occurrences: readonly GeneratorOccurrence[];
   /** Kept items per local date, in play order. */
   kept?: ReadonlyMap<LocalDate, readonly KeptItem[]>;
+  /**
+   * A regeneration's freeze point (#101, `regenPolicy`): everything starting before it is
+   * kept, and nothing new is planned before it, not even in a gap between kept items (one
+   * back-timing left before an anchor, #46). Null or absent: no freeze.
+   */
+  frozenUntil?: Date | null;
   /** Where the day before the first generated one ends (its last item), if it has a log. */
   previousDayEnd?: Date | null;
 }

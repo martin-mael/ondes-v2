@@ -282,15 +282,19 @@ class DayBuilder {
     const dayStart = this.startsAt.getTime();
     const dayEndMs = this.endsAt.getTime();
     const blocks = this.fixedBlocks();
+    const frozen = this.snapshot.frozenUntil?.getTime() ?? null;
     for (const block of blocks) {
       // Music up to the block, then the block. A block that starts before the cursor (a
       // previous block overran into it) is placed anyway: retiming reports the overrun.
+      // Before the freeze point nothing new is planned: a gap there stays as it is.
+      if (frozen !== null && this.cursor < frozen) this.skipTo(Math.min(frozen, block.start));
       if (block.start > this.cursor) this.fillWindow(this.cursor, block.start);
       for (const item of block.items) this.place(item);
       // A block without items (a show from the night before) is a hole in this day's items.
       if (block.items.length === 0) this.skipTo(block.end);
       this.cursor = Math.max(this.cursor, block.end);
     }
+    if (frozen !== null && this.cursor < frozen) this.skipTo(Math.min(frozen, dayEndMs));
     if (this.cursor < dayEndMs) this.fillWindow(this.cursor, dayEndMs);
 
     const timed = retime(

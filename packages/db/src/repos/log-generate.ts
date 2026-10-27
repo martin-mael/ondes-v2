@@ -216,6 +216,7 @@ export async function loadGeneratorSnapshot(
       lastPlayedAt,
       occurrences,
       kept: kept.kept,
+      frozenUntil: options.keep?.frozenUntil ?? null,
       previousDayEnd,
     },
     days,
