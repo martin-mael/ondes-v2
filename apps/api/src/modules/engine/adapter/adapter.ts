@@ -3,6 +3,7 @@ import {
   ENGINE_ROUTES,
   type EngineEventBatch,
   type EngineHealth,
+  type EngineLiveMetadata,
   type EnginePushItem,
   type EnginePushSegment,
   type EnginePushSegmentResult,
@@ -17,6 +18,8 @@ import {
   engineLiveDisconnectResultSchema,
   engineLiveDisconnectSchema,
   engineLiveGateSchema,
+  engineLiveMetadataResultSchema,
+  engineLiveMetadataSchema,
   enginePushItemSchema,
   enginePushSegmentResultSchema,
   enginePushSegmentSchema,
@@ -77,6 +80,12 @@ export type EngineAdapter = {
   setLive(enabled: boolean, options?: LiveGateOptions): Promise<void>;
   /** Hangs up the DJ on one harbor input (#64). False if nobody was connected there. */
   disconnectLive(input: number): Promise<boolean>;
+  /**
+   * The now-playing while a DJ is on air (#68): on the streams at once if the gate is open, else
+   * at the next takeover. `encoder`: let the DJ software's metadata through instead. Returns
+   * whether it went on air. Optional: test doubles may leave it out.
+   */
+  setLiveMetadata?(metadata: EngineLiveMetadata): Promise<boolean>;
   /**
    * Pre-listen (#71): the harbor input's audio as its DJ sends it, an endless MP3 stream from
    * the control port (`prelisten/<input>`). Null when nobody streams there. Abort `signal` to
@@ -348,6 +357,17 @@ export function createEngineAdapter(options: EngineAdapterOptions): EngineAdapte
         repeatable: true,
       });
       return disconnected;
+    },
+
+    async setLiveMetadata(metadata) {
+      const { applied } = await call(engineLiveMetadataResultSchema, {
+        method: 'POST',
+        path: ENGINE_ROUTES.liveMetadata,
+        body: command(engineLiveMetadataSchema, metadata, `POST ${ENGINE_ROUTES.liveMetadata}`),
+        // Sending the same now-playing twice only re-sends it on the streams.
+        repeatable: true,
+      });
+      return applied;
     },
 
     async listen(input, signal) {

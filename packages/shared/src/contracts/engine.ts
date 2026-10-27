@@ -32,6 +32,8 @@ export const ENGINE_ROUTES = {
   live: `${ENGINE_CONTROL_PREFIX}/live`,
   /** Added by #64: hangs up the DJ on one input of the harbor pool. */
   liveDisconnect: `${ENGINE_CONTROL_PREFIX}/live/disconnect`,
+  /** Added by #68: the now-playing while a DJ is on air. */
+  liveMetadata: `${ENGINE_CONTROL_PREFIX}/live/metadata`,
   /** Added by #46: the hard start waiting for its time (`POST`), or cancelling it (`DELETE`). */
   schedule: `${ENGINE_CONTROL_PREFIX}/schedule`,
 } as const;
@@ -195,6 +197,20 @@ export const engineLiveDisconnectSchema = z.object({ input: liveInput });
 export type EngineLiveDisconnect = z.infer<typeof engineLiveDisconnectSchema>;
 export const engineLiveDisconnectResultSchema = z.object({ disconnected: z.boolean() });
 
+/**
+ * `POST /v1/live/metadata` (#68): the now-playing listeners see while a DJ is on air. Sent on
+ * the streams at once if the gate is open, else at the next takeover. `encoder`: let the
+ * metadata the DJ's software sends through instead. A new live session (`POST /v1/live` with
+ * another session id) clears it until Node sends the next one. Answers `{applied}`.
+ */
+export const engineLiveMetadataSchema = z.object({
+  title: z.string().nullable(),
+  artist: z.string().nullable(),
+  encoder: z.boolean(),
+});
+export type EngineLiveMetadata = z.infer<typeof engineLiveMetadataSchema>;
+export const engineLiveMetadataResultSchema = z.object({ applied: z.boolean() });
+
 // `DELETE /v1/queue/:id` removes every queued entry whose item_id or segment_id is `id`
 // (404 if none). A segment can't be split: naming any of its parts removes all of it, and
 // `removed` counts requests. `DELETE /v1/queue` clears the queue. `POST /v1/skip` ends whatever is on
@@ -291,6 +307,10 @@ export const engineStateSchema = z.object({
     on_air: liveInput.nullable().optional(),
     /** The live session Node opened the gate with. */
     session_id: z.string().nullable().optional(),
+    /** The now-playing Node last sent (#68); empty strings when none. */
+    now_playing: z
+      .object({ title: z.string(), artist: z.string(), encoder: z.boolean() })
+      .optional(),
     /** The harbor pool, in order. */
     inputs: z
       .array(
@@ -397,6 +417,21 @@ export const engineEventSchema = z.discriminatedUnion('type', [
       /** Added by #64: the selected input (null: the first ready one) and the session. */
       input: liveInput.nullable().optional(),
       session_id: z.string().nullable().optional(),
+    }),
+  }),
+  /**
+   * The DJ on air's encoder sent metadata (#68), whether or not it reaches the streams. `title`
+   * is the ICY `song` when the encoder sends no title.
+   */
+  z.object({
+    ...eventBase,
+    type: z.literal('live.metadata'),
+    data: z.object({
+      input: z.int().min(0),
+      session_id: z.string().nullable(),
+      streamer_id: z.string().nullable(),
+      title: z.string().nullable(),
+      artist: z.string().nullable(),
     }),
   }),
   z.object({ ...eventBase, type: z.literal('blank.detected'), data: empty }),

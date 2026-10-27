@@ -88,6 +88,19 @@ export function toRealtimeEvent(e: EngineEvent): EngineRealtimeEvent {
           sessionId: e.data.session_id ?? null,
         },
       };
+    case 'live.metadata':
+      return {
+        ...envelope,
+        type: 'engine.live.metadata',
+        data: {
+          ...origin,
+          input: e.data.input,
+          sessionId: e.data.session_id,
+          streamerId: e.data.streamer_id,
+          title: e.data.title,
+          artist: e.data.artist,
+        },
+      };
     case 'blank.detected':
       return { ...envelope, type: 'engine.blank.detected', data: origin };
     case 'blank.recovered':

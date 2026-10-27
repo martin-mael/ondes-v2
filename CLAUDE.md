@@ -32,7 +32,8 @@ apps/
                         # auth, orgs, stations, library, engine, asrun, rotation,
                         # clocks, shows, log, onair, public, jobs, alerts, cache, segues, live,
                         # listeners, prelisten, promos
-                        # (live/: switching, standing, slot-check, requests, events;
+                        # (live/: switching, standing, slot-check, requests, events,
+                        #  metadata (the live now-playing);
                         #  live/testing/: the in-memory engine pool for its tests;
                         #  shows/live-slots.ts: live slot settings and live episodes)
   worker/src/
@@ -55,7 +56,7 @@ packages/
                            # by api, worker, web)
   db/
     src/schema/<domain>.ts # one file per domain: tenancy, library, engine, asrun,
-                           # rotation, clocks, shows, log, regen, segues, live, alerts,
+                           # rotation, clocks, shows, log, regen, segues, live, live-metadata, alerts,
                            # cache, safety, promos
     migrations/            # generated, timestamp-prefixed
   storage/                 # S3-compatible abstraction

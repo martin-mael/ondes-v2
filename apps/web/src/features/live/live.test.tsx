@@ -36,6 +36,7 @@ const streamer = (overrides: Partial<Streamer> = {}): Streamer => ({
   expiresAt: new Date('2026-11-05T21:30:00Z'),
   anyTime: false,
   adHoc: 'approval',
+  encoderMetadata: false,
   shows: [{ id: showId, name: 'Night Shift', colour: '#ff00aa' }],
   status: 'active',
   lastConnectedAt: null,
@@ -140,6 +141,7 @@ describe('live page', () => {
       expiresAt: null,
       anyTime: true,
       adHoc: 'approval',
+      encoderMetadata: false,
       showIds: [],
     });
   });

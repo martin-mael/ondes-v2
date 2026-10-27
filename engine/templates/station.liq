@@ -657,13 +657,21 @@ def nullable_string(s) =
   if s == "" then json.value(null) else json.value(s) end
 end
 
+# #68: a digest of a login's credentials, so the connected DJ's are known without keeping them.
+def live_login_key(login) =
+  string.digest("#{string.length(login.user)}:#{login.user}#{login.password}")
+end
+
 # `pending`: the streamer id Node answered with, for the on_connect that follows.
-def live_auth(index, connected, pending, login) =
+# `holder` / `candidate` (#68): the connected DJ's login key, and the last accepted one's.
+def live_auth(index, connected, pending, holder, candidate, login) =
   if
     connected()
   then
-    # Harbor takes one source per mount: never let a login replace the DJ on this one.
-    false
+    # Harbor takes one source per mount: never let a login replace the DJ on this one. The
+    # DJ on it may log in again (#68): DJ software sends its track info for MP3 and AAC
+    # streams through harbor's /admin/metadata, which checks the login like a connection.
+    holder() != "" and holder() == live_login_key(login)
   elsif live_auth_url != "" then
     try
       body = json.object()
@@ -681,6 +689,7 @@ def live_auth(index, connected, pending, login) =
       if
         r.status_code >= 200 and r.status_code < 300
       then
+        candidate := live_login_key(login)
         pending :=
           try
             let json.parse (a : {streamer_id: string?}) = r
@@ -698,7 +707,9 @@ def live_auth(index, connected, pending, login) =
     end
   else
     pending := ""
-    live_password != "" and login.password == live_password
+    ok = live_password != "" and login.password == live_password
+    if ok then candidate := live_login_key(login) end
+    ok
   end
 end
 
@@ -706,12 +717,14 @@ def live_input_of(index) =
   connected = ref(false)
   streamer = ref("")
   pending = ref("")
+  holder = ref("")
+  candidate = ref("")
   s =
     input.harbor(
       id="live_#{index}",
       port=live_port,
       icy=live_icy and index == 1,
-      auth=fun (login) -> live_auth(index, connected, pending, login),
+      auth=fun (login) -> live_auth(index, connected, pending, holder, candidate, login),
       buffer=live_buffer,
       max=live_max,
       live_mount_of(index)
@@ -732,6 +745,7 @@ def live_input_of(index) =
       begin
         connected := true
         streamer := pending()
+        holder := candidate()
         d = json.object()
         d.add("input", index)
         d.add("streamer_id", nullable_string(streamer()))
@@ -745,6 +759,7 @@ def live_input_of(index) =
     fun () ->
       begin
         connected := false
+        holder := ""
         d = json.object()
         d.add("input", index)
         d.add("streamer_id", nullable_string(streamer()))
@@ -827,6 +842,31 @@ def live_gate_index() =
   if null.defined(inp) then null.get(inp).index else 0 end
 end
 
+# --- #68 live metadata (ADR 0040): what listeners see while a DJ is on air ---------------
+# Node sends the now-playing (`POST /v1/live/metadata {title, artist, encoder}`): the show and
+# DJ by default, or what a manager typed. `encoder`: let the metadata the DJ's software sends
+# through instead. Whatever the encoder sends on the input on air is reported to Node
+# (`live.metadata`), allowed or not. Written by harbor handlers, read on the clock thread.
+live_np_title = ref("")
+live_np_artist = ref("")
+live_np_encoder = ref(false)
+# Inserts Node's now-playing on the live branch now (set by with_live).
+live_np_push = ref(fun () -> ())
+
+# Node's now-playing as metadata. `song` too: the Icecast output sends `song` as is when a
+# track has one (DJ software often sends only that), else `artist - title`.
+def live_np_tags() =
+  t = live_np_title()
+  a = live_np_artist()
+  [
+    ("title", t),
+    ("artist", a),
+    ("song", if a == "" then t elsif t == "" then a else "#{a} - #{t}" end),
+    ("ondes_live_np", "1")
+  ]
+end
+# --- end #68 live metadata -----------------------------------------------------------------
+
 def with_live(auto) =
   def live_fade(a, b) =
     add(normalize=false, [fade.in(duration=1., b), fade.out(duration=1., a)])
@@ -875,6 +915,37 @@ def with_live(auto) =
   # starts when the DJ connects, not when they go on air.
   gated = metadata.map(insert_missing=true, fun (_) -> live_tags(), gated)
 
+  # --- #68 live metadata (ADR 0040) ---------------------------------------------------------
+  # Metadata from the DJ's encoder (anything but Node's own inserts, `ondes_live_np`) is
+  # reported, then replaced by Node's now-playing unless Node lets the encoder through.
+  def live_np_map(m) =
+    if
+      m["ondes_live_np"] != ""
+    then
+      []
+    else
+      title = if m["title"] != "" then m["title"] else m["song"] end
+      sent = title != "" or m["artist"] != ""
+      if
+        sent
+      then
+        d = json.object()
+        d.add("input", int_of_string(default=0, m["ondes_live_input"]))
+        d.add("session_id", nullable_string(m["ondes_live_session"]))
+        d.add("streamer_id", nullable_string(m["ondes_live_streamer"]))
+        d.add("title", nullable_string(title))
+        d.add("artist", nullable_string(m["artist"]))
+        emit("live.metadata", d)
+      end
+      if sent and live_np_encoder() then [] else live_np_tags() end
+    end
+  end
+  gated = metadata.map(fun (m) -> live_np_map(m), gated)
+  live_np_push :=
+    fun () ->
+      if live_enabled() then gated.insert_metadata([...live_tags(), ...live_np_tags()]) end
+  # --- end #68 live metadata ----------------------------------------------------------------
+
   # Taking the air. The automation track on air is faded out under the DJ and frozen
   # there (Liquidsoap doesn't pull a source that isn't selected): it must never come back.
   # A zero end duration is set on it now, while it is still the current track, so that
@@ -887,7 +958,7 @@ def with_live(auto) =
     auto_feed.insert_metadata([("liq_cross_end_duration", "0."), ("liq_fade_out", "0.")])
     # Fresh tags for this takeover: the input switch may still be on the same input as the
     # previous show, so no new track (and no metadata) would come from below.
-    gated.insert_metadata(live_tags())
+    gated.insert_metadata([...live_tags(), ...live_np_tags()])
     live_fade(a, b)
   end
 
@@ -1326,6 +1397,12 @@ def state_json() =
   l.add("selected", if live_selected() == 0 then json.value(null) else json.value(live_selected()) end)
   l.add("on_air", if live_on_air() == 0 then json.value(null) else json.value(live_on_air()) end)
   l.add("session_id", nullable_string(live_session_id()))
+  # #68: the now-playing Node last sent.
+  np = json.object()
+  np.add("title", live_np_title())
+  np.add("artist", live_np_artist())
+  np.add("encoder", live_np_encoder())
+  l.add("now_playing", np)
   l.add(
     "inputs",
     list.map(
@@ -1735,6 +1812,14 @@ def handle_live(req, res) =
             then
               live_previous_session := live_session_id()
             end
+            # #68: a new session shows nothing of the previous DJ's until Node sends its own.
+            if
+              session != live_session_id()
+            then
+              live_np_title := ""
+              live_np_artist := ""
+              live_np_encoder := false
+            end
             live_session_id := session
             live_selected := wanted
           end
@@ -1784,6 +1869,34 @@ def handle_live_disconnect(req, res) =
   end
 end
 
+# --- #68 live metadata (ADR 0040) ---------------------------------------------------------
+# POST /v1/live/metadata {title, artist, encoder}: the now-playing while live. On air at once
+# if the gate is open, else at the next takeover.
+def handle_live_metadata(req, res) =
+  if
+    authorized(req, res)
+  then
+    if
+      not live_input
+    then
+      fail(res, 409, "live input is disabled for this station")
+    else
+      try
+        let json.parse (p : {title: string?, artist: string?, encoder: bool?}) = req.body()
+        live_np_title := p.title ?? ""
+        live_np_artist := p.artist ?? ""
+        live_np_encoder := p.encoder ?? false
+        push = live_np_push()
+        push()
+        reply(res, 200, json.stringify({applied=live_enabled()}))
+      catch err do
+        fail(res, 400, "invalid live metadata: #{err.message}")
+      end
+    end
+  end
+end
+# --- end #68 live metadata ----------------------------------------------------------------
+
 def handle_state(req, res) =
   if authorized(req, res) then reply(res, 200, state_json().stringify(compact=true)) end
 end
@@ -1832,6 +1945,10 @@ harbor.http.register(port=control_port, method="DELETE", "/v1/schedule", handle_
 harbor.http.register(port=control_port, method="POST", "/v1/live", handle_live)
 harbor.http.register(
   port=control_port, method="POST", "/v1/live/disconnect", handle_live_disconnect
+)
+# #68 live metadata
+harbor.http.register(
+  port=control_port, method="POST", "/v1/live/metadata", handle_live_metadata
 )
 
 emit(
