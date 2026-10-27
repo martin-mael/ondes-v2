@@ -24,6 +24,7 @@ export * from './contracts/on-air.ts';
 export * from './contracts/orgs.ts';
 export * from './contracts/peaks.ts';
 export * from './contracts/promos.ts';
+export * from './contracts/public.ts';
 export * from './contracts/rotation.ts';
 export * from './contracts/rotation-rules.ts';
 export * from './contracts/safety.ts';
