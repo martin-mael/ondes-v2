@@ -16,6 +16,8 @@ import { uuidSchema } from './tenancy.ts';
 //           joined FLAC as an upload, ingests it inline (playout copy, `asset.ingested` →
 //           loudness, autocue, peaks) and attaches the asset to the episode
 //
+// One recording per episode, else per event, else per (ad hoc) session: a handover inside a
+// slot or an event (#66) keeps the binding, so both DJs end up in one recording.
 // A DJ who hangs up and reconnects within their slot gets a new session on the same episode
 // (ADR 0033): its file is a new part of the same recording, and the job rebuilds the episode's
 // audio from all parts. The job is keyed by the recording and its parts (`version`), so a
@@ -91,7 +93,8 @@ export const liveRecordingSchema = z.object({
   stationId: uuidSchema,
   /** The episode it is the audio of; null for a session that aired no episode (ad hoc, event). */
   episodeId: uuidSchema.nullable(),
-  /** For a recording without episode: its one session. */
+  /** Without episode: the event it aired (all its sessions), else its one (ad hoc) session. */
+  eventId: uuidSchema.nullable(),
   sessionId: uuidSchema.nullable(),
   title: z.string().nullable(),
   status: liveRecordingStatusSchema,

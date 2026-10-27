@@ -128,6 +128,13 @@ describe('engine container spec', () => {
             ReadOnly: true,
             BindOptions: { CreateMountpoint: true },
           },
+          {
+            Type: 'bind',
+            Source: '/srv/ondes/cache/st-1/recordings',
+            Target: '/recordings',
+            ReadOnly: false,
+            BindOptions: { CreateMountpoint: true },
+          },
           { Type: 'tmpfs', Target: '/tmp', TmpfsOptions: { SizeBytes: 64 * 1024 * 1024 } },
         ],
       },

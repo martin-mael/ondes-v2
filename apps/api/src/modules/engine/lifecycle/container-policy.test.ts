@@ -36,6 +36,8 @@ type Body = Record<string, unknown> & {
   NetworkingConfig: { EndpointsConfig: Record<string, unknown> };
 };
 const firstMount = (b: Body) => (b.HostConfig.Mounts as Record<string, unknown>[])[0] ?? {};
+const recordingsMount = (b: Body) =>
+  (b.HostConfig.Mounts as Record<string, unknown>[])[1] ?? {};
 
 describe('engine container policy', () => {
   it('allows the lifecycle spec', () => {
@@ -61,6 +63,29 @@ describe('engine container policy', () => {
       /bind source/,
     ],
     ['a writable cache', (b) => (firstMount(b).ReadOnly = false), /read-only/],
+    // Live recordings (#67): the station's own `recordings` directory only.
+    [
+      'recordings outside a station directory',
+      (b) => (recordingsMount(b).Source = '/srv/ondes/cache/recordings'),
+      /bind source/,
+    ],
+    [
+      'recordings escaping the root',
+      (b) => (recordingsMount(b).Source = '/srv/ondes/cache/../etc/recordings'),
+      /bind source/,
+    ],
+    [
+      'a writable cache disguised as recordings',
+      (b) => (recordingsMount(b).Source = '/srv/ondes/cache/st-1'),
+      /bind source/,
+    ],
+    [
+      'the recordings directory at the cache target',
+      (b) => {
+        recordingsMount(b).Target = '/cache';
+      },
+      /bind source/,
+    ],
     [
       'a docker volume',
       (b) => (b.HostConfig.Mounts as unknown[]).push({ Type: 'volume', Target: '/x' }),

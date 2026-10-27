@@ -25,8 +25,8 @@ import { station } from './tenancy.ts';
 // - `live_recording_settings`: one row per station, absent = the defaults.
 // - `live_recording_part`: one engine file (one live session on air), unique per station and
 //   file name, inserted by the api from the engine's `live.recording.*` events.
-// - `live_recording`: what the parts are joined into: one per episode, or one per session
-//   that airs no episode (ad hoc, events). `version` counts the parts closed into it, so the
+// - `live_recording`: what the parts are joined into: one per episode, else one per event,
+//   else one per (ad hoc) session. `version` counts the parts closed into it, so the
 //   worker builds each version once.
 
 export const LIVE_RECORDING_STATUSES = [
@@ -87,7 +87,11 @@ export const liveRecording = pgTable(
     /** The episode whose audio it is; null for a session that airs no episode. */
     episodeId: uuid('episode_id'),
     showId: uuid('show_id'),
-    /** For a recording without episode: its one session. */
+    /**
+     * Without episode: the event its sessions aired (a handover inside an event keeps it,
+     * #66), else its one session (ad hoc).
+     */
+    eventId: uuid('event_id'),
     sessionId: uuid('session_id'),
     /** The show's name or the event's title, as it aired (for the library asset's title). */
     title: text('title'),
@@ -116,12 +120,15 @@ export const liveRecording = pgTable(
     uniqueIndex('live_recording_episode_key')
       .on(t.stationId, t.episodeId)
       .where(sql`${t.episodeId} is not null`),
+    uniqueIndex('live_recording_event_key')
+      .on(t.stationId, t.eventId)
+      .where(sql`${t.episodeId} is null and ${t.eventId} is not null`),
     uniqueIndex('live_recording_session_key')
       .on(t.stationId, t.sessionId)
-      .where(sql`${t.episodeId} is null`),
+      .where(sql`${t.episodeId} is null and ${t.eventId} is null`),
     check(
       'live_recording_owner_check',
-      sql`${t.episodeId} is not null or ${t.sessionId} is not null`,
+      sql`${t.episodeId} is not null or ${t.eventId} is not null or ${t.sessionId} is not null`,
     ),
     check('live_recording_status_check', sql`${t.status} in (${inList(LIVE_RECORDING_STATUSES)})`),
     check('live_recording_version_check', sql`${t.version} >= 0`),

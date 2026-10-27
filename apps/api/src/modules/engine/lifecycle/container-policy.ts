@@ -10,6 +10,13 @@ export const ENGINE_PORTS = { control: 7000, metrics: 9599, live: 8005, liveIcy:
 /** Where the station's playout cache is mounted, read-only (ADR 0004). */
 export const ENGINE_CACHE_MOUNT = '/cache';
 /**
+ * Live recordings (#67, ADR 0039): the station's `<cache>/recordings`, the one directory the
+ * engine may write to. The worker joins and uploads the files, then deletes them.
+ */
+export const ENGINE_RECORDINGS_MOUNT = '/recordings';
+/** The recordings directory inside a station's cache directory, on the host. */
+export const RECORDINGS_DIR = 'recordings';
+/**
  * The engine's root filesystem is read-only; the script copy goes to this tmpfs. Liquidsoap's
  * prebuilt standard-library cache stays readable in the image (it logs once that it can't
  * write a cache for the station script, which is harmless).
@@ -187,6 +194,16 @@ export function checkEngineCreate(
       if (bad) return bad;
       const source = String(m.Source ?? '');
       const rest = source.startsWith(`${root}/`) ? source.slice(root.length + 1) : '';
+      if (m.Target === ENGINE_RECORDINGS_MOUNT) {
+        // The only writable bind: the station's recordings directory (#67).
+        const station = rest.endsWith(`/${RECORDINGS_DIR}`)
+          ? rest.slice(0, -RECORDINGS_DIR.length - 1)
+          : '';
+        if (!/^[A-Za-z0-9-]+$/.test(station))
+          return `bind source must be ${root}/<station>/${RECORDINGS_DIR}`;
+        if (m.ReadOnly !== false) return `bind at ${ENGINE_RECORDINGS_MOUNT} must be read-write`;
+        continue;
+      }
       if (!/^[A-Za-z0-9-]+$/.test(rest)) return `bind source must be ${root}/<station>`;
       if (m.Target !== ENGINE_CACHE_MOUNT || m.ReadOnly !== true)
         return `bind must be read-only at ${ENGINE_CACHE_MOUNT}`;

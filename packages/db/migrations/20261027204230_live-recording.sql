@@ -4,6 +4,7 @@ CREATE TABLE "live_recording" (
 	"station_id" uuid NOT NULL,
 	"episode_id" uuid,
 	"show_id" uuid,
+	"event_id" uuid,
 	"session_id" uuid,
 	"title" text,
 	"status" text DEFAULT 'recording' NOT NULL,
@@ -18,7 +19,7 @@ CREATE TABLE "live_recording" (
 	"ended_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "live_recording_owner_check" CHECK ("live_recording"."episode_id" is not null or "live_recording"."session_id" is not null),
+	CONSTRAINT "live_recording_owner_check" CHECK ("live_recording"."episode_id" is not null or "live_recording"."event_id" is not null or "live_recording"."session_id" is not null),
 	CONSTRAINT "live_recording_status_check" CHECK ("live_recording"."status" in ('recording', 'pending', 'processing', 'ready', 'failed', 'expired', 'skipped')),
 	CONSTRAINT "live_recording_version_check" CHECK ("live_recording"."version" >= 0)
 );
@@ -54,7 +55,8 @@ ALTER TABLE "live_recording_part" ADD CONSTRAINT "live_recording_part_recording_
 ALTER TABLE "live_recording_part" ADD CONSTRAINT "live_recording_part_station_org_fk" FOREIGN KEY ("station_id","org_id") REFERENCES "public"."station"("id","org_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "live_recording_settings" ADD CONSTRAINT "live_recording_settings_station_org_fk" FOREIGN KEY ("station_id","org_id") REFERENCES "public"."station"("id","org_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "live_recording_episode_key" ON "live_recording" USING btree ("station_id","episode_id") WHERE "live_recording"."episode_id" is not null;--> statement-breakpoint
-CREATE UNIQUE INDEX "live_recording_session_key" ON "live_recording" USING btree ("station_id","session_id") WHERE "live_recording"."episode_id" is null;--> statement-breakpoint
+CREATE UNIQUE INDEX "live_recording_event_key" ON "live_recording" USING btree ("station_id","event_id") WHERE "live_recording"."episode_id" is null and "live_recording"."event_id" is not null;--> statement-breakpoint
+CREATE UNIQUE INDEX "live_recording_session_key" ON "live_recording" USING btree ("station_id","session_id") WHERE "live_recording"."episode_id" is null and "live_recording"."event_id" is null;--> statement-breakpoint
 CREATE INDEX "live_recording_status_ended_idx" ON "live_recording" USING btree ("status","ended_at");--> statement-breakpoint
 CREATE INDEX "live_recording_part_recording_idx" ON "live_recording_part" USING btree ("recording_id","started_at");--> statement-breakpoint
 CREATE INDEX "live_recording_part_session_idx" ON "live_recording_part" USING btree ("station_id","session_id");--> statement-breakpoint

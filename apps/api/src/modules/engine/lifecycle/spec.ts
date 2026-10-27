@@ -12,8 +12,10 @@ import {
   ENGINE_ENTRYPOINT,
   ENGINE_LABELS,
   ENGINE_PORTS,
+  ENGINE_RECORDINGS_MOUNT,
   ENGINE_SCRIPT_ENV,
   ENGINE_TMPFS,
+  RECORDINGS_DIR,
 } from './container-policy.ts';
 import type { ContainerCreateBody } from './docker.ts';
 import type { PortRange } from './repo.ts';
@@ -29,6 +31,7 @@ export {
   ENGINE_ENTRYPOINT,
   ENGINE_LABELS,
   ENGINE_PORTS,
+  ENGINE_RECORDINGS_MOUNT,
   ENGINE_SCRIPT_ENV,
   ENGINE_TMPFS,
 } from './container-policy.ts';
@@ -112,6 +115,8 @@ export function engineSettingsFor(
       authUrl: liveAuthUrl(config.internalApiUrl, station.stationId),
       // Played once after a live show, when the file is in the cache (#64, ADR 0027).
       returnFile: `${ENGINE_CACHE_MOUNT}/live-return.flac`,
+      // Each live session's audio, for its episode (#67, ADR 0039).
+      recordDir: ENGINE_RECORDINGS_MOUNT,
     },
     paths: {
       safetyDir: `${ENGINE_CACHE_MOUNT}/safety`,
@@ -213,6 +218,13 @@ export function engineContainerSpec(
           Source: `${config.cacheRoot.replace(/\/+$/, '')}/${stationId}`,
           Target: ENGINE_CACHE_MOUNT,
           ReadOnly: true,
+          BindOptions: { CreateMountpoint: true },
+        },
+        {
+          Type: 'bind',
+          Source: `${config.cacheRoot.replace(/\/+$/, '')}/${stationId}/${RECORDINGS_DIR}`,
+          Target: ENGINE_RECORDINGS_MOUNT,
+          ReadOnly: false,
           BindOptions: { CreateMountpoint: true },
         },
         ...ENGINE_TMPFS.map((target) => ({

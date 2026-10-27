@@ -1,5 +1,5 @@
 {
-  "id": "0361a9c5-0c33-47ba-a724-baef128753bf",
+  "id": "f106db02-be94-4fac-b523-3c9687ef8fa1",
   "prevId": "64bb6f79-c280-4ddd-934f-1cf7911848d6",
   "version": "7",
   "dialect": "postgresql",
@@ -5870,6 +5870,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "event_id": {
+          "name": "event_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "session_id": {
           "name": "session_id",
           "type": "uuid",
@@ -5982,6 +5988,28 @@
           "method": "btree",
           "with": {}
         },
+        "live_recording_event_key": {
+          "name": "live_recording_event_key",
+          "columns": [
+            {
+              "expression": "station_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "event_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"live_recording\".\"episode_id\" is null and \"live_recording\".\"event_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "live_recording_session_key": {
           "name": "live_recording_session_key",
           "columns": [
@@ -5999,7 +6027,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"live_recording\".\"episode_id\" is null",
+          "where": "\"live_recording\".\"episode_id\" is null and \"live_recording\".\"event_id\" is null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -6049,7 +6077,7 @@
       "checkConstraints": {
         "live_recording_owner_check": {
           "name": "live_recording_owner_check",
-          "value": "\"live_recording\".\"episode_id\" is not null or \"live_recording\".\"session_id\" is not null"
+          "value": "\"live_recording\".\"episode_id\" is not null or \"live_recording\".\"event_id\" is not null or \"live_recording\".\"session_id\" is not null"
         },
         "live_recording_status_check": {
           "name": "live_recording_status_check",
