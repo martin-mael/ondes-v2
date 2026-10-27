@@ -48,7 +48,7 @@ field that isn't in the public contract can't leak even if the internal shapes g
 readers wait for the same build; nothing is queried per request. A snapshot is rebuilt when:
 - an event for its station arrives on the RabbitMQ event fanout (the same subscription kind as
   the SSE plugin): `asrun.*`, `engine.up/down/booted/track.started`, `log.updated`,
-  `log.item.changed`, `feeder.item.passed_over`, `live.session.*`, `live.metadata.updated`,
+  `log.item.changed`, `feeder.item.passed_over`, `live.session.*`, `live.metadata.changed`,
   `asset.updated`, `station.updated` (which also drops the slug lookups);
 - its TTL runs out (30 s) or the show block it shows ends (no event marks that, ADR 0034).
 History is a second snapshot (last 50, sliced per `limit`, each slice serialised once),
@@ -100,7 +100,9 @@ resolves and `public.int.test.ts` that each documented route exists.
 `PublicPluginOptions.liveNowPlaying: (db, scope) => Promise<LiveNowPlaying | null>` with
 `{ title, artist, source: 'default' | 'encoder' | 'manual', updatedAt }`, called only while the
 station is live. Default: none (the live item shows the DJ and the show). #68 provides the
-reader and emits `live.metadata.updated` (only `type` and `stationId` are read, loosely, so the
+reader (`getLiveNowPlaying` in `apps/api/src/modules/live/metadata.ts`: its `default` source is
+the show and episode as title, the DJ as artist; `encoder` and `manual` override it) and emits
+`live.metadata.changed` (only `type` and `stationId` are read, loosely, so the
 event doesn't have to be in the contract first); the wiring in `app.ts`/`main.ts` lands at
 integration.
 

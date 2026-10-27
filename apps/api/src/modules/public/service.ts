@@ -46,7 +46,10 @@ export type LiveNowPlayingReader = (
   scope: StationScope,
 ) => Promise<LiveNowPlaying | null>;
 
-/** Until #68's reader is wired in: no live metadata, the live item shows the DJ and the show. */
+/**
+ * Until #68's reader (`getLiveNowPlaying`, `modules/live/metadata.ts`) is wired in: no live
+ * metadata, the live item has no title and `liveInfo` shows the DJ and the show.
+ */
 export const noLiveNowPlaying: LiveNowPlayingReader = async () => null;
 
 export async function findStationBySlug(

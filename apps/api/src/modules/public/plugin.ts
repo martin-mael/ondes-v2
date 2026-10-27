@@ -70,7 +70,7 @@ const NOW_PLAYING_EVENTS = new Set([
   'live.session.started',
   'live.session.ended',
   // Live metadata (#68): the DJ's encoder or a manual update.
-  'live.metadata.updated',
+  'live.metadata.changed',
   'asset.updated',
   'station.updated',
 ]);
