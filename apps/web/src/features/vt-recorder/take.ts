@@ -82,6 +82,11 @@ export function voiceStart(take: Take, trim: Trim): number | null {
   return take.axisStart + Math.round((trim.from * AXIS_RATE) / take.sampleRate);
 }
 
+/** The trimmed take's length on the segue axis (44.1 kHz samples). */
+export function voiceLength(take: Pick<Take, 'sampleRate'>, trim: Trim): number {
+  return Math.round(((trim.to - trim.from) * AXIS_RATE) / take.sampleRate);
+}
+
 /** Take samples → seconds. */
 export const takeSeconds = (take: Pick<Take, 'sampleRate'>, n: number) => n / take.sampleRate;
 

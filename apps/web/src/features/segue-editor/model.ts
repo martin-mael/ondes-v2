@@ -1,4 +1,5 @@
 import {
+  autoPlacement,
   checkSegue,
   DEFAULT_DUCK,
   type DuckPreset,
@@ -11,6 +12,9 @@ import {
   type EnvelopePoint,
   type IslandMedia,
   type IslandPlan,
+  type PlacementBed,
+  type PlacementVoice,
+  placementMediaOf,
   SEGUE_MAX_OFFSET_SAMPLES,
   type SegueInLane,
   type SegueMedia,
@@ -292,12 +296,95 @@ export function addVoice(lanes: Lanes, assetId: string): Lanes {
   return { ...lanes, voices: [...lanes.voices, { assetId, start, gainDb: 0, envelope: [] }] };
 }
 
+// --- Smart default placement (#61, ADR 0037) ---------------------------------------------
+
 /**
- * A take just recorded (#59): placed where it was recorded over the pre-roll (`start`, else
- * where {@link addVoice} puts a voice) and played from its first sample (`cueIn` 0), so a
- * cue-in found later by autocue never shifts it off the music it was spoken over.
+ * The lanes placed by `autoPlacement` from A's and B's cue markers: every voice over A's outro
+ * and B's intro, B at its natural start or after the voices, A and B ducked under them. A voice
+ * keeps its trim, gain trim and envelope; the first `bed` among the voices (when another voice
+ * remains) becomes the bed laid under a voice that outlasts the music. `extra` is a voice not
+ * in the media yet (a take before its ingest), `voiceStart` pins the first voice. Null while A's,
+ * B's or a voice's media is missing.
  */
-export function addRecordedVoice(lanes: Lanes, assetId: string, start: number | null): Lanes {
+function placeLanes(
+  lanes: Lanes,
+  media: LaneMedia,
+  extra?: PlacementVoice,
+  voiceStart?: number,
+): Lanes | null {
+  if (!media.from || !media.to) return null;
+  const voices: PlacementVoice[] = [];
+  const beds: PlacementBed[] = [];
+  for (const v of lanes.voices) {
+    const m = media.voices[v.assetId];
+    if (!m) return null;
+    const range = voiceRange(v, m);
+    if (m.kind === 'bed') beds.push({ assetId: v.assetId, ...range });
+    else voices.push({ assetId: v.assetId, ...range, lane: v });
+  }
+  if (extra) voices.push(extra);
+  // A segue of beds only: they are its voices.
+  const [bed, ...otherBeds] = voices.length ? beds : [];
+  if (!voices.length) {
+    for (const b of beds) {
+      const lane = lanes.voices.find((v) => v.assetId === b.assetId);
+      voices.push({ ...b, lane });
+    }
+  }
+  for (const b of otherBeds) {
+    voices.push({ ...b, lane: lanes.voices.find((v) => v.assetId === b.assetId) });
+  }
+  return autoPlacement(placementMediaOf(media.from), placementMediaOf(media.to), voices, {
+    bed,
+    ...(voiceStart !== undefined && { voiceStart }),
+  }).lanes;
+}
+
+/** "Reset to auto placement": {@link placeLanes} over the voices as they are. */
+export const autoLanes = (lanes: Lanes, media: LaneMedia): Lanes | null => placeLanes(lanes, media);
+
+/**
+ * A voice picked from the library. The first one is placed by smart placement (B and the
+ * ducks follow it); the next ones go after the last voice ({@link addVoice}), and so does the
+ * first while A's, B's or its own media is missing.
+ */
+export function addPlacedVoice(lanes: Lanes, media: LaneMedia, assetId: string): Lanes {
+  const m = media.voices[assetId];
+  if (lanes.voices.length || !m) return addVoice(lanes, assetId);
+  return (
+    placeLanes(lanes, media, { assetId, cueIn: m.cueIn, cueOut: m.cueOut }) ??
+    addVoice(lanes, assetId)
+  );
+}
+
+/**
+ * A take just recorded (#59), played from its first sample (`cueIn` 0), so a cue-in found later
+ * by autocue never shifts it off the music it was spoken over. The first voice of a segue is
+ * placed by smart placement: a take spoken over the pre-roll stays where it was spoken (`start`)
+ * and only B and the ducks follow it; one recorded without music (`start` null) is placed like
+ * a voice from the library. `length` is the take's length on the axis (its media arrives after
+ * ingest). Otherwise it goes where it was recorded, else where {@link addVoice} puts a voice.
+ */
+export function addRecordedVoice(
+  lanes: Lanes,
+  assetId: string,
+  start: number | null,
+  placement?: { media: LaneMedia; length: number | null },
+): Lanes {
+  if (placement?.length && !lanes.voices.length) {
+    const placed = placeLanes(
+      lanes,
+      placement.media,
+      {
+        assetId,
+        cueIn: 0,
+        cueOut: placement.length,
+        lane: { start: start ?? 0, cueIn: 0, gainDb: 0, envelope: [] },
+      },
+      start === null ? undefined : clampOffset(start),
+    );
+    if (placed) return placed;
+  }
   const next = addVoice(lanes, assetId);
   const i = next.voices.length - 1;
   return {

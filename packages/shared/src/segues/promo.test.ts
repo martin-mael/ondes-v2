@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { PLAYOUT_FLAC_BLOCK_SIZE, PLAYOUT_SAMPLE_RATE } from '../contracts/library.ts';
 import { envelopeGainAt } from './gain.ts';
 import { checkSegue, type IslandMedia } from './island.ts';
-import { DEFAULT_DUCK, defaultPromoLanes, duckEnvelopes, type PlacementMedia } from './promo.ts';
+import { DEFAULT_DUCK, duckEnvelopes, type PlacementMedia } from './placement.ts';
+import { defaultPromoLanes } from './promo.ts';
 
 // Default promo segues (#60, ADR 0032): the voice over A's outro and B's intro from their cue
 // markers, B never earlier than its natural start, and the owner's default ducking.

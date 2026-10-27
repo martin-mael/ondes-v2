@@ -62,10 +62,11 @@ import { useHistory } from './history.ts';
 import { Lane, type LaneStyle } from './lane.tsx';
 import { type SegueMessageKey, type SegueT, useSegueT } from './messages.ts';
 import {
+  addPlacedVoice,
   addRecordedVoice,
-  addVoice,
   applyDuck,
   applyFadeOut,
+  autoLanes,
   type Clip,
   clearEnvelopes,
   clipsOf,
@@ -203,7 +204,11 @@ export function SegueEditorPage() {
         segue={segue.data}
         back={back}
         date={date}
-        placed={search.voice ? { assetId: search.voice, at: search.at ?? null } : null}
+        placed={
+          search.voice
+            ? { assetId: search.voice, at: search.at ?? null, length: search.length ?? null }
+            : null
+        }
         resume={!!search.resume}
       />
     </PreviewProvider>
@@ -238,8 +243,11 @@ function Editor({
   segue: Segue | null;
   back: React.ReactNode;
   date: LocalDate;
-  /** A take just recorded (#59): added as a new voice once, then dropped from the URL. */
-  placed: { assetId: string; at: number | null } | null;
+  /**
+   * A take just recorded (#59): added as a new voice once, then dropped from the URL. `length`
+   * (axis samples) lets smart placement (#61) place it before its ingest.
+   */
+  placed: { assetId: string; at: number | null; length: number | null } | null;
   /** Back from the recorder without a take: restore the draft handed over to it. */
   resume: boolean;
 }) {
@@ -286,6 +294,8 @@ function Editor({
     [media.data, a.id, b.id],
   );
   const clips = useMemo(() => clipsOf(lanes, laneMedia), [lanes, laneMedia]);
+  /** "Reset to auto placement" (#61): null while some media is missing. */
+  const autoPlaced = useMemo(() => autoLanes(lanes, laneMedia), [lanes, laneMedia]);
   const extent = extentOf(clips);
   const bounds = padded(extent);
   const problem = useMemo(() => problemOf(lanes, laneMedia), [lanes, laneMedia]);
@@ -543,6 +553,8 @@ function Editor({
   useEffect(() => {
     const take = placing.current;
     if (!take && !resuming.current) return;
+    // Smart placement reads A's and B's markers: wait for their media (or its failure).
+    if (take && media.isPending) return;
     placing.current = null;
     resuming.current = false;
     void navigate({
@@ -559,7 +571,10 @@ function Editor({
       toast.warning(t('record.full'));
       return;
     }
-    const next = addRecordedVoice(lanes, take.assetId, take.at);
+    const next = addRecordedVoice(lanes, take.assetId, take.at, {
+      media: laneMedia,
+      length: take.length,
+    });
     history.change(next);
     setSelection({ lane: voiceKey(next.voices.length - 1), point: null });
   });
@@ -741,6 +756,8 @@ function Editor({
           if (preset) edit(applyDuck(lanes, laneMedia, preset));
         }}
         onFadeOut={() => edit(applyFadeOut(lanes, 2000))}
+        canAuto={autoPlaced !== null}
+        onAuto={() => autoPlaced && edit(autoPlaced)}
         onClear={() => edit(clearEnvelopes(lanes))}
       />
 
@@ -812,9 +829,20 @@ function Editor({
         title={t('voice.pick')}
         initialKind="vt"
         kinds={['vt', 'jingle', 'bed']}
-        onPick={(asset) => {
+        onPick={async (asset) => {
           setPicking(false);
-          const next = addVoice(lanes, asset.id);
+          // Smart placement (#61) needs the voice's length: its media first (a fast request,
+          // usually cached). Without it the voice goes where `addVoice` puts one.
+          const voices = await queryClient
+            .fetchQuery(
+              segueMediaQuery(stationId, a.id, b.id, [
+                ...lanes.voices.map((v) => v.assetId),
+                asset.id,
+              ]),
+            )
+            .then((m) => m.assets)
+            .catch(() => ({}));
+          const next = addPlacedVoice(lanes, { ...laneMedia, voices }, asset.id);
           edit(next);
           setSelection({ lane: voiceKey(next.voices.length - 1), point: null });
         }}
@@ -908,6 +936,8 @@ function Toolbar(props: {
   onDuck(index: number): void;
   onFadeOut(): void;
   onClear(): void;
+  canAuto: boolean;
+  onAuto(): void;
 }) {
   const { t } = props;
   return (
@@ -992,6 +1022,10 @@ function Toolbar(props: {
                 </DropdownMenuItem>
               ))}
               <DropdownMenuItem onClick={props.onFadeOut}>{t('preset.fadeOut')}</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={props.onAuto} disabled={!props.canAuto}>
+                {t('preset.auto')}
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={props.onClear}>{t('preset.clear')}</DropdownMenuItem>
             </DropdownMenuContent>

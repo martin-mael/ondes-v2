@@ -35,5 +35,6 @@ export * from './json.ts';
 export * from './segues/gain.ts';
 export * from './segues/island.ts';
 export * from './segues/mix.ts';
+export * from './segues/placement.ts';
 export * from './segues/promo.ts';
 export * from './time/index.ts';

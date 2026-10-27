@@ -49,6 +49,7 @@ import {
   type Take,
   type Trim,
   takePeaks,
+  voiceLength,
   voiceStart,
 } from './take.ts';
 
@@ -163,13 +164,13 @@ export function SegueRecorderPage() {
       preroll={music && { clips: music, transitionStart: transitionStart(lanes) }}
       prerollMissing={!music}
       saveLabel={t('save.place')}
-      onUploaded={(assetId, at, allowLeave) => {
+      onUploaded={(assetId, at, length, allowLeave) => {
         toast.success(t('save.placed'));
         allowLeave();
         void navigate({
           to: '/stations/$stationId/log/segue',
           params: { stationId },
-          search: { date: search.date, from, to, voice: assetId, at: at ?? undefined },
+          search: { date: search.date, from, to, voice: assetId, at: at ?? undefined, length },
         });
       }}
     />
@@ -212,7 +213,7 @@ export function VtRecorderPage() {
       preroll={null}
       prerollMissing={false}
       saveLabel={t('save.library')}
-      onUploaded={(_assetId, _at, allowLeave) => {
+      onUploaded={(_assetId, _at, _length, allowLeave) => {
         toast.success(t('save.done'));
         allowLeave();
         void navigate({ to: '/stations/$stationId/library', params: { stationId } });
@@ -256,7 +257,12 @@ function Recorder({
   preroll: { clips: readonly Clip[]; transitionStart: number } | null;
   prerollMissing: boolean;
   saveLabel: string;
-  onUploaded(assetId: string, voiceStart: number | null, allowLeave: () => void): void;
+  onUploaded(
+    assetId: string,
+    voiceStart: number | null,
+    length: number,
+    allowLeave: () => void,
+  ): void;
 }) {
   const t = useVtT();
   const errorMessage = useErrorMessage();
@@ -409,7 +415,7 @@ function Recorder({
             });
           }),
       });
-      onUploaded(assetId, voiceStart(take, trim), allowLeave);
+      onUploaded(assetId, voiceStart(take, trim), voiceLength(take, trim), allowLeave);
     } catch (error) {
       if (controller.signal.aborted) return;
       setUpload(null);

@@ -41,6 +41,7 @@ const en = {
 
   'preset.duck': 'Duck under the voice: {depth} dB, {ramp} ms ramps',
   'preset.fadeOut': 'Fade out the outgoing song (2 s)',
+  'preset.auto': 'Auto placement (voices, next start and ducking)',
   'preset.clear': 'Clear every envelope',
 
   'cursor.at': 'Cursor {offset} · on air ≈ {time}',
@@ -113,6 +114,7 @@ const fr: Record<SegueMessageKey, string> = {
 
   'preset.duck': 'Atténuer sous la voix : {depth} dB, rampes de {ramp} ms',
   'preset.fadeOut': 'Fondu de sortie du titre sortant (2 s)',
+  'preset.auto': 'Placement automatique (voix, titre suivant et atténuation)',
   'preset.clear': 'Effacer toutes les enveloppes',
 
   'cursor.at': 'Curseur {offset} · à l’antenne ≈ {time}',
