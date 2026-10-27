@@ -1,5 +1,6 @@
 import type {
   Category,
+  LocalDate,
   PickUnfilled,
   RelaxedRule,
   RotationRule,
@@ -492,7 +493,7 @@ function orderFor<C extends PickCandidate>(
       lastPlayedAt: snapshot.lastPlayedAt,
       category,
       at: at.getTime(),
-      consumed: history.items.length,
+      seen: history.changes.length,
       allPrecede: history.allPrecede,
       order: ordered,
       keys: new Map(
@@ -507,7 +508,8 @@ function orderFor<C extends PickCandidate>(
  * The rotation order of the previous pick from the same candidates, brought up to date, when
  * that gives exactly what `orderFor` would (the fast path only, `least_recently_played` and
  * `weighted_random` orders):
- * - same history (it only grew, and every item precedes both slots), same older airings, same
+ * - same history (it grew, or lost items through `removeFromHistory`, and every item precedes
+ *   both slots: the assets in its `changes` since are re-placed), same older airings, same
  *   category, a later slot;
  * - no member's schedule window (`startAt`, `killAt`) nor older airing falls between the two
  *   slots, so the same members are schedulable and every other member keeps its time.
@@ -530,7 +532,6 @@ function reusedOrder<C extends PickCandidate>(
     !cached.allPrecede ||
     !history.allPrecede ||
     at < cached.at ||
-    history.items.length < cached.consumed ||
     crossesBoundary(slot.candidates, snapshot.lastPlayedAt, cached.at, at)
   ) {
     return null;
@@ -538,9 +539,9 @@ function reusedOrder<C extends PickCandidate>(
   const ranks = idRanks(slot.candidates);
   const byId = candidatesById(slot.candidates);
   const { order, keys } = cached;
-  for (let i = cached.consumed; i < history.items.length; i++) {
-    const id = history.items[i]?.assetId;
-    const member = id ? (byId.get(id) as C | undefined) : undefined;
+  const { changes } = history;
+  for (let i = cached.seen; i < changes.length; i++) {
+    const member = byId.get(changes[i] as string) as C | undefined;
     if (!member || !keys.has(member)) continue;
     const t = lastPlayedAt(member.id)?.getTime() ?? Number.NEGATIVE_INFINITY;
     if (keys.get(member) === t) continue;
@@ -560,7 +561,7 @@ function reusedOrder<C extends PickCandidate>(
     keys.set(member, t);
   }
   cached.at = at;
-  cached.consumed = history.items.length;
+  cached.seen = changes.length;
   return order;
 }
 
@@ -569,7 +570,8 @@ interface OrderCache<C extends PickCandidate = PickCandidate> {
   lastPlayedAt: ReadonlyMap<string, Date> | undefined;
   category: PickCategory;
   at: number;
-  consumed: number;
+  /** How many of the history's `changes` it has taken in. */
+  seen: number;
   allPrecede: boolean;
   /** The schedulable members in rotation order. */
   order: C[];
@@ -666,6 +668,31 @@ function quickPick<C extends PickCandidate>(
   return { asset: pick.asset, relaxed: [], unfilled: null, ranked };
 }
 
+type Bounds = { startsAt: Date; endsAt: Date };
+const dayAndWeekCache = new Map<string, { day: Bounds; week: Bounds }>();
+
+/**
+ * A local day's bounds and its week's (Monday to Monday), computed once per day and zone: a
+ * log generator picks thousands of slots a day, and each zone conversion formats dates.
+ */
+function dayAndWeek(localDate: LocalDate, timeZone: string): { day: Bounds; week: Bounds } {
+  const key = `${timeZone} ${localDate}`;
+  let bounds = dayAndWeekCache.get(key);
+  if (!bounds) {
+    const monday = weekStart(localDate);
+    bounds = {
+      day: localDayBounds(localDate, timeZone),
+      week: {
+        startsAt: localDayBounds(monday, timeZone).startsAt,
+        endsAt: localDayBounds(addDays(monday, 7), timeZone).startsAt,
+      },
+    };
+    if (dayAndWeekCache.size >= 1000) dayAndWeekCache.clear();
+    dayAndWeekCache.set(key, bounds);
+  }
+  return bounds;
+}
+
 /** Fill one slot: the best candidate, the rules relaxed to get it, and every verdict. */
 export function pickForSlot<C extends PickCandidate>(
   snapshot: PickSnapshot,
@@ -677,8 +704,7 @@ export function pickForSlot<C extends PickCandidate>(
   const ordered =
     (snapshot.explain === false && reusedOrder(snapshot, slot, history, lastPlayedAt)) ||
     orderFor(snapshot, slot, history, lastPlayedAt);
-  const localDate = zonedParts(at, snapshot.timeZone).date;
-  const monday = weekStart(localDate);
+  const { day, week } = dayAndWeek(zonedParts(at, snapshot.timeZone).date, snapshot.timeZone);
   const ctx: SlotContext = {
     at,
     timeZone: snapshot.timeZone,
@@ -686,11 +712,8 @@ export function pickForSlot<C extends PickCandidate>(
     history,
     lastPlayedAt,
     depth: Math.max(1, Math.ceil((ordered.length * category.searchDepthPercent) / 100)),
-    day: localDayBounds(localDate, snapshot.timeZone),
-    week: {
-      startsAt: localDayBounds(monday, snapshot.timeZone).startsAt,
-      endsAt: localDayBounds(addDays(monday, 7), snapshot.timeZone).startsAt,
-    },
+    day,
+    week,
     previous: history.preceding(1)[0],
     cache: new Map(),
     windows: new Map(),

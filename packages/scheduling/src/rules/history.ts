@@ -139,11 +139,19 @@ class TypeIndex {
   readonly lastByAsset = new Map<string, PlayedItem>();
   /** How many items of the source array it has read. */
   consumed = 0;
+  /**
+   * The assets whose latest item may have changed, in the order it happened (added, or taken
+   * out by `removeFromHistory`). Append-only: a reader remembers how far it got.
+   */
+  readonly changes: string[] = [];
 
   add(item: PlayedItem) {
     const i = this.items.length;
     this.items.push(item);
-    if (item.assetId) this.lastByAsset.set(item.assetId, item);
+    if (item.assetId) {
+      this.lastByAsset.set(item.assetId, item);
+      this.changes.push(item.assetId);
+    }
     const keys = keysOf(item);
     if (item.assetId) push(this.byKind.asset, item.assetId, i);
     if (keys.title) push(this.byKind.title, keys.title, i);
@@ -151,6 +159,33 @@ class TypeIndex {
     for (const a of keys.artists) push(this.byKind.artist, a, i);
     for (const a of keys.primaryArtists) push(this.byKind.primaryArtist, a, i);
   }
+
+  /**
+   * Re-reads the type's items of `history` in place, keeping its identity: `changes` gets the
+   * assets whose latest item is no longer the same (taken out, or added since it last read).
+   */
+  rebuild(history: readonly PlayedItem[], type: AssetType) {
+    const changes = this.changes.length;
+    const before = new Map(this.lastByAsset);
+    this.items.length = 0;
+    this.lastByAsset.clear();
+    for (const index of Object.values(this.byKind)) index.clear();
+    for (const item of sortedOfType(history, type)) this.add(item);
+    this.changes.length = changes;
+    this.consumed = history.length;
+    for (const [assetId, item] of before) {
+      if (this.lastByAsset.get(assetId) !== item) this.changes.push(assetId);
+    }
+    for (const assetId of this.lastByAsset.keys()) {
+      if (!before.has(assetId)) this.changes.push(assetId);
+    }
+  }
+}
+
+function sortedOfType(history: readonly PlayedItem[], type: AssetType): PlayedItem[] {
+  return history
+    .filter((item) => item.type === type)
+    .sort((a, b) => a.at.getTime() - b.at.getTime());
 }
 
 /**
@@ -164,9 +199,9 @@ const indexes = new WeakMap<readonly PlayedItem[], Map<AssetType, TypeIndex>>();
 
 /**
  * Takes items out of a history array in place, for a planner that changes its mind (the
- * generator's back-timing dropping a pick, #46). The indexes built on the array are dropped,
- * so the next pick rebuilds them (and the picker's rotation order with them). Returns how many
- * items went.
+ * generator's back-timing dropping a pick, #46). The indexes built on the array are rebuilt in
+ * place and list the assets whose latest play changed in their `changes`, so the picker's rotation order is
+ * brought up to date rather than recomputed. Returns how many items went.
  */
 export function removeFromHistory(
   history: PlayedItem[],
@@ -178,7 +213,8 @@ export function removeFromHistory(
     history.splice(i, 1);
     removed++;
   }
-  if (removed > 0) indexes.delete(history);
+  if (removed === 0) return 0;
+  for (const [type, index] of indexes.get(history) ?? []) index.rebuild(history, type);
   return removed;
 }
 
@@ -212,15 +248,13 @@ function indexFor(history: readonly PlayedItem[], type: AssetType): TypeIndex {
     }
   }
   const index = new TypeIndex();
-  for (const item of history
-    .filter((item) => item.type === type)
-    .sort((a, b) => a.at.getTime() - b.at.getTime())) {
-    index.add(item);
-  }
+  for (const item of sortedOfType(history, type)) index.add(item);
   index.consumed = history.length;
   byType.set(type, index);
   return index;
 }
+
+const NONE: readonly number[] = [];
 
 /** History of one slot: the items of the slot's type in air order, and lookups on them. */
 export class SlotHistory {
@@ -228,6 +262,8 @@ export class SlotHistory {
   /** Index of the first item at or after the slot: items before it precede the slot. */
   readonly insertAt: number;
   private readonly index: TypeIndex;
+  /** The slot's time, in ms. */
+  private readonly at: number;
 
   constructor(history: readonly PlayedItem[], type: AssetType, at: Date) {
     this.index = indexFor(history, type);
@@ -242,6 +278,7 @@ export class SlotHistory {
       else hi = mid;
     }
     this.insertAt = lo;
+    this.at = t;
   }
 
   /**
@@ -252,6 +289,11 @@ export class SlotHistory {
     return this.index;
   }
 
+  /** The assets whose latest item may have changed, in order (append-only, see `TypeIndex`). */
+  get changes(): readonly string[] {
+    return this.index.changes;
+  }
+
   /** Every item precedes the slot (a sequence planning forward in time). */
   get allPrecede(): boolean {
     return this.insertAt === this.items.length;
@@ -259,8 +301,11 @@ export class SlotHistory {
 
   /** The last item with this asset before the slot, if any. */
   lastBefore(assetId: string): PlayedItem | undefined {
-    // Every item precedes the slot (a sequence planning forward): the latest one is it.
-    if (this.insertAt === this.items.length) return this.index.lastByAsset.get(assetId);
+    // The asset's latest item, when it precedes the slot, is it (a sequence planning forward
+    // has every item before the slot); never played, there is none.
+    const latest = this.index.lastByAsset.get(assetId);
+    if (!latest || this.insertAt === this.items.length) return latest;
+    if (latest.at.getTime() < this.at) return latest;
     const positions = this.positions('asset', assetId);
     let lo = 0;
     let hi = positions.length;
@@ -274,7 +319,7 @@ export class SlotHistory {
 
   /** Positions of the items with this key, in air order. */
   positions(kind: IndexKind, key: string): readonly number[] {
-    return this.index.byKind[kind].get(key) ?? [];
+    return this.index.byKind[kind].get(key) ?? NONE;
   }
 
   /** The `count` items right before the slot, nearest last. */
