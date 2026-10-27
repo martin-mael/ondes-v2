@@ -1194,31 +1194,40 @@ blank_source = radio
 # ---------------------------------------------------------------------------------------
 # Live recording (#67, ADR 0039). BEGIN live recording (owned by #67; keep other changes out)
 #
-# While a DJ is on air (live_on_air != 0) the final mix is written to live_record_dir as
-# FLAC, one file per live session: the file is cut where the `ondes_live_session` tag of the
-# mix changes (a handover, or another show's session bound in place), so every file is one
-# session's on-air span, frame-accurate, and consecutive files join without a gap. Off
-# when live_record_dir is "" (the lifecycle mounts the station's `<cache>/recordings` there,
-# read-write; the playout cache itself stays read-only).
+# While a DJ is on air (live_on_air != 0, after the takeover's fade) the final mix is
+# written to live_record_dir as FLAC, one file per live session: a new file starts on the frame where the session on air
+# changes (a handover, or a reconnect), so every file is one session's on-air span and
+# consecutive files join without a gap. Off when live_record_dir is "" (the lifecycle mounts
+# the station's `<cache>/recordings` there, read-write; the playout cache stays read-only).
 #
-# Files are `live-<boot>-<n>.flac`. Each one is announced once its session is known
-# (`live.recording.started`) and when it is closed (`live.recording.closed`, also on a
-# clean shutdown); Node turns them into the episode's audio. A file that never saw a session
-# tag (an engine opened by hand without one) is not announced and is swept by the worker.
-# The recording never stops the air: a file that can't be written is retried every 10 s.
+# The session on air is the `ondes_live_session` tag of the final mix, as the as-run reads
+# it. Files are `live-<boot>-<n>.flac`. Each one is announced once its session is known
+# (`live.recording.started`) and when it is closed (`live.recording.closed`, also on a clean
+# shutdown); Node turns them into the episode's audio. A file that never saw a session (an
+# engine opened by hand without one) is not announced, and the worker sweeps it. The
+# recording never stops the air: a file that can't be written is retried every 10 s.
 #
-# Threads: everything below runs on the clock thread (filename, metadata and close
-# callbacks of the output), so the refs have a single writer.
+# Threads: everything below runs on the clock thread (metadata, filename, reopen and close
+# callbacks), so the refs have a single writer.
 
 if
   live_input and live_record_dir != ""
 then
   live_record_seq = ref(0)
+  # The latest session tag on air (kept while automation airs: nothing is recorded then).
+  live_record_air_session = ref("")
   # The file being written and the one before it: whichever on_close names.
   live_record_cur = ref({file="", session="", started=0.})
   live_record_prev = ref({file="", session="", started=0.})
-  # The session of the next file, set when a tag change asks for a new one.
-  live_record_next_session = ref("")
+
+  radio.on_metadata(
+    synchronous=true,
+    fun (m) ->
+      begin
+        session = m["ondes_live_session"]
+        if session != "" then live_record_air_session := session end
+      end
+  )
 
   def live_record_announce_started(r) =
     d = json.object()
@@ -1232,27 +1241,25 @@ then
     live_record_seq := live_record_seq() + 1
     name = "live-#{boot_id}-#{live_record_seq()}.flac"
     live_record_prev := live_record_cur()
-    live_record_cur := {file=name, session=live_record_next_session(), started=time()}
-    live_record_next_session := ""
+    live_record_cur := {file=name, session=live_record_air_session(), started=time()}
     if live_record_cur().session != "" then live_record_announce_started(live_record_cur()) end
     "#{live_record_dir}/#{name}"
   end
 
-  # true: close this file and open the next one (another session is on air).
-  def live_record_on_metadata(m) =
-    session = m["ondes_live_session"]
+  # Checked on every frame: true closes this file and opens the next one.
+  def live_record_reopen() =
+    session = live_record_air_session()
     cur = live_record_cur()
     if
       session == "" or session == cur.session
     then
       false
     elsif cur.session == "" then
-      # The first tag of a file opened before its session was known: it is that session's.
+      # A file opened before its session was known: it is that session's.
       live_record_cur := cur.{session=session}
       live_record_announce_started(live_record_cur())
       false
     else
-      live_record_next_session := session
       true
     end
   end
@@ -1272,17 +1279,31 @@ then
     end
   end
 
-  # Only while a DJ is on air. The switch replays the mix's last metadata when it takes it,
-  # so a new file sees its session tag on its first frame.
+  # Only while a DJ is on air, from the end of the takeover's 1 s crossfade (the automation
+  # fading out under the DJ is not part of the show). A handover keeps a DJ on air, so it
+  # skips nothing: the next session's file starts on the handover's frame.
+  live_record_on_air_since = ref(-1.)
+  def live_record_live() =
+    if
+      live_on_air() == 0
+    then
+      live_record_on_air_since := -1.
+      false
+    else
+      if live_record_on_air_since() < 0. then live_record_on_air_since := time() end
+      time() - live_record_on_air_since() >= 1.
+    end
+  end
   live_recorded =
-    switch(id="live_record_gate", track_sensitive=false, [({live_on_air() != 0}, radio)])
+    switch(id="live_record_gate", track_sensitive=false, [(live_record_live, radio)])
 
   output.file(
     id="live_record",
     fallible=true,
     perm=0o644,
     dir_perm=0o755,
-    reopen_on_metadata=live_record_on_metadata,
+    reopen_when=live_record_reopen,
+    reopen_delay={0.},
     reopen_on_error=
       fun (err) ->
         begin
