@@ -181,6 +181,11 @@ export const stationEngineSettingsSchema = z
          * bed), if the file exists. Unset or missing: straight back to the log.
          */
         returnFile: absolutePath.optional(),
+        /**
+         * Record the final mix while a DJ is on air, one FLAC file per live session, into this
+         * writable directory (#67, ADR 0039). Unset: no recording.
+         */
+        recordDir: absolutePath.optional(),
       })
       .prefault({})
       .refine((l) => l.maxBuffer > l.buffer, {

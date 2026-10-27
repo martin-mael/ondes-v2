@@ -46,8 +46,7 @@ export const LIVE_RECORDING_PART_STATUSES = [
   'deleted',
 ] as const satisfies readonly LiveRecordingPartStatus[];
 
-const inList = (values: readonly string[]) =>
-  sql.raw(values.map((v) => `'${v}'`).join(', '));
+const inList = (values: readonly string[]) => sql.raw(values.map((v) => `'${v}'`).join(', '));
 
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 const updatedAt = () =>
@@ -120,7 +119,10 @@ export const liveRecording = pgTable(
     uniqueIndex('live_recording_session_key')
       .on(t.stationId, t.sessionId)
       .where(sql`${t.episodeId} is null`),
-    check('live_recording_owner_check', sql`${t.episodeId} is not null or ${t.sessionId} is not null`),
+    check(
+      'live_recording_owner_check',
+      sql`${t.episodeId} is not null or ${t.sessionId} is not null`,
+    ),
     check('live_recording_status_check', sql`${t.status} in (${inList(LIVE_RECORDING_STATUSES)})`),
     check('live_recording_version_check', sql`${t.version} >= 0`),
     // The retention sweep, across tenants.

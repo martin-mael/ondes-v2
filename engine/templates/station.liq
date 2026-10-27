@@ -1192,6 +1192,113 @@ radio.on_noise(synchronous=true, fun () -> emit("blank.recovered", json.object()
 blank_source = radio
 
 # ---------------------------------------------------------------------------------------
+# Live recording (#67, ADR 0039). BEGIN live recording (owned by #67; keep other changes out)
+#
+# While a DJ is on air (live_on_air != 0) the final mix is written to live_record_dir as
+# FLAC, one file per live session: the file is cut where the `ondes_live_session` tag of the
+# mix changes (a handover, or another show's session bound in place), so every file is one
+# session's on-air span, frame-accurate, and consecutive files join without a gap. Off
+# when live_record_dir is "" (the lifecycle mounts the station's `<cache>/recordings` there,
+# read-write; the playout cache itself stays read-only).
+#
+# Files are `live-<boot>-<n>.flac`. Each one is announced once its session is known
+# (`live.recording.started`) and when it is closed (`live.recording.closed`, also on a
+# clean shutdown); Node turns them into the episode's audio. A file that never saw a session
+# tag (an engine opened by hand without one) is not announced and is swept by the worker.
+# The recording never stops the air: a file that can't be written is retried every 10 s.
+#
+# Threads: everything below runs on the clock thread (filename, metadata and close
+# callbacks of the output), so the refs have a single writer.
+
+if
+  live_input and live_record_dir != ""
+then
+  live_record_seq = ref(0)
+  # The file being written and the one before it: whichever on_close names.
+  live_record_cur = ref({file="", session="", started=0.})
+  live_record_prev = ref({file="", session="", started=0.})
+  # The session of the next file, set when a tag change asks for a new one.
+  live_record_next_session = ref("")
+
+  def live_record_announce_started(r) =
+    d = json.object()
+    d.add("file", r.file)
+    d.add("session_id", r.session)
+    d.add("started_at", r.started)
+    emit("live.recording.started", d)
+  end
+
+  def live_record_filename() =
+    live_record_seq := live_record_seq() + 1
+    name = "live-#{boot_id}-#{live_record_seq()}.flac"
+    live_record_prev := live_record_cur()
+    live_record_cur := {file=name, session=live_record_next_session(), started=time()}
+    live_record_next_session := ""
+    if live_record_cur().session != "" then live_record_announce_started(live_record_cur()) end
+    "#{live_record_dir}/#{name}"
+  end
+
+  # true: close this file and open the next one (another session is on air).
+  def live_record_on_metadata(m) =
+    session = m["ondes_live_session"]
+    cur = live_record_cur()
+    if
+      session == "" or session == cur.session
+    then
+      false
+    elsif cur.session == "" then
+      # The first tag of a file opened before its session was known: it is that session's.
+      live_record_cur := cur.{session=session}
+      live_record_announce_started(live_record_cur())
+      false
+    else
+      live_record_next_session := session
+      true
+    end
+  end
+
+  def live_record_on_close(filename) =
+    name = path.basename(filename)
+    r = if name == live_record_cur().file then live_record_cur() else live_record_prev() end
+    if
+      r.file == name and r.session != ""
+    then
+      d = json.object()
+      d.add("file", r.file)
+      d.add("session_id", r.session)
+      d.add("started_at", r.started)
+      d.add("ended_at", time())
+      emit("live.recording.closed", d)
+    end
+  end
+
+  # Only while a DJ is on air. The switch replays the mix's last metadata when it takes it,
+  # so a new file sees its session tag on its first frame.
+  live_recorded =
+    switch(id="live_record_gate", track_sensitive=false, [({live_on_air() != 0}, radio)])
+
+  output.file(
+    id="live_record",
+    fallible=true,
+    perm=0o644,
+    dir_perm=0o755,
+    reopen_on_metadata=live_record_on_metadata,
+    reopen_on_error=
+      fun (err) ->
+        begin
+          message = if null.defined(err) then error.message(null.get(err)) else "unknown error" end
+          log.important(label="live", "Live recording failed, retrying in 10 s: #{message}")
+          10.
+        end,
+    on_close=live_record_on_close,
+    %flac(samplerate=44100, channels=2, bits_per_sample=16, compression=5),
+    live_record_filename,
+    live_recorded
+  )
+end
+# END live recording
+
+# ---------------------------------------------------------------------------------------
 # Metrics. Built-in server on metrics_port plus a few station gauges.
 
 queue_length_metric =

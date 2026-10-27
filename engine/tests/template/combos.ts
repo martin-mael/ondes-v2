@@ -70,6 +70,19 @@ export function combos(): Combo[] {
       live: { inputs: 4, icy: true, returnFile: '/media/retour "x" #{y}.flac' },
     },
   });
+  // Live recording (#67): with the pool of one and of four, and with live off (no block).
+  out.push({
+    name: 'live-record',
+    settings: { ...base, live: { recordDir: '/recordings' } },
+  });
+  out.push({
+    name: 'live-record_pool-1_escaping',
+    settings: { ...base, live: { inputs: 1, recordDir: '/rec "x" #{y}' } },
+  });
+  out.push({
+    name: 'live-off_record-dir',
+    settings: { ...base, live: { enabled: false, recordDir: '/recordings' } },
+  });
   out.push({
     name: 'no-events-url',
     settings: { ...base, eventsUrl: undefined, live: { enabled: true, port: 8100 } },
