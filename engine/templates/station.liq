@@ -717,6 +717,31 @@ def live_input_of(index) =
       live_mount_of(index)
     )
 
+  # DJ handover (#66, ADR 0038): mute. What goes on air (`aired`) is the DJ through a gain
+  # that ramps to 0 or 1 over 100 ms, so muting never clicks; `source` stays what the DJ
+  # sends (pre-listen hears a muted DJ). A DJ's own `liq_amplify` metadata is ignored. The
+  # getter runs once per frame of `aired`; a jump while it isn't pulled is never heard.
+  muted = ref(false)
+  gain = ref(1.)
+  gain_at = ref(time())
+  def mute_gain() =
+    t = time()
+    step = (t - gain_at()) / 0.1
+    gain_at := t
+    g =
+      if
+        muted()
+      then
+        max(0., gain() - step)
+      else
+        min(1., gain() + step)
+      end
+    gain := g
+    g
+  end
+  aired = amplify(id="live_#{index}_gain", override=null, mute_gain, s)
+  # End of DJ handover (#66).
+
   # Only the headers that describe the client and its stream: never the DJ's credentials
   # (Authorization) or anything else they send.
   def described(h) =
@@ -745,6 +770,8 @@ def live_input_of(index) =
     fun () ->
       begin
         connected := false
+        # DJ handover (#66): the next DJ on this input starts unmuted.
+        muted := false
         d = json.object()
         d.add("input", index)
         d.add("streamer_id", nullable_string(streamer()))
@@ -753,7 +780,15 @@ def live_input_of(index) =
       end
   )
 
-  {index=index, mount=live_mount_of(index), connected=connected, streamer=streamer, source=s}
+  {
+    index=index,
+    mount=live_mount_of(index),
+    connected=connected,
+    streamer=streamer,
+    source=s,
+    aired=aired,
+    muted=muted
+  }
 end
 
 live_pool = if live_input then list.init(live_inputs, fun (i) -> live_input_of(i + 1)) else [] end
@@ -827,20 +862,43 @@ def live_gate_index() =
   if null.defined(inp) then null.get(inp).index else 0 end
 end
 
+# DJ handover (#66, ADR 0038): the crossfade between two DJs, in seconds (`POST /v1/live`
+# `fade`; 0: a cut). Equal-power (sine) fades: two DJs are unrelated signals, so the summed
+# level stays flat through the overlap instead of dipping 3 dB in the middle.
+live_handover_fade = ref(1.)
+
+def live_handover(a, b) =
+  # Only from a DJ on air. The input switch also changes input when the gate opens on another
+  # input than the last show's; the gate's own fade covers that one, and the input it leaves
+  # isn't on air.
+  d = live_handover_fade()
+  if
+    live_on_air() == 0 or d <= 0.
+  then
+    (b : source)
+  else
+    add(
+      normalize=false,
+      [fade.in(type="sin", duration=d, b), fade.out(type="sin", duration=d, a)]
+    )
+  end
+end
+# End of DJ handover (#66).
+
 def with_live(auto) =
   def live_fade(a, b) =
     add(normalize=false, [fade.in(duration=1., b), fade.out(duration=1., a)])
   end
 
   # Which DJ: the selected input (or the first ready one). Switching inputs while the gate
-  # is open is a handover, with the same crossfade. This switch doesn't look at the gate
+  # is open is a handover, with its own crossfade (#66). This switch doesn't look at the gate
   # itself, so the DJ stays available while they fade out when the gate closes.
   gated =
     switch(
       id="live_inputs",
       track_sensitive=false,
-      transitions=list.map(fun (_) -> live_fade, live_pool),
-      list.map(fun (inp) -> ({live_gate_index() == inp.index}, inp.source), live_pool)
+      transitions=list.map(fun (_) -> live_handover, live_pool),
+      list.map(fun (inp) -> ({live_gate_index() == inp.index}, inp.aired), live_pool)
     )
 
   # What the live branch is tagged with: the as-run callback keys on it.
@@ -1337,6 +1395,7 @@ def state_json() =
           i.add("connected", inp.connected())
           i.add("ready", live_input_ready(inp))
           i.add("streamer_id", nullable_string(inp.streamer()))
+          i.add("muted", inp.muted())
           i
         end,
       live_pool
@@ -1719,13 +1778,19 @@ def handle_live(req, res) =
       fail(res, 409, "live input is disabled for this station")
     else
       try
-        let json.parse (p : {enabled: bool, input: int?, session_id: string?}) = req.body()
+        let json.parse (p : {enabled: bool, input: int?, session_id: string?, fade: float?}) =
+          req.body()
         wanted = p.input ?? 0
+        handover_fade = p.fade ?? live_handover_fade()
         if
           wanted < 0 or wanted > live_inputs
         then
           fail(res, 400, "invalid live command: no input #{wanted}")
+        elsif handover_fade < 0. or handover_fade > 10. then
+          fail(res, 400, "invalid live command: fade #{handover_fade} s")
         else
+          # DJ handover (#66): the crossfade of this handover, if it is one.
+          live_handover_fade := handover_fade
           if
             p.enabled
           then
@@ -1784,6 +1849,43 @@ def handle_live_disconnect(req, res) =
   end
 end
 
+# DJ handover (#66, ADR 0038). POST /v1/live/mute {input, muted}: mutes (or unmutes) what an
+# input sends on air, over 100 ms. The DJ stays connected and, if on air, on air: silence
+# until unmuted. Pre-listen still hears them. Reset when the DJ hangs up.
+def handle_live_mute(req, res) =
+  if
+    authorized(req, res)
+  then
+    if
+      not live_input
+    then
+      fail(res, 409, "live input is disabled for this station")
+    else
+      try
+        let json.parse (p : {input: int, muted: bool}) = req.body()
+        inp = live_input_at(p.input)
+        if
+          not null.defined(inp)
+        then
+          fail(res, 400, "invalid mute: no input #{p.input}")
+        else
+          inp = null.get(inp)
+          inp.muted := p.muted
+          d = json.object()
+          d.add("input", p.input)
+          d.add("muted", p.muted)
+          d.add("connected", inp.connected())
+          emit("live.muted", d)
+          reply(res, 200, d.stringify(compact=true))
+        end
+      catch err do
+        fail(res, 400, "invalid mute: #{err.message}")
+      end
+    end
+  end
+end
+# End of DJ handover (#66).
+
 def handle_state(req, res) =
   if authorized(req, res) then reply(res, 200, state_json().stringify(compact=true)) end
 end
@@ -1833,6 +1935,7 @@ harbor.http.register(port=control_port, method="POST", "/v1/live", handle_live)
 harbor.http.register(
   port=control_port, method="POST", "/v1/live/disconnect", handle_live_disconnect
 )
+harbor.http.register(port=control_port, method="POST", "/v1/live/mute", handle_live_mute)
 
 emit(
   "engine.started",

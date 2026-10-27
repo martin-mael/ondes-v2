@@ -3,7 +3,12 @@ import type { EngineState } from '@ondes/shared';
 // An in-memory station engine with a pool of two harbor inputs (#64): who is connected where,
 // the gate, and what Node asked. For the live switching tests (switching, live slots).
 
-type Input = { connected: boolean; ready: boolean; streamer_id: string | null };
+type Input = {
+  connected: boolean;
+  ready: boolean;
+  streamer_id: string | null;
+  muted?: boolean;
+};
 
 /** The engine side of the pool: who is connected where, the gate, what Node asked. */
 export function fakeEngine() {
@@ -16,6 +21,8 @@ export function fakeEngine() {
     selected: null as number | null,
     sessionId: null as string | null,
     commands: [] as string[],
+    /** The crossfade asked by each opening of the gate (#66). */
+    fades: [] as (number | null)[],
     connect(input: number, streamerId: string | null) {
       engine.inputs[input - 1] = { connected: true, ready: true, streamer_id: streamerId };
     },
@@ -52,8 +59,12 @@ export function fakeEngine() {
         },
       };
     },
-    async setLive(enabled: boolean, options: { input?: number; sessionId?: string } = {}) {
+    async setLive(
+      enabled: boolean,
+      options: { input?: number; sessionId?: string; fadeMs?: number } = {},
+    ) {
       engine.commands.push(enabled ? `open ${options.input}` : 'close');
+      if (enabled) engine.fades.push(options.fadeMs ?? null);
       if (enabled) {
         engine.selected = options.input ?? null;
         engine.sessionId = options.sessionId ?? null;
@@ -65,6 +76,12 @@ export function fakeEngine() {
       const was = engine.inputs[input - 1]?.connected ?? false;
       engine.hangUp(input);
       return was;
+    },
+    async muteLive(input: number, muted: boolean) {
+      engine.commands.push(`${muted ? 'mute' : 'unmute'} ${input}`);
+      const slot = engine.inputs[input - 1];
+      if (slot) slot.muted = muted;
+      return slot?.connected ?? false;
     },
   };
   return engine;

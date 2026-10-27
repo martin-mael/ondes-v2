@@ -9,6 +9,7 @@ import {
   liveSessionEndReasonSchema,
   liveSessionTriggerSchema,
 } from './live.ts';
+import { liveHandoverStatusSchema } from './live-handover.ts';
 import {
   localDateSchema,
   logItemChangeSchema,
@@ -152,6 +153,18 @@ export const engineLiveGateEventSchema = z.object({
   }),
 });
 
+/** DJ handover (#66): a harbor input muted or unmuted on air. */
+export const engineLiveMutedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('engine.live.muted'),
+  data: z.object({
+    ...engineOrigin,
+    input: z.int(),
+    muted: z.boolean(),
+    connected: z.boolean(),
+  }),
+});
+
 /** Silence on the output for longer than the station's blank threshold. */
 export const engineBlankDetectedEventSchema = z.object({
   ...envelope,
@@ -212,6 +225,7 @@ export const engineRealtimeEventSchema = z.discriminatedUnion('type', [
   engineLiveConnectedEventSchema,
   engineLiveDisconnectedEventSchema,
   engineLiveGateEventSchema,
+  engineLiveMutedEventSchema,
   engineBlankDetectedEventSchema,
   engineBlankRecoveredEventSchema,
   engineRestartStormEventSchema,
@@ -557,11 +571,22 @@ export const liveRequestDecidedEventSchema = z.object({
   data: z.object({ requestId: z.uuid(), status: liveRequestStatusSchema }),
 });
 
+/**
+ * A scheduled handover (#66) was scheduled, ran, failed or was cancelled: the dashboard's list
+ * refetches (`GET …/live/handovers`).
+ */
+export const liveHandoverChangedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('live.handover.changed'),
+  data: z.object({ handoverId: z.uuid(), status: liveHandoverStatusSchema }),
+});
+
 export const liveRealtimeEventSchema = z.discriminatedUnion('type', [
   liveSessionStartedEventSchema,
   liveSessionEndedEventSchema,
   liveRequestCreatedEventSchema,
   liveRequestDecidedEventSchema,
+  liveHandoverChangedEventSchema,
 ]);
 export type LiveRealtimeEvent = z.infer<typeof liveRealtimeEventSchema>;
 
@@ -595,6 +620,7 @@ export const realtimeEventPermissions = {
   'engine.live.connected': 'engine:read',
   'engine.live.disconnected': 'engine:read',
   'engine.live.gate': 'engine:read',
+  'engine.live.muted': 'engine:read',
   'engine.blank.detected': 'engine:read',
   'engine.blank.recovered': 'engine:read',
   'engine.restart_storm': 'engine:read',
@@ -634,6 +660,8 @@ export const realtimeEventPermissions = {
   // Ad-hoc live (#65): the approval prompt.
   'live.request.created': 'engine:read',
   'live.request.decided': 'engine:read',
+  // DJ handover (#66): the scheduled handovers list.
+  'live.handover.changed': 'engine:read',
 } as const satisfies Record<RealtimeEventType, Permission>;
 
 /** Permission needed to receive `type` over SSE; `null` for types the contract doesn't declare. */

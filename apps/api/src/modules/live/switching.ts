@@ -20,6 +20,7 @@ import type {
   LiveStatus,
   RealtimeEvent,
 } from '@ondes/shared';
+import { LIVE_HANDOVER_FADE_MS_DEFAULT } from '@ondes/shared';
 import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
 import { HttpError } from '../../plugins/errors.ts';
 import { bindLiveEntries } from '../asrun/repo.ts';
@@ -58,8 +59,13 @@ import {
 /** The part of the engine adapter this needs (`app.engineLifecycle.adapterFor`). */
 export type LiveSwitchEngine = {
   state(): Promise<EngineState>;
-  setLive(enabled: boolean, options?: { input?: number; sessionId?: string }): Promise<void>;
+  setLive(
+    enabled: boolean,
+    options?: { input?: number; sessionId?: string; fadeMs?: number },
+  ): Promise<void>;
   disconnectLive(input: number): Promise<boolean>;
+  /** DJ handover (#66): mutes what an input sends on air. False if nobody was connected. */
+  muteLive(input: number, muted: boolean): Promise<boolean>;
 };
 export type LiveSwitchEngineLookup = (stationId: string) => Promise<LiveSwitchEngine | undefined>;
 
@@ -94,19 +100,23 @@ export type LiveSwitcherOptions = {
 const SWEEP_GRACE_MS = 10_000;
 
 type Ctx = { actor: Actor; scope: StationScope };
+/** DJ handover (#66): the crossfade if this puts a DJ on air over another one. */
+export type GoLiveOptions = { fadeMs?: number };
 type SessionRow = typeof liveSession.$inferSelect;
 
 export type LiveSwitcher = {
   status(scope: StationScope, liveEnabled: boolean): Promise<LiveStatus>;
   /**
    * Puts the DJ connected on `input` on air. 409 if nobody may go on air there. Without a
-   * `binding`, the session is bound to the DJ's running slot or event, if they have one.
+   * `binding`, the session is bound to the DJ's running slot or event, if they have one; failing
+   * that, a handover keeps the binding of the session it ends (#66).
    */
   goLive(
     ctx: Ctx,
     input: number,
     trigger?: LiveSessionTrigger,
     binding?: LiveBinding | null,
+    options?: GoLiveOptions,
   ): Promise<LiveSession>;
   /** Approves an ad-hoc request: its DJ goes on air (a handover if another DJ is on). */
   approve(ctx: Ctx, requestId: string): Promise<LiveSession>;
@@ -116,6 +126,8 @@ export type LiveSwitcher = {
   returnToAutomation(ctx: Ctx, reason?: LiveSessionEndReason): Promise<LiveSession | null>;
   /** Hangs up the DJ on `input` (a kick). False if nobody was connected there. */
   disconnect(ctx: Ctx, input: number): Promise<boolean>;
+  /** Mutes (or unmutes) what `input` sends on air (#66). False if nobody was connected there. */
+  mute(ctx: Ctx, input: number, muted: boolean): Promise<boolean>;
   /** Closes the open session if `streamerId` holds it (revocation). */
   endSessionOf(ctx: Ctx, streamerId: string, reason: LiveSessionEndReason): Promise<boolean>;
   /** A real-time event from the fanout. Never throws. */
@@ -158,6 +170,40 @@ async function streamerNames(db: Executor, stationId: string, ids: (string | nul
     .from(streamer)
     .where(and(eq(streamer.stationId, stationId), inArray(streamer.id, wanted)));
   return new Map(rows.map((r) => [r.id, r.displayName]));
+}
+
+/**
+ * DJ handover (#66, ADR 0038): what a session is bound to, for the DJ taking the air from it.
+ * Only while its slot or event runs. `startsAt` isn't stored on the session; nothing that
+ * reopens a binding reads it, so the session's own start stands in.
+ */
+export function bindingOfSession(row: SessionRow, at: Date): LiveBinding | null {
+  if (!row.scheduledEndAt || row.scheduledEndAt <= at) return null;
+  if (row.slotId && row.showId && row.occurrenceDate && row.title !== null) {
+    return {
+      kind: 'slot',
+      occurrence: {
+        showId: row.showId,
+        showName: row.title,
+        slotId: row.slotId,
+        date: row.occurrenceDate,
+        startsAt: row.startedAt,
+        endsAt: row.scheduledEndAt,
+      },
+    };
+  }
+  if (row.eventId && row.title !== null) {
+    return {
+      kind: 'event',
+      event: {
+        id: row.eventId,
+        title: row.title,
+        startsAt: row.startedAt,
+        endsAt: row.scheduledEndAt,
+      },
+    };
+  }
+  return null;
 }
 
 function toSession(row: SessionRow, names: Map<string, string>): LiveSession {
@@ -256,7 +302,13 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
     return row ? unsafeScope(row.orgId, stationId) : undefined;
   }
 
-  const goLive: LiveSwitcher['goLive'] = async (ctx, input, trigger = 'manual', bound) => {
+  const goLive: LiveSwitcher['goLive'] = async (
+    ctx,
+    input,
+    trigger = 'manual',
+    bound,
+    goLiveOptions = {},
+  ) => {
     const engine = await engineOf(ctx.scope.stationId);
     const state = await engine.state();
     const slot = state.live.inputs?.find((i) => i.input === input);
@@ -286,10 +338,16 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
         binding = standing.binding;
       }
     }
+    const open = await openLiveSession(db, ctx.scope.stationId);
+    // DJ handover (#66, ADR 0038): a DJ handed the air during a slot or event with none of
+    // their own (a guest, the next DJ of a night) carries on the same show, episode or event:
+    // its recording (#67) and the as-run stay one programme.
+    if (bound === undefined && !binding && open && open.input !== input) {
+      binding = bindingOfSession(open, now());
+    }
     const occurrence = binding?.kind === 'slot' ? binding.occurrence : null;
     const event = binding?.kind === 'event' ? binding.event : null;
 
-    const open = await openLiveSession(db, ctx.scope.stationId);
     // The same DJ on the same input, already through the gate: nothing to do. Another DJ on
     // that input (a missed disconnect) gets a session of their own.
     if (
@@ -376,7 +434,11 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
     // After the commit: the engine is never told about a session that a rollback would undo.
     // If it refuses, the session is taken back (and the previous one reopened).
     try {
-      await engine.setLive(true, { input, sessionId: created.id });
+      await engine.setLive(true, {
+        input,
+        sessionId: created.id,
+        fadeMs: goLiveOptions.fadeMs ?? LIVE_HANDOVER_FADE_MS_DEFAULT,
+      });
     } catch (err) {
       // The call may have failed after the engine applied it (a timeout): if the engine is on
       // the new session, keep it rather than leave a DJ on air with no session (#65 review).
@@ -778,6 +840,7 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
             connected: i.connected,
             ready: i.ready,
             streamer: id && name ? { id, displayName: name } : null,
+            muted: i.muted ?? false,
           };
         }),
       };
@@ -851,6 +914,17 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
       });
       if (onAir) await closeOpen(ctx, 'disconnected', (row) => row.input === input);
       return disconnected;
+    },
+
+    async mute(ctx, input, muted) {
+      const engine = await engineOf(ctx.scope.stationId);
+      const connected = await engine.muteLive(input, muted);
+      await writeAudit(db, ctx, {
+        action: 'live.input.mute',
+        entity: { type: 'station', id: ctx.scope.stationId },
+        diff: { input: { from: null, to: input }, muted: { from: !muted, to: muted } },
+      });
+      return connected;
     },
 
     async endSessionOf(ctx, streamerId, reason) {
