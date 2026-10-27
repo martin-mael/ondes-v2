@@ -37,6 +37,12 @@ processing chain, so the file is what listeners heard (compressor and limiter in
   `ended_at` was rejected: a session starts in Node before the engine takes the air (the DJ may
   still be buffering, ADR 0027), so timestamps would put seconds of one DJ into the other's
   episode.
+  - Only a change of session reopens the file: the live branch also carries now-playing
+    metadata (#68, ADR 0040) on every track change of the DJ, all with the same session.
+  - With #66's handover crossfade (ADR 0038), the new session's tag arrives as the crossfade
+    starts, so the outgoing DJ's fade-out tail is at the head of the incoming DJ's file. Within
+    one episode the parts join seamlessly anyway; across two shows the next episode opens with
+    up to the crossfade length (2 s by default) of the previous DJ fading out.
   - Liquidsoap's `reopen_on_metadata` was tried first: on this chain it never saw the session
     tag (the switch only forwards the mix's metadata at track boundaries), so the handover's two
     sessions landed in one file. `radio.on_metadata` does see it, like the as-run callback.
