@@ -36,8 +36,7 @@ type Body = Record<string, unknown> & {
   NetworkingConfig: { EndpointsConfig: Record<string, unknown> };
 };
 const firstMount = (b: Body) => (b.HostConfig.Mounts as Record<string, unknown>[])[0] ?? {};
-const recordingsMount = (b: Body) =>
-  (b.HostConfig.Mounts as Record<string, unknown>[])[1] ?? {};
+const recordingsMount = (b: Body) => (b.HostConfig.Mounts as Record<string, unknown>[])[1] ?? {};
 
 describe('engine container policy', () => {
   it('allows the lifecycle spec', () => {
