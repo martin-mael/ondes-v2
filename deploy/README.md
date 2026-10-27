@@ -2,6 +2,7 @@
 
 - `compose.dev.yml`: backing services for local development (this file documents it).
 - `dev/`: configs and bootstrap scripts used by `compose.dev.yml`.
+- `dev/engine/`: opt-in local station engines (`pnpm dev:engine`), its own compose project; see its README.
 - Production compose, installer and Caddyfile come later (epic #2 and its sub-issues).
 
 ## Local development services
@@ -46,6 +47,7 @@ Every long-running service has a healthcheck. `pnpm dev:up` waits until they all
 
 ### Liquidsoap
 - `dev/liquidsoap/dev.liq` is a placeholder that proves the Liquidsoap → Icecast chain works. The real station scripts live in `engine/templates` (#12, #13), and spike #13 may change the pinned version.
+- To run the seeded station's real engine (station template, feeder, as-run, on-air view), use `pnpm dev:engine`: `dev/engine/README.md`.
 - Its telnet control server (port 1234) is only reachable from other containers on the compose network. It is **never** published to the host (see `CLAUDE.md`). To poke at it by hand:
   ```sh
   docker compose -f deploy/compose.dev.yml exec liquidsoap bash -c \

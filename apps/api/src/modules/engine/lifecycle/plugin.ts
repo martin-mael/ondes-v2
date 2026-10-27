@@ -201,6 +201,12 @@ export function engineLifecycleConfigFromEnv(
         memoryMb: num('ENGINE_MEMORY_MB', 512),
         pids: num('ENGINE_PIDS', 256),
       },
+      // Dev only (`pnpm dev:engine`, deploy/dev/engine): the api runs outside Docker. The guard
+      // refuses both unless it was started with GUARD_ALLOW_LOOPBACK_CONTROL / GUARD_EXTRA_HOSTS.
+      ...(env.ENGINE_PUBLISH_CONTROL_ON_LOOPBACK === 'true'
+        ? { publishControlOnLoopback: true }
+        : {}),
+      ...(env.ENGINE_EXTRA_HOSTS ? { extraHosts: env.ENGINE_EXTRA_HOSTS.split(',') } : {}),
     },
     guard: {
       maxRestarts: num('ENGINE_RESTART_MAX', 5),
