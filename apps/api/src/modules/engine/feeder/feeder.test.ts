@@ -381,6 +381,27 @@ describe('station feeder', () => {
     expect(resolved).toContain('feeder.items_skipped');
   });
 
+  it('never pushes a voice track past its kill date, nor before its start (#60)', async () => {
+    const items = Array.from({ length: 6 }, (_, i) =>
+      item(T0 + i * 3 * MIN, i === 2 || i === 3 ? { kind: 'vt', plannedDurationMs: 30_000 } : {}),
+    );
+    const [killed, early] = [items[2] as LogItem, items[3] as LogItem];
+    setLog(items, (i) =>
+      media(i.assetId as string, {
+        ...(i === killed
+          ? { validity: { startAt: null, killAt: new Date(T0 + 6 * MIN + 10_000) } }
+          : {}),
+        ...(i === early ? { validity: { startAt: new Date(T0 + 10 * MIN), killAt: null } } : {}),
+      }),
+    );
+    await feeder().sync();
+    expect(queuedIds()).not.toContain(killed.id);
+    expect(queuedIds()).not.toContain(early.id);
+    expect(queuedIds()).toContain(items[4]?.id);
+    // Not a cache miss: nothing to fetch.
+    expect(fetches).toEqual([]);
+  });
+
   it('reports a skipped item to as-run once a later item airs', async () => {
     const items = Array.from({ length: 6 }, (_, i) => item(T0 + i * 3 * MIN));
     setLog(items, (i) => media(i.assetId as string, { cached: i !== items[1] }));

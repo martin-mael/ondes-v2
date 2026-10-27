@@ -12,6 +12,8 @@ export * from './jobs.ts';
 export * from './library.ts';
 export * from './live.ts';
 export * from './log.ts';
+export * from './promos.ts';
+export * from './regen.ts';
 export * from './rotation.ts';
 export * from './safety.ts';
 export * from './segues.ts';

@@ -301,3 +301,51 @@ describe('layoutIslands: the fallback', () => {
     expect(layout.overlays.size).toBe(1);
   });
 });
+
+describe('layoutIslands: a voice outside its validity (#60)', () => {
+  // A plays 10:00:00–10:03:00 (planned): the voice airs around 10:03.
+  const transition = Date.parse('2026-10-21T10:03:00.000Z');
+  const withVoice = (validity: FeedMedia['validity']) =>
+    new Map(
+      Object.values(MEDIA).map((m) => [m.assetId, m.assetId === ASSET.vt ? { ...m, validity } : m]),
+    );
+
+  it('airs the transition as a plain crossfade: no chain, no overlay', () => {
+    const [island] = islandsOf([AB()], 'cached');
+    const killed = withVoice({ startAt: null, killAt: new Date(transition) });
+    const layout = layoutIslands(
+      input([island as FeedIsland], { islandMedia: killed, nowMs: transition - 600_000 }),
+    );
+    expect(layout.chains.size).toBe(0);
+    expect(layout.overlays.size).toBe(0);
+    // Not started yet: the same.
+    const early = withVoice({ startAt: new Date(transition + 60_000), killAt: null });
+    const notYet = layoutIslands(input([island as FeedIsland], { islandMedia: early }));
+    expect(notYet.chains.size + notYet.overlays.size).toBe(0);
+  });
+
+  it('checks from now when the log runs late', () => {
+    const [island] = islandsOf([AB()], 'cached');
+    // Valid at the planned time, but the transition can't air before now, past the kill date.
+    const media = withVoice({ startAt: null, killAt: new Date(transition + 60_000) });
+    const late = layoutIslands(
+      input([island as FeedIsland], { islandMedia: media, nowMs: transition + 120_000 }),
+    );
+    expect(late.chains.size + late.overlays.size).toBe(0);
+    const onTime = layoutIslands(
+      input([island as FeedIsland], { islandMedia: media, nowMs: transition - 600_000 }),
+    );
+    expect(onTime.chains.get(ITEM.a)?.itemIds).toEqual([ITEM.a, ITEM.b]);
+  });
+
+  it('leaves the next island of the chain alone', () => {
+    const islands = islandsOf([AB(), BC()], 'cached');
+    const killed = withVoice({ startAt: null, killAt: new Date(transition) });
+    const layout = layoutIslands(
+      input(islands, { islandMedia: killed, nowMs: transition - 600_000 }),
+    );
+    // A→B is out; B→C (another voice) still airs as its own chain.
+    expect(layout.chains.get(ITEM.a)).toBeUndefined();
+    expect(layout.chains.get(ITEM.b)?.itemIds).toEqual([ITEM.b, ITEM.c]);
+  });
+});

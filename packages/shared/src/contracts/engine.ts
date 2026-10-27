@@ -32,6 +32,8 @@ export const ENGINE_ROUTES = {
   live: `${ENGINE_CONTROL_PREFIX}/live`,
   /** Added by #64: hangs up the DJ on one input of the harbor pool. */
   liveDisconnect: `${ENGINE_CONTROL_PREFIX}/live/disconnect`,
+  /** Added by #46: the hard start waiting for its time (`POST`), or cancelling it (`DELETE`). */
+  schedule: `${ENGINE_CONTROL_PREFIX}/schedule`,
 } as const;
 
 /** Harbor inputs per station (#64): input `n` listens on mount `<mount>` (1) or `<mount>-n`. */
@@ -121,6 +123,31 @@ export const enginePushItemSchema = z
   .object({ ...requestFields, ...transitionFields, ...overlayField })
   .refine(cueOrder, cueOrderError);
 export type EnginePushItem = z.infer<typeof enginePushItemSchema>;
+
+/**
+ * `POST /v1/schedule` (#46, ADR 0031, after ADR 0003): the item that must start at `at`, a hard
+ * start. The engine holds it above the automation and opens the gate on its own audio
+ * timeline, to the frame (20 ms); whatever is on air then fades out under it over `fade_out`
+ * seconds (default 1) and is skipped. A new schedule replaces the previous one. The item
+ * reports `source: queue` on the as-run, like any log item. `201` like a push; `422` if the
+ * file can't be resolved (nothing is scheduled).
+ */
+export const engineScheduleSchema = z
+  .object({
+    ...requestFields,
+    /** Wall-clock epoch seconds (UTC) at which the item starts. */
+    at: z.number().positive(),
+    /** Fade into the item itself (default none: it starts at full level). */
+    fade_in: seconds.optional(),
+    /** How long the automation it interrupts fades out under it. Default 1 s. */
+    fade_out: seconds.optional(),
+  })
+  .refine(cueOrder, cueOrderError);
+export type EngineSchedule = z.infer<typeof engineScheduleSchema>;
+
+/** `DELETE /v1/schedule`: whether an item was scheduled (one already on air keeps playing). */
+export const engineUnscheduleResultSchema = z.object({ cancelled: z.boolean() });
+export type EngineUnscheduleResult = z.infer<typeof engineUnscheduleResultSchema>;
 
 /** One request inside a segment. Cue points follow spike #12 (grid, half-sample bias). */
 export const engineSegmentPartSchema = z.object(requestFields).refine(cueOrder, cueOrderError);
@@ -247,6 +274,11 @@ export const engineStateSchema = z.object({
   /** Missing fields until the first track starts. */
   on_air: onAirSchema.partial(),
   queue: z.array(engineQueuedRequestSchema),
+  /**
+   * The hard start waiting for its time (`POST /v1/schedule`, #46), null when none. Absent from
+   * engines rendered before #46.
+   */
+  scheduled: z.object({ item_id: z.string(), at: z.number() }).nullable().optional(),
   /** `ready` turns true once input.harbor has buffered enough to go on air (about 5 s). */
   live: z.object({
     enabled: z.boolean(),
@@ -389,3 +421,35 @@ export const engineLiveAuthRequestSchema = z.object({
   input: liveInput.optional(),
 });
 export type EngineLiveAuthRequest = z.infer<typeof engineLiveAuthRequestSchema>;
+
+/**
+ * `GET /api/v1/stations/:stationId/engine` (#35's lifecycle `status`), for the dashboard (#71).
+ * Domain shape (camelCase), unlike the engine's wire format above.
+ */
+export const engineStatusViewSchema = z.object({
+  stationId: z.string(),
+  desiredState: z.enum(['running', 'stopped']),
+  container: z
+    .object({
+      id: z.string(),
+      status: z.string(),
+      running: z.boolean(),
+      restartCount: z.int().nonnegative(),
+      configVersion: z.string().nullable(),
+    })
+    .nullable(),
+  /** The health monitor's view: `unknown` until the first probe, null when not monitored. */
+  health: z.enum(['unknown', 'up', 'down']).nullable(),
+  reportedVersion: z.string().nullable(),
+  expectedVersion: z.string(),
+  /** The engine runs an older script than its settings: a restart is due. */
+  restartPending: z.boolean(),
+  livePort: z.int().nullable(),
+  restartStorm: z.object({
+    tripped: z.boolean(),
+    since: z.string().nullable(),
+    restarts: z.int().nonnegative(),
+    windowSeconds: z.int().positive(),
+  }),
+});
+export type EngineStatusView = z.infer<typeof engineStatusViewSchema>;

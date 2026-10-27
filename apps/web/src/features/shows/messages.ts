@@ -81,6 +81,13 @@ const en = {
   'upcoming.rerunOf': 'Rerun of episode {number}',
   'upcoming.rerunNothing': 'Nothing to rerun yet: no earlier episode has audio.',
 
+  'live.grace': 'Wait for the DJ (minutes)',
+  'live.graceInvalid': 'From 0 to 60 minutes.',
+  'live.early': 'DJ connected early',
+  'live.early.wait': 'Waits for the start',
+  'live.early.go_live': 'Goes on air at once',
+  'live.help':
+    'Nobody on air after the wait: the show’s fallback airs for the rest of the slot. A DJ who connects later still takes the air. DJs can connect 15 minutes early.',
   'rerun.strategy': 'Episode to air again',
   'rerun.latest_episode': 'The latest episode',
   'rerun.episode': 'A chosen episode',
@@ -148,6 +155,15 @@ const en = {
   'slot.date': 'Date',
   'slot.time': 'Time',
   'slot.duration': 'Length (min)',
+  'slot.start': 'Start',
+  'slot.start.hard': 'On time',
+  'slot.start.soft': 'After the current item',
+  'slot.startCap': 'Late by at most (s)',
+  'slot.startCapInvalid': 'Seconds, from 0 to 600.',
+  'slot.startHelp.hard':
+    'Starts exactly on time: whatever is playing fades out under it. The music before it is planned to end on time.',
+  'slot.startHelp.soft':
+    'Lets the item playing end first, then starts, at most this late. Empty: 30 s.',
   'slot.detachWarning':
     'Episodes planned on airings this change removes are kept, but must be planned again.',
   'slot.exceptions': 'Exceptions',
@@ -356,6 +372,13 @@ const fr: Record<ShowMessageKey, string> = {
   'upcoming.rerunNothing':
     'Rien à rediffuser pour l’instant : aucun épisode précédent n’a d’audio.',
 
+  'live.grace': 'Attendre le DJ (minutes)',
+  'live.graceInvalid': 'De 0 à 60 minutes.',
+  'live.early': 'DJ connecté en avance',
+  'live.early.wait': 'Attend le début',
+  'live.early.go_live': 'Passe aussitôt à l’antenne',
+  'live.help':
+    'Personne à l’antenne après l’attente : le secours de l’émission passe jusqu’à la fin du créneau. Un DJ qui se connecte plus tard prend quand même l’antenne. Les DJ peuvent se connecter 15 minutes en avance.',
   'rerun.strategy': 'Épisode rediffusé',
   'rerun.latest_episode': 'Le dernier épisode',
   'rerun.episode': 'Un épisode choisi',
@@ -428,6 +451,15 @@ const fr: Record<ShowMessageKey, string> = {
   'slot.date': 'Date',
   'slot.time': 'Heure',
   'slot.duration': 'Durée (min)',
+  'slot.start': 'Début',
+  'slot.start.hard': 'À l’heure',
+  'slot.start.soft': 'Après l’élément en cours',
+  'slot.startCap': 'Retard maximal (s)',
+  'slot.startCapInvalid': 'En secondes, de 0 à 600.',
+  'slot.startHelp.hard':
+    'Commence pile à l’heure : ce qui passe s’efface en fondu. La musique avant est prévue pour finir à l’heure.',
+  'slot.startHelp.soft':
+    'Laisse finir l’élément en cours, puis commence, avec au plus ce retard. Vide : 30 s.',
   'slot.detachWarning':
     'Les épisodes prévus sur des diffusions que ce changement supprime sont conservés, mais à replanifier.',
   'slot.exceptions': 'Exceptions',

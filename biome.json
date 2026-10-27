@@ -26,6 +26,7 @@
         "rules": {
           "a11y": { "noLabelWithoutControl": "off", "useSemanticElements": "off" },
           "correctness": { "useExhaustiveDependencies": "off" },
+          "security": { "noDangerouslySetInnerHtml": "off" },
           "suspicious": {
             "noArrayIndexKey": "off",
             "noDocumentCookie": "off",

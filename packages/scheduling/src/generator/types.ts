@@ -19,7 +19,7 @@ import type { PickCandidate, PickCategory, PlayedItem } from '../rules/index.ts'
 // do. No I/O: the same snapshot and seed always give the same day.
 
 /** Bumped when the same snapshot and seed would give a different day. Stored on `log_day`. */
-export const GENERATOR_VERSION = '1';
+export const GENERATOR_VERSION = '2';
 
 /** A library asset as the generator sees it: what the rules read, and how long it plays. */
 export interface GeneratorAsset extends PickCandidate {
@@ -66,10 +66,18 @@ export interface GeneratorOccurrence {
    * (#48); null when there is none. Always null for `live`.
    */
   episode: GeneratorEpisode | null;
+  /**
+   * How it takes the air (#46): `hard` at its start (the default), or `soft`, at most `capMs`
+   * late. Absent = hard.
+   */
+  startPolicy?: { mode: 'hard' | 'soft'; capMs: number | null };
 }
 
-/** Why an existing item survives a regeneration with its id. */
-export type KeptReason = 'locked' | 'segue' | 'fallback';
+/**
+ * Why an existing item survives a regeneration with its id. `past` (it starts before the
+ * freeze point) and `manual` (a manual edit) are #101's regeneration policy (`regen/`).
+ */
+export type KeptReason = 'past' | 'manual' | 'locked' | 'segue' | 'fallback';
 
 /**
  * An item of the day being regenerated that is kept as it is, with its id: locked items,
@@ -111,6 +119,12 @@ export interface GeneratorSnapshot {
   occurrences: readonly GeneratorOccurrence[];
   /** Kept items per local date, in play order. */
   kept?: ReadonlyMap<LocalDate, readonly KeptItem[]>;
+  /**
+   * A regeneration's freeze point (#101, `regenPolicy`): everything starting before it is
+   * kept, and nothing new is planned before it, not even in a gap between kept items (one
+   * back-timing left before an anchor, #46). Null or absent: no freeze.
+   */
+  frozenUntil?: Date | null;
   /** Where the day before the first generated one ends (its last item), if it has a log. */
   previousDayEnd?: Date | null;
 }
@@ -158,7 +172,8 @@ export interface GeneratedItem extends PlannedItem {
  * - `occurrence_dropped`: an occurrence lost to another one at the same time (or to a kept item).
  * - `occurrence_overlap`: two occurrences overlap in part; both are planned, and retiming
  *   reports the overrun on the later one.
- * - `vt_placeholder`: a voice-track placeholder slot nothing placed (#60's extension point).
+ * - `vt_placeholder`: a voice-track slot (placeholder, or promo with a VT pool) nothing placed
+ *   (#60's extension point).
  */
 export type GeneratorIssueCode =
   | 'no_clock'
@@ -201,13 +216,34 @@ export interface AnchorContext {
   run: readonly PlannedItem[];
   /** Where the run ends as planned (the last item's start plus its duration). */
   runEndsAt: Date;
+  /** Picks under the rotation rules, for a hook that re-plans the run (#46). */
+  tools: AnchorTools;
 }
 
-/** A `vt` placeholder slot of a clock (`mode: 'placeholder'`). */
+/**
+ * What `beforeAnchor` may use to change the run with the rules still applying (#46).
+ * - `pick`: an asset of `categoryId` for a slot at `at`, among the members `accept` lets
+ *   through, picked like any slot (rotation order, rules, relaxation). The pick joins the
+ *   rules' history, so later picks see it. Null when nothing is accepted.
+ * - `release`: takes a run item's pick (its asset at its `start`) out of the history, for an
+ *   item the hook drops or replaces, so the rules don't count a play that won't happen.
+ */
+export interface AnchorTools {
+  pick(request: {
+    categoryId: string;
+    at: Date;
+    accept: (asset: GeneratorAsset) => boolean;
+  }): { asset: GeneratorAsset; relaxedRules: RelaxedRule[] } | null;
+  release(item: PlannedItem): void;
+}
+
+/** A `vt` slot of a clock the hook places: a placeholder, or a promo slot with a VT pool. */
 export interface VtPlacementContext {
   clockId: string;
   slotIndex: number;
   mode: VtSlotMode;
+  /** `promo` slots: the VT pool to draw from (#60). Null for a placeholder. */
+  poolId: string | null;
   /** Where the slot falls. */
   at: Date;
   /** The item before it in the run, if any. */

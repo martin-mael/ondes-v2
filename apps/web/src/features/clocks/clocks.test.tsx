@@ -311,6 +311,52 @@ describe('clocks', () => {
     ]);
   });
 
+  it('draws a promo slot from a VT pool, the category only while no pool is chosen', async () => {
+    const poolId = '01a15ddf-0000-7000-8000-0000000000d1';
+    const { screen, user, calls } = renderApp(
+      `${base}/${clockId}`,
+      asProgrammer({
+        [`GET ${base}/${clockId}`]: [200, detail([slot({ kind: 'vt', mode: 'promo' })])],
+        [`GET /stations/${stationId}/vt-pools`]: [
+          200,
+          {
+            items: [
+              {
+                id: poolId,
+                stationId,
+                name: 'Events',
+                description: null,
+                color: '#ff0066',
+                promoCount: 2,
+                activeCount: 1,
+                createdAt: at,
+                updatedAt: at,
+              },
+            ],
+          },
+        ],
+        [`PATCH ${base}/${clockId}`]: (body) => [
+          200,
+          detail((body as { slots: ClockSlot[] }).slots),
+        ],
+      }),
+    );
+    const vt = within(await screen.findByRole('listitem', { name: '1. Voice track' }));
+    expect(vt.getByLabelText('Category')).toBeVisible();
+    await waitFor(() => expect(vt.getByRole('option', { name: 'Events' })).toBeDefined());
+    await user.selectOptions(vt.getByLabelText('VT pool'), 'Events');
+    expect(vt.queryByLabelText('Category')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(lastCall(calls, 'PATCH', `${base}/${clockId}`)).toBeDefined());
+    expect(
+      (
+        lastCall(calls, 'PATCH', `${base}/${clockId}`)?.body as
+          | { slots: { poolId: string | null; categoryId: string | null }[] }
+          | undefined
+      )?.slots[0],
+    ).toMatchObject({ kind: 'vt', mode: 'promo', poolId, categoryId: null });
+  });
+
   it('duplicates and removes slots', async () => {
     const { screen, user } = renderApp(
       `${base}/${clockId}`,

@@ -4,13 +4,18 @@ import { asRunEntrySchema } from './asrun.ts';
 import type { Permission } from './auth.ts';
 import { engineSourceSchema } from './engine.ts';
 import { assetIngestedDataSchema, uploadUpdatedDataSchema } from './library-jobs.ts';
-import { liveSessionEndReasonSchema, liveSessionTriggerSchema } from './live.ts';
+import {
+  liveRequestStatusSchema,
+  liveSessionEndReasonSchema,
+  liveSessionTriggerSchema,
+} from './live.ts';
 import {
   localDateSchema,
   logItemChangeSchema,
   logItemSchema,
   logUpdateCauseSchema,
 } from './log.ts';
+import { logGeneratedDataSchema } from './log-regen.ts';
 import {
   islandStatusSchema,
   segueChangeSchema,
@@ -176,6 +181,28 @@ export const engineRestartStormEventSchema = z.object({
   }),
 });
 
+/**
+ * The engine lifecycle's supervisor (#35) saw the station's engine restart on its own: Docker
+ * restarted the crashed container, or the lifecycle replaced a dead one (#71). Restarts asked
+ * for by a person or a settings change don't count. A crash loop ends in
+ * `engine.restart_storm`.
+ */
+export const engineRestartedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('engine.restarted'),
+  data: z.object({
+    /** Last boot the health monitor saw before the restart, if any. */
+    bootId: z.string().nullable(),
+    /** Restarts seen by this check. */
+    restarts: z.int().positive(),
+    /** Restarts counted in the storm guard's window so far. */
+    inWindow: z.int().positive(),
+    windowSeconds: z.int().positive(),
+    /** The container was found dead (not restarting by itself) and recreated. */
+    crashed: z.boolean(),
+  }),
+});
+
 export const engineRealtimeEventSchema = z.discriminatedUnion('type', [
   engineUpEventSchema,
   engineDownEventSchema,
@@ -188,6 +215,7 @@ export const engineRealtimeEventSchema = z.discriminatedUnion('type', [
   engineBlankDetectedEventSchema,
   engineBlankRecoveredEventSchema,
   engineRestartStormEventSchema,
+  engineRestartedEventSchema,
 ]);
 export type EngineRealtimeEvent = z.infer<typeof engineRealtimeEventSchema>;
 
@@ -223,9 +251,20 @@ export const logItemChangedEventSchema = z.object({
   }),
 });
 
+/**
+ * The generator wrote (or found unchanged) these days, with what it couldn't do. The api turns
+ * the issues into `log.generation_issues` alerts (durable queue). Follows the `log.updated`.
+ */
+export const logGeneratedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('log.generated'),
+  data: logGeneratedDataSchema,
+});
+
 export const logRealtimeEventSchema = z.discriminatedUnion('type', [
   logUpdatedEventSchema,
   logItemChangedEventSchema,
+  logGeneratedEventSchema,
 ]);
 export type LogRealtimeEvent = z.infer<typeof logRealtimeEventSchema>;
 // Alerts (#33). `data` is a snapshot of the alert after the change (API shape in
@@ -391,7 +430,8 @@ export type AsRunRealtimeEvent = z.infer<typeof asRunRealtimeEventSchema>;
  * `(station, item, boot)`, so a durable consumer can dedupe. Not the as-run `skipped` outcome
  * (an item that aired under 5 s, #30): a passed-over item never aired and has no as-run row.
  * `reason`: `not_cached` (not in the playout cache), `unresolvable` (the engine refused the
- * file), `no_media_file` (no playout file), `dropped` (removed by a soft or hard anchor).
+ * file), `no_media_file` (no playout file), `dropped` (removed by a soft or hard anchor), `expired`
+ * (a voice track outside its asset's start and kill dates, a promo past its kill date, #60).
  */
 export const feederItemPassedOverEventSchema = z.object({
   ...envelope,
@@ -402,7 +442,7 @@ export const feederItemPassedOverEventSchema = z.object({
     /** The segment it belongs to, when a whole island chain is passed over. */
     segmentId: z.uuid().nullable(),
     plannedStart: isoTime,
-    reason: z.enum(['not_cached', 'unresolvable', 'no_media_file', 'dropped']),
+    reason: z.enum(['not_cached', 'unresolvable', 'no_media_file', 'dropped', 'expired']),
     bootId: z.string().nullable(),
   }),
 });
@@ -498,9 +538,30 @@ export const liveSessionEndedEventSchema = z.object({
   data: z.object({ ...liveSessionData, reason: liveSessionEndReasonSchema }),
 });
 
+/** A DJ who needs approval connected outside their slots (#65): the dashboard's prompt. */
+export const liveRequestCreatedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('live.request.created'),
+  data: z.object({
+    requestId: z.uuid(),
+    streamerId: z.uuid(),
+    displayName: z.string(),
+    input: z.int().min(1),
+  }),
+});
+
+/** A request was approved, refused or cancelled: the prompt goes away. */
+export const liveRequestDecidedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('live.request.decided'),
+  data: z.object({ requestId: z.uuid(), status: liveRequestStatusSchema }),
+});
+
 export const liveRealtimeEventSchema = z.discriminatedUnion('type', [
   liveSessionStartedEventSchema,
   liveSessionEndedEventSchema,
+  liveRequestCreatedEventSchema,
+  liveRequestDecidedEventSchema,
 ]);
 export type LiveRealtimeEvent = z.infer<typeof liveRealtimeEventSchema>;
 
@@ -537,9 +598,11 @@ export const realtimeEventPermissions = {
   'engine.blank.detected': 'engine:read',
   'engine.blank.recovered': 'engine:read',
   'engine.restart_storm': 'engine:read',
+  'engine.restarted': 'engine:read',
   // Log (#100): the timeline refetches the changed range.
   'log.updated': 'log:read',
   'log.item.changed': 'log:read',
+  'log.generated': 'log:read',
   // Alerts (#33): the dashboard and alert list.
   'alert.raised': 'alert:read',
   'alert.reopened': 'alert:read',
@@ -568,6 +631,9 @@ export const realtimeEventPermissions = {
   // Live switching (#64): the Live page and the dashboard's on-air state.
   'live.session.started': 'engine:read',
   'live.session.ended': 'engine:read',
+  // Ad-hoc live (#65): the approval prompt.
+  'live.request.created': 'engine:read',
+  'live.request.decided': 'engine:read',
 } as const satisfies Record<RealtimeEventType, Permission>;
 
 /** Permission needed to receive `type` over SSE; `null` for types the contract doesn't declare. */

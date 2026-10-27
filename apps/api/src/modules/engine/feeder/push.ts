@@ -46,6 +46,11 @@ export type FeedMedia = {
   artists: string[];
   cues: FeedCues | null;
   gain: PlayoutGainAsset;
+  /**
+   * The asset's validity (`startAt` / `killAt`). A voice track outside it doesn't air (#60): a
+   * `vt` item is skipped, an island or overlay voicing it is left out. Absent: always valid.
+   */
+  validity?: { startAt: Date | null; killAt: Date | null };
 };
 
 /** The asset's cue points in samples at `sampleRate` (fades are lengths in samples). */

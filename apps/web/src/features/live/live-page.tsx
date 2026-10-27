@@ -20,6 +20,8 @@ import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
 import { DelayedSpinner, ListSkeleton } from '../../app/pending.tsx';
 import { connectionQuery, invalidateLive, liveApi, streamersQuery } from './api.ts';
+import { LiveEvents } from './events.tsx';
+import { LiveRequestPrompt } from './live-requests.tsx';
 import { type LiveT, useLiveError, useLiveT } from './messages.ts';
 import { ShowChip } from './show-chip.tsx';
 import { PasswordDialog, StreamerDialog } from './streamer-dialog.tsx';
@@ -27,6 +29,7 @@ import { PasswordDialog, StreamerDialog } from './streamer-dialog.tsx';
 // Live (#63): the station's streamers (DJ credentials) and what to type into BUTT, Mixxx or
 // OBS. Managers (`live:manage`) see and edit every streamer; other members only see the ones
 // linked to them, and may make a new password (`live:broadcast`). The api checks again.
+// Ad-hoc requests waiting for a manager and the station's events (#65) show here too.
 
 const route = getRouteApi('/_app/stations/$stationId/live');
 
@@ -241,6 +244,7 @@ function StreamerRow({
           ) : (
             streamer.shows.map((s) => <ShowChip key={s.id} show={s} />)
           )}
+          {streamer.adHoc === 'allowed' && <span>· {t('streamers.adHocAllowed')}</span>}
           {streamer.user && <span>· {streamer.user.name}</span>}
           {streamer.expiresAt && (
             <span>· {t('streamers.expires', { date: when(streamer.expiresAt) })}</span>
@@ -339,6 +343,8 @@ export function LivePage() {
         )}
       </div>
 
+      <LiveRequestPrompt stationId={stationId} />
+
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-medium">{t('connection.title')}</h2>
         {connection.isPending ? (
@@ -395,6 +401,8 @@ export function LivePage() {
           </Card>
         )}
       </section>
+
+      <LiveEvents stationId={stationId} timezone={access.timezone} canManage={access.canManage} />
 
       {access.canManage && (
         <StreamerDialog

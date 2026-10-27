@@ -116,7 +116,10 @@ export type EngineLifecycleOptions = {
   health?: StationEngineOptions['health'];
   /** Station template source; default: read from disk. */
   template?: string;
-  /** Delay between supervisor passes. Default 15 s. */
+  /**
+   * Delay between supervisor passes. Default 5 s (#71: a crash restart is on the dashboard
+   * within about 5 s; a pass is one Docker inspect per station and one container list).
+   */
   superviseIntervalMs?: number;
   /** First retry delay for a station whose reconcile failed; doubles up to 5 min. Default 5 s. */
   retryBaseMs?: number;
@@ -135,7 +138,7 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
   const logger = options.logger ?? silentLogger;
   const guard = options.guard ?? new RestartGuard();
   const template = options.template ?? loadStationTemplate();
-  const superviseIntervalMs = options.superviseIntervalMs ?? 15_000;
+  const superviseIntervalMs = options.superviseIntervalMs ?? 5_000;
   const retryBaseMs = options.retryBaseMs ?? 5_000;
   const now = options.now ?? Date.now;
 
@@ -437,7 +440,34 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
       await tripStorm(ex, scope, verdict.restarts, info);
       return;
     }
+    await publishRestarted(scope, restarts, verdict.restarts, dead);
     if (dead) await doReconcile(ex, scope);
+  }
+
+  /** An unasked-for restart, for the `engine.restarted` alert (#71). Best effort. */
+  async function publishRestarted(
+    scope: StationScope,
+    restarts: number,
+    inWindow: number,
+    crashed: boolean,
+  ) {
+    try {
+      await options.publish({
+        id: randomUUID(),
+        type: 'engine.restarted',
+        stationId: scope.stationId,
+        at: new Date(now()).toISOString(),
+        data: {
+          bootId: engines.get(scope.stationId)?.health.last()?.boot_id ?? null,
+          restarts,
+          inWindow: Math.max(inWindow, restarts),
+          windowSeconds: guard.windowSeconds,
+          crashed,
+        },
+      });
+    } catch (error) {
+      logger.error({ stationId: scope.stationId, err: error }, 'Publishing engine restart failed');
+    }
   }
 
   /**

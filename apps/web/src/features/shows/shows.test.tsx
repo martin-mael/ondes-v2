@@ -470,20 +470,37 @@ describe('show page', () => {
         byDay: ['tu', 'th'],
         time: '21:30',
       },
+      startMode: 'hard',
+      startCapMs: null,
     });
 
-    // A one-off live special.
+    // A one-off live special, starting after the item on air, 45 s late at most (#46).
     dialog = await add();
     await user.selectOptions(dialog.getByLabelText('Type'), 'live');
     await user.selectOptions(dialog.getByLabelText('Repeats'), 'once');
     fireEvent.change(dialog.getByLabelText('Date'), { target: { value: '2026-12-31' } });
     fireEvent.change(dialog.getByLabelText('Time'), { target: { value: '23:00' } });
+    // Its live settings (#65): wait 10 min for the DJ, who goes on air as soon as they connect.
+    fireEvent.change(dialog.getByLabelText('Wait for the DJ (minutes)'), {
+      target: { value: '10' },
+    });
+    await user.selectOptions(dialog.getByLabelText('DJ connected early'), 'go_live');
+    await user.selectOptions(dialog.getByLabelText('Start'), 'soft');
+    await user.type(dialog.getByLabelText('Late by at most (s)'), '700');
+    await user.click(dialog.getByRole('button', { name: 'Add the slot' }));
+    expect(await dialog.findByText('Seconds, from 0 to 600.')).toBeVisible();
+    expect(created).toHaveLength(1);
+    await user.clear(dialog.getByLabelText('Late by at most (s)'));
+    await user.type(dialog.getByLabelText('Late by at most (s)'), '45');
     await user.click(dialog.getByRole('button', { name: 'Add the slot' }));
     await waitFor(() => expect(created).toHaveLength(2));
     expect(created[1]).toEqual({
       type: 'live',
       durationMs: 3_600_000,
       rule: { freq: 'once', date: '2026-12-31', time: '23:00' },
+      live: { graceMs: 600_000, earlyConnect: 'go_live' },
+      startMode: 'soft',
+      startCapMs: 45_000,
     });
   });
 

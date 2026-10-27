@@ -30,33 +30,41 @@ apps/
     plugins/            # fastify plugins: db, auth, rabbit, sse, errors
     modules/<module>/   # routes.ts, service.ts, repo.ts, *.test.ts
                         # auth, orgs, stations, library, engine, asrun, rotation,
-                        # clocks, shows, log, public, jobs, alerts, cache, segues, live
+                        # clocks, shows, log, onair, public, jobs, alerts, cache, segues, live,
+                        # listeners, prelisten, promos
+                        # (live/: switching, standing, slot-check, requests, events;
+                        #  live/testing/: the in-memory engine pool for its tests;
+                        #  shows/live-slots.ts: live slot settings and live episodes)
   worker/src/
     jobs/<job>/         # one folder per job type: ingest, loudness, autocue, analysis,
                         # peaks, dedupe, cache-sync (+ cache-fetch, its urgent
                         # one-file variant), episode-check, log-generate,
-                        # island-render, …
+                        # log-horizon, island-render, …
   web/src/
     app/                # shell, routing (router.tsx), auth pages, layout, api client,
                         # SSE client (sse/), i18n
     features/<feature>/ # library, cue-editor, rotation, clocks, grid, shows,
-                        # log-timeline, segue-editor, live, dashboard, settings
+                        # log-timeline, segue-editor, live, dashboard, alerts, settings,
+                        # promos
     ui/                 # shared design-system components (shadcn/ui on Base UI)
 packages/
   shared/src/
     contracts/<domain>.ts  # zod schemas + inferred types: API DTOs, events, job payloads
     time/                  # timezone/DST helpers (station-local ↔ UTC)
-    segues/                # island derivation and hashing (pure, shared by api, worker, web)
+    segues/                # island derivation and hashing, default promo lanes (pure, shared
+                           # by api, worker, web)
   db/
     src/schema/<domain>.ts # one file per domain: tenancy, library, engine, asrun,
-                           # rotation, clocks, shows, log, segues, live, alerts,
-                           # cache, safety
+                           # rotation, clocks, shows, log, regen, segues, live, alerts,
+                           # cache, safety, promos
     migrations/            # generated, timestamp-prefixed
   storage/                 # S3-compatible abstraction
   queue/                   # RabbitMQ job framework
   scheduling/              # pure, side-effect-free: rules engine, category picker,
                            # clock expansion, log generator (generator/), log timing
-                           # (log/: retime), back-timing
+                           # (log/: retime), regeneration (regen/), promo placement
+                           # (promos/), back-timing (backtiming/: the generator's
+                           # beforeAnchor); test fixtures at `@ondes/scheduling/testing`
 engine/
   templates/               # Liquidsoap script templates (pinned 2.4.x)
   tests/                   # engine fixtures, seam/timing tests

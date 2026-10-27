@@ -257,13 +257,32 @@ jobs:
     needs: changes
     if: needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - *checkout
       - *pnpm
       - *node
+      # The template and splice tests need a native ffmpeg. The Ubuntu mirror sometimes crawls
+      # (an install ran into the job's timeout), so the downloaded packages are cached: apt then
+      # fetches only what changed since, and the week key still picks up security updates.
+      - id: apt-week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-ffmpeg-ubuntu-24.04-${{ steps.apt-week.outputs.week }}
+          restore-keys: apt-ffmpeg-ubuntu-24.04-
       - name: Install ffmpeg
-        run: sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends ffmpeg
+        timeout-minutes: 10
+        env:
+          ARCHIVES: ${{ runner.temp }}/apt-archives
+        run: |
+          mkdir -p "$ARCHIVES/partial"
+          sudo apt-get update -q -o Acquire::Retries=3
+          sudo apt-get install -yq --no-install-recommends -o Acquire::Retries=3 \
+            -o Dir::Cache::Archives="$ARCHIVES" ffmpeg
+          sudo rm -rf "$ARCHIVES/partial" "$ARCHIVES/lock"
+          sudo chown -R "$USER" "$ARCHIVES"
       - *install
       # Re-validates the island splice rules (ADR / spike #12) against the pinned Liquidsoap
       # image, so a Liquidsoap bump that changes seek or cue rounding fails here.

@@ -274,6 +274,40 @@ describe('slots and exceptions', () => {
     expect((await audits(slot.id))[0]?.action).toBe('show_slot.create');
   });
 
+  it('starts slots hard by default; soft with a cap, which a hard start drops (#46)', async () => {
+    expect(slot).toMatchObject({ startMode: 'hard', startCapMs: null });
+    const once = { freq: 'once', date: '2026-06-02', time: '12:00' };
+    const soft = await ok<ShowSlot>(
+      await call('programmer', 'POST', `/shows/${s.id}/slots`, {
+        rule: once,
+        startMode: 'soft',
+        startCapMs: 45_000,
+      }),
+      201,
+    );
+    expect(soft).toMatchObject({ startMode: 'soft', startCapMs: 45_000 });
+    const capped = await call('programmer', 'POST', `/shows/${s.id}/slots`, {
+      rule: once,
+      startCapMs: 45_000,
+    });
+    expect(capped.statusCode).toBe(400);
+    const hard = await ok<ShowSlotChange>(
+      await call('programmer', 'PATCH', `/shows/${s.id}/slots/${soft.id}`, { startMode: 'hard' }),
+    );
+    expect(hard.slot).toMatchObject({ startMode: 'hard', startCapMs: null });
+    const capOnHard = await call('programmer', 'PATCH', `/shows/${s.id}/slots/${soft.id}`, {
+      startCapMs: 10_000,
+    });
+    expect([capOnHard.statusCode, capOnHard.json().error]).toEqual([422, 'start_cap_on_hard']);
+    const again = await ok<ShowSlotChange>(
+      await call('programmer', 'PATCH', `/shows/${s.id}/slots/${soft.id}`, { startMode: 'soft' }),
+    );
+    // A soft slot without a cap waits SOFT_START_DEFAULT_CAP_MS at most.
+    expect(again.slot).toMatchObject({ startMode: 'soft', startCapMs: null });
+    expect((await audits(soft.id)).map((a) => a.action)).toContain('show_slot.update');
+    await call('programmer', 'DELETE', `/shows/${s.id}/slots/${soft.id}`);
+  });
+
   it('refuses a slot without a duration when the show has none, and invalid rules', async () => {
     const bare = await ok<Show>(await call('programmer', 'POST', '/shows', { name: 'Bare' }), 201);
     const once = { freq: 'once', date: '2026-06-01', time: '10:00' };

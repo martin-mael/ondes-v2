@@ -12,6 +12,7 @@ import {
   type MarkerTiming,
   markerTimingSchema,
   slotCategoryId,
+  slotPoolId,
   vtSlotModeSchema,
 } from '@ondes/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -44,6 +45,7 @@ import { isApiError } from '../../app/api/client.ts';
 import { type FieldErrors, FormAlert, fieldErrors } from '../../app/forms.tsx';
 import { DelayedSpinner, ListSkeleton, PageSkeleton } from '../../app/pending.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
+import { vtPoolsQuery } from '../promos/api.ts';
 import { categoriesQuery } from '../rotation/categories/api.ts';
 import {
   clockKeys,
@@ -684,16 +686,22 @@ function SlotFields({
   const id = (name: string) => `slot-${index}-${name}`;
   const categoryId = 'categoryId' in slot ? slot.categoryId : null;
   const category = categoryId ? categories.find((c) => c.id === categoryId) : undefined;
+  // A promo slot draws from a VT pool (#60); a category of `vt` assets is the older way, offered
+  // only while no pool is chosen.
+  const promoSlot = slot.kind === 'vt' && slot.mode === 'promo';
+  const pools = useQuery({ ...vtPoolsQuery(stationId), enabled: promoSlot });
+  const poolId = slotPoolId(slot);
+  const pool = poolId ? pools.data?.items.find((p) => p.id === poolId) : undefined;
   const showCategory =
     slot.kind === 'category' ||
     slot.kind === 'jingle' ||
     slot.kind === 'fill' ||
-    (slot.kind === 'vt' && slot.mode === 'promo');
+    (promoSlot && !poolId);
 
   return (
     <div className="flex min-w-0 flex-1 flex-wrap items-end gap-2">
       <div className="flex w-full items-center gap-2">
-        <ColorDot color={category?.color ?? null} />
+        <ColorDot color={pool?.color ?? category?.color ?? null} />
         <Badge variant="secondary">{t(`kind.${slot.kind}`)}</Badge>
         <Input
           aria-label={t('slot.label')}
@@ -714,12 +722,37 @@ function SlotFields({
             onChange={(e) => {
               const mode = vtSlotModeSchema.parse(e.target.value);
               // A placeholder keeps no category: the api drops it anyway.
-              onChange({ ...slot, mode, ...(mode === 'placeholder' ? { categoryId: null } : {}) });
+              if (mode === 'placeholder' && slot.kind === 'vt') {
+                const { poolId: _, ...rest } = slot;
+                onChange({ ...rest, mode, categoryId: null });
+              } else {
+                onChange({ ...slot, mode });
+              }
             }}
           >
             {vtSlotModeSchema.options.map((mode) => (
               <NativeSelectOption key={mode} value={mode}>
                 {t(`slot.vtMode.${mode}`)}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        </Mini>
+      )}
+      {promoSlot && slot.kind === 'vt' && (
+        <Mini label={t('slot.pool')} htmlFor={id('pool')}>
+          <NativeSelect
+            id={id('pool')}
+            size="sm"
+            aria-invalid={poolId && pools.isSuccess && !pool ? true : undefined}
+            value={pool || !pools.isSuccess ? (poolId ?? '') : ''}
+            onChange={(e) =>
+              onChange({ ...slot, poolId: e.target.value || null, categoryId: null })
+            }
+          >
+            <NativeSelectOption value="">{t('slot.poolNone')}</NativeSelectOption>
+            {(pools.data?.items ?? []).map((p) => (
+              <NativeSelectOption key={p.id} value={p.id}>
+                {p.name}
               </NativeSelectOption>
             ))}
           </NativeSelect>

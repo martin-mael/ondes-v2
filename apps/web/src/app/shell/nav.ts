@@ -2,6 +2,7 @@ import type { Permission } from '@ondes/shared';
 import type { LinkProps } from '@tanstack/react-router';
 import {
   AudioLinesIcon,
+  BellIcon,
   CalendarClockIcon,
   CalendarDaysIcon,
   CalendarRangeIcon,
@@ -11,6 +12,7 @@ import {
   LifeBuoyIcon,
   ListMusicIcon,
   type LucideIcon,
+  MegaphoneIcon,
   MicIcon,
   RadioTowerIcon,
   SlidersHorizontalIcon,
@@ -37,6 +39,12 @@ export const stationNav: NavItem[] = [
     label: 'shell.nav.dashboard',
     icon: LayoutDashboardIcon,
     permission: 'dashboard:read',
+  },
+  {
+    to: '/stations/$stationId/alerts',
+    label: 'shell.nav.alerts',
+    icon: BellIcon,
+    permission: 'alert:read',
   },
   {
     to: '/stations/$stationId/shows/calendar',
@@ -67,6 +75,12 @@ export const stationNav: NavItem[] = [
     label: 'shell.nav.recordVt',
     icon: AudioLinesIcon,
     permission: 'voice_track:write_own',
+  },
+  {
+    to: '/stations/$stationId/promos',
+    label: 'shell.nav.promos',
+    icon: MegaphoneIcon,
+    permission: 'voice_track:read',
   },
   {
     to: '/stations/$stationId/library',

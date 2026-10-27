@@ -11,14 +11,17 @@ import {
 } from '@tanstack/react-router';
 import { toast } from 'sonner';
 import { z } from 'zod';
+import { AlertsPage, alertsSearchSchema } from '../features/alerts/alerts-page.tsx';
 import { EditClockPage, NewClockPage } from '../features/clocks/clock-editor-page.tsx';
 import { ClocksPage } from '../features/clocks/clocks-page.tsx';
 import { CueEditorPage, cueEditorSearchSchema } from '../features/cue-editor/cue-editor-page.tsx';
+import { DashboardPage } from '../features/dashboard/dashboard-page.tsx';
 import { GridPage } from '../features/grid/grid-page.tsx';
 import { librarySearchParamsSchema } from '../features/library/filters.ts';
 import { LibraryPage } from '../features/library/library-page.tsx';
 import { LivePage } from '../features/live/live-page.tsx';
 import { TimelinePage } from '../features/log-timeline/timeline-page.tsx';
+import { PromosPage } from '../features/promos/promos-page.tsx';
 import { CategoriesPage } from '../features/rotation/categories/categories-page.tsx';
 import {
   EditCategoryPage,
@@ -39,7 +42,6 @@ import { ForgotPasswordPage, ResetPasswordPage } from './auth/password-pages.tsx
 import { findStation, homeStation, meQuery, orgsQuery, resetSession } from './auth/session.ts';
 import { SignupPage } from './auth/signup-page.tsx';
 import { VerifyEmailPage } from './auth/verify-email-page.tsx';
-import { DashboardPage } from './dashboard/dashboard-page.tsx';
 import { isGlobalApiError, setApiErrorHandler } from './errors.ts';
 import { translate } from './i18n/i18n.tsx';
 import type { Locale } from './i18n/messages.ts';
@@ -276,6 +278,14 @@ const showRoute = createRoute({
   component: ShowPage,
 });
 
+// Alerts (#71): open by default, `?status=open|resolved|all&type=<alert type>`.
+const alertsRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'alerts',
+  validateSearch: alertsSearchSchema,
+  component: AlertsPage,
+});
+
 const safetySettingsRoute = createRoute({
   getParentRoute: () => stationRoute,
   path: '/settings/safety',
@@ -335,6 +345,13 @@ const vtRecordRoute = createRoute({
   component: VtRecorderPage,
 });
 
+// Promo VTs and VT pools (#60).
+const promosRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: 'promos',
+  component: PromosPage,
+});
+
 const routeTree = rootRoute.addChildren([
   authLayout.addChildren([
     loginRoute,
@@ -349,6 +366,7 @@ const routeTree = rootRoute.addChildren([
     accountRoute,
     stationRoute.addChildren([
       dashboardRoute,
+      alertsRoute,
       libraryRoute,
       cueEditorRoute,
       categoriesRoute,
@@ -368,6 +386,7 @@ const routeTree = rootRoute.addChildren([
       segueRoute,
       segueRecordRoute,
       vtRecordRoute,
+      promosRoute,
     ]),
   ]),
 ]);

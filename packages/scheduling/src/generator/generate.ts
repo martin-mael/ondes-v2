@@ -9,12 +9,20 @@ import {
   localDayBounds,
   logKindForSlot,
   type SlotReference,
+  slotPoolId,
   zonedParts,
 } from '@ondes/shared';
 import { expandGrid } from '../grid/index.ts';
 import { retime } from '../log/index.ts';
-import { type PickSnapshot, type PlayedItem, pickForSlot, playedFrom } from '../rules/index.ts';
 import {
+  type PickSnapshot,
+  type PlayedItem,
+  pickForSlot,
+  playedFrom,
+  removeFromHistory,
+} from '../rules/index.ts';
+import {
+  type AnchorTools,
   GENERATOR_VERSION,
   type GeneratedDay,
   type GeneratedItem,
@@ -274,15 +282,19 @@ class DayBuilder {
     const dayStart = this.startsAt.getTime();
     const dayEndMs = this.endsAt.getTime();
     const blocks = this.fixedBlocks();
+    const frozen = this.snapshot.frozenUntil?.getTime() ?? null;
     for (const block of blocks) {
       // Music up to the block, then the block. A block that starts before the cursor (a
       // previous block overran into it) is placed anyway: retiming reports the overrun.
+      // Before the freeze point nothing new is planned: a gap there stays as it is.
+      if (frozen !== null && this.cursor < frozen) this.skipTo(Math.min(frozen, block.start));
       if (block.start > this.cursor) this.fillWindow(this.cursor, block.start);
       for (const item of block.items) this.place(item);
       // A block without items (a show from the night before) is a hole in this day's items.
       if (block.items.length === 0) this.skipTo(block.end);
       this.cursor = Math.max(this.cursor, block.end);
     }
+    if (frozen !== null && this.cursor < frozen) this.skipTo(Math.min(frozen, dayEndMs));
     if (this.cursor < dayEndMs) this.fillWindow(this.cursor, dayEndMs);
 
     const timed = retime(
@@ -368,11 +380,12 @@ class DayBuilder {
   }
 
   private occurrenceItem(o: GeneratorOccurrence): PlannedItem {
+    const soft = o.startPolicy?.mode === 'soft';
     const base = {
       keptId: null,
-      timing: 'hard' as const,
+      timing: soft ? ('soft' as const) : ('hard' as const),
       anchorAt: o.startsAt,
-      capMs: null,
+      capMs: soft ? (o.startPolicy?.capMs ?? null) : null,
       origin: { type: 'show' as const, showSlotId: o.slotId },
       relaxedRules: [],
       segmentId: null,
@@ -443,6 +456,7 @@ class DayBuilder {
           anchor: placed,
           run,
           runEndsAt: new Date(last ? last.start.getTime() + last.plannedDurationMs : this.cursor),
+          tools: this.tools,
         });
         this.items.splice(this.runStart, run.length, ...replaced);
       }
@@ -459,6 +473,39 @@ class DayBuilder {
           : placed.start.getTime();
     if (placed.segmentId === null) this.cursor = start + placed.plannedDurationMs;
   }
+
+  /** `beforeAnchor`'s picks: the same picker and history as the clock slots'. */
+  private readonly tools: AnchorTools = {
+    pick: ({ categoryId, at, accept }) => {
+      const category = this.snapshot.categories.get(categoryId);
+      if (!category) return null;
+      const result = pickForSlot(
+        {
+          timeZone: this.snapshot.timeZone,
+          rules: this.snapshot.rules,
+          history: this.history,
+          ...(this.snapshot.lastPlayedAt ? { lastPlayedAt: this.snapshot.lastPlayedAt } : {}),
+          seed: this.seed,
+          explain: false,
+        },
+        { at, category, candidates: category.members.filter(accept) },
+      );
+      if (!result.asset) return null;
+      this.history.push(playedFrom(result.asset, at));
+      return { asset: result.asset, relaxedRules: result.relaxed };
+    },
+    release: (item) => {
+      if (item.keptId !== null || item.assetId === null) return;
+      const at = item.start.getTime();
+      let found = false;
+      // The one play this item stands for: its asset at its start.
+      removeFromHistory(this.history, (played) => {
+        if (found || played.assetId !== item.assetId || played.at.getTime() !== at) return false;
+        found = true;
+        return true;
+      });
+    },
+  };
 
   // --- Music windows -------------------------------------------------------------------------
 
@@ -615,11 +662,14 @@ class DayBuilder {
       case 'jingle':
       case 'vt':
       case 'fill': {
-        if (slot.kind === 'vt' && slot.mode === 'placeholder') {
+        // A placeholder, or a promo slot with a VT pool (#60): the hook's to place.
+        const poolId = slotPoolId(slot);
+        if (slot.kind === 'vt' && (slot.mode === 'placeholder' || poolId !== null)) {
           const placed = this.extensions.placeVoiceTrack?.({
             clockId: clock.id,
             slotIndex: index,
             mode: slot.mode,
+            poolId,
             at,
             previous: this.items.at(-1) ?? null,
           });

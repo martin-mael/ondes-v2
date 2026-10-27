@@ -24,9 +24,14 @@ import { type PeaksPluginOptions, peaksPlugin } from './modules/library/peaks-pl
 import { libraryPlugin } from './modules/library/plugin.ts';
 import { librarySearchRoutes } from './modules/library/search-routes.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
+import { listenerRoutes } from './modules/listeners/routes.ts';
 import { type LivePluginOptions, livePlugin } from './modules/live/plugin.ts';
+import { type RegenPluginOptions, regenPlugin } from './modules/log/regen-plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
+import { onAirRoutes } from './modules/onair/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
+import { type PrelistenRoutesOptions, prelistenRoutes } from './modules/prelisten/routes.ts';
+import { type PromosPluginOptions, promosPlugin } from './modules/promos/plugin.ts';
 import { rotationRoutes } from './modules/rotation/routes.ts';
 import { rotationRulesRoutes } from './modules/rotation/rules/routes.ts';
 import { type SeguesPluginOptions, seguesPlugin } from './modules/segues/plugin.ts';
@@ -56,12 +61,16 @@ export interface AppOptions {
   asrun?: AsRunPluginOptions;
   /** Segues (#55): the durable queue name (tests). */
   segues?: SeguesPluginOptions;
+  /** Promo VTs (#60): the durable queue name, event sink and jobs (tests). */
+  promos?: PromosPluginOptions;
   /** Playout cache (#31): readiness API and cache alerts. */
   cache?: CachePluginOptions;
   /** Safety playlist and emergency file (#34): alert interval, event queue (tests). */
   safety?: SafetyPluginOptions;
   /** Missing-episode alerts and fallbacks (#47): the clock fallback's hooks, the interval. */
   episodeCheck?: EpisodeCheckPluginOptions;
+  /** Log regeneration (#101): dry-run extensions, the horizon and change sweep, the alerts queue (tests). */
+  regen?: RegenPluginOptions;
   /** Log feeder (#29), on when the api manages engines and has RabbitMQ. `false` turns it off. */
   feeder?: FeederPluginOptions | false;
   /** Media storage. Optional so tests that don't upload can skip S3; without it, no upload or peaks routes. */
@@ -75,6 +84,8 @@ export interface AppOptions {
    * auth route (default: the engine lifecycle's, when it runs).
    */
   live?: LivePluginOptions;
+  /** Pre-listen (#71); defaults to the engine lifecycle's adapters. */
+  prelisten?: PrelistenRoutesOptions;
   /** Team onboarding (#113): DNS resolver and sending limits. */
   invitations?: InvitationsOptions;
   /** Real-time stream tuning (tests shorten the timers). */
@@ -118,8 +129,12 @@ export async function buildApp(options: AppOptions) {
   // As-run (#30): `GET …/asrun`, engine track events -> as-run entries (durable queue).
   await app.register(asRunPlugin, options.asrun ?? {});
   await app.register(showsRoutes, { prefix: '/api/v1' });
+  // On air (#70): the dashboard's snapshot of the air.
+  await app.register(onAirRoutes, { prefix: '/api/v1' });
   // Segues and islands (#55): routes, and log/asset events -> island re-sync (durable queue).
   await app.register(seguesPlugin, options.segues ?? {});
+  // Promo VTs and VT pools (#60): routes, and log/asset events -> promo segues (durable queue).
+  await app.register(promosPlugin, options.promos ?? {});
   await app.register(rotationRoutes, { prefix: '/api/v1' });
   await app.register(rotationRulesRoutes, { prefix: '/api/v1' });
   await app.register(clocksRoutes, { prefix: '/api/v1' });
@@ -152,12 +167,22 @@ export async function buildApp(options: AppOptions) {
       : {}),
     ...options.live,
   });
+  // Listener counts for the dashboard (#71): what the Icecast poller (#32) recorded.
+  await app.register(listenerRoutes, { prefix: '/api/v1' });
+  // Pre-listen of the live inputs (#71), proxied from the station's engine.
+  await app.register(prelistenRoutes, {
+    prefix: '/api/v1',
+    ...(lifecycle ? { engineFor: (stationId: string) => lifecycle.adapterFor(stationId) } : {}),
+    ...options.prelisten,
+  });
   // Playout cache (#31): `app.playoutCache` for the feeder, `GET …/cache`, cache alerts.
   await app.register(cachePlugin, options.cache ?? {});
   // Safety playlist and emergency file (#34): routes, on-air source, fallback alerts.
   await app.register(safetyPlugin, options.safety ?? {});
   // Missing-episode alerts and fallbacks (#47): works off the worker's `episode_check` steps.
   await app.register(episodeCheckPlugin, options.episodeCheck ?? {});
+  // Log regeneration (#101): dry-run and apply routes, the horizon sweep, generation alerts.
+  await app.register(regenPlugin, options.regen ?? {});
   // Log feeder (#29): keeps each station's engine queue ahead of air, one replica per station.
   if (lifecycle && options.rabbit && options.feeder !== false) {
     await app.register(feederPlugin, options.feeder ?? {});

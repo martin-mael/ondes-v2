@@ -2,8 +2,10 @@ import type {
   EpisodeFallbackPolicy,
   EpisodeKind,
   EpisodeStatus,
+  LiveEarlyConnect,
   RerunStrategy,
   SlotRule,
+  SlotStartMode,
   SlotType,
   TracklistEntry,
 } from '@ondes/shared';
@@ -163,6 +165,17 @@ export const showSlot = pgTable(
     rerunEpisodeId: uuid('rerun_episode_id').references((): AnyPgColumn => episode.id, {
       onDelete: 'set null',
     }),
+    /**
+     * Only on `live` slots (#65, ADR 0033): how long after the start the slot waits for its DJ
+     * before the show's fallback airs, and what a DJ connecting early gets. Both set exactly on
+     * live slots.
+     */
+    liveGraceMs: integer('live_grace_ms'),
+    liveEarlyConnect: text('live_early_connect').$type<LiveEarlyConnect>(),
+    /** How its occurrences start (#46, ADR 0031): `hard` at their time, or `soft`. */
+    startMode: text('start_mode').$type<SlotStartMode>().notNull().default('hard'),
+    /** `soft` only: how late it may start; null = `SOFT_START_DEFAULT_CAP_MS`. */
+    startCapMs: integer('start_cap_ms'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -179,6 +192,18 @@ export const showSlot = pgTable(
       sql`(${t.rerunStrategy} is null or ${t.type} = 'rerun')
         and (${t.rerunStrategy} is null or ${t.rerunStrategy} in ('latest_episode', 'episode'))
         and (${t.rerunEpisodeId} is null or ${t.rerunStrategy} = 'episode')`,
+    ),
+    check(
+      'show_slot_live_check',
+      sql`(${t.liveGraceMs} is null) = (${t.liveEarlyConnect} is null)
+        and (${t.liveGraceMs} is null or ${t.type} = 'live')
+        and (${t.liveGraceMs} is null or ${t.liveGraceMs} between 0 and 3600000)
+        and (${t.liveEarlyConnect} is null or ${t.liveEarlyConnect} in ('wait', 'go_live'))`,
+    ),
+    check(
+      'show_slot_start_check',
+      sql`${t.startMode} in ('hard', 'soft')
+        and (${t.startCapMs} is null or (${t.startMode} = 'soft' and ${t.startCapMs} between 0 and 600000))`,
     ),
     index('show_slot_rerun_episode_idx')
       .on(t.rerunEpisodeId)

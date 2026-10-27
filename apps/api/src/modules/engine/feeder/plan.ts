@@ -1,4 +1,5 @@
 import type { EngineSource, LogItemKind, LogItemTiming } from '@ondes/shared';
+import { FLEXIBLE_KINDS, stretchTail } from './hardstart.ts';
 
 // Just-in-time planning (ADR 0002 "Just-in-time feeding", ADR 0003 "Feeder"). Pure: given the
 // clock, what the engine has on air and the log around now, decide which entries should be
@@ -13,17 +14,25 @@ import type { EngineSource, LogItemKind, LogItemTiming } from '@ondes/shared';
 //
 // Anchors (contracts/log.ts `timing`):
 // - `hard`: an overrun is absorbed by the tail before it: drop whole queued entries that fit
-//   in the overrun, trim the flexible ones (songs, beds, fills) down to `minKeepMs`. A gap
-//   bigger than `holdGapMs` holds the item until its anchor (the safety playlist fills, until
-//   #46 sizes a bed). The engine-timed cut (`POST /v1/schedule`, ADR 0003) doesn't exist on
-//   the engine yet: what the tail can't absorb is reported in `late`.
+//   in the overrun, trim the flexible ones (songs, beds, fills) down to `minKeepMs`. A gap is
+//   closed by stretching the tail's flexible entries back toward their media's length
+//   (`stretchTail`, #46). With `engineCut`, the item is not queued: it is handed to the engine
+//   (`scheduled`, `POST /v1/schedule`), which starts it at its anchor to the frame and fades
+//   out whatever is on air; the tail aims `cutOverlapMs` past the anchor so the music never
+//   runs dry before it. Without it, a gap bigger than `holdGapMs` holds the item until its
+//   anchor and what the tail can't absorb is reported in `late`.
 // - `soft`: entries that would start at or after the anchor are dropped; so is the last one
-//   if it would end after `anchor + cap`. An item on air past the cap is reported in `late`.
+//   past `anchor + cap` is cut, else dropped (`absorb`). A gap is stretched like a hard one's,
+//   aiming `cutOverlapMs` past the anchor, and one bigger than `holdGapMs` holds the item until
+//   its anchor: a soft item starts when the music ends, not early. When the item on air itself
+//   runs past the cap, the engine cuts it there (`scheduled` at `anchor + cap`, with
+//   `engineCut`); without it, that is reported in `late`.
 // - `not_before`: held until its anchor when it would start more than `holdGapMs` early.
 // - `live_slot`: nothing to push; the entries after it are held until the slot's end.
 // - `marker`: a timing point only (its anchor applies), nothing to push.
 
-export type SkipReason = 'not_cached' | 'unresolvable' | 'no_media_file';
+/** `expired`: a voice track outside its asset's validity (a promo past its kill date, #60). */
+export type SkipReason = 'not_cached' | 'unresolvable' | 'no_media_file' | 'expired';
 
 /** A top-level log item, as the planner sees it. */
 export type FeedEntry = {
@@ -42,6 +51,8 @@ export type FeedEntry = {
   unplayable: SkipReason | null;
   /** How much its end may be cut by a hard-start re-plan, in ms. 0 = not flexible. */
   flexMs: number;
+  /** How much longer than its slot it may play (the cut back-timing planned), in ms. */
+  stretchMs?: number;
 };
 
 /** What the engine has on air (`GET /v1/state` `on_air`). */
@@ -72,6 +83,13 @@ export type PlanOptions = {
   pushLeadMs: number;
   /** Error below which an anchor counts as met: one engine frame. */
   toleranceMs: number;
+  /** The engine starts `hard` items itself (`POST /v1/schedule`, #46). */
+  engineCut: boolean;
+  /**
+   * How far past a `hard` anchor the tail aims when the engine cuts (faded out under the item),
+   * and past a `soft` one always (its item waits for the end: never early).
+   */
+  cutOverlapMs: number;
 };
 
 export const DEFAULT_PLAN_OPTIONS: PlanOptions = {
@@ -83,6 +101,8 @@ export const DEFAULT_PLAN_OPTIONS: PlanOptions = {
   holdGapMs: 5_000,
   pushLeadMs: 500,
   toleranceMs: 20,
+  engineCut: false,
+  cutOverlapMs: 500,
 };
 
 export type PlanInput = {
@@ -120,9 +140,13 @@ export type FeedPlan = {
   hold: { itemId: string; untilMs: number } | null;
   /** Anchors the plan can't meet by re-planning alone, and by how much. */
   late: { itemId: string; ms: number }[];
+  /**
+   * With `engineCut`: the `hard` item the engine should start at `atMs` (never queued). The
+   * plan stops there: nothing after it is queued before it airs.
+   */
+  scheduled: { entry: FeedEntry; atMs: number } | null;
 };
 
-const FLEXIBLE: readonly LogItemKind[] = ['song', 'bed', 'fill'];
 /** Kinds the planner pushes. */
 const PUSHED: readonly LogItemKind[] = [
   'song',
@@ -135,7 +159,7 @@ const PUSHED: readonly LogItemKind[] = [
 ];
 
 /** Whether a kind's end may be trimmed by a hard-start re-plan. */
-export const isFlexibleKind = (kind: LogItemKind) => FLEXIBLE.includes(kind);
+export const isFlexibleKind = (kind: LogItemKind) => FLEXIBLE_KINDS.includes(kind);
 
 export function planFeed(input: PlanInput): FeedPlan {
   const o = { ...DEFAULT_PLAN_OPTIONS, ...input.options };
@@ -145,6 +169,9 @@ export function planFeed(input: PlanInput): FeedPlan {
   const skipped: FeedPlan['skipped'] = [];
   const late: FeedPlan['late'] = [];
   let hold: FeedPlan['hold'] = null;
+  let scheduled: FeedPlan['scheduled'] = null;
+  /** Index in `wanted` where the tail since the last anchored entry starts. */
+  let tailFrom = 0;
 
   const onAirIndex = locateOnAir(entries, input.onAir);
   /** Floor set by a live slot (or a long item not joined): what follows waits for its end. */
@@ -190,23 +217,35 @@ export function planFeed(input: PlanInput): FeedPlan {
     }
   };
 
-  /** Absorbs `overrun` ms in the queued tail, from its end. Returns what's left. */
+  /**
+   * Absorbs `overrun` ms in the tail since the previous anchor (`tailFrom`), from its end:
+   * first whole flexible entries (song, bed, fill) that fit in it, then trims of the flexible
+   * ones, and only then whole other entries (a VT, a jingle), so a voice track stays when the
+   * music around it can give the time. Returns what's left.
+   */
   const absorb = (overrun: number): number => {
     let left = overrun;
-    for (let j = wanted.length - 1; j >= 0 && left > o.toleranceMs; j--) {
-      const w = wanted[j] as PlannedEntry;
-      const length = w.entry.slotMs - w.trimMs;
-      if (left >= length) {
-        shorten(j, length, true);
-        left -= length;
-        continue;
+    const pass = (test: (w: PlannedEntry) => boolean, trim: boolean) => {
+      for (let j = wanted.length - 1; j >= tailFrom && left > o.toleranceMs; j--) {
+        const w = wanted[j] as PlannedEntry;
+        if (!test(w)) continue;
+        const length = w.entry.slotMs - w.trimMs;
+        if (!trim && left >= length) {
+          shorten(j, length, true);
+          left -= length;
+          continue;
+        }
+        const cut = trim ? Math.min(left, Math.max(0, w.entry.flexMs - w.trimMs)) : 0;
+        if (cut > 0) {
+          shorten(j, cut, false);
+          left -= cut;
+        }
       }
-      const cut = Math.min(left, Math.max(0, w.entry.flexMs - w.trimMs));
-      if (cut > 0) {
-        shorten(j, cut, false);
-        left -= cut;
-      }
-    }
+    };
+    const flexible = (w: PlannedEntry) => isFlexibleKind(w.entry.kind);
+    pass(flexible, false);
+    pass(flexible, true);
+    pass((w) => !flexible(w), false);
     return left;
   };
 
@@ -230,24 +269,47 @@ export function planFeed(input: PlanInput): FeedPlan {
 
     const anchor = e.timing === 'flow' ? null : e.anchorAtMs;
     if (anchor !== null && e.timing === 'hard') {
-      if (t - anchor > o.toleranceMs) {
-        const left = absorb(t - anchor);
-        if (left > o.toleranceMs) late.push({ itemId: e.id, ms: left });
+      // Segments (island chains) can't be scheduled: they keep the re-plan alone.
+      const cut = o.engineCut && PUSHED.includes(e.kind) && e.kind !== 'segment' && !e.unplayable;
+      const target = anchor + (cut ? o.cutOverlapMs : 0);
+      if (t - target > o.toleranceMs) {
+        const left = absorb(t - target);
+        if (left > o.toleranceMs && !cut) late.push({ itemId: e.id, ms: left });
+      } else if (target - t > o.toleranceMs) {
+        t += stretchTail(wanted, tailFrom, target - t);
+      }
+      if (cut) {
+        scheduled = { entry: e, atMs: anchor };
+        break;
       }
       if (!waitFor(e, anchor)) break;
     } else if (anchor !== null && e.timing === 'soft') {
       // Whatever would start at or after the anchor makes way for this item.
-      const dropLast = () => {
+      while (wanted.length > tailFrom && (wanted.at(-1) as PlannedEntry).startMs >= anchor) {
         const last = wanted.at(-1) as PlannedEntry;
         shorten(wanted.length - 1, last.entry.slotMs - last.trimMs, true);
-      };
-      while (wanted.length && (wanted.at(-1) as PlannedEntry).startMs >= anchor) dropLast();
+      }
+      // At most `capMs` late: the tail is cut (or dropped) down to the cap.
       const cap = anchor + (e.capMs ?? 0);
-      if (t > cap && wanted.length) dropLast();
-      if (t > cap + o.toleranceMs) late.push({ itemId: e.id, ms: t - cap });
+      const left = t > cap ? absorb(t - cap) : 0;
+      if (left > o.toleranceMs) {
+        // The item on air itself runs past the cap: the engine cuts it there (#46).
+        if (o.engineCut && PUSHED.includes(e.kind) && e.kind !== 'segment' && !e.unplayable) {
+          scheduled = { entry: e, atMs: cap };
+          break;
+        }
+        late.push({ itemId: e.id, ms: left });
+      }
+      // Not early: the tail aims a little past the anchor, the item waits for its end; a gap
+      // the tail can't stretch over holds the item until its anchor, like a hard one.
+      const aim = anchor + o.cutOverlapMs;
+      if (aim - t > o.toleranceMs) t += stretchTail(wanted, tailFrom, aim - t);
+      if (!waitFor(e, anchor)) break;
     } else if (anchor !== null && e.timing === 'not_before') {
       if (!waitFor(e, anchor)) break;
     }
+    // The tail of the next anchor starts after this one (a marker or a live slot included).
+    if (anchor !== null) tailFrom = wanted.length;
     if (notBefore !== null && e.kind !== 'marker') {
       const floor = notBefore;
       notBefore = null;
@@ -266,6 +328,7 @@ export function planFeed(input: PlanInput): FeedPlan {
     }
     wanted.push({ entry: e, startMs: t, trimMs: 0 });
     t += e.slotMs;
+    if (e.timing !== 'flow') tailFrom = wanted.length;
   }
 
   let need = 0;
@@ -275,7 +338,7 @@ export function planFeed(input: PlanInput): FeedPlan {
     if (need >= o.minItems && ahead >= o.minAheadMs) break;
     need++;
   }
-  return { onAirIndex, onAirEndMs, wanted, need, skipped, hold, late };
+  return { onAirIndex, onAirEndMs, wanted, need, skipped, hold, late, scheduled };
 }
 
 function findLastIndex<T>(list: readonly T[], test: (item: T) => boolean): number {

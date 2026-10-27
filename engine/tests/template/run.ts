@@ -477,6 +477,94 @@ async function main() {
       `the voice is no item on air: as-run sees F only (got ${JSON.stringify(afterF)})`,
     );
 
+    // Hard start (#46, ADR 0031): G (440 Hz) plays from the queue; H (660 Hz) is scheduled 4 s
+    // later. The engine starts H on its own audio timeline, fades G out under it and skips G,
+    // so G doesn't come back after H.
+    writeWav(join(work, 'g.wav'), tone(440, 12, 0.3));
+    writeWav(join(work, 'h.wav'), tone(660, 4, 0.3));
+    const hardBefore = engineEventBatchSchema.parse(
+      await (await call('GET', '/events?after=0')).json(),
+    ).length;
+    check(
+      (await call('POST', '/queue', { item_id: 'G', uri: inContainer(join(work, 'g.wav')) }))
+        .status === 201,
+      'hard start: G queued',
+    );
+    await sleep(1000);
+    const hAt = Date.now() / 1000 + 4;
+    check(
+      (await call('POST', '/schedule', { item_id: 'H', at: hAt })).status === 400,
+      'schedule of a bad body: 400',
+    );
+    check(
+      (await call('POST', '/schedule', { item_id: 'H', uri: '/work/nope.wav', at: hAt })).status ===
+        422,
+      'schedule of a missing file: 422',
+    );
+    const scheduledH = await call('POST', '/schedule', {
+      item_id: 'H',
+      uri: inContainer(join(work, 'h.wav')),
+      at: hAt,
+      fade_in: 0,
+    });
+    check(scheduledH.status === 201, `POST /v1/schedule: 201 (got ${scheduledH.status})`);
+    const waiting = engineStateSchema.parse(await (await call('GET', '/state')).json());
+    check(
+      waiting.scheduled?.item_id === 'H' &&
+        // The engine prints epoch floats to 10 ms (ADR 0003).
+        Math.abs((waiting.scheduled?.at ?? 0) - hAt) < 0.011 &&
+        waiting.on_air.item_id === 'G',
+      'state: G on air, H scheduled at its time',
+    );
+    // Once H is on air, as the feeder does: queue what follows it (K), and post the next hard
+    // start (I), then cancel it. Neither may disturb H.
+    let onAirH = false;
+    for (let i = 0; i < 100 && !onAirH; i++) {
+      await sleep(100);
+      onAirH =
+        engineStateSchema.parse(await (await call('GET', '/state')).json()).on_air.item_id === 'H';
+    }
+    check(onAirH, 'H goes on air');
+    // Longer than the station crossfade, like any song after an episode.
+    writeWav(join(work, 'k.wav'), tone(330, 8, 0.3));
+    await call('POST', '/queue', { item_id: 'K', uri: inContainer(join(work, 'k.wav')) });
+    const afterH = engineStateSchema.parse(await (await call('GET', '/state')).json());
+    check(afterH.scheduled === null, 'state: nothing scheduled once H has started');
+    const cancel = await call('POST', '/schedule', {
+      item_id: 'I',
+      uri: inContainer(join(work, 'h.wav')),
+      at: Date.now() / 1000 + 60,
+    });
+    const duringH = engineStateSchema.parse(await (await call('GET', '/state')).json());
+    check(
+      cancel.status === 201 && duringH.on_air.item_id === 'H' && duringH.scheduled?.item_id === 'I',
+      'the next hard start, posted while H plays, waits: H stays on air',
+    );
+    const cancelled = (await (await call('DELETE', '/schedule')).json()) as { cancelled: boolean };
+    await sleep(8000);
+    const hardEvents = engineEventBatchSchema
+      .parse(await (await call('GET', `/events?after=${hardBefore}`)).json())
+      .filter((e) => e.type === 'track.started');
+    const hEvent = hardEvents.find((e) => e.data.item_id === 'H');
+    check(
+      JSON.stringify(hardEvents.map((e) => e.data.item_id)) === JSON.stringify(['G', 'H', 'K']) &&
+        hEvent?.data.source === 'queue',
+      `as-run: G, H as a log item, then K; G doesn't resume (got ${JSON.stringify(
+        hardEvents.map((e) => [e.data.item_id, e.data.rid, (e.at - hAt).toFixed(2)]),
+      )})`,
+    );
+    // The callback's time() lags the audio by tens of ms (ADR 0003): a loose bound here; the
+    // gate's own accuracy was measured on the audio by the spike (≤ 1 ms).
+    check(
+      hEvent !== undefined && Math.abs(hEvent.at - hAt) < 0.3,
+      `H reported on air at its time (${hEvent ? (hEvent.at - hAt).toFixed(3) : '?'} s)`,
+    );
+    check(
+      cancelled.cancelled &&
+        engineStateSchema.parse(await (await call('GET', '/state')).json()).scheduled === null,
+      'DELETE /v1/schedule cancels it, and H played on',
+    );
+
     docker(['stop', '-t', '10', name]);
 
     // Seam check, as in the splice test: the output from A's first sample against the ideal
@@ -567,6 +655,29 @@ async function main() {
       Math.abs(20 * Math.log10(music(5.4) / music(1.2))) <= 1,
       'fallback: the music comes back to full level after the voice',
     );
+
+    // The hard start in the audio: H's onset (660 Hz, from the end), G faded out under it
+    // within its 1 s cut fade, and never back.
+    let hStart = -1;
+    for (let i = output.length - win; i >= 0; i -= win) {
+      if (amplitudeAt(output, 660, i, win) > 0.1) hStart = i;
+      else if (hStart >= 0) break;
+    }
+    const tAt = (seconds: number) => hStart + Math.round(seconds * SAMPLE_RATE);
+    const g = (t: number) => amplitudeAt(output, 440, tAt(t), span);
+    const h = (t: number) => amplitudeAt(output, 660, tAt(t), span);
+    const k = (t: number) => amplitudeAt(output, 330, tAt(t), span);
+    console.log(
+      `     hard start: G ${g(-0.6).toFixed(3)} before, ${g(1.5).toFixed(3)} after; H ${h(1).toFixed(3)}`,
+    );
+    check(hStart >= 0 && g(-0.6) > 0.2, 'hard start: G on air until H');
+    check(
+      h(1) > 0.2 && h(3) > 0.2 && h(3.4) > 0.2,
+      'hard start: H at full level from its start to its end',
+    );
+    check(g(1.5) < 0.01 && g(5) < 0.01, 'hard start: G faded out under H, and does not resume');
+    const kMax = Math.max(...[4.2, 4.6, 5, 5.4, 5.8, 6.2].map(k));
+    check(kMax > 0.2, `hard start: K, queued after H, airs after it (${kMax.toFixed(3)})`);
   } finally {
     if (failures.length) console.log(docker(['logs', '--tail', '40', name], false));
     docker(['rm', '-f', name], false);

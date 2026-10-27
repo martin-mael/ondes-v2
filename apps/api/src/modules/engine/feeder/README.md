@@ -7,6 +7,7 @@ Keeps each station's engine queue a few items ahead of air, following the publis
 | Piece | File | Role |
 |---|---|---|
 | Planner | `plan.ts` | Pure. Engine state + log around now → which entries to have queued, in order, with their trims; `diffQueue` compares that with the engine queue. |
+| Hard starts | `hardstart.ts` | Pure (#46, ADR 0031). `slotFit`: a flexible item plays to its log slot (back-timing's cut) and may stretch back; `stretchTail`: the tail lengthens toward an anchor; `scheduleBody` / `scheduleAction`: what to send `POST /v1/schedule`. `hardstart.sim.test.ts` plays two weeks of generated logs through the feeder into a model of the engine. |
 | Push bodies | `push.ts` | Pure. One log item (or segment, or island chain) + its media → `POST /v1/queue` / `POST /v1/segment` body: cache path, biased cue points, fades, crossfades, gain, ICY metadata, voice overlay. |
 | Islands | `islands.ts` | Pure. The window's islands (#57, ADR 0024) → which air as chains (`A body, island, B body`) and which fall back to a crossfade with their voices laid over it. |
 | Repo | `repo.ts` | The log around now (published days only) and, in one query, each asset's playout file, cues, loudness and cache state. `loadFeedIslands`: the islands the window's segues call for now, their render's cache state, the voices' media. `feeder_push`: what was pushed to the current boot. |
@@ -38,15 +39,30 @@ Keeps each station's engine queue a few items ahead of air, following the publis
    - Uncached items, files the engine refused (422) and items with no playout file are passed
      over; the next playable item takes their place.
    - Markers push nothing. A live slot pushes nothing and holds what follows until its end.
-6. **Anchors** (`timing`), within the lookahead:
-   - `hard`: an overrun drops whole queued entries that fit in it, then trims flexible ones
-     (song, bed, fill) to no less than 30 s, from the tail backwards. A gap over `holdGapMs` (5 s)
-     holds the item until its anchor.
-   - `soft`: entries that would start at or after the anchor are dropped, plus the last one if it
-     would end past `anchor + cap`.
+6. **Anchors** (`timing`), within the lookahead (#46, ADR 0031):
+   - A flexible item (song, bed, fill) plays to its log slot: when back-timing cut it in the log
+     (a shortened last song, a bed sized to the gap), it is pushed trimmed, with a fade-out, and
+     may play up to that much longer again (`slotFit`).
+   - Overruns are absorbed in the tail since the previous anchor only: whole flexible entries
+     that fit in it first, then trims of the flexible ones (to no less than 30 s), and only then
+     whole other entries (a VT, a jingle), from the tail backwards.
+   - `hard`: an overrun is absorbed; a gap stretches the tail's flexible entries back toward
+     their media's length, the last one first (`stretchTail`).
+     - When the engine has `POST /v1/schedule`, the hard item is never queued: it is scheduled
+       with the engine as soon as it enters the window (again after a restart, or when its body
+       or time changes, except in its last 5 s; cancelled when the log stops starting it hard),
+       and the plan stops there. The engine holds a schedule posted while the previous hard
+       item plays until that one ends. The tail aims `cutOverlapMs` (500 ms) past the anchor;
+       the engine starts the item on its own audio timeline and fades out what's on air under
+       it. Nothing is `late`.
+     - Without it, a gap over `holdGapMs` (5 s) holds the item until its anchor, and what the
+       tail can't absorb is logged as `late`.
+   - `soft`: entries that would start at or after the anchor are dropped, and the tail is cut
+     (else dropped) down to `anchor + cap`. A gap stretches the tail like a hard one's, aiming
+     `cutOverlapMs` past the anchor, and one over `holdGapMs` holds the item until its anchor.
+     When the item on air itself runs past the cap, the engine cuts it there (the soft item is
+     scheduled at `anchor + cap`); without the engine cut, that's `late`.
    - `not_before`: held until its anchor (gap over 5 s).
-   - What re-planning can't absorb is logged as `late`. The engine-timed cut (ADR 0003
-     `POST /v1/schedule`) isn't on the engine yet.
 7. **Diff.** Keep the longest queued prefix that matches the plan: same entry, same body
    fingerprint, trim within 250 ms. Remove the rest (`DELETE /v1/queue/:id`, or clear when it's
    everything), re-read the state, then push what's missing. The item on air is never in the

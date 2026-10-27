@@ -239,6 +239,34 @@
       "when": 1792762562693,
       "tag": "20261023133602_live-switching",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1792779509623,
+      "tag": "20261023181829_log-regen",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1792873847373,
+      "tag": "20261024203047_promo-vts",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1792873876622,
+      "tag": "20261024203116_live-slots",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1793024146451,
+      "tag": "20261026141546_slot-start-policy",
+      "breakpoints": true
     }
   ]
 }

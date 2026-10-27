@@ -1,7 +1,11 @@
 import { NotFoundError } from '@ondes/db';
 import {
+  createLiveEventSchema,
   createStreamerSchema,
   liveConnectionInfoSchema,
+  liveEventListSchema,
+  liveEventSchema,
+  liveRequestListSchema,
   liveSessionSchema,
   liveStatusSchema,
   putLiveOnAirSchema,
@@ -10,6 +14,7 @@ import {
   streamerListSchema,
   streamerSchema,
   streamerWithPasswordSchema,
+  updateLiveEventSchema,
   updateStreamerSchema,
   uuidSchema,
 } from '@ondes/shared';
@@ -20,9 +25,17 @@ import { z } from 'zod';
 import { actorOf, stationScopeOf } from '../../plugins/auth.ts';
 import { HttpError } from '../../plugins/errors.ts';
 import { listRunningStationScopes } from '../engine/lifecycle/repo.ts';
+import {
+  type FallbackDeps,
+  generatorClockMusic,
+  gridClockResolver,
+} from '../shows/episode-check/fallback.ts';
 import { createLiveAuthHandler, type LoginFailureLimiter } from './auth.ts';
+import * as events from './events.ts';
 import * as repo from './repo.ts';
+import * as requests from './requests.ts';
 import { createLiveRevoker, liveHolder } from './revoke.ts';
+import { createLiveSlotCheck } from './slot-check.ts';
 import { createLiveSwitcher, type LiveSwitchEngineLookup } from './switching.ts';
 import { LIVE_AUTH_ROUTE } from './url.ts';
 
@@ -33,6 +46,9 @@ import { LIVE_AUTH_ROUTE } from './url.ts';
 //   only sees the streamers linked to them, and with `live:broadcast` may reset their password.
 // - `live:read` also reads the harbor pool's status; `engine:control` puts a connected DJ on
 //   air, hands the air back to automation and hangs a DJ up (#64, ADR 0027).
+// - Live slots, ad-hoc live and events (#65, ADR 0033): `live:read` lists the pending ad-hoc
+//   requests and the events, `engine:control` approves or refuses a request, `live:manage`
+//   writes events. The switch sweep also runs the missed-live-slot check (`slot-check.ts`).
 
 export type LivePluginOptions = {
   /** Host name DJs connect to. Default: the app URL's host. */
@@ -55,11 +71,15 @@ export type LivePluginOptions = {
    * session the engine lost (#64). Default 5 s; 0 turns it off (tests).
    */
   switchIntervalMs?: number;
+  /** What a missed live slot's fallback resolves with. Default: the station's grid and log. */
+  fallback?: FallbackDeps;
 };
 
 const stationParams = z.object({ stationId: z.string() });
 const streamerParams = stationParams.extend({ streamerId: uuidSchema });
 const inputParams = stationParams.extend({ input: z.coerce.number().int().min(1).max(16) });
+const requestParams = stationParams.extend({ requestId: uuidSchema });
+const eventParams = stationParams.extend({ eventId: uuidSchema });
 const candidatesSchema = z.object({
   users: z.array(z.object({ id: uuidSchema, name: z.string() })),
 });
@@ -73,6 +93,16 @@ export const livePlugin = fp(
     const control = app.requirePermission('engine', 'control');
     const BASE = '/api/v1/stations/:stationId/live';
     const rabbit = app.hasDecorator('rabbit') ? app.rabbit : undefined;
+    const slotCheck = createLiveSlotCheck({
+      db: app.db,
+      alerts: app.hasDecorator('alerts') ? app.alerts : undefined,
+      fallback: options.fallback ?? {
+        resolveClock: gridClockResolver(app.db),
+        clockMusic: generatorClockMusic(app.db),
+      },
+      logEvents: rabbit?.events,
+      logger: app.log,
+    });
     const switcher = createLiveSwitcher({
       db: app.db,
       engineFor: options.engineFor,
@@ -81,6 +111,7 @@ export const livePlugin = fp(
       // A streamer still connected though they may not be: revoke again (retries a failed
       // hang-up, and catches an expiry the expiry sweep missed).
       onNotAllowed: (scope, streamerId, reason) => revoker.revoke(scope, streamerId, reason),
+      onSlotLive: (scope, occurrence) => slotCheck.onSlotLive(scope, occurrence),
     });
     const revoker = createLiveRevoker({
       db: app.db,
@@ -277,6 +308,82 @@ export const livePlugin = fp(
       }),
     );
 
+    // Ad-hoc requests (#65): DJs connected outside their slots, waiting for a manager.
+    r.get(
+      `${BASE}/requests`,
+      {
+        preHandler: read,
+        schema: { params: stationParams, response: { 200: liveRequestListSchema } },
+      },
+      async (request) => ({
+        requests: await requests.listPending(app.db, stationScopeOf(request)),
+      }),
+    );
+
+    r.post(
+      `${BASE}/requests/:requestId/approve`,
+      {
+        preHandler: control,
+        schema: { params: requestParams, response: { 200: liveSessionSchema } },
+      },
+      (request) => switcher.approve(ctx(request), request.params.requestId),
+    );
+
+    r.post(
+      `${BASE}/requests/:requestId/refuse`,
+      { preHandler: control, schema: { params: requestParams } },
+      async (request, reply) => {
+        await switcher.refuse(ctx(request), request.params.requestId);
+        return reply.code(204).send();
+      },
+    );
+
+    // Events (#65): one-off live blocks with a title.
+    r.get(
+      `${BASE}/events`,
+      {
+        preHandler: read,
+        schema: { params: stationParams, response: { 200: liveEventListSchema } },
+      },
+      async (request) => ({ events: await events.listEvents(app.db, stationScopeOf(request)) }),
+    );
+
+    r.post(
+      `${BASE}/events`,
+      {
+        preHandler: manage,
+        schema: {
+          params: stationParams,
+          body: createLiveEventSchema,
+          response: { 201: liveEventSchema },
+        },
+      },
+      async (request, reply) =>
+        reply.code(201).send(await events.createEvent(app.db, ctx(request), request.body)),
+    );
+
+    r.patch(
+      `${BASE}/events/:eventId`,
+      {
+        preHandler: manage,
+        schema: {
+          params: eventParams,
+          body: updateLiveEventSchema,
+          response: { 200: liveEventSchema },
+        },
+      },
+      (request) => events.updateEvent(app.db, ctx(request), request.params.eventId, request.body),
+    );
+
+    r.delete(
+      `${BASE}/events/:eventId`,
+      { preHandler: manage, schema: { params: eventParams } },
+      async (request, reply) => {
+        await events.deleteEvent(app.db, ctx(request), request.params.eventId);
+        return reply.code(204).send();
+      },
+    );
+
     if (options.engineFor && rabbit) {
       const subscription = rabbit.subscribeEvents((raw) => {
         const event = realtimeEventSchema.safeParse(raw);
@@ -299,6 +406,11 @@ export const livePlugin = fp(
               .sweep(scope)
               .catch((err: unknown) =>
                 app.log.error({ err, stationId: scope.stationId }, 'Live switching sweep failed'),
+              );
+            await slotCheck
+              .sweep(scope)
+              .catch((err: unknown) =>
+                app.log.error({ err, stationId: scope.stationId }, 'Live slot check failed'),
               );
           }
         })()

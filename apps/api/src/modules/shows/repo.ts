@@ -61,6 +61,7 @@ import {
 } from '@ondes/shared';
 import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { HttpError } from '../../plugins/errors.ts';
+import { liveColumns, toSlotLive } from './live-slots.ts';
 import { rerunColumns, resolveReruns, toSlotRerun } from './reruns.ts';
 
 // Shows, slots, exceptions and episodes (#44, ADR 0014). Every function takes the station
@@ -347,6 +348,9 @@ async function toSlots(db: Executor, rows: SlotRow[]): Promise<ShowSlot[]> {
     rule: r.rule,
     durationMs: r.durationMs,
     rerun: toSlotRerun(r),
+    live: toSlotLive(r),
+    startMode: r.startMode,
+    startCapMs: r.startCapMs,
     exceptions: exceptions.get(r.id) ?? [],
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
@@ -414,6 +418,9 @@ export async function createSlot(
         endsOn: ruleEndDate(parsed.rule),
         durationMs,
         ...(await rerunColumns(tx, ctx.scope, showId, type, parsed.rerun)),
+        ...liveColumns(type, parsed.live),
+        startMode: parsed.startMode ?? 'hard',
+        startCapMs: parsed.startCapMs ?? null,
       })
       .returning();
     if (!row) throw new Error('insert returned no row');
@@ -437,18 +444,37 @@ export async function updateSlot(
   return withAudit(db, ctx, async (tx, audit) => {
     const before = await slotRow(tx, ctx.scope, showId, slotId);
     const rule = parsed.rule ?? before.rule;
-    const { rerun, ...fields } = parsed;
+    const { rerun, live, startMode, startCapMs, ...fields } = parsed;
     const type = parsed.type ?? before.type;
+    // A cap only goes with a soft start: a slot made hard drops it, and a cap alone on a hard
+    // slot is refused rather than silently dropped.
+    const mode = startMode ?? before.startMode;
+    if (mode === 'hard' && startCapMs != null) {
+      throw new HttpError(422, 'start_cap_on_hard', 'startCapMs only applies to a soft start');
+    }
+    const startFields =
+      startMode !== undefined || startCapMs !== undefined
+        ? {
+            startMode: mode,
+            startCapMs:
+              mode === 'soft' ? (startCapMs === undefined ? before.startCapMs : startCapMs) : null,
+          }
+        : {};
     // The strategy is rewritten when it's given or the type changes; else a rerun slot keeps its.
     const rerunFields =
       rerun !== undefined || type !== before.type
         ? await rerunColumns(tx, ctx.scope, showId, type, rerun)
         : {};
+    // Likewise for a live slot's settings (missing ones keep their value, or the defaults).
+    const liveFields =
+      live !== undefined || type !== before.type ? liveColumns(type, live, before) : {};
     const [after] = await tx
       .update(showSlot)
       .set({
         ...fields,
         ...rerunFields,
+        ...liveFields,
+        ...startFields,
         ...(parsed.rule ? { startsOn: ruleStartDate(rule), endsOn: ruleEndDate(rule) } : {}),
       })
       .where(and(eq(showSlot.id, slotId), whereStation(showSlot, ctx.scope)))
@@ -1015,6 +1041,7 @@ export async function getOccurrences(
         moved: o.moved,
         episode: e ? summary(e) : null,
         ...(o.slot.type === 'rerun' ? { rerunOf: rerunOf ? summary(rerunOf) : null } : {}),
+        ...(o.slot.type === 'live' ? { live: toSlotLive(o.slot) ?? undefined } : {}),
       };
     }),
     conflicts: findConflicts(occurrences).map((c) => ({
