@@ -1,13 +1,26 @@
 import { spawnSync } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import type { EngineEvent, EngineState } from '@ondes/shared';
+import {
+  createOrganization,
+  createStation,
+  resolveOrgScope,
+  resolveStationScope,
+  type StationScope,
+} from '@ondes/db';
+import { createTestDatabase } from '@ondes/db/testing';
+import type { Actor, EngineEvent, EngineState } from '@ondes/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { EngineBadRequestError } from '../engine/adapter/errors.ts';
 import { createEngineAdapter, type EngineAdapter } from '../engine/adapter/index.ts';
 import { renderStationScript } from '../engine/config/index.ts';
+import { createLiveHandovers, type LiveHandovers } from './handover.ts';
+import { createStreamer } from './repo.ts';
+import { createLiveSwitcher, type LiveSwitchEngine, type LiveSwitcher } from './switching.ts';
 import {
   analyse,
   readWavChannel,
@@ -20,8 +33,10 @@ import {
 // DJ handover on the real engine (#66, ADR 0038), recorded. The station template runs in the
 // pinned Liquidsoap image with a WAV recorder on its final mix; two more Liquidsoap containers
 // play DJs streaming MP3 to the two inputs of the pool, each its own tone:
-//   A 440 Hz (queue) → DJ 1 220 Hz (takeover) → DJ 2 330 Hz (handover, 3 s crossfade)
-//   → DJ 2 muted for 2 s, then unmuted → DJ 1 again (handover with a 0 s fade: a cut).
+//   A 440 Hz (queue) → DJ 1 220 Hz (takeover) → DJ 2 330 Hz (a scheduled handover, 3 s
+//   crossfade) → DJ 2 muted for 2 s, then unmuted → DJ 1 again (handover with a 0 s fade: a cut).
+// Node's side is the real one (switcher, scheduled handovers, a throwaway database); a stub of
+// the harbor auth callback tells the engine which streamer each DJ is, as the api does.
 // The recording must show no dead air and no level bump through each handover: the old DJ
 // fades out while the new one fades in over the asked duration, at a steady total level
 // (equal-power fades), and the cut leaves neither a gap nor an overlap. Own network and
@@ -57,7 +72,17 @@ const user =
     ? ['--user', `${process.getuid()}:${process.getgid()}`, '-e', 'HOME=/tmp']
     : [];
 
+const system: Actor = { type: 'system', name: 'live-handover-test' };
+const logger = { info: () => {}, warn: () => {}, error: () => {} };
+
 let engine: EngineAdapter;
+let tdb: Awaited<ReturnType<typeof createTestDatabase>>;
+let scope: StationScope;
+let switcher: LiveSwitcher;
+let handovers: LiveHandovers;
+let auth: Server;
+/** Streamer ids by DJ (their source login's user name). */
+const streamers: Record<string, string> = {};
 
 async function until(what: string, ok: (s: EngineState) => boolean, ms = 20_000) {
   let last: EngineState | undefined;
@@ -77,7 +102,8 @@ function startDj(name: string, mount: string, freq: number): void {
       'settings.log.stdout := true',
       'settings.log.level := 2',
       `output.icecast(%mp3(bitrate=192), host=${JSON.stringify(engineName)}, port=8005,`,
-      `  password=${JSON.stringify(PASSWORD)}, mount=${JSON.stringify(mount)},`,
+      `  user=${JSON.stringify(name)}, password=${JSON.stringify(PASSWORD)},`,
+      `  mount=${JSON.stringify(mount)},`,
       `  sine(amplitude=0.5, ${freq.toFixed(1)}))`,
     ].join('\n'),
   );
@@ -100,6 +126,40 @@ beforeAll(async () => {
   mkdirSync(join(work, 'safety'), { recursive: true });
   writeTone(join(work, 'a.wav'), TONES.A, 120);
 
+  tdb = await createTestDatabase();
+  const org = await createOrganization(tdb.db, system, { slug: `ho-${run}`, name: 'Org' });
+  const st = await createStation(
+    tdb.db,
+    { actor: system, scope: await resolveOrgScope(tdb.db, org.id) },
+    { slug: `ho-fm-${run}`, name: 'FM', timezone: 'Europe/Paris' },
+  );
+  scope = await resolveStationScope(tdb.db, org.id, st.id);
+  for (const username of ['dj1', 'dj2']) {
+    const created = await createStreamer(
+      tdb.db,
+      { actor: system, scope },
+      { displayName: username, username, anyTime: true },
+    );
+    streamers[username] = created.streamer.id;
+  }
+  // The harbor auth callback, stubbed: the right password and a known DJ get their streamer id.
+  auth = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => {
+      body += c;
+    });
+    req.on('end', () => {
+      const login = JSON.parse(body) as { user: string; password: string };
+      const id = streamers[login.user];
+      res.writeHead(id && login.password === PASSWORD ? 200 : 403, {
+        'content-type': 'application/json',
+      });
+      res.end(JSON.stringify({ streamer_id: id ?? null }));
+    });
+  });
+  await new Promise<void>((ok) => auth.listen(0, '0.0.0.0', ok));
+  const authPort = (auth.address() as AddressInfo).port;
+
   const rendered = renderStationScript({
     stationId: `live-handover-${run}`,
     name: 'DJ handover test',
@@ -109,7 +169,14 @@ beforeAll(async () => {
     processing: { compressor: { enabled: false }, limiter: { enabled: false } },
     icecast: { host: '127.0.0.1', port: 9 },
     outputs: [{ mount: 'test.mp3', format: 'mp3', bitrate: 128 }],
-    live: { enabled: true, mount: 'live', inputs: 2, buffer: 2, maxBuffer: 5 },
+    live: {
+      enabled: true,
+      mount: 'live',
+      inputs: 2,
+      buffer: 2,
+      maxBuffer: 5,
+      authUrl: `http://host.docker.internal:${authPort}/live-auth`,
+    },
   });
   // Test-only recorder of the final mix, appended after the outputs.
   writeFileSync(
@@ -125,6 +192,8 @@ beforeAll(async () => {
     engineName,
     '--network',
     network,
+    '--add-host',
+    'host.docker.internal:host-gateway',
     ...user,
     '-e',
     `ENGINE_CONTROL_TOKEN=${TOKEN}`,
@@ -145,6 +214,10 @@ beforeAll(async () => {
     baseUrl: `http://127.0.0.1:${port}`,
     token: TOKEN,
   });
+  const engineFor = async (id: string) =>
+    id === scope.stationId ? (engine as LiveSwitchEngine) : undefined;
+  switcher = createLiveSwitcher({ db: tdb.db, engineFor, logger });
+  handovers = createLiveHandovers({ db: tdb.db, switcher, engineFor, logger });
   for (let i = 0; i < 120; i++) {
     if (
       await engine.health().then(
@@ -158,7 +231,10 @@ beforeAll(async () => {
   throw new Error(`engine did not start:\n${docker(['logs', engineName], false)}`);
 }, 120_000);
 
-afterAll(() => {
+afterAll(async () => {
+  handovers?.close();
+  auth?.close();
+  await tdb?.drop();
   for (const id of docker(['ps', '-aq', '--filter', `name=ondes-live-handover-.*-${run}`], false)
     .split('\n')
     .filter(Boolean))
@@ -183,7 +259,7 @@ function firstSustained(
 
 describe('DJ handover on the real engine', () => {
   it('hands over between two connected DJs with no silence and no overlap glitch', async () => {
-    const [S1, S2, S3] = [randomUUID(), randomUUID(), randomUUID()];
+    const ctx = { actor: system, scope };
     await engine.push({ item_id: 'A', uri: '/work/a.wav', title: 'A' });
     await until('A on air', (s) => s.on_air.item_id === 'A');
 
@@ -191,22 +267,42 @@ describe('DJ handover on the real engine', () => {
     startDj('dj1', 'live', TONES.dj1);
     startDj('dj2', 'live-2', TONES.dj2);
     await until('both DJs ready', (s) => s.live.inputs?.every((i) => i.ready) === true, 30_000);
-    await engine.setLive(true, { input: 1, sessionId: S1 });
+    expect((await engine.state()).live.inputs?.map((i) => i.streamer_id)).toEqual([
+      streamers.dj1,
+      streamers.dj2,
+    ]);
+    const S1 = (await switcher.goLive(ctx, 1)).id;
     await until('DJ 1 on air', (s) => s.live.on_air === 1);
-    await sleep(3000);
 
-    // The handover, with a 3 s crossfade. A fade past 10 s is refused, the gate untouched.
+    // A fade past 10 s is refused by the engine, the gate untouched.
     await expect(
-      engine.setLive(true, { input: 2, sessionId: S2, fadeMs: 11_000 }),
+      engine.setLive(true, { input: 2, sessionId: S1, fadeMs: 11_000 }),
     ).rejects.toBeInstanceOf(EngineBadRequestError);
     expect((await engine.state()).live.session_id).toBe(S1);
-    await engine.setLive(true, { input: 2, sessionId: S2, fadeMs: FADE_MS });
-    await until('DJ 2 on air', (s) => s.live.on_air === 2);
+
+    // The handover, scheduled 3 s ahead with a 3 s crossfade: found on whichever input DJ 2 is
+    // connected, run by the timer the schedule armed.
+    const at = new Date(Date.now() + 3000);
+    const scheduled = await handovers.schedule(ctx, {
+      streamerId: streamers.dj2 ?? '',
+      at,
+      fadeMs: FADE_MS,
+    });
+    await until('DJ 2 on air', (s) => s.live.on_air === 2, 10_000);
+    expect(Date.now()).toBeGreaterThanOrEqual(at.getTime());
+    let done = (await handovers.list(scope)).find((x) => x.id === scheduled.id);
+    for (let i = 0; i < 50 && done?.status !== 'done'; i++) {
+      await sleep(100);
+      done = (await handovers.list(scope)).find((x) => x.id === scheduled.id);
+    }
+    expect(done).toMatchObject({ status: 'done', reason: null });
+    const S2 = done?.sessionId ?? '';
+    expect((await engine.state()).live.session_id).toBe(S2);
     await sleep(FADE_MS + 2000);
 
     // Mute DJ 2 for 2 s: silence on air, the DJ stays connected and on air; pre-listen still
     // has their stream.
-    expect(await engine.muteLive(2, true)).toBe(true);
+    expect(await switcher.mute(ctx, 2, true)).toBe(true);
     const state = await engine.state();
     expect(state.live.inputs?.[1]).toMatchObject({ connected: true, muted: true });
     expect(state.live.on_air).toBe(2);
@@ -215,11 +311,11 @@ describe('DJ handover on the real engine', () => {
     expect(stream?.status).toBe(200);
     listen.abort();
     await sleep(2000);
-    expect(await engine.muteLive(2, false)).toBe(true);
+    expect(await switcher.mute(ctx, 2, false)).toBe(true);
     await sleep(3000);
 
     // Back to DJ 1 with no crossfade: a cut.
-    await engine.setLive(true, { input: 1, sessionId: S3, fadeMs: 0 });
+    const S3 = (await switcher.goLive(ctx, 1, 'manual', undefined, { fadeMs: 0 })).id;
     await until('DJ 1 on air again', (s) => s.live.on_air === 1);
     await sleep(3000);
 
@@ -240,6 +336,17 @@ describe('DJ handover on the real engine', () => {
       [2, true],
       [2, false],
     ]);
+
+    // A mute never waits for the next DJ: DJ 2 hangs up, muting their input is refused, and
+    // the engine (on_connect and on_disconnect) has it unmuted for whoever connects there.
+    await expect(switcher.mute(ctx, 2, true)).resolves.toBe(true);
+    docker(['rm', '-f', `ondes-live-handover-dj2-${run}`], false);
+    await until('DJ 2 gone', (s) => s.live.inputs?.[1]?.connected === false);
+    expect((await engine.state()).live.inputs?.[1]?.muted).toBe(false);
+    await expect(switcher.mute(ctx, 2, true)).rejects.toMatchObject({
+      code: 'live_input_not_connected',
+    });
+    await expect(engine.muteLive(2, true)).rejects.toMatchObject({ status: 409 });
 
     // Stop the engine so the recorder closes its file, then listen.
     docker(['stop', '-t', '5', engineName], false);
