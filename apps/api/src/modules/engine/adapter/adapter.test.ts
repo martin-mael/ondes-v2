@@ -10,6 +10,7 @@ import {
   EngineUnavailableError,
   EngineUnresolvableError,
 } from './errors.ts';
+import { toRealtimeEvent } from './map.ts';
 import { type FakeEngine, startFakeEngine } from './testing/fake-engine.ts';
 
 const TOKEN = 'secret-token';
@@ -147,5 +148,51 @@ describe('EngineAdapter', () => {
     await expect(adapter.setLive(true)).rejects.toBeInstanceOf(EngineConflictError);
     // Not retried: a 409 won't change by asking again.
     expect(engine.calls.filter((c) => c === 'POST /v1/live')).toHaveLength(1);
+  });
+
+  it('sends the live now-playing, checked first and retried on 5xx (#68)', async () => {
+    const send = adapter.setLiveMetadata;
+    if (!send) throw new Error('setLiveMetadata missing');
+    expect(await send({ title: 'Night Shift #12', artist: 'DJ Nova', encoder: false })).toBe(false);
+    expect(engine.calls).toEqual(['POST /v1/live/metadata']);
+    // Checked before sending: no round trip for a broken command.
+    await expect(
+      send({ title: 'x', artist: null } as unknown as Parameters<typeof send>[0]),
+    ).rejects.toBeInstanceOf(EngineBadRequestError);
+    expect(engine.calls).toHaveLength(1);
+    // Repeatable: the same now-playing twice is harmless.
+    engine.failWith = 503;
+    await expect(send({ title: null, artist: null, encoder: true })).rejects.toBeInstanceOf(
+      EngineServerError,
+    );
+    expect(engine.calls.filter((c) => c === 'POST /v1/live/metadata')).toHaveLength(4);
+    engine.failWith = null;
+    engine.liveDisabled = true;
+    await expect(send({ title: null, artist: null, encoder: false })).rejects.toBeInstanceOf(
+      EngineConflictError,
+    );
+  });
+
+  it("maps the encoder's metadata to engine.live.metadata, capped (#68)", async () => {
+    engine.emit('live.metadata', {
+      input: 1,
+      session_id: 'session-1',
+      streamer_id: null,
+      title: 'x'.repeat(600),
+      artist: 'Encoder Artist',
+    });
+    const [event] = await adapter.events(1);
+    if (!event) throw new Error('no event');
+    expect(toRealtimeEvent(event)).toMatchObject({
+      stationId: engine.stationId,
+      type: 'engine.live.metadata',
+      data: {
+        input: 1,
+        sessionId: 'session-1',
+        streamerId: null,
+        title: 'x'.repeat(500),
+        artist: 'Encoder Artist',
+      },
+    });
   });
 });

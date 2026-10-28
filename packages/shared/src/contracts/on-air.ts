@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { asRunSourceSchema } from './asrun.ts';
+import { liveNowPlayingSchema } from './live-metadata.ts';
 import { logItemKindSchema, logItemTimingSchema } from './log.ts';
 import { slotTypeSchema } from './shows.ts';
 import { uuidSchema } from './tenancy.ts';
@@ -102,6 +103,8 @@ export const onAirSchema = z.object({
   next: z.array(onAirNextItemSchema),
   nextHardEvent: onAirHardEventSchema.nullable(),
   show: onAirShowSchema.nullable(),
+  /** While a DJ is on air: what the streams show (#68). Optional: older apis don't send it. */
+  live: liveNowPlayingSchema.nullable().optional(),
 });
 export type OnAir = z.infer<typeof onAirSchema>;
 

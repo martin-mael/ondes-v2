@@ -1,5 +1,6 @@
 import type { Permission } from '@ondes/shared';
 import type { ComponentType } from 'react';
+import { LiveNowPlayingControl } from '../live/live-now-playing.tsx';
 import { LiveRequestPrompt } from '../live/live-requests.tsx';
 import {
   AlertsPanel,
@@ -32,6 +33,13 @@ export const dashboardWidgets: DashboardWidget[] = [
   },
   // On air (#70): clock, mode, current and next items, next hard event, show block.
   { id: 'on-air', Component: OnAirWidget, permission: 'dashboard:read', width: 'full' },
+  // Live metadata (#68): while a DJ is on air, what the streams show, and a manual override.
+  {
+    id: 'live-now-playing',
+    Component: LiveNowPlayingControl,
+    permission: 'engine:control',
+    width: 'full',
+  },
   // Health, listeners and alerts (#71).
   { id: 'engine-status', Component: EngineStatusPanel, permission: 'engine:read', width: 'half' },
   { id: 'live-sources', Component: LiveSourcesPanel, permission: 'engine:read', width: 'half' },

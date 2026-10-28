@@ -5,11 +5,14 @@ import {
   liveConnectionInfoSchema,
   liveEventListSchema,
   liveEventSchema,
+  liveNowPlayingResponseSchema,
+  liveNowPlayingSchema,
   liveRequestListSchema,
   liveSessionSchema,
   liveStatusSchema,
   putLiveOnAirSchema,
   realtimeEventSchema,
+  setLiveNowPlayingSchema,
   setStreamerPasswordSchema,
   streamerListSchema,
   streamerSchema,
@@ -32,6 +35,7 @@ import {
 } from '../shows/episode-check/fallback.ts';
 import { createLiveAuthHandler, type LoginFailureLimiter } from './auth.ts';
 import * as events from './events.ts';
+import { createLiveMetadata, getLiveNowPlaying } from './metadata.ts';
 import * as repo from './repo.ts';
 import * as requests from './requests.ts';
 import { createLiveRevoker, liveHolder } from './revoke.ts';
@@ -112,6 +116,13 @@ export const livePlugin = fp(
       // hang-up, and catches an expiry the expiry sweep missed).
       onNotAllowed: (scope, streamerId, reason) => revoker.revoke(scope, streamerId, reason),
       onSlotLive: (scope, occurrence) => slotCheck.onSlotLive(scope, occurrence),
+    });
+    // Live metadata (#68, ADR 0040).
+    const metadata = createLiveMetadata({
+      db: app.db,
+      engineFor: options.engineFor,
+      publish: rabbit ? (event) => rabbit.events.publish(event) : undefined,
+      logger: app.log,
     });
     const revoker = createLiveRevoker({
       db: app.db,
@@ -207,6 +218,12 @@ export const livePlugin = fp(
         // Disabled or expired while live: off air now, not at the next connection.
         if (updated.status !== 'active') {
           await revoker.revoke(stationScopeOf(request), updated.id, updated.status);
+        }
+        // Their encoder's metadata allowed or not while on air (#68).
+        if (request.body.encoderMetadata !== undefined) {
+          await metadata
+            .refresh(stationScopeOf(request))
+            .catch((err: unknown) => app.log.warn({ err }, 'Refreshing live metadata failed'));
         }
         return updated;
       },
@@ -308,6 +325,42 @@ export const livePlugin = fp(
       }),
     );
 
+    // Live metadata (#68): what the streams show while a DJ is on air. Null when nobody is.
+    r.get(
+      `${BASE}/now-playing`,
+      {
+        preHandler: read,
+        schema: { params: stationParams, response: { 200: liveNowPlayingResponseSchema } },
+      },
+      async (request) => ({
+        nowPlaying: await getLiveNowPlaying(app.db, stationScopeOf(request)),
+      }),
+    );
+
+    // A manual now-playing (a concert: the artist on stage), until cleared or the session ends.
+    r.put(
+      `${BASE}/now-playing`,
+      {
+        preHandler: control,
+        schema: {
+          params: stationParams,
+          body: setLiveNowPlayingSchema,
+          response: { 200: liveNowPlayingSchema },
+        },
+      },
+      (request) => metadata.setManual(ctx(request), request.body),
+    );
+
+    // Back to the DJ's encoder (if allowed) or the show and DJ.
+    r.delete(
+      `${BASE}/now-playing`,
+      {
+        preHandler: control,
+        schema: { params: stationParams, response: { 200: liveNowPlayingSchema } },
+      },
+      (request) => metadata.clearManual(ctx(request)),
+    );
+
     // Ad-hoc requests (#65): DJs connected outside their slots, waiting for a manager.
     r.get(
       `${BASE}/requests`,
@@ -387,7 +440,10 @@ export const livePlugin = fp(
     if (options.engineFor && rabbit) {
       const subscription = rabbit.subscribeEvents((raw) => {
         const event = realtimeEventSchema.safeParse(raw);
-        if (event.success) void switcher.onEvent(event.data);
+        if (event.success) {
+          void switcher.onEvent(event.data);
+          void metadata.onEvent(event.data);
+        }
       });
       app.addHook('onClose', async () => {
         await subscription.close();
@@ -401,6 +457,11 @@ export const livePlugin = fp(
         if (running) return;
         running = true;
         (async () => {
+          // Live metadata only has work where a session is open: one query for all stations.
+          const live = await metadata.liveStationIds().catch((err: unknown) => {
+            app.log.error({ err }, 'Live metadata sweep failed');
+            return undefined; // sweeps every station instead
+          });
           for (const scope of await listRunningStationScopes(app.db)) {
             await switcher
               .sweep(scope)
@@ -412,6 +473,13 @@ export const livePlugin = fp(
               .catch((err: unknown) =>
                 app.log.error({ err, stationId: scope.stationId }, 'Live slot check failed'),
               );
+            if (!live || live.has(scope.stationId)) {
+              await metadata
+                .sweep(scope)
+                .catch((err: unknown) =>
+                  app.log.error({ err, stationId: scope.stationId }, 'Live metadata sweep failed'),
+                );
+            }
           }
         })()
           .catch((err: unknown) => app.log.error({ err }, 'Live switching sweep failed'))

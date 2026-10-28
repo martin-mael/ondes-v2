@@ -75,6 +75,11 @@ export const streamerSchema = z.object({
    * payloads still parse.
    */
   adHoc: liveAdHocPolicySchema.default('approval'),
+  /**
+   * While on air, the metadata their DJ software sends reaches the streams (#68). Off: the
+   * show and DJ name. Optional with a default so older api versions' payloads still parse.
+   */
+  encoderMetadata: z.boolean().default(false),
   /** Shows whose slots this streamer may connect for. */
   shows: z.array(z.object({ id: uuidSchema, name: z.string(), colour: z.string().nullable() })),
   status: streamerStatusSchema,
@@ -96,6 +101,7 @@ const streamerFields = z.object({
   expiresAt: dateInputSchema.nullable(),
   anyTime: z.boolean(),
   adHoc: liveAdHocPolicySchema,
+  encoderMetadata: z.boolean(),
   showIds: z
     .array(uuidSchema)
     .max(100)
@@ -110,6 +116,7 @@ export const createStreamerSchema = streamerFields
     expiresAt: true,
     anyTime: true,
     adHoc: true,
+    encoderMetadata: true,
     showIds: true,
   })
   .extend({ password: streamerPasswordSchema.optional() });

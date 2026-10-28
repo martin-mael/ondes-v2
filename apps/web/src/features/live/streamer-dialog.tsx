@@ -45,6 +45,7 @@ interface Draft {
   expiresTime: string;
   anyTime: boolean;
   adHoc: LiveAdHocPolicy;
+  encoderMetadata: boolean;
   showIds: string[];
 }
 
@@ -60,6 +61,7 @@ function draftOf(streamer: Streamer | undefined, timezone: string): Draft {
     expiresTime: expires?.time ?? '',
     anyTime: streamer?.anyTime ?? false,
     adHoc: streamer?.adHoc ?? 'approval',
+    encoderMetadata: streamer?.encoderMetadata ?? false,
     showIds: streamer?.shows.map((s) => s.id) ?? [],
   };
 }
@@ -122,6 +124,7 @@ export function StreamerDialog({
       expiresAt,
       anyTime: draft.anyTime,
       adHoc: draft.adHoc,
+      encoderMetadata: draft.encoderMetadata,
       showIds: draft.showIds,
     };
     const body = streamer
@@ -277,6 +280,17 @@ export function StreamerDialog({
               </NativeSelect>
               <FieldDescription>{t('field.adHocHelp')}</FieldDescription>
             </Field>
+            <FieldSet>
+              {/* biome-ignore lint/a11y/noLabelWithoutControl: Base UI's checkbox renders the control. */}
+              <label className="flex cursor-pointer items-center gap-2">
+                <Checkbox
+                  checked={draft.encoderMetadata}
+                  onCheckedChange={(on) => set('encoderMetadata', on)}
+                />
+                {t('field.encoderMetadata')}
+              </label>
+              <FieldDescription>{t('field.encoderMetadataHelp')}</FieldDescription>
+            </FieldSet>
             <FieldSet disabled={draft.anyTime}>
               <FieldLegend variant="label">{t('field.shows')}</FieldLegend>
               {shows.isSuccess && showList.length === 0 ? (

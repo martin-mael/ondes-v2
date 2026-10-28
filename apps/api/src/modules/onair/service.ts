@@ -20,6 +20,7 @@ import {
 } from '@ondes/shared';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import { getOnAir as getOpenEntry } from '../asrun/index.ts';
+import { getLiveNowPlaying } from '../live/metadata.ts';
 import { getLogRange } from '../log/repo.ts';
 import { getOccurrences } from '../shows/repo.ts';
 import { estimateNext } from './estimate.ts';
@@ -70,11 +71,15 @@ export async function readOnAir(
   const block = currentOccurrence(occurrences, at);
   const nextShow = occurrences.find((o) => o.startsAt.getTime() > at) ?? null;
 
-  const [current, djName, showBlock] = await Promise.all([
+  const [onAirEntry, djName, showBlock, live] = await Promise.all([
     entry ? currentOf(db, scope, entry) : null,
     entry?.source === 'live' ? liveDjName(db, scope, entry.liveSessionId) : null,
     block ? showOf(db, scope, block) : null,
+    entry?.source === 'live' ? getLiveNowPlaying(db, scope) : null,
   ]);
+  // While live, the item on air reads what the streams show (#68), not the as-run's first tags.
+  const current =
+    onAirEntry && live ? { ...onAirEntry, title: live.title, artist: live.artist } : onAirEntry;
 
   return {
     at: now.toISOString(),
@@ -83,6 +88,7 @@ export async function readOnAir(
     next: estimate.next,
     nextHardEvent: earliest(estimate.hardEvent, nextShow),
     show: showBlock,
+    live,
   };
 }
 

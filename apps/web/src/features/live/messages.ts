@@ -146,6 +146,24 @@ const en = {
   'error.live_input_not_connected': 'The DJ is no longer connected.',
   'error.invalid_streamer': 'One of the streamers isn’t on this station any more.',
   'error.invalid_span': 'An event ends after it starts, at most 24 hours later.',
+
+  'field.encoderMetadata': 'Show what their DJ software sends',
+  'field.encoderMetadataHelp':
+    'Track titles from BUTT, Mixxx… reach the streams while they’re on air. Otherwise listeners see the show and the DJ’s name.',
+  'nowPlaying.title': 'Now playing on the streams',
+  'nowPlaying.source.default': 'Show and DJ',
+  'nowPlaying.source.encoder': 'From the DJ software',
+  'nowPlaying.source.manual': 'Typed by hand',
+  'nowPlaying.empty': 'Nothing',
+  'nowPlaying.songTitle': 'Title',
+  'nowPlaying.artist': 'Artist',
+  'nowPlaying.placeholder': 'e.g. the artist on stage',
+  'nowPlaying.set': 'Show on the streams',
+  'nowPlaying.clear': 'Back to automatic',
+  'nowPlaying.saved': 'The streams now show it.',
+  'nowPlaying.cleared': 'Back to the automatic now-playing.',
+  'nowPlaying.help': 'Until you go back to automatic or the DJ leaves the air.',
+  'error.live_not_on_air': 'No DJ is on air any more.',
 };
 
 const fr: typeof en = {
@@ -294,6 +312,24 @@ const fr: typeof en = {
   'error.live_input_not_connected': 'Le DJ n’est plus connecté.',
   'error.invalid_streamer': 'Un des streamers n’est plus sur cette station.',
   'error.invalid_span': 'Un événement finit après son début, au plus 24 heures plus tard.',
+
+  'field.encoderMetadata': 'Afficher ce qu’envoie son logiciel de DJ',
+  'field.encoderMetadataHelp':
+    'Les titres envoyés par BUTT, Mixxx… arrivent sur les flux pendant son direct. Sinon, les auditeurs voient l’émission et le nom du DJ.',
+  'nowPlaying.title': 'En ce moment sur les flux',
+  'nowPlaying.source.default': 'Émission et DJ',
+  'nowPlaying.source.encoder': 'Envoyé par le logiciel du DJ',
+  'nowPlaying.source.manual': 'Saisi à la main',
+  'nowPlaying.empty': 'Rien',
+  'nowPlaying.songTitle': 'Titre',
+  'nowPlaying.artist': 'Artiste',
+  'nowPlaying.placeholder': 'p. ex. l’artiste sur scène',
+  'nowPlaying.set': 'Afficher sur les flux',
+  'nowPlaying.clear': 'Revenir à l’automatique',
+  'nowPlaying.saved': 'Les flux l’affichent.',
+  'nowPlaying.cleared': 'Retour à l’affichage automatique.',
+  'nowPlaying.help': 'Jusqu’au retour à l’automatique ou à la fin du direct de ce DJ.',
+  'error.live_not_on_air': 'Plus aucun DJ n’est à l’antenne.',
 };
 
 export type LiveMessageKey = keyof typeof en;

@@ -4,8 +4,11 @@ import {
   liveConnectionInfoSchema,
   liveEventListSchema,
   liveEventSchema,
+  liveNowPlayingResponseSchema,
+  liveNowPlayingSchema,
   liveRequestListSchema,
   liveSessionSchema,
+  type SetLiveNowPlaying,
   type SetStreamerPassword,
   streamerListSchema,
   streamerSchema,
@@ -32,7 +35,16 @@ export const liveKeys = {
   connection: (stationId: string) => [...liveKeys.all(stationId), 'connection'] as const,
   requests: (stationId: string) => [...liveKeys.all(stationId), 'requests'] as const,
   events: (stationId: string) => [...liveKeys.all(stationId), 'events'] as const,
+  nowPlaying: (stationId: string) => [...liveKeys.all(stationId), 'now-playing'] as const,
 };
+
+/** What the streams show while a DJ is on air (#68); null when nobody is. */
+export const nowPlayingQuery = (stationId: string) =>
+  queryOptions({
+    queryKey: liveKeys.nowPlaying(stationId),
+    queryFn: ({ signal }) =>
+      request(`${live(stationId)}/now-playing`, { schema: liveNowPlayingResponseSchema, signal }),
+  });
 
 /** Pending ad-hoc requests (#65): DJs connected outside their slots, waiting for a manager. */
 export const requestsQuery = (stationId: string) =>
@@ -106,6 +118,14 @@ export const liveApi = {
     request(liveEvent(stationId, eventId), { method: 'PATCH', body, schema: liveEventSchema }),
   removeEvent: (stationId: string, eventId: string) =>
     request(liveEvent(stationId, eventId), { method: 'DELETE' }),
+  setNowPlaying: (stationId: string, body: SetLiveNowPlaying) =>
+    request(`${live(stationId)}/now-playing`, {
+      method: 'PUT',
+      body,
+      schema: liveNowPlayingSchema,
+    }),
+  clearNowPlaying: (stationId: string) =>
+    request(`${live(stationId)}/now-playing`, { method: 'DELETE', schema: liveNowPlayingSchema }),
 };
 
 export const invalidateLive = (queryClient: QueryClient, stationId: string) =>

@@ -4,6 +4,7 @@ import {
   asRunEntry,
   createOrganization,
   createStation,
+  liveNowPlaying,
   liveSession,
   logDay,
   logItem,
@@ -232,6 +233,51 @@ describe('GET /stations/:stationId/on-air', () => {
     const body = onAirSchema.parse((await onAir(scope)).json());
     expect(body.mode).toEqual({ kind: 'live', djName: 'Nova' });
     expect(body.current?.source).toBe('live');
+  }, 30_000);
+
+  it('reads the live now-playing while a DJ is on air (#68)', async () => {
+    const scope = await newStation();
+    const [session] = await tdb.db
+      .insert(liveSession)
+      .values({
+        orgId: scope.orgId,
+        stationId: scope.stationId,
+        input: 1,
+        trigger: 'slot',
+        title: 'Night Shift',
+        episodeNumber: 12,
+        streamerName: 'DJ Nova',
+      })
+      .returning({ id: liveSession.id });
+    const sessionId = session?.id ?? '';
+    // The as-run keeps the live entry's first tags; the snapshot shows what the streams show.
+    await airing(scope, { source: 'live', liveSessionId: sessionId, title: 'First tags' });
+
+    let body = onAirSchema.parse((await onAir(scope)).json());
+    expect(body.live).toMatchObject({
+      sessionId,
+      input: 1,
+      title: 'Night Shift #12',
+      artist: 'DJ Nova',
+      source: 'default',
+    });
+    expect(body.current).toMatchObject({ title: 'Night Shift #12', artist: 'DJ Nova' });
+
+    await tdb.db.insert(liveNowPlaying).values({
+      sessionId,
+      orgId: scope.orgId,
+      stationId: scope.stationId,
+      title: 'Live at the Marché',
+      artist: 'Kiosque',
+      source: 'manual',
+    });
+    body = onAirSchema.parse((await onAir(scope)).json());
+    expect(body.live).toMatchObject({ title: 'Live at the Marché', source: 'manual' });
+    expect(body.current).toMatchObject({ title: 'Live at the Marché', artist: 'Kiosque' });
+
+    // Another station's snapshot never reads it.
+    const other = onAirSchema.parse((await onAir(await newStation())).json());
+    expect(other.live ?? null).toBeNull();
   }, 30_000);
 
   it('reports safety mode, and off air when nothing is on air', async () => {

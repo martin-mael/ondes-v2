@@ -9,6 +9,7 @@ import {
   liveSessionEndReasonSchema,
   liveSessionTriggerSchema,
 } from './live.ts';
+import { liveEncoderTextSchema, liveNowPlayingSchema } from './live-metadata.ts';
 import {
   localDateSchema,
   logItemChangeSchema,
@@ -152,6 +153,20 @@ export const engineLiveGateEventSchema = z.object({
   }),
 });
 
+/** The DJ on air's encoder sent metadata (#68), allowed on the streams or not. */
+export const engineLiveMetadataEventSchema = z.object({
+  ...envelope,
+  type: z.literal('engine.live.metadata'),
+  data: z.object({
+    ...engineOrigin,
+    input: z.int(),
+    sessionId: z.string().nullable(),
+    streamerId: z.string().nullable(),
+    title: liveEncoderTextSchema.nullable(),
+    artist: liveEncoderTextSchema.nullable(),
+  }),
+});
+
 /** Silence on the output for longer than the station's blank threshold. */
 export const engineBlankDetectedEventSchema = z.object({
   ...envelope,
@@ -212,6 +227,7 @@ export const engineRealtimeEventSchema = z.discriminatedUnion('type', [
   engineLiveConnectedEventSchema,
   engineLiveDisconnectedEventSchema,
   engineLiveGateEventSchema,
+  engineLiveMetadataEventSchema,
   engineBlankDetectedEventSchema,
   engineBlankRecoveredEventSchema,
   engineRestartStormEventSchema,
@@ -557,11 +573,19 @@ export const liveRequestDecidedEventSchema = z.object({
   data: z.object({ requestId: z.uuid(), status: liveRequestStatusSchema }),
 });
 
+/** The live now-playing changed (#68): on the streams and in the on-air snapshot. */
+export const liveMetadataChangedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('live.metadata.changed'),
+  data: liveNowPlayingSchema,
+});
+
 export const liveRealtimeEventSchema = z.discriminatedUnion('type', [
   liveSessionStartedEventSchema,
   liveSessionEndedEventSchema,
   liveRequestCreatedEventSchema,
   liveRequestDecidedEventSchema,
+  liveMetadataChangedEventSchema,
 ]);
 export type LiveRealtimeEvent = z.infer<typeof liveRealtimeEventSchema>;
 
@@ -595,6 +619,7 @@ export const realtimeEventPermissions = {
   'engine.live.connected': 'engine:read',
   'engine.live.disconnected': 'engine:read',
   'engine.live.gate': 'engine:read',
+  'engine.live.metadata': 'engine:read',
   'engine.blank.detected': 'engine:read',
   'engine.blank.recovered': 'engine:read',
   'engine.restart_storm': 'engine:read',
@@ -634,6 +659,8 @@ export const realtimeEventPermissions = {
   // Ad-hoc live (#65): the approval prompt.
   'live.request.created': 'engine:read',
   'live.request.decided': 'engine:read',
+  // Live metadata (#68): the dashboard's now-playing while live.
+  'live.metadata.changed': 'engine:read',
 } as const satisfies Record<RealtimeEventType, Permission>;
 
 /** Permission needed to receive `type` over SSE; `null` for types the contract doesn't declare. */

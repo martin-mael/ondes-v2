@@ -70,6 +70,8 @@ export const streamer = pgTable(
     anyTime: boolean('any_time').notNull().default(false),
     /** Outside their slots and events (#65): ask a manager, or go on air. */
     adHoc: text('ad_hoc').$type<LiveAdHocPolicy>().notNull().default('approval'),
+    /** While on air, the metadata their DJ software sends reaches the streams (#68). */
+    encoderMetadata: boolean('encoder_metadata').notNull().default(false),
     lastConnectedAt: timestamp('last_connected_at', { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

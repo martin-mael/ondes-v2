@@ -36,6 +36,7 @@ const streamer = (overrides: Partial<Streamer> = {}): Streamer => ({
   expiresAt: new Date('2026-11-05T21:30:00Z'),
   anyTime: false,
   adHoc: 'approval',
+  encoderMetadata: false,
   shows: [{ id: showId, name: 'Night Shift', colour: '#ff00aa' }],
   status: 'active',
   lastConnectedAt: null,
@@ -140,6 +141,7 @@ describe('live page', () => {
       expiresAt: null,
       anyTime: true,
       adHoc: 'approval',
+      encoderMetadata: false,
       showIds: [],
     });
   });
@@ -293,6 +295,27 @@ describe('live page', () => {
     await waitFor(() => expect(calls.some((c) => c.method === 'PATCH')).toBe(true));
     const patch = calls.find((c) => c.method === 'PATCH');
     expect(patch?.body).toMatchObject({ adHoc: 'allowed' });
+  });
+
+  it('lets a streamer’s DJ software metadata through, off by default (#68)', async () => {
+    const { screen, user, calls } = renderApp(
+      base,
+      as('station_manager', {
+        [`GET ${base}/streamers`]: [200, { streamers: [streamer()] }],
+        [`GET ${base}/streamers/user-candidates`]: [200, { users: [] }],
+        [`GET /stations/${stationId}/shows`]: [200, { items: [] }],
+        [`PATCH ${base}/streamers/${streamerId}`]: [200, streamer({ encoderMetadata: true })],
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Edit' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    const box = dialog.getByRole('checkbox', { name: 'Show what their DJ software sends' });
+    expect(box).toHaveAttribute('aria-checked', 'false');
+    await user.click(box);
+    expect(box).toHaveAttribute('aria-checked', 'true');
+    await user.click(dialog.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(calls.some((c) => c.method === 'PATCH')).toBe(true));
+    expect(calls.find((c) => c.method === 'PATCH')?.body).toMatchObject({ encoderMetadata: true });
   });
 
   it('deletes an event after confirming (#65)', async () => {
