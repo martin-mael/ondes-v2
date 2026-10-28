@@ -9,8 +9,8 @@ import {
   liveSessionEndReasonSchema,
   liveSessionTriggerSchema,
 } from './live.ts';
-import { liveEncoderTextSchema, liveNowPlayingSchema } from './live-metadata.ts';
 import { liveHandoverStatusSchema } from './live-handover.ts';
+import { liveEncoderTextSchema, liveNowPlayingSchema } from './live-metadata.ts';
 import { liveRecordingStatusSchema } from './live-recording.ts';
 import {
   localDateSchema,

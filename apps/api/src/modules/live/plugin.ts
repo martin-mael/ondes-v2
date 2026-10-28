@@ -6,10 +6,10 @@ import {
   liveConnectionInfoSchema,
   liveEventListSchema,
   liveEventSchema,
-  liveNowPlayingResponseSchema,
-  liveNowPlayingSchema,
   liveHandoverListSchema,
   liveHandoverSchema,
+  liveNowPlayingResponseSchema,
+  liveNowPlayingSchema,
   liveRequestListSchema,
   liveSessionSchema,
   liveStatusSchema,
@@ -39,8 +39,8 @@ import {
 } from '../shows/episode-check/fallback.ts';
 import { createLiveAuthHandler, type LoginFailureLimiter } from './auth.ts';
 import * as events from './events.ts';
-import { createLiveMetadata, getLiveNowPlaying } from './metadata.ts';
 import { createLiveHandovers } from './handover.ts';
+import { createLiveMetadata, getLiveNowPlaying } from './metadata.ts';
 import * as repo from './repo.ts';
 import * as requests from './requests.ts';
 import { createLiveRevoker, liveHolder } from './revoke.ts';

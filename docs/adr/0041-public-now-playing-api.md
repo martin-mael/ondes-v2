@@ -118,8 +118,8 @@ reader (`getLiveNowPlaying(db, scope)` in `apps/api/src/modules/live/metadata.ts
 `default` source is the show and episode as title, the DJ as artist; `encoder` and `manual`
 override it; its result is a superset of `LiveNowPlaying`) and emits
 `live.metadata.changed` (only `type` and `stationId` are read, loosely, so the
-event doesn't have to be in the contract first). The wiring lands at the wave integration:
-`publicApi: { liveNowPlaying: getLiveNowPlaying }` where `app.ts` registers `publicPlugin`. The
+event doesn't have to be in the contract first). `app.ts` registers `publicPlugin` with
+`liveNowPlaying: getLiveNowPlaying` (wired at the wave 11 integration). The
 `default` metadata is kept as `current`'s title and artist (the same text Icecast shows);
 `liveInfo` still has the DJ and the show apart.
 

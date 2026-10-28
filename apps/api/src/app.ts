@@ -25,6 +25,7 @@ import { libraryPlugin } from './modules/library/plugin.ts';
 import { librarySearchRoutes } from './modules/library/search-routes.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { listenerRoutes } from './modules/listeners/routes.ts';
+import { getLiveNowPlaying } from './modules/live/metadata.ts';
 import { type LivePluginOptions, livePlugin } from './modules/live/plugin.ts';
 import {
   type LiveRecordingPluginOptions,
@@ -140,7 +141,11 @@ export async function buildApp(options: AppOptions) {
   // On air (#70): the dashboard's snapshot of the air.
   await app.register(onAirRoutes, { prefix: '/api/v1' });
   // Public API (#74): now playing, history and their SSE stream, by station slug, anonymous.
-  await app.register(publicPlugin, options.publicApi ?? {});
+  // The live now-playing (#68) gives the public live item its title (ADR 0041).
+  await app.register(publicPlugin, {
+    liveNowPlaying: getLiveNowPlaying,
+    ...options.publicApi,
+  });
   // Segues and islands (#55): routes, and log/asset events -> island re-sync (durable queue).
   await app.register(seguesPlugin, options.segues ?? {});
   // Promo VTs and VT pools (#60): routes, and log/asset events -> promo segues (durable queue).

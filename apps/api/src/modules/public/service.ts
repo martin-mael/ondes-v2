@@ -47,8 +47,8 @@ export type LiveNowPlayingReader = (
 ) => Promise<LiveNowPlaying | null>;
 
 /**
- * Until #68's reader (`getLiveNowPlaying`, `modules/live/metadata.ts`) is wired in: no live
- * metadata, the live item has no title and `liveInfo` shows the DJ and the show.
+ * No live metadata: the live item has no title and `liveInfo` shows the DJ and the show. The
+ * plugin's default; `app.ts` plugs in #68's reader (`getLiveNowPlaying`, `modules/live/metadata.ts`).
  */
 export const noLiveNowPlaying: LiveNowPlayingReader = async () => null;
 
