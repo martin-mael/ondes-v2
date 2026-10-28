@@ -7,6 +7,7 @@ import {
   CalendarDaysIcon,
   CalendarRangeIcon,
   ClockIcon,
+  DiscIcon,
   LayoutDashboardIcon,
   LibraryBigIcon,
   LifeBuoyIcon,
@@ -117,5 +118,11 @@ export const stationNav: NavItem[] = [
     label: 'shell.nav.safety',
     icon: LifeBuoyIcon,
     permission: 'engine:read',
+  },
+  {
+    to: '/stations/$stationId/settings/live-recording',
+    label: 'shell.nav.liveRecording',
+    icon: DiscIcon,
+    permission: 'live:read',
   },
 ];

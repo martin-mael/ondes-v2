@@ -464,6 +464,28 @@ export const engineEventSchema = z.discriminatedUnion('type', [
     /** Added by #66: an input muted or unmuted (`POST /v1/live/mute`). */
     data: z.object({ input: liveInput, muted: z.boolean(), connected: z.boolean() }),
   }),
+  // Live recording (#67, ADR 0039): one FLAC file per live session on air, in the engine's
+  // `/recordings`. `file` is the bare name (no directory); `started_at` / `ended_at` are when
+  // the engine opened and closed it.
+  z.object({
+    ...eventBase,
+    type: z.literal('live.recording.started'),
+    data: z.object({
+      file: z.string(),
+      session_id: z.string(),
+      started_at: z.number(),
+    }),
+  }),
+  z.object({
+    ...eventBase,
+    type: z.literal('live.recording.closed'),
+    data: z.object({
+      file: z.string(),
+      session_id: z.string(),
+      started_at: z.number(),
+      ended_at: z.number(),
+    }),
+  }),
   z.object({ ...eventBase, type: z.literal('blank.detected'), data: empty }),
   z.object({ ...eventBase, type: z.literal('blank.recovered'), data: empty }),
 ]);

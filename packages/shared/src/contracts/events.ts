@@ -11,6 +11,7 @@ import {
 } from './live.ts';
 import { liveEncoderTextSchema, liveNowPlayingSchema } from './live-metadata.ts';
 import { liveHandoverStatusSchema } from './live-handover.ts';
+import { liveRecordingStatusSchema } from './live-recording.ts';
 import {
   localDateSchema,
   logItemChangeSchema,
@@ -180,6 +181,26 @@ export const engineLiveMutedEventSchema = z.object({
   }),
 });
 
+/** The engine opened a live recording file (#67, ADR 0039). */
+export const engineLiveRecordingStartedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('engine.live.recording.started'),
+  data: z.object({ ...engineOrigin, file: z.string(), sessionId: z.string(), startedAt: isoTime }),
+});
+
+/** The engine closed a live recording file: the session left the air. */
+export const engineLiveRecordingClosedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('engine.live.recording.closed'),
+  data: z.object({
+    ...engineOrigin,
+    file: z.string(),
+    sessionId: z.string(),
+    startedAt: isoTime,
+    endedAt: isoTime,
+  }),
+});
+
 /** Silence on the output for longer than the station's blank threshold. */
 export const engineBlankDetectedEventSchema = z.object({
   ...envelope,
@@ -242,6 +263,8 @@ export const engineRealtimeEventSchema = z.discriminatedUnion('type', [
   engineLiveGateEventSchema,
   engineLiveMetadataEventSchema,
   engineLiveMutedEventSchema,
+  engineLiveRecordingStartedEventSchema,
+  engineLiveRecordingClosedEventSchema,
   engineBlankDetectedEventSchema,
   engineBlankRecoveredEventSchema,
   engineRestartStormEventSchema,
@@ -604,6 +627,24 @@ export const liveHandoverChangedEventSchema = z.object({
   data: z.object({ handoverId: z.uuid(), status: liveHandoverStatusSchema }),
 });
 
+/**
+ * A live recording changed status (#67, ADR 0039). `pending` with a new `version` is the
+ * worker's cue to build it (durable queue `worker.live-recording`); the other statuses refresh
+ * the episode and settings screens.
+ */
+export const liveRecordingUpdatedEventSchema = z.object({
+  ...envelope,
+  type: z.literal('live.recording.updated'),
+  data: z.object({
+    orgId: z.uuid(),
+    recordingId: z.uuid(),
+    episodeId: z.uuid().nullable(),
+    showId: z.uuid().nullable(),
+    status: liveRecordingStatusSchema,
+    version: z.int().min(0),
+  }),
+});
+
 export const liveRealtimeEventSchema = z.discriminatedUnion('type', [
   liveSessionStartedEventSchema,
   liveSessionEndedEventSchema,
@@ -611,6 +652,7 @@ export const liveRealtimeEventSchema = z.discriminatedUnion('type', [
   liveRequestDecidedEventSchema,
   liveMetadataChangedEventSchema,
   liveHandoverChangedEventSchema,
+  liveRecordingUpdatedEventSchema,
 ]);
 export type LiveRealtimeEvent = z.infer<typeof liveRealtimeEventSchema>;
 
@@ -646,6 +688,8 @@ export const realtimeEventPermissions = {
   'engine.live.gate': 'engine:read',
   'engine.live.metadata': 'engine:read',
   'engine.live.muted': 'engine:read',
+  'engine.live.recording.started': 'engine:read',
+  'engine.live.recording.closed': 'engine:read',
   'engine.blank.detected': 'engine:read',
   'engine.blank.recovered': 'engine:read',
   'engine.restart_storm': 'engine:read',
@@ -689,6 +733,8 @@ export const realtimeEventPermissions = {
   'live.metadata.changed': 'engine:read',
   // DJ handover (#66): the scheduled handovers list.
   'live.handover.changed': 'engine:read',
+  // Live recording (#67): the episode page's recording status.
+  'live.recording.updated': 'show:read',
 } as const satisfies Record<RealtimeEventType, Permission>;
 
 /** Permission needed to receive `type` over SSE; `null` for types the contract doesn't declare. */

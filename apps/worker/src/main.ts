@@ -7,6 +7,7 @@ import { startCacheTriggers } from './jobs/cache-sync/trigger.ts';
 import { startEpisodeCheckSweep } from './jobs/episode-check/sweep.ts';
 import { sweepUploads } from './jobs/ingest/sweep.ts';
 import { sweepIslandRenders } from './jobs/island-render/sweep.ts';
+import { startLiveRecordingCleanupSweep } from './jobs/live-recording-cleanup/index.ts';
 import { discoverJobs, discoverTriggers } from './registry.ts';
 import { startJobTriggers } from './triggers.ts';
 
@@ -100,6 +101,21 @@ if (!cacheTriggers) {
   );
 }
 
+// Live recording (#67): every station's recordings directory, and its hourly retention.
+const liveRecordingCleanup = startLiveRecordingCleanupSweep({
+  db: database.db,
+  jobs: publisher,
+  cacheRoot: cacheRootFromEnv() ?? null,
+  onError: (err) =>
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        msg: 'live recording cleanup sweep failed',
+        err: String(err),
+      }),
+    ),
+});
+
 // Missing-episode check (#47): every minute, a pass per station with pre-recorded slots.
 const episodeCheckSweep = startEpisodeCheckSweep({
   db: database.db,
@@ -128,6 +144,7 @@ async function stop(signal: string) {
   await Promise.all(triggerConsumers.map((consumer) => consumer.close()));
   await cacheTriggers?.close();
   episodeCheckSweep.close();
+  liveRecordingCleanup.close();
   await worker.close();
   await publisher.close();
   await queue.close();

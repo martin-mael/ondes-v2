@@ -87,6 +87,12 @@ jobs:
               - *tooling
               - apps/worker/**
               - apps/api/src/modules/library/**
+              # The live recording test (#67) runs the station template on the real engine
+              # through the api's recorder and the engine adapter.
+              - engine/templates/**
+              - apps/api/src/modules/engine/config/**
+              - apps/api/src/modules/engine/adapter/**
+              - apps/api/src/modules/live/recording/**
               - packages/**
               - deploy/docker/worker.Dockerfile
               - deploy/compose.dev.yml

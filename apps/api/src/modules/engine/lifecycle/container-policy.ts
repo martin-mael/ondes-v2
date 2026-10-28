@@ -10,6 +10,15 @@ export const ENGINE_PORTS = { control: 7000, metrics: 9599, live: 8005, liveIcy:
 /** Where the station's playout cache is mounted, read-only (ADR 0004). */
 export const ENGINE_CACHE_MOUNT = '/cache';
 /**
+ * Live recordings (#67, ADR 0039): the station's `<cache>/recordings`, the one directory the
+ * engine may write to. The worker joins and uploads the files, then deletes them.
+ */
+export const ENGINE_RECORDINGS_MOUNT = '/recordings';
+/** The recordings directory inside a station's cache directory, on the host. */
+export const RECORDINGS_DIR = 'recordings';
+/** The `User` an engine may run as: numeric `uid:gid`, never root (ADR 0039). */
+export const ENGINE_USER_PATTERN = /^[1-9][0-9]*:[1-9][0-9]*$/;
+/**
  * The engine's root filesystem is read-only; the script copy goes to this tmpfs. Liquidsoap's
  * prebuilt standard-library cache stays readable in the image (it logs once that it can't
  * write a cache for the station script, which is harmless).
@@ -83,6 +92,7 @@ export function checkEngineCreate(
     'Image',
     'Entrypoint',
     'Cmd',
+    'User',
     'Env',
     'Labels',
     'ExposedPorts',
@@ -95,6 +105,8 @@ export function checkEngineCreate(
     return 'entrypoint must be the engine entrypoint';
   if (body.Cmd !== undefined && !(Array.isArray(body.Cmd) && body.Cmd.length === 0))
     return 'cmd not allowed';
+  if (body.User !== undefined && !ENGINE_USER_PATTERN.test(String(body.User)))
+    return 'user must be a numeric uid:gid, not root';
   if (
     body.Env !== undefined &&
     !(Array.isArray(body.Env) && body.Env.every((e) => typeof e === 'string'))
@@ -174,6 +186,8 @@ export function checkEngineCreate(
   const mounts = host.Mounts ?? [];
   if (!Array.isArray(mounts)) return 'mounts must be a list';
   const root = policy.cacheRoot.replace(/\/+$/, '');
+  // Binds are the container's own station's directories only (its name says which).
+  const own = name.slice(policy.namePrefix.length + 1);
   for (const m of mounts) {
     if (!isObject(m)) return 'mount must be an object';
     if (m.Type === 'bind') {
@@ -187,7 +201,14 @@ export function checkEngineCreate(
       if (bad) return bad;
       const source = String(m.Source ?? '');
       const rest = source.startsWith(`${root}/`) ? source.slice(root.length + 1) : '';
-      if (!/^[A-Za-z0-9-]+$/.test(rest)) return `bind source must be ${root}/<station>`;
+      if (m.Target === ENGINE_RECORDINGS_MOUNT) {
+        // The only writable bind: the station's recordings directory (#67).
+        if (rest !== `${own}/${RECORDINGS_DIR}`)
+          return `bind source must be ${root}/${own}/${RECORDINGS_DIR}`;
+        if (m.ReadOnly !== false) return `bind at ${ENGINE_RECORDINGS_MOUNT} must be read-write`;
+        continue;
+      }
+      if (rest !== own) return `bind source must be ${root}/${own}`;
       if (m.Target !== ENGINE_CACHE_MOUNT || m.ReadOnly !== true)
         return `bind must be read-only at ${ENGINE_CACHE_MOUNT}`;
     } else if (m.Type === 'tmpfs') {

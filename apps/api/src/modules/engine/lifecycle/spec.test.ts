@@ -128,11 +128,26 @@ describe('engine container spec', () => {
             ReadOnly: true,
             BindOptions: { CreateMountpoint: true },
           },
+          {
+            Type: 'bind',
+            Source: '/srv/ondes/cache/st-1/recordings',
+            Target: '/recordings',
+            ReadOnly: false,
+            BindOptions: { CreateMountpoint: true },
+          },
           { Type: 'tmpfs', Target: '/tmp', TmpfsOptions: { SizeBytes: 64 * 1024 * 1024 } },
         ],
       },
       NetworkingConfig: { EndpointsConfig: { ondes_engines: { Aliases: ['ondes-engine-st-1'] } } },
     });
+  });
+
+  it("runs as the api's user when it has one, with a home on the tmpfs (#67)", () => {
+    const { body } = spec({ engineUser: '1000:1000' });
+    expect(body.User).toBe('1000:1000');
+    expect(body.Env).toContain('HOME=/tmp');
+    expect(spec().body.User).toBeUndefined();
+    expect(spec().body.Env).not.toContain('HOME=/tmp');
   });
 
   it('publishes the live port only, never the control port', () => {

@@ -26,6 +26,10 @@ import { librarySearchRoutes } from './modules/library/search-routes.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { listenerRoutes } from './modules/listeners/routes.ts';
 import { type LivePluginOptions, livePlugin } from './modules/live/plugin.ts';
+import {
+  type LiveRecordingPluginOptions,
+  liveRecordingPlugin,
+} from './modules/live/recording/plugin.ts';
 import { type RegenPluginOptions, regenPlugin } from './modules/log/regen-plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
 import { onAirRoutes } from './modules/onair/routes.ts';
@@ -85,6 +89,7 @@ export interface AppOptions {
    * auth route (default: the engine lifecycle's, when it runs).
    */
   live?: LivePluginOptions;
+  liveRecording?: LiveRecordingPluginOptions;
   /** Pre-listen (#71); defaults to the engine lifecycle's adapters. */
   prelisten?: PrelistenRoutesOptions;
   /** Team onboarding (#113): DNS resolver and sending limits. */
@@ -172,6 +177,8 @@ export async function buildApp(options: AppOptions) {
       : {}),
     ...options.live,
   });
+  // Live recording (#67): sessions' audio into their episodes, and its settings.
+  await app.register(liveRecordingPlugin, options.liveRecording ?? {});
   // Listener counts for the dashboard (#71): what the Icecast poller (#32) recorded.
   await app.register(listenerRoutes, { prefix: '/api/v1' });
   // Pre-listen of the live inputs (#71), proxied from the station's engine.

@@ -74,6 +74,7 @@ function configBlock(s: StationEngineSettings, version: string): string {
     ['live_inputs', liqInt(s.live.inputs)],
     ['live_icy', liqBool(s.live.icy)],
     ['live_return_file', liqString(s.live.returnFile ?? '')],
+    ['live_record_dir', liqString(s.live.recordDir ?? '')],
     ['safety_dir', liqString(s.paths.safetyDir)],
     ['emergency_file', liqString(s.paths.emergencyFile)],
     ['default_cross', liqFloat(s.crossfade.duration)],

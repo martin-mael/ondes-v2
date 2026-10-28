@@ -13,6 +13,7 @@ export * from './library.ts';
 export * from './live.ts';
 export * from './live-metadata.ts';
 export * from './live-handover.ts';
+export * from './live-recording.ts';
 export * from './log.ts';
 export * from './promos.ts';
 export * from './regen.ts';

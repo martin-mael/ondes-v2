@@ -28,14 +28,14 @@ const programmerId = '01a15ddf-0000-7000-8000-000000000002';
 const base = `/stations/${stationId}`;
 const showBase = `${base}/shows/${showId}`;
 
-const withRole = (role: 'programmer' | 'presenter' | 'viewer'): MyOrg[] =>
+const withRole = (role: 'programmer' | 'presenter' | 'viewer' | 'station_manager'): MyOrg[] =>
   orgs.map((org) => ({
     ...org,
     stations: org.stations.map((s) => (s.id === stationId ? { ...s, role } : s)),
   }));
 
 const as = (
-  role: 'programmer' | 'presenter' | 'viewer',
+  role: 'programmer' | 'presenter' | 'viewer' | 'station_manager',
   routes: Record<string, ApiRoute> = {},
 ): Record<string, ApiRoute> => ({
   ...signedIn(),
@@ -197,7 +197,7 @@ describe('shows list', () => {
 
 describe('show page', () => {
   const showRoutes = (
-    role: 'programmer' | 'presenter' | 'viewer',
+    role: 'programmer' | 'presenter' | 'viewer' | 'station_manager',
     extra: Record<string, ApiRoute> = {},
   ) =>
     as(role, {
@@ -591,6 +591,127 @@ describe('show page', () => {
     dialog = within(screen.getAllByRole('dialog')[0] as HTMLElement);
     expect(await dialog.findByText('The audio file is attached.')).toBeVisible();
     expect(dialog.getByRole('button', { name: 'Remove the audio' })).toBeVisible();
+  });
+
+  it("shows a live episode's recording, and lets a manager process it again (#67)", async () => {
+    const recordingId = '01a15ddf-0000-7000-8000-00000000c0de';
+    const recording = (status: string, version: number) => ({
+      id: recordingId,
+      stationId,
+      episodeId,
+      eventId: null,
+      sessionId: null,
+      title: 'La Matinale #12',
+      status,
+      version,
+      durationMs: 7_140_000,
+      assetId,
+      error: status === 'failed' ? 'recording file live-b-2.flac is gone' : null,
+      builtAt: at,
+      buildMs: 54_000,
+      expiresAt: '2026-11-26T19:00:00.000Z',
+      parts: [
+        {
+          id: '01a15ddf-0000-7000-8000-0000000000a1',
+          sessionId: slotId,
+          status: 'closed',
+          startedAt: at,
+          endedAt: at,
+        },
+        {
+          id: '01a15ddf-0000-7000-8000-0000000000a2',
+          sessionId: slotId,
+          status: 'closed',
+          startedAt: at,
+          endedAt: at,
+        },
+      ],
+      createdAt: at,
+    });
+    const { screen, user, calls } = renderApp(
+      showBase,
+      showRoutes('station_manager', {
+        [`GET ${base}/show-occurrences`]: occurrences([]),
+        [`GET ${showBase}/episodes`]: [
+          200,
+          { items: [episode({ kind: 'live', status: 'aired', assetId })] },
+        ],
+        [`GET ${showBase}/episodes/${episodeId}/recording`]: [
+          200,
+          { recording: recording('failed', 2) },
+        ],
+        [`POST ${base}/live/recordings/${recordingId}/rebuild`]: [202, recording('pending', 3)],
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Episode #12' }));
+    const section = within(await screen.findByTestId('episode-recording'));
+    expect(section.getByText('Failed')).toBeVisible();
+    expect(section.getByText('recording file live-b-2.flac is gone')).toBeVisible();
+    expect(section.getByText(/1 h 59 of audio · 2 parts joined/)).toBeVisible();
+    await user.click(section.getByRole('button', { name: 'Process again' }));
+    expect(await screen.findByText('The recording is processed again')).toBeVisible();
+    expect(calls.some((c) => c.method === 'POST' && c.path.endsWith('/rebuild'))).toBe(true);
+  });
+
+  it('offers the recording over other audio a build kept, and says when it cannot be read (#67)', async () => {
+    const recordingId = '01a15ddf-0000-7000-8000-00000000c0df';
+    const liveAssetId = '01a15ddf-0000-7000-8000-00000000a55e';
+    const recording = {
+      id: recordingId,
+      stationId,
+      episodeId,
+      eventId: null,
+      sessionId: null,
+      title: 'La Matinale #12',
+      status: 'ready',
+      version: 1,
+      durationMs: 3_600_000,
+      assetId: liveAssetId,
+      error: null,
+      builtAt: at,
+      buildMs: 30_000,
+      expiresAt: null,
+      parts: [],
+      createdAt: at,
+    };
+    const { screen, user, calls } = renderApp(
+      showBase,
+      showRoutes('station_manager', {
+        [`GET ${base}/show-occurrences`]: occurrences([]),
+        [`GET ${showBase}/episodes`]: [
+          200,
+          { items: [episode({ kind: 'live', status: 'aired', assetId })] },
+        ],
+        [`GET ${showBase}/episodes/${episodeId}/recording`]: [200, { recording }],
+        [`POST ${base}/live/recordings/${recordingId}/attach`]: [200, recording],
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Episode #12' }));
+    const section = within(await screen.findByTestId('episode-recording'));
+    expect(section.getByText(/The episode already had other audio, which was kept/)).toBeVisible();
+    await user.click(section.getByRole('button', { name: 'Use the recording' }));
+    expect(await screen.findByText('The recording is now the episode’s audio')).toBeVisible();
+    expect(calls.some((c) => c.method === 'POST' && c.path.endsWith('/attach'))).toBe(true);
+  });
+
+  it("says calmly when a live episode's recording can't be read (#67)", async () => {
+    const { screen, user } = renderApp(
+      showBase,
+      showRoutes('station_manager', {
+        [`GET ${base}/show-occurrences`]: occurrences([]),
+        [`GET ${showBase}/episodes`]: [
+          200,
+          { items: [episode({ kind: 'live', status: 'aired', assetId })] },
+        ],
+        [`GET ${showBase}/episodes/${episodeId}/recording`]: [
+          500,
+          { error: 'internal', message: 'boom' },
+        ],
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Episode #12' }));
+    const section = within(await screen.findByTestId('episode-recording', {}, { timeout: 5000 }));
+    expect(section.getByText(/The recording couldn’t be read/)).toBeVisible();
   });
 
   it('plans an unscheduled episode on a free airing', async () => {
