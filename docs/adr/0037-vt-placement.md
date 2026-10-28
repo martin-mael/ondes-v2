@@ -38,8 +38,10 @@ Deterministic, markers only, no platform API, shared by the api, the web editor 
 
 Options: `maxLead` keeps the voices within a bound of A's end (promos: their 30 s air window,
 ADR 0032); `voiceStart` pins the first voice (a take spoken over the music) so only B, the other
-voices and the ducks follow rules 3–6; an existing lane keeps its trim, gain trim and envelope
-(moved with it). It returns the lanes and a **report** (`post` or `delayed`, the delay, the dry
+voices and the ducks follow rules 3–6; `inStart` pins B (placed by a person): the voices end on
+its intro end and B is never delayed. An existing lane keeps its trim, gain trim and envelope
+(moved with it). The segue's own bed lane is never dropped: with nothing to cover it stays where
+it was, and a gain trim or envelope a person gave it is kept (the envelope moving with it). It returns the lanes and a **report** (`post` or `delayed`, the delay, the dry
 stretch, whether a bed was laid, which markers were usable) that the tests and the review use.
 Markers outside the effective cues are ignored.
 
@@ -58,15 +60,22 @@ trim and an envelope. So the island spec, the renderer (#56) and the splice are 
   `segueMedia` (one source for them, below) instead of its own query.
 - **Segue editor, a voice from the library:** the first voice of a transition is placed by
   `autoPlacement` (B and the ducks follow it). Later voices still go after the last one: a
-  second voice is a person shaping the transition.
+  second voice is a person shaping the transition. When a person already placed B (away from
+  A's end and its natural start) or drew an envelope on A or B, those stay: the voice ends on
+  B's intro end (`inStart`) and nothing else moves. When the voice's media can't be loaded, it
+  goes after the other voices and the editor says so.
 - **Recorded takes (#59):** the first voice of a transition. A take spoken over the pre-roll
   stays where it was spoken (`voiceStart`): the presenter timed it to the music, so only B and
-  the ducks follow it. A take recorded without music is placed like a library voice. The
-  recorder passes the take's length back with it (`length` search parameter), because the take's
-  media only exists after its ingest.
-- **"Auto placement"** in the editor's envelope menu: re-places every voice, B and the ducks,
-  the first `bed` voice becoming the bed when another voice remains. An undoable edit, like
-  every preset.
+  the ducks follow it. A take recorded without music is placed like a library voice; B and
+  envelopes a person set stay, as above. The recorder passes the take's length back with it
+  (`length` search parameter), because the take's media only exists after its ingest. The lane
+  pins the take whole (`cueIn` 0, `cueOut` its length), so autocue's cues, found later, never
+  trim its tail and leave B late; the editor clamps that cue-out to the playout copy's length
+  (resampling can make it a sample shorter) when it checks and saves.
+- **"Auto placement"** in the editor's envelope menu ("move the voices and the next song,
+  replace the envelopes"): re-places every voice, B and the ducks, the first `bed` voice
+  becoming the bed when another voice remains. An undoable edit, like every preset; when it
+  would change B's start or A's or B's envelopes, the editor asks first.
 
 The editor saves `origin: 'manual'` as before, so a segue a person saved is never re-placed.
 
@@ -81,8 +90,10 @@ prepares it: a draft log day (two weeks ahead by default) of 50 song pairs from 
 library, each with an `auto` segue carrying one of its VTs. Cases come from a seeded PRNG and are
 taken round-robin across the kinds the library produces (outro or not × intro or not × fits or
 delays B), so the set is the same on every run and covers the edge cases the library allows. It
-prints a checklist with a link to each transition's editor. Saving in the editor makes a segue
-`manual`, so `--report` gives the share of segues still `auto`: the 80 % criterion.
+prints a checklist with a link to each transition's editor. `--report` gives the 80 % criterion:
+over the transitions the seed wrote (and only those), the share whose segue still has the lanes
+the seed created (its `segue.create` audit row). A save without a change isn't an adjustment;
+a segue changed, deleted or replaced is. No song pair repeats; `--count` is 1 to 200.
 
 ## Consequences
 - The quality of the default is the quality of the markers. Without any (no autocue result, or

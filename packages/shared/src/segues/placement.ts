@@ -119,11 +119,16 @@ export interface PlacementVoice {
   lane?: Pick<SegueVoiceLane, 'start' | 'cueIn' | 'cueOut' | 'gainDb' | 'envelope'>;
 }
 
-/** A bed asset to lay under a voice that outlasts the music: its effective range. */
+/**
+ * A bed asset to lay under a voice that outlasts the music: its effective range. `lane` is the
+ * segue's bed lane when it has one: it is never dropped, and a gain trim or envelope a person
+ * gave it is kept (the envelope moves with it).
+ */
 export interface PlacementBed {
   assetId: string;
   cueIn: number;
   cueOut: number;
+  lane?: Pick<SegueVoiceLane, 'start' | 'cueIn' | 'cueOut' | 'gainDb' | 'envelope'>;
 }
 
 export interface PlacementOptions {
@@ -135,6 +140,11 @@ export interface PlacementOptions {
   maxLead?: number;
   /** The first voice starts here (a take recorded over the music): only B and ducks move. */
   voiceStart?: number;
+  /**
+   * B starts here (a person placed it): the voices end on B's intro end instead, and B is never
+   * delayed. With `voiceStart` too, nothing moves but the voices after the first.
+   */
+  inStart?: number;
 }
 
 export interface PlacementLanes {
@@ -206,7 +216,8 @@ export function autoPlacement(
 ): Placement {
   const duck = options.duck ?? DEFAULT_DUCK;
   const aStart = a.cueIn - a.cueOut;
-  const natural = inside(a.crossStartNext, a) ? a.crossStartNext - a.cueOut : 0;
+  const cross = inside(a.crossStartNext, a);
+  const natural = cross ? (a.crossStartNext as number) - a.cueOut : 0;
   const outro = inside(a.outroStart, a) ? a.outroStart - a.cueOut : null;
   const intro = inside(b.introEnd, b) ? b.introEnd - b.cueIn : 0;
   const gap = samplesOfMs(VOICE_GAP_MS);
@@ -217,7 +228,10 @@ export function autoPlacement(
 
   let start: number;
   let inStart: number;
-  if (options.voiceStart !== undefined) {
+  if (options.inStart !== undefined) {
+    inStart = options.inStart;
+    start = options.voiceStart ?? bounded(inStart + intro - total);
+  } else if (options.voiceStart !== undefined) {
     start = options.voiceStart;
     inStart = Math.max(natural, start + total - intro);
   } else {
@@ -267,6 +281,9 @@ export function autoPlacement(
       bed = true;
     }
   }
+  // The segue's own bed stays, where it was, when there is nothing for it to cover.
+  const own = options.bed?.lane;
+  if (options.bed && own && !bed) placed.push({ assetId: options.bed.assetId, ...own });
 
   return {
     lanes: {
@@ -279,15 +296,16 @@ export function autoPlacement(
       delay: Math.max(0, inStart - natural),
       dry,
       bed,
-      markers: { outro: outro !== null, intro: intro > 0, cross: natural !== 0 },
+      markers: { outro: outro !== null, intro: intro > 0, cross },
     },
   };
 }
 
 /**
  * A bed over the dry stretch `[from, to)`: it fades in over `fadeMs` ending where the stretch
- * starts (under A's last moments, never before A starts) and fades out over `fadeMs` once B has started. A bed shorter
- * than that plays whole, from its start, with shorter fades.
+ * starts (under A's last moments, never before A starts) and fades out over `fadeMs` once B has
+ * started. A bed shorter than that plays whole, from its start, with shorter fades. A bed lane a
+ * person shaped (a gain trim or an envelope) keeps them, its envelope moved with it.
  */
 function bedLane(
   bed: PlacementBed,
@@ -303,6 +321,17 @@ function bedLane(
   if (length < 4) return null;
   const f = Math.min(fade, Math.floor((length - 1) / 3));
   const end = start + length;
+  const own = bed.lane;
+  if (own && (own.gainDb !== 0 || own.envelope.length)) {
+    return {
+      assetId: bed.assetId,
+      start,
+      cueIn: bed.cueIn,
+      cueOut: bed.cueIn + length,
+      gainDb: own.gainDb,
+      envelope: clampEnvelope(own.envelope.map((p) => ({ ...p, at: p.at + start - own.start }))),
+    };
+  }
   return {
     assetId: bed.assetId,
     start,

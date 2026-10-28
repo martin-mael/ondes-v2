@@ -304,6 +304,35 @@ describe('autoPlacement: edge cases', () => {
     expect(early.report.fit).toBe('post');
   });
 
+  it('with a fixed B start (placed by a person), ends the voices on its intro end', () => {
+    // B at −2 s: its 8 s intro ends at +6 s, so a 5 s voice starts at +1 s; B never moves.
+    const { lanes, report } = autoPlacement(a, b, [voice(5)], { inStart: -s(2) });
+    expect(lanes.in.start).toBe(-s(2));
+    expect(lanes.voices[0]?.start).toBe(s(1));
+    expect(report.fit).toBe('delayed');
+    // A long voice starts earlier, never before A does; B still stays.
+    const long = autoPlacement(a, b, [voice(300)], { inStart: -s(2) });
+    expect(long.lanes.in.start).toBe(-s(2));
+    expect(long.lanes.voices[0]?.start).toBe(-s(178));
+    // With a fixed voice start too, nothing moves.
+    const both = autoPlacement(a, b, [voice(5)], { inStart: -s(2), voiceStart: -s(9) });
+    expect([both.lanes.in.start, both.lanes.voices[0]?.start]).toEqual([-s(2), -s(9)]);
+  });
+
+  it('reports the crossfade marker only when A has a usable one', () => {
+    expect(autoPlacement(a, b, [voice(5)]).report.markers).toEqual({
+      outro: true,
+      intro: true,
+      cross: true,
+    });
+    // At A's cue-out (no earlier start) or outside the cues: not usable.
+    for (const crossStartNext of [s(179), s(200), null]) {
+      expect(autoPlacement(song({ crossStartNext }), b, [voice(5)]).report.markers.cross).toBe(
+        false,
+      );
+    }
+  });
+
   it('keeps every voice within `maxLead` of A’s end', () => {
     const long = song({ outroStart: s(119), crossStartNext: s(149) });
     expect(
@@ -338,6 +367,30 @@ describe('autoPlacement: edge cases', () => {
     const laid = lanes.voices[1];
     expect(laid?.cueOut).toBe(s(3));
     expect(laid?.envelope).toHaveLength(4);
+  });
+
+  it('keeps the segue’s own bed where it was when there is nothing to cover', () => {
+    const own = { start: -s(20), cueIn: 0, gainDb: -6, envelope: [{ at: -s(19), gainDb: -2 }] };
+    const { lanes, report } = autoPlacement(a, b, [voice(5)], { bed: { ...bed(), lane: own } });
+    expect(report.bed).toBe(false);
+    expect(lanes.voices[1]).toEqual({ assetId: BED, ...own });
+  });
+
+  it('keeps the gain trim and envelope a person gave the bed, moved with it', () => {
+    const own = { start: -s(20), cueIn: 0, gainDb: -14, envelope: [{ at: -s(18), gainDb: -3 }] };
+    const { lanes, problem } = check(song(), song(), [voice(8)], {
+      bed: { ...bed(), lane: own },
+    });
+    expect(problem).toBeNull();
+    const fade = Math.round((DEFAULT_BED.fadeMs * SR) / 1000);
+    expect(lanes.voices[1]).toMatchObject({ assetId: BED, start: -fade, gainDb: -14 });
+    expect(lanes.voices[1]?.envelope).toEqual([{ at: -fade + s(2), gainDb: -3 }]);
+    // A bed lane nobody shaped gets the default gain and fades.
+    const fresh = autoPlacement(song(), song(), [voice(8)], {
+      bed: { ...bed(), lane: { start: 0, gainDb: 0, envelope: [] } },
+    });
+    expect(fresh.lanes.voices[1]?.gainDb).toBe(DEFAULT_BED.gainDb);
+    expect(fresh.lanes.voices[1]?.envelope).toHaveLength(4);
   });
 
   it('adds no bed when every voice lane is taken', () => {

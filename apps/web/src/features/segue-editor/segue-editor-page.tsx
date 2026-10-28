@@ -73,6 +73,7 @@ import {
   DUCK_PRESETS,
   emptyLanes,
   extentOf,
+  fitTrims,
   islandOf,
   islandRange,
   type LaneKey,
@@ -85,6 +86,7 @@ import {
   problemOf,
   removePoint,
   removeVoice,
+  replacesIn,
   SR,
   sameLanes,
   setLaneEnvelope,
@@ -296,6 +298,9 @@ function Editor({
   const clips = useMemo(() => clipsOf(lanes, laneMedia), [lanes, laneMedia]);
   /** "Reset to auto placement" (#61): null while some media is missing. */
   const autoPlaced = useMemo(() => autoLanes(lanes, laneMedia), [lanes, laneMedia]);
+  // Read after an await (the voice picker): the lanes and media as they are then.
+  const latest = useRef({ lanes, laneMedia });
+  latest.current = { lanes, laneMedia };
   const extent = extentOf(clips);
   const bounds = padded(extent);
   const problem = useMemo(() => problemOf(lanes, laneMedia), [lanes, laneMedia]);
@@ -450,8 +455,9 @@ function Editor({
     setConflict(lanesOf(fresh));
   };
   const save = useMutation({
-    mutationFn: (body: Lanes) =>
-      saved.segueId
+    mutationFn: (lanes: Lanes) => {
+      const body = fitTrims(lanes, latest.current.laneMedia);
+      return saved.segueId
         ? segueApi.update(stationId, saved.segueId, {
             ...body,
             // Saved by a person: an `auto` segue (a generated promo's, #60) becomes theirs, and a
@@ -459,7 +465,8 @@ function Editor({
             origin: 'manual',
             ...(saved.version !== null ? { version: saved.version } : {}),
           })
-        : segueApi.create(stationId, { fromItemId: a.id, toItemId: b.id, ...body }),
+        : segueApi.create(stationId, { fromItemId: a.id, toItemId: b.id, ...body });
+    },
     onSuccess: (result, body) => {
       setSaved({ lanes: body, segueId: result.id, version: result.version });
       queryClient.setQueryData(segueKey(stationId, a.id, b.id), result);
@@ -545,6 +552,13 @@ function Editor({
 
   // --- Voices ----------------------------------------------------------------------------
   const [picking, setPicking] = useState(false);
+  // Auto placement waiting for a yes: it would replace B's start or envelopes a person set.
+  const [confirmAuto, setConfirmAuto] = useState<Lanes | null>(null);
+  const applyAuto = () => {
+    if (!autoPlaced) return;
+    if (replacesIn(lanes, autoPlaced)) setConfirmAuto(autoPlaced);
+    else edit(autoPlaced);
+  };
 
   // A take back from the recorder: one new voice (undoable), then off the URL so a reload or
   // a back navigation doesn't add it twice.
@@ -757,7 +771,7 @@ function Editor({
         }}
         onFadeOut={() => edit(applyFadeOut(lanes, 2000))}
         canAuto={autoPlaced !== null}
-        onAuto={() => autoPlaced && edit(autoPlaced)}
+        onAuto={applyAuto}
         onClear={() => edit(clearEnvelopes(lanes))}
       />
 
@@ -822,6 +836,28 @@ function Editor({
         </DialogContent>
       </Dialog>
 
+      <Dialog open={confirmAuto !== null} onOpenChange={(open) => !open && setConfirmAuto(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('auto.title')}</DialogTitle>
+            <DialogDescription>{t('auto.body')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmAuto(null)}>
+              {t('auto.cancel')}
+            </Button>
+            <Button
+              onClick={() => {
+                if (confirmAuto) edit(confirmAuto);
+                setConfirmAuto(null);
+              }}
+            >
+              {t('auto.confirm')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <AssetPickerDialog
         stationId={stationId}
         open={picking}
@@ -832,17 +868,30 @@ function Editor({
         onPick={async (asset) => {
           setPicking(false);
           // Smart placement (#61) needs the voice's length: its media first (a fast request,
-          // usually cached). Without it the voice goes where `addVoice` puts one.
+          // usually cached). Without it the voice goes where `addVoice` puts one, and says so.
           const voices = await queryClient
             .fetchQuery(
               segueMediaQuery(stationId, a.id, b.id, [
-                ...lanes.voices.map((v) => v.assetId),
+                ...latest.current.lanes.voices.map((v) => v.assetId),
                 asset.id,
               ]),
             )
             .then((m) => m.assets)
-            .catch(() => ({}));
-          const next = addPlacedVoice(lanes, { ...laneMedia, voices }, asset.id);
+            .catch((error: unknown) => {
+              toast.warning(t('voice.placeError', { reason: errorMessage(error) }));
+              return {};
+            });
+          // Edits made while it loaded stay: place over the lanes as they are now.
+          const now = latest.current;
+          if (now.lanes.voices.length >= 4) {
+            toast.warning(t('voice.full'));
+            return;
+          }
+          const next = addPlacedVoice(
+            now.lanes,
+            { ...now.laneMedia, voices: { ...now.laneMedia.voices, ...voices } },
+            asset.id,
+          );
           edit(next);
           setSelection({ lane: voiceKey(next.voices.length - 1), point: null });
         }}

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { clampTrim, encodeWav, peakDb, suggestTrim, takePeaks, voiceStart } from './take.ts';
+import {
+  clampTrim,
+  encodeWav,
+  peakDb,
+  suggestTrim,
+  takePeaks,
+  voiceLength,
+  voiceStart,
+} from './take.ts';
 
 const RATE = 48_000;
 
@@ -21,6 +29,13 @@ describe('take', () => {
     expect(trim.to / RATE).toBeCloseTo(3.3, 2);
     // Silence is kept whole.
     expect(suggestTrim(new Float32Array(100), RATE)).toEqual({ from: 0, to: 100 });
+  });
+
+  it('gives the trimmed take’s length on the 44.1 kHz segue axis', () => {
+    expect(voiceLength({ sampleRate: 48_000 }, { from: 4800, to: 52_800 })).toBe(44_100);
+    expect(voiceLength({ sampleRate: 44_100 }, { from: 100, to: 1100 })).toBe(1000);
+    // Rounded to a whole sample.
+    expect(voiceLength({ sampleRate: 48_000 }, { from: 0, to: 1 })).toBe(1);
   });
 
   it('keeps a trim inside the take, ordered and at least 10 ms long', () => {

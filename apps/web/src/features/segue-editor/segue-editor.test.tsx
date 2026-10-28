@@ -1,8 +1,8 @@
 import type { LogDay, Segue, SegueMedia } from '@ondes/shared';
-import { waitFor } from '@testing-library/react';
+import { waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type ApiRoute, orgs, renderApp, signedIn, stationId } from '../../app/testing/render.tsx';
-import { logItem } from '../log-timeline/testing.ts';
+import { libraryAsset, logItem } from '../log-timeline/testing.ts';
 import { setRecorderDeps } from '../vt-recorder/recorder.ts';
 import { fakeRecorder } from '../vt-recorder/testing.ts';
 
@@ -172,45 +172,49 @@ describe('segue editor', () => {
     await waitFor(() => expect(save).toBeDisabled());
   });
 
-  it('resets to auto placement (#61): the voice ends on B’s intro end, B at its natural start', async () => {
+  // A's outro 12 s before its end, crossfade 7 s before; B's intro 8 s.
+  const marked = (assetId: string, markers: NonNullable<SegueMedia['markers']>) => ({
+    ...media(assetId, 200),
+    markers,
+  });
+  const markedItems = {
+    [a.id]: marked(a.assetId as string, {
+      introEnd: null,
+      outroStart: s(188),
+      crossStartNext: s(193),
+    }),
+    [b.id]: marked(b.assetId as string, {
+      introEnd: s(8),
+      outroStart: null,
+      crossStartNext: null,
+    }),
+  };
+  const AUTO = 'Auto placement: move the voices and the next song, replace the envelopes';
+
+  it('resets to auto placement (#61) after asking: the voice ends on B’s intro end, B at its natural start', async () => {
     const put = vi.fn((body: unknown): [number, unknown] => [200, segue(body as object)]);
-    // A's outro 12 s before its end, crossfade 7 s before; B's intro 8 s.
-    const marked = (assetId: string, markers: NonNullable<SegueMedia['markers']>) => ({
-      ...media(assetId, 200),
-      markers,
-    });
     const { screen, user } = renderApp(
       url,
       routes(segue(), {
         [`PUT ${base}/segues/${segue().id}`]: put,
         [`GET ${base}/segues/media`]: [
           200,
-          {
-            items: {
-              [a.id]: marked(a.assetId as string, {
-                introEnd: null,
-                outroStart: s(188),
-                crossStartNext: s(193),
-              }),
-              [b.id]: marked(b.assetId as string, {
-                introEnd: s(8),
-                outroStart: null,
-                crossStartNext: null,
-              }),
-            },
-            assets: { [vtAsset]: media(vtAsset, 5) },
-          },
+          { items: markedItems, assets: { [vtAsset]: media(vtAsset, 5) } },
         ],
       }),
     );
     await screen.findByText('Voice 1');
+    const save = screen.getByRole('button', { name: 'Save' });
+    // B was placed by hand (−1 s): it asks first, and keeping it changes nothing.
     await user.click(screen.getByRole('button', { name: 'Envelopes' }));
-    await user.click(
-      await screen.findByRole('menuitem', {
-        name: 'Auto placement (voices, next start and ducking)',
-      }),
-    );
-    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await user.click(await screen.findByRole('menuitem', { name: AUTO }));
+    expect(await screen.findByRole('dialog', { name: 'Replace your placement?' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Keep mine' }));
+    expect(save).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Envelopes' }));
+    await user.click(await screen.findByRole('menuitem', { name: AUTO }));
+    await user.click(await screen.findByRole('button', { name: 'Replace' }));
+    await user.click(save);
     await waitFor(() => expect(put).toHaveBeenCalledOnce());
     expect(put.mock.calls[0]?.[0]).toMatchObject({
       in: { start: -s(7) },
@@ -342,6 +346,70 @@ describe('segue editor', () => {
     await user.click(screen.getByText('Voice 1'));
     await user.keyboard('{ArrowRight}{Delete}');
     expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument();
+  });
+
+  it('places the first voice picked from the library (#61)', async () => {
+    const vt = { ...libraryAsset('f1', 'Station ID', 5000), type: 'vt' as const };
+    const post = vi.fn((body: unknown): [number, unknown] => [201, segue(body as object)]);
+    const { screen, user } = renderApp(url, {
+      ...routes(null, {
+        [`POST ${base}/segues`]: post,
+        [`GET ${base}/segues/media`]: [
+          200,
+          { items: markedItems, assets: { [vt.id]: media(vt.id, 5) } },
+        ],
+      }),
+      [`GET ${base}/assets`]: [200, { items: [vt], nextCursor: null }],
+    });
+    await screen.findByText('Not saved yet');
+    await user.click(screen.getByRole('button', { name: 'Add a voice' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add a voice' });
+    await user.click(await within(dialog).findByRole('button', { name: 'Choose: Station ID' }));
+    expect(await screen.findByText('Voice 1')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(post).toHaveBeenCalledOnce());
+    expect(post.mock.calls[0]?.[0]).toMatchObject({
+      in: { start: -s(7) },
+      voices: [{ assetId: vt.id, start: -s(4) }],
+    });
+  });
+
+  it('adds a picked voice without placing it when its audio fails to load, and says so', {
+    timeout: 15_000,
+  }, async () => {
+    const vt = { ...libraryAsset('f1', 'Station ID', 5000), type: 'vt' as const };
+    const post = vi.fn((body: unknown): [number, unknown] => [201, segue(body as object)]);
+    let failing = false;
+    const { screen, user } = renderApp(url, {
+      ...routes(null, {
+        [`POST ${base}/segues`]: post,
+        [`GET ${base}/segues/media`]: () =>
+          failing
+            ? [500, { error: 'internal', message: 'Media unavailable' }]
+            : [200, { items: markedItems, assets: {} }],
+      }),
+      [`GET ${base}/assets`]: [200, { items: [vt], nextCursor: null }],
+    });
+    await screen.findByText('Not saved yet');
+    failing = true;
+    await user.click(screen.getByRole('button', { name: 'Add a voice' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add a voice' });
+    await user.click(await within(dialog).findByRole('button', { name: 'Choose: Station ID' }));
+    // After the query client's retries.
+    expect(
+      await screen.findByText(
+        /The voice’s audio couldn’t be loaded .*without auto placement/,
+        {},
+        { timeout: 6000 },
+      ),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(post).toHaveBeenCalledOnce());
+    // Where a new voice goes, B where it was.
+    expect(post.mock.calls[0]?.[0]).toMatchObject({
+      in: { start: 0 },
+      voices: [{ assetId: vt.id, start: -s(3) }],
+    });
   });
 
   it('opens the voice picker', async () => {

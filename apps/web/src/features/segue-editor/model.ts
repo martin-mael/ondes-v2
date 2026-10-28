@@ -299,18 +299,36 @@ export function addVoice(lanes: Lanes, assetId: string): Lanes {
 // --- Smart default placement (#61, ADR 0037) ---------------------------------------------
 
 /**
+ * Whether a person set B's start or A's and B's envelopes: B neither at A's end (a new
+ * transition) nor at its natural start (A's `crossStartNext`), or an envelope on A or B. Placing
+ * a first voice then keeps them. Null while A's media is missing.
+ */
+export function handPlaced(lanes: Lanes, media: LaneMedia): boolean | null {
+  const a = media.from;
+  if (!a) return null;
+  const cross = a.markers?.crossStartNext;
+  const natural =
+    typeof cross === 'number' && cross > a.cueIn && cross < a.cueOut ? cross - a.cueOut : 0;
+  return (
+    (lanes.in.start !== 0 && lanes.in.start !== natural) ||
+    lanes.out.envelope.length > 0 ||
+    lanes.in.envelope.length > 0
+  );
+}
+
+/**
  * The lanes placed by `autoPlacement` from A's and B's cue markers: every voice over A's outro
  * and B's intro, B at its natural start or after the voices, A and B ducked under them. A voice
  * keeps its trim, gain trim and envelope; the first `bed` among the voices (when another voice
- * remains) becomes the bed laid under a voice that outlasts the music. `extra` is a voice not
- * in the media yet (a take before its ingest), `voiceStart` pins the first voice. Null while A's,
- * B's or a voice's media is missing.
+ * remains) becomes the bed laid under a voice that outlasts the music, never dropped, keeping
+ * what a person set on it. `extra` is a voice not in the media yet (a take before its ingest),
+ * `voiceStart` pins the first voice; `keepIn` keeps B where it is and A's and B's envelopes
+ * (only the voices move). Null while A's, B's or a voice's media is missing.
  */
 function placeLanes(
   lanes: Lanes,
   media: LaneMedia,
-  extra?: PlacementVoice,
-  voiceStart?: number,
+  options: { extra?: PlacementVoice; voiceStart?: number; keepIn?: boolean } = {},
 ): Lanes | null {
   if (!media.from || !media.to) return null;
   const voices: PlacementVoice[] = [];
@@ -319,51 +337,60 @@ function placeLanes(
     const m = media.voices[v.assetId];
     if (!m) return null;
     const range = voiceRange(v, m);
-    if (m.kind === 'bed') beds.push({ assetId: v.assetId, ...range });
+    if (m.kind === 'bed') beds.push({ assetId: v.assetId, ...range, lane: v });
     else voices.push({ assetId: v.assetId, ...range, lane: v });
   }
-  if (extra) voices.push(extra);
+  if (options.extra) voices.push(options.extra);
   // A segue of beds only: they are its voices.
   const [bed, ...otherBeds] = voices.length ? beds : [];
-  if (!voices.length) {
-    for (const b of beds) {
-      const lane = lanes.voices.find((v) => v.assetId === b.assetId);
-      voices.push({ ...b, lane });
-    }
-  }
-  for (const b of otherBeds) {
-    voices.push({ ...b, lane: lanes.voices.find((v) => v.assetId === b.assetId) });
-  }
-  return autoPlacement(placementMediaOf(media.from), placementMediaOf(media.to), voices, {
+  if (!voices.length) voices.push(...beds);
+  voices.push(...otherBeds);
+  const placed = autoPlacement(placementMediaOf(media.from), placementMediaOf(media.to), voices, {
     bed,
-    ...(voiceStart !== undefined && { voiceStart }),
+    ...(options.voiceStart !== undefined && { voiceStart: options.voiceStart }),
+    ...(options.keepIn && { inStart: lanes.in.start }),
   }).lanes;
+  return options.keepIn ? { ...placed, out: lanes.out, in: lanes.in } : placed;
 }
 
 /** "Reset to auto placement": {@link placeLanes} over the voices as they are. */
 export const autoLanes = (lanes: Lanes, media: LaneMedia): Lanes | null => placeLanes(lanes, media);
 
 /**
- * A voice picked from the library. The first one is placed by smart placement (B and the
- * ducks follow it); the next ones go after the last voice ({@link addVoice}), and so does the
- * first while A's, B's or its own media is missing.
+ * Whether `auto` replaces what a person may have set: B's start or A's and B's envelopes. The
+ * editor asks before applying it then.
+ */
+export const replacesIn = (lanes: Lanes, auto: Lanes): boolean =>
+  lanes.in.start !== auto.in.start ||
+  JSON.stringify([lanes.out.envelope, lanes.in.envelope]) !==
+    JSON.stringify([auto.out.envelope, auto.in.envelope]);
+
+/**
+ * A voice picked from the library. The first one is placed by smart placement: B and the ducks
+ * follow it, unless a person placed B or drew an envelope ({@link handPlaced}), when the voice
+ * ends on B's intro end and B and the envelopes stay. The next ones go after the last voice
+ * ({@link addVoice}), and so does the first while A's, B's or its own media is missing.
  */
 export function addPlacedVoice(lanes: Lanes, media: LaneMedia, assetId: string): Lanes {
   const m = media.voices[assetId];
   if (lanes.voices.length || !m) return addVoice(lanes, assetId);
   return (
-    placeLanes(lanes, media, { assetId, cueIn: m.cueIn, cueOut: m.cueOut }) ??
-    addVoice(lanes, assetId)
+    placeLanes(lanes, media, {
+      extra: { assetId, cueIn: m.cueIn, cueOut: m.cueOut },
+      keepIn: handPlaced(lanes, media) === true,
+    }) ?? addVoice(lanes, assetId)
   );
 }
 
 /**
- * A take just recorded (#59), played from its first sample (`cueIn` 0), so a cue-in found later
- * by autocue never shifts it off the music it was spoken over. The first voice of a segue is
- * placed by smart placement: a take spoken over the pre-roll stays where it was spoken (`start`)
- * and only B and the ducks follow it; one recorded without music (`start` null) is placed like
- * a voice from the library. `length` is the take's length on the axis (its media arrives after
- * ingest). Otherwise it goes where it was recorded, else where {@link addVoice} puts a voice.
+ * A take just recorded (#59), played from its first sample to its last (`cueIn` 0, `cueOut` its
+ * length when known), so cues found later by autocue never trim it or shift it off the music it
+ * was spoken over. The first voice of a segue is placed by smart placement: a take spoken over
+ * the pre-roll stays where it was spoken (`start`) and only B and the ducks follow it; one
+ * recorded without music (`start` null) is placed like a voice from the library. B and the
+ * envelopes a person set stay ({@link handPlaced}). `length` is the take's length on the axis
+ * (its media arrives after ingest). Otherwise it goes where it was recorded, else where
+ * {@link addVoice} puts a voice.
  */
 export function addRecordedVoice(
   lanes: Lanes,
@@ -371,18 +398,19 @@ export function addRecordedVoice(
   start: number | null,
   placement?: { media: LaneMedia; length: number | null },
 ): Lanes {
-  if (placement?.length && !lanes.voices.length) {
-    const placed = placeLanes(
-      lanes,
-      placement.media,
-      {
+  const length = placement?.length || null;
+  const trim = { cueIn: 0, ...(length !== null && { cueOut: length }) };
+  if (placement && length !== null && !lanes.voices.length) {
+    const placed = placeLanes(lanes, placement.media, {
+      extra: {
         assetId,
         cueIn: 0,
-        cueOut: placement.length,
-        lane: { start: start ?? 0, cueIn: 0, gainDb: 0, envelope: [] },
+        cueOut: length,
+        lane: { start: start ?? 0, ...trim, gainDb: 0, envelope: [] },
       },
-      start === null ? undefined : clampOffset(start),
-    );
+      ...(start !== null && { voiceStart: clampOffset(start) }),
+      keepIn: handPlaced(lanes, placement.media) === true,
+    });
     if (placed) return placed;
   }
   const next = addVoice(lanes, assetId);
@@ -390,8 +418,30 @@ export function addRecordedVoice(
   return {
     ...next,
     voices: next.voices.map((v, j) =>
-      j === i ? { ...v, start: start === null ? v.start : clampOffset(start), cueIn: 0 } : v,
+      j === i ? { ...v, start: start === null ? v.start : clampOffset(start), ...trim } : v,
     ),
+  };
+}
+
+/**
+ * A take's pinned cue-out ({@link addRecordedVoice}) is its length as recorded; its playout copy,
+ * resampled at ingest, can end a sample or two earlier. Clamped to it, so the api never finds the
+ * segue invalid for that. Voices whose media is missing are left as they are.
+ */
+export function fitTrims(lanes: Lanes, media: LaneMedia): Lanes {
+  const fits = lanes.voices.every((v) => {
+    const m = media.voices[v.assetId];
+    return !m || v.cueOut === undefined || v.cueOut <= m.durationSamples;
+  });
+  if (fits) return lanes;
+  return {
+    ...lanes,
+    voices: lanes.voices.map((v) => {
+      const m = media.voices[v.assetId];
+      return m && v.cueOut !== undefined && v.cueOut > m.durationSamples
+        ? { ...v, cueOut: m.durationSamples }
+        : v;
+    }),
   };
 }
 
@@ -411,7 +461,7 @@ function islandInput(lanes: Lanes, media: LaneMedia) {
   });
   if (!media.from || !media.to) return null;
   const voices = [];
-  for (const v of lanes.voices) {
+  for (const v of fitTrims(lanes, media).voices) {
     const m = media.voices[v.assetId];
     if (!m) return null;
     voices.push({ ...v, media: island(m) });

@@ -15,9 +15,11 @@
 // markers come from autocue or the cue editor. `--bed` lays the station's first bed under
 // voices that outlast the music (the editor does this when the segue has a bed lane).
 //
-// The owner listens to each transition in the editor and fixes the ones that need it; saving
-// in the editor makes a segue `manual`. `--report` counts, for the day, the segues still `auto`
-// (no manual adjustment) against the acceptance target: 80 % (#61).
+// The owner listens to each transition in the editor and fixes the ones that need it.
+// `--report` counts, over the transitions this seed wrote, the ones whose segue is still the one
+// it placed (lanes unchanged since its `segue.create` audit row) against the acceptance target:
+// 80 % (#61). Saving without a change doesn't count as an adjustment; a seeded segue that was
+// changed, deleted or replaced does. `--count` is 1 to 200; no A → B pair repeats.
 //
 // Refuses a day that already has items unless `--force` (which rewrites it). Needs the dev
 // stack (`pnpm dev:up`) and the api's database; with RabbitMQ reachable the island renders are
@@ -50,6 +52,8 @@ import { connectBus } from './log-fixture.ts';
 
 const actor: Actor = { type: 'system', name: 'dev-seed:placement-review' };
 const SEED = 61;
+const GENERATOR = 'placement-review/1';
+const MAX_COUNT = 200;
 
 type Media = SegueMedia & { title: string };
 type Case = { a: Media; b: Media; voice: Media; report: PlacementReport; kind: string };
@@ -107,10 +111,13 @@ function pickCases(lib: Awaited<ReturnType<typeof library>>, count: number, bed:
   const next = random(SEED);
   const pick = <T>(xs: readonly T[]) => xs[Math.floor(next() * xs.length)] as T;
   const byKind = new Map<string, Case[]>();
+  const pairs = new Set<string>();
   for (let i = 0; i < count * 40; i++) {
     const a = pick(lib.songs);
     const b = pick(lib.songs);
-    if (a.assetId === b.assetId) continue;
+    const pair = `${a.assetId}:${b.assetId}`;
+    if (a.assetId === b.assetId || pairs.has(pair)) continue;
+    pairs.add(pair);
     const voice = pick(lib.vts);
     const { report } = autoPlacement(placementMediaOf(a), placementMediaOf(b), [voice], {
       bed: bed && { assetId: bed.assetId, cueIn: bed.cueIn, cueOut: bed.cueOut },
@@ -156,6 +163,12 @@ async function seedReview(
   if (options.bed && !bed)
     console.warn('placement-review: no bed with a playout copy, --bed ignored');
   const cases = pickCases(lib, options.count, bed);
+  if (cases.length < options.count) {
+    console.warn(
+      `placement-review: the library gives ${cases.length} distinct song pairs, not ` +
+        `${options.count}: import more songs for a full set`,
+    );
+  }
 
   const ms = (m: Media) => Math.round(((m.cueOut - m.cueIn) * 1000) / m.sampleRate);
   const items = cases.flatMap((c, i) =>
@@ -175,7 +188,7 @@ async function seedReview(
       items,
       generatedAt: new Date(),
       seed: `placement-review/${SEED}`,
-      generatorVersion: 'placement-review/1',
+      generatorVersion: GENERATOR,
       cause: 'fixture',
     },
   );
@@ -254,29 +267,93 @@ async function seedReview(
   );
 }
 
-/** Segues of the day still `auto` vs adjusted (saved in the editor: `manual`). */
+/** JSON with sorted keys: lanes compare equal whatever the key order jsonb gave them. */
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_, v) =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? Object.fromEntries(Object.entries(v).sort(([x], [y]) => x.localeCompare(y)))
+      : v,
+  );
+}
+
+/**
+ * The transitions this seed wrote on the day (consecutive item pairs, as `seedReview` lays them),
+ * each counted as untouched when its segue is the one the seed created (its `segue.create` audit
+ * row by this seed's actor) with the same lanes: an editor save with no change keeps it so.
+ */
 async function report(db: Db, scope: StationScope, localDate: LocalDate) {
-  const segues = await db.query.segue.findMany({
-    where: (t, { eq }) => eq(t.stationId, scope.stationId),
-    columns: { origin: true, fromItemId: true },
-  });
   const day = await db.query.logDay.findFirst({
     where: (t, { and, eq }) => and(eq(t.stationId, scope.stationId), eq(t.localDate, localDate)),
+    columns: { id: true, generatorVersion: true },
+  });
+  if (!day || day.generatorVersion !== GENERATOR) {
+    throw new Error(`${localDate} isn't a placement review day: seed one first (without --report)`);
+  }
+  const items = await db.query.logItem.findMany({
+    where: (t, { and, eq, isNull }) =>
+      and(eq(t.stationId, scope.stationId), eq(t.logDayId, day.id), isNull(t.segmentId)),
+    orderBy: (t, { asc }) => [asc(t.position)],
     columns: { id: true },
   });
-  const items = day
-    ? await db.query.logItem.findMany({
-        where: (t, { and, eq }) => and(eq(t.stationId, scope.stationId), eq(t.logDayId, day.id)),
-        columns: { id: true },
+  const pairs = items.flatMap((from, i) => {
+    const to = items[i + 1];
+    return i % 2 === 0 && to ? [{ from: from.id, to: to.id }] : [];
+  });
+  const segues = pairs.length
+    ? await db.query.segue.findMany({
+        where: (t, { and, eq, inArray }) =>
+          and(
+            eq(t.stationId, scope.stationId),
+            inArray(
+              t.fromItemId,
+              pairs.map((p) => p.from),
+            ),
+          ),
+        columns: {
+          id: true,
+          fromItemId: true,
+          toItemId: true,
+          outLane: true,
+          inLane: true,
+          voices: true,
+        },
       })
     : [];
-  const ids = new Set(items.map((i) => i.id));
-  const ofDay = segues.filter((s) => s.fromItemId && ids.has(s.fromItemId));
-  const untouched = ofDay.filter((s) => s.origin === 'auto').length;
-  const pct = ofDay.length ? Math.round((100 * untouched) / ofDay.length) : 0;
+  const created = segues.length
+    ? await db.query.auditLog.findMany({
+        where: (t, { and, eq, inArray }) =>
+          and(
+            eq(t.stationId, scope.stationId),
+            eq(t.action, 'segue.create'),
+            eq(t.actorType, 'system'),
+            eq(t.actorId, actor.type === 'system' ? actor.name : ''),
+            inArray(
+              t.entityId,
+              segues.map((s) => s.id),
+            ),
+          ),
+        columns: { entityId: true, diff: true },
+      })
+    : [];
+  const seeded = new Map(created.map((row) => [row.entityId, row.diff]));
+  let untouched = 0;
+  const adjusted: number[] = [];
+  for (const [i, pair] of pairs.entries()) {
+    const segue = segues.find((s) => s.fromItemId === pair.from && s.toItemId === pair.to);
+    const diff = segue && seeded.get(segue.id);
+    const same =
+      segue &&
+      diff &&
+      canonical([segue.outLane, segue.inLane, segue.voices]) ===
+        canonical([diff.outLane?.to, diff.inLane?.to, diff.voices?.to ?? []]);
+    if (same) untouched++;
+    else adjusted.push(i + 1);
+  }
+  const pct = pairs.length ? Math.round((100 * untouched) / pairs.length) : 0;
   console.log(
-    `${localDate}: ${untouched} of ${ofDay.length} auto segues need no manual adjustment ` +
-      `(${pct} %; target 80 %): ${pct >= 80 ? 'met' : 'not met'}.`,
+    `${localDate}: ${untouched} of ${pairs.length} seeded auto segues need no manual adjustment ` +
+      `(${pct} %; target 80 %): ${pct >= 80 ? 'met' : 'not met'}.` +
+      (adjusted.length ? `\nAdjusted: ${adjusted.join(', ')}.` : ''),
   );
 }
 
@@ -308,8 +385,14 @@ if (import.meta.main) {
       : addDays(localDateOf(new Date(), st.timezone), 14);
     if (values.report) await report(db, scope, localDate);
     else {
+      const count = Number(values.count);
+      if (!Number.isInteger(count) || count < 1 || count > MAX_COUNT) {
+        throw new Error(
+          `--count must be a whole number from 1 to ${MAX_COUNT} (got ${values.count})`,
+        );
+      }
       await seedReview(db, scope, localDate, {
-        count: Number(values.count),
+        count,
         bed: values.bed,
         force: values.force,
         appUrl: process.env.APP_URL ?? 'http://localhost:5173',
