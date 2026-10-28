@@ -249,7 +249,7 @@ describe('categories', () => {
     );
     await user.type(await screen.findByLabelText('Search the library'), 'alp');
     await user.click(await screen.findByRole('button', { name: 'Add Alpha' }));
-    await waitFor(() => expect(screen.getByTestId('preview-members')).toHaveTextContent('1 songs'));
+    await waitFor(() => expect(screen.getByTestId('preview-members')).toHaveTextContent('1 song'));
     const manual = within(screen.getByTestId('manual-members'));
     expect(manual.getByText('A – Alpha')).toBeVisible();
     expect(manual.getByText('Added')).toBeVisible();
@@ -381,7 +381,7 @@ describe('categories', () => {
 
     expect(await screen.findByLabelText('Name')).toHaveValue('House power');
     await user.click(await screen.findByRole('button', { name: 'Exclude Bravo' }));
-    await waitFor(() => expect(screen.getByTestId('preview-members')).toHaveTextContent('1 songs'));
+    await waitFor(() => expect(screen.getByTestId('preview-members')).toHaveTextContent('1 song'));
     const manual = within(screen.getByTestId('manual-members'));
     expect(manual.getByText('B – Bravo')).toBeVisible();
     expect(manual.getByText('Kept out')).toBeVisible();

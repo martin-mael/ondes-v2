@@ -19,7 +19,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router';
 import {
   ArrowDownIcon,
-  ArrowLeftIcon,
   ArrowUpIcon,
   CircleAlertIcon,
   CopyIcon,
@@ -43,6 +42,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Textarea } from '@/ui/textarea';
 import { isApiError } from '../../app/api/client.ts';
 import { type FieldErrors, FormAlert, fieldErrors } from '../../app/forms.tsx';
+import { BackButton, PageHeader } from '../../app/page-header.tsx';
 import { DelayedSpinner, ListSkeleton, PageSkeleton } from '../../app/pending.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
 import { vtPoolsQuery } from '../promos/api.ts';
@@ -284,40 +284,39 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
   };
 
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="flex flex-col gap-6 p-4 sm:p-6">
       {guard}
-      <div className="flex flex-wrap items-center gap-3">
-        <Button
-          variant="ghost"
-          size="sm"
-          nativeButton={false}
-          render={<Link to="/stations/$stationId/clocks" params={{ stationId }} />}
-        >
-          <ArrowLeftIcon data-icon="inline-start" />
-          {t('editor.back')}
-        </Button>
-        <h1 className="font-heading text-xl font-semibold">
-          {clock ? t('editor.editTitle') : t('editor.newTitle')}
-        </h1>
-        <div className="ml-auto flex gap-2">
-          {clock && (
-            <>
-              <Button variant="outline" onClick={duplicate}>
-                <CopyIcon data-icon="inline-start" />
-                {t('duplicate')}
-              </Button>
-              <Button variant="destructive" onClick={remove}>
-                <Trash2Icon data-icon="inline-start" />
-                {t('editor.delete')}
-              </Button>
-            </>
-          )}
-          <Button onClick={save} disabled={pending}>
-            <DelayedSpinner when={pending} data-icon="inline-start" />
-            {clock ? t('editor.save') : t('editor.create')}
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        back={
+          <BackButton
+            nativeButton={false}
+            render={<Link to="/stations/$stationId/clocks" params={{ stationId }} />}
+          >
+            {t('editor.back')}
+          </BackButton>
+        }
+        title={clock ? t('editor.editTitle') : t('editor.newTitle')}
+        actions={
+          <>
+            {clock && (
+              <>
+                <Button variant="outline" onClick={duplicate}>
+                  <CopyIcon data-icon="inline-start" />
+                  {t('duplicate')}
+                </Button>
+                <Button variant="destructive" onClick={remove}>
+                  <Trash2Icon data-icon="inline-start" />
+                  {t('editor.delete')}
+                </Button>
+              </>
+            )}
+            <Button onClick={save} disabled={pending}>
+              <DelayedSpinner when={pending} data-icon="inline-start" />
+              {clock ? t('editor.save') : t('editor.create')}
+            </Button>
+          </>
+        }
+      />
       {conflict && (
         <Alert variant="destructive">
           <CircleAlertIcon />

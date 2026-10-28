@@ -56,13 +56,13 @@ export function CueSummary({ stationId, asset }: AssetDrawerSlotProps) {
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 sm:grid-cols-[auto_1fr_auto_1fr]">
           {LIST_FIELDS.map((field) => {
             const point = cues[field];
+            // Unset points have no marker on the waveform and no row here.
+            if (point.samples === null) return null;
             return (
               <div key={field} className="contents" data-summary-field={field}>
                 <dt className="text-muted-foreground">{t(`field.${field}`)}</dt>
                 <dd className="flex items-center gap-1 tabular-nums">
-                  {point.samples === null
-                    ? t('point.unset')
-                    : formatSamples(point.samples, cues.sampleRate)}
+                  {formatSamples(point.samples, cues.sampleRate)}
                   {point.locked && (
                     <LockIcon
                       className="size-3"
@@ -77,10 +77,9 @@ export function CueSummary({ stationId, asset }: AssetDrawerSlotProps) {
       ) : (
         <p className="text-muted-foreground">{t('summary.none')}</p>
       )}
-      {cues?.analyzerVersion && (
-        <p className="text-muted-foreground">{t('analyzer', { version: cues.analyzerVersion })}</p>
-      )}
       <Button
+        variant="outline"
+        size="sm"
         className="self-start"
         nativeButton={false}
         render={

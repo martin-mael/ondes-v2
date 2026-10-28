@@ -224,7 +224,7 @@ export function LibraryPage() {
         : t('results', { count: total.toLocaleString() });
 
   return (
-    <div className="flex h-[calc(100svh-3rem)] min-h-96 min-w-0 flex-col gap-3 p-4">
+    <div className="flex h-[calc(100svh-3rem)] min-h-96 min-w-0 flex-col gap-3 p-4 sm:p-6">
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="mr-2 font-heading text-xl font-semibold">{t('title')}</h1>
         <div className="relative min-w-64 flex-1">

@@ -14,6 +14,7 @@ import { Separator } from '@/ui/separator';
 import { authApi } from '../api/auth.ts';
 import { CodeField, FormAlert, TextField, useErrorMessage, useZodForm } from '../forms.tsx';
 import { useI18n } from '../i18n/i18n.tsx';
+import { PageHeader } from '../page-header.tsx';
 import { DelayedSpinner } from '../pending.tsx';
 import { meQuery, useMe } from './session.ts';
 
@@ -25,8 +26,8 @@ export function AccountPage() {
   const { reason } = route.useSearch();
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-6">
-      <h1 className="font-heading text-xl font-semibold">{t('account.title')}</h1>
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-4 sm:p-6">
+      <PageHeader title={t('account.title')} />
       {reason === 'two_factor_required' && !me.twoFactorEnabled && (
         <Alert variant="destructive">
           <ShieldAlertIcon />

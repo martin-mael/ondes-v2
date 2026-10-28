@@ -1,6 +1,6 @@
 import { type AssetActivity, type AssetDetail, CUE_FIELDS, type Permission } from '@ondes/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckIcon, CircleDashedIcon, LockIcon, PencilIcon } from 'lucide-react';
+import { CircleDashedIcon, LockIcon, PencilIcon } from 'lucide-react';
 import { type ReactNode, useCallback, useEffect, useId, useState } from 'react';
 import { toast } from 'sonner';
 import { Badge } from '@/ui/badge';
@@ -31,8 +31,10 @@ import {
 } from './format.ts';
 import { type LibraryT, useLibraryT } from './messages.ts';
 
-// The asset drawer (#23): everything stored about one asset, read-only except its tags, plus
-// the sections other features plug in through drawer-slots.ts (the cue editor, #24).
+// The asset drawer (#23): what's stored about one asset, read-only except its tags, plus the
+// sections other features plug in through drawer-slots.ts (the cue editor, #24). It lists what
+// is set, not every field: an empty value is left out rather than shown as "—", and what the
+// header already says (artist, album, year, explicit) isn't repeated.
 
 export function AssetDrawer({
   stationId,
@@ -125,6 +127,7 @@ function DrawerBody({
   const asset = detail.data;
   const refresh = () => invalidateLibrary(queryClient, stationId);
   const entries = drawerLayout(assetDrawerSlots(), allowed);
+  const byline = [asset.artists.join(', '), asset.album, asset.year].filter(Boolean).join(' · ');
 
   return (
     <>
@@ -139,10 +142,7 @@ function DrawerBody({
             <span className="font-normal text-muted-foreground"> ({asset.version})</span>
           )}
         </SheetTitle>
-        <SheetDescription>
-          {[asset.artists.join(', '), asset.album, asset.year].filter(Boolean).join(' · ') ||
-            t('drawer.none')}
-        </SheetDescription>
+        {byline && <SheetDescription>{byline}</SheetDescription>}
       </SheetHeader>
       <div className="flex flex-col gap-5 p-4">
         {entries.map((entry) => (
@@ -204,20 +204,31 @@ function DrawerSection({
 }) {
   const id = entry.kind === 'slot' ? `slot-${entry.slot.id}` : entry.id;
   return (
-    <section aria-labelledby={`drawer-${id}`} className="flex flex-col gap-2">
-      <h3 id={`drawer-${id}`} className="text-xs font-semibold tracking-wide uppercase">
+    // A section with nothing to show (an empty `Rows`) is hidden, heading included.
+    <section
+      aria-labelledby={`drawer-${id}`}
+      className="flex flex-col gap-2 has-[>[data-drawer-body]:empty]:hidden"
+    >
+      <h3 id={`drawer-${id}`} className="text-sm font-medium">
         {title}
       </h3>
-      {children}
+      <div data-drawer-body className="contents">
+        {children}
+      </div>
       <Separator className="mt-2" />
     </section>
   );
 }
 
+/** Label/value rows; rows without a value (`null`, `undefined`, `false`, `''`) are left out. */
 function Rows({ rows }: { rows: [label: string, value: ReactNode][] }) {
+  const shown = rows.filter(
+    ([, value]) => value !== null && value !== undefined && value !== false && value !== '',
+  );
+  if (shown.length === 0) return null;
   return (
     <dl className="grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-4 gap-y-1">
-      {rows.map(([label, value]) => (
+      {shown.map(([label, value]) => (
         <div key={label} className="contents">
           <dt className="text-muted-foreground">{label}</dt>
           <dd className="min-w-0 break-words">{value}</dd>
@@ -357,16 +368,17 @@ function BuiltinSection({
       return (
         <Rows
           rows={[
-            [t('field.album'), asset.album ?? none],
-            [t('field.year'), asset.year ?? none],
-            [t('col.duration'), formatDuration(asset.durationMs) || none],
-            [t('field.isrc'), asset.isrc ?? none],
-            [t('field.explicit'), asset.explicit ? t('bulk.edit.yes') : t('bulk.edit.no')],
-            [t('field.startAt'), formatDateTime(asset.startAt, locale) || none],
-            [t('field.killAt'), formatDateTime(asset.killAt, locale) || none],
-            [t('field.sourceFilename'), asset.sourceFilename ?? none],
+            [t('col.duration'), formatDuration(asset.durationMs)],
+            [t('field.isrc'), asset.isrc],
+            [t('field.startAt'), formatDateTime(asset.startAt, locale)],
+            [t('field.killAt'), formatDateTime(asset.killAt, locale)],
+            [t('field.sourceFilename'), asset.sourceFilename],
             [t('field.createdAt'), formatDateTime(asset.createdAt, locale)],
-            [t('field.updatedAt'), formatDateTime(asset.updatedAt, locale)],
+            [
+              t('field.updatedAt'),
+              formatDateTime(asset.updatedAt, locale) !== formatDateTime(asset.createdAt, locale) &&
+                formatDateTime(asset.updatedAt, locale),
+            ],
             ...extra.map(([k, v]): [string, ReactNode] => [k, v]),
             ...(asset.notes ? [[t('field.notes'), asset.notes] as [string, ReactNode]] : []),
           ]}
@@ -389,14 +401,12 @@ function BuiltinSection({
                 ? formatDb(asset.loudness.integratedLufs, 'LUFS')
                 : t('drawer.unmeasured'),
             ],
-            [t('drawer.lra'), formatDb(asset.loudness?.loudnessRangeLu, 'LU') || none],
-            [t('drawer.truePeak'), formatDb(asset.loudness?.truePeakDbtp, 'dBTP') || none],
+            [t('drawer.lra'), formatDb(asset.loudness?.loudnessRangeLu, 'LU')],
+            [t('drawer.truePeak'), formatDb(asset.loudness?.truePeakDbtp, 'dBTP')],
             [t('drawer.gain'), gainLabel],
-            [
-              t('field.normalizeLoudness'),
-              asset.normalizeLoudness ? t('bulk.edit.yes') : t('bulk.edit.no'),
-            ],
-            [t('field.gainOverrideDb'), formatDb(asset.gainOverrideDb) || none],
+            // Normalised is the default: only the exception is worth a row.
+            [t('field.normalizeLoudness'), !asset.normalizeLoudness && t('bulk.edit.no')],
+            [t('field.gainOverrideDb'), formatDb(asset.gainOverrideDb)],
           ]}
         />
       );
@@ -434,27 +444,25 @@ function BuiltinSection({
       );
     }
     case 'analysis': {
-      const done = (ok: boolean) => (
-        <span className="flex items-center gap-1">
-          {ok ? <CheckIcon className="size-3" /> : <CircleDashedIcon className="size-3" />}
-          {ok ? t('drawer.analysis.done') : t('drawer.analysis.missing')}
-        </span>
-      );
+      // Only what's still pending, and the measures that exist: a fully analysed asset
+      // without BPM, key or energy has no section at all.
+      const missing = (ok: boolean) =>
+        !ok && (
+          <span className="flex items-center gap-1 text-muted-foreground">
+            <CircleDashedIcon className="size-3" />
+            {t('drawer.analysis.missing')}
+          </span>
+        );
       const hasPeaks = asset.files.some((f) => f.role === 'peaks');
       return (
         <Rows
           rows={[
-            [t('drawer.analysis.loudness'), done(asset.loudness !== null)],
-            [t('drawer.analysis.cues'), done(asset.cues !== null)],
-            [t('drawer.analysis.peaks'), done(hasPeaks)],
-            [t('drawer.analysis.bpm'), asset.analysis?.bpm?.toFixed(1) ?? none],
-            [t('drawer.analysis.key'), asset.analysis?.musicalKey ?? none],
-            [
-              t('drawer.analysis.energy'),
-              asset.analysis?.energy === null || asset.analysis?.energy === undefined
-                ? none
-                : asset.analysis.energy.toFixed(2),
-            ],
+            [t('drawer.analysis.loudness'), missing(asset.loudness !== null)],
+            [t('drawer.analysis.cues'), missing(asset.cues !== null)],
+            [t('drawer.analysis.peaks'), missing(hasPeaks)],
+            [t('drawer.analysis.bpm'), asset.analysis?.bpm?.toFixed(1)],
+            [t('drawer.analysis.key'), asset.analysis?.musicalKey],
+            [t('drawer.analysis.energy'), asset.analysis?.energy?.toFixed(2)],
           ]}
         />
       );
@@ -465,7 +473,7 @@ function BuiltinSection({
       ) : (
         <ul className="flex flex-col gap-2">
           {asset.files.map((file) => (
-            <li key={file.id} className="flex flex-col">
+            <li key={file.id} className="flex flex-col" title={file.sha256 ?? undefined}>
               <span className="font-medium">
                 {t(`drawer.file.${file.role}`)}{' '}
                 <span className="font-normal text-muted-foreground">
@@ -484,9 +492,6 @@ function BuiltinSection({
                   ? ` · ${formatDuration((file.durationSamples / file.sampleRate) * 1000)}`
                   : ''}
               </span>
-              <code className="truncate text-[0.625rem] text-muted-foreground" title={file.sha256}>
-                {file.sha256}
-              </code>
             </li>
           ))}
         </ul>

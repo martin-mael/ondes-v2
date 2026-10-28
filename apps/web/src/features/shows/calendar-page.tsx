@@ -29,6 +29,7 @@ import { cn } from '@/ui/lib/utils';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
+import { PageHeader } from '../../app/page-header.tsx';
 import { ListSkeleton } from '../../app/pending.tsx';
 import { useShowAccess } from './access.ts';
 import { invalidateShows, occurrencesQuery, showsApi, showsQuery, slotsQuery } from './api.ts';
@@ -219,40 +220,40 @@ export function CalendarPage() {
         view === 'week' && 'h-[calc(100svh-3rem)] min-h-[32rem]',
       )}
     >
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex flex-col gap-1">
-          <h1 className="font-heading text-xl font-semibold">{t('calendar.title')}</h1>
-          <p className="text-muted-foreground">{t('upcoming.timezone', { timezone: tz })}</p>
-        </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <NativeSelect
-            size="sm"
-            aria-label={t('calendar.filter')}
-            value={search.show ?? ''}
-            onChange={(e) => go({ show: e.target.value || undefined })}
-          >
-            <NativeSelectOption value="">{t('calendar.allShows')}</NativeSelectOption>
-            {shows.data?.items.map((s) => (
-              <NativeSelectOption key={s.id} value={s.id}>
-                {s.name}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-          <fieldset className="flex" aria-label={t('calendar.view')}>
-            {calendarViews.map((v) => (
-              <Button
-                key={v}
-                size="sm"
-                variant={v === view ? 'default' : 'outline'}
-                aria-pressed={v === view}
-                onClick={() => go({ view: v })}
-              >
-                {t(`calendar.${v}`)}
-              </Button>
-            ))}
-          </fieldset>
-        </div>
-      </div>
+      <PageHeader
+        title={t('calendar.title')}
+        description={t('upcoming.timezone', { timezone: tz })}
+        actions={
+          <>
+            <NativeSelect
+              size="sm"
+              aria-label={t('calendar.filter')}
+              value={search.show ?? ''}
+              onChange={(e) => go({ show: e.target.value || undefined })}
+            >
+              <NativeSelectOption value="">{t('calendar.allShows')}</NativeSelectOption>
+              {shows.data?.items.map((s) => (
+                <NativeSelectOption key={s.id} value={s.id}>
+                  {s.name}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+            <fieldset className="flex" aria-label={t('calendar.view')}>
+              {calendarViews.map((v) => (
+                <Button
+                  key={v}
+                  size="sm"
+                  variant={v === view ? 'default' : 'outline'}
+                  aria-pressed={v === view}
+                  onClick={() => go({ view: v })}
+                >
+                  {t(`calendar.${v}`)}
+                </Button>
+              ))}
+            </fieldset>
+          </>
+        }
+      />
 
       <div className="flex items-center gap-2">
         <Button
@@ -334,7 +335,7 @@ export function CalendarPage() {
       )}
       {view === 'week' &&
         (access.canManage || shows.data?.items.some((s) => access.canEdit(s))) && (
-          <p className="text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             {access.canManage ? t('calendar.dragHelp') : t('calendar.dropHelp')}
           </p>
         )}

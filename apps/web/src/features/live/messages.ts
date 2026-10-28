@@ -7,8 +7,7 @@ import type { Locale } from '../../app/i18n/messages.ts';
 
 const en = {
   title: 'Live',
-  description:
-    'DJ credentials for going live from BUTT, Mixxx or OBS, and the settings to type in.',
+  description: 'DJ credentials and encoder settings for going live.',
   forbidden: "You don't have access to this station's live settings.",
 
   'connection.title': 'Connection settings',
@@ -170,7 +169,7 @@ const en = {
 
   'events.title': 'Events',
   'events.description':
-    'One-off live blocks with a title, outside the shows: a concert, a festival stage. Their DJs connect up to {minutes} minutes before and go on air at the start.',
+    'One-off live blocks outside the shows, like a concert. DJs connect up to {minutes} minutes before.',
   'events.new': 'New event',
   'events.empty': 'No upcoming event.',
   'events.anyStreamer': 'Any streamer',
@@ -223,8 +222,7 @@ const en = {
 
 const fr: typeof en = {
   title: 'Direct',
-  description:
-    'Les identifiants des DJ pour passer en direct depuis BUTT, Mixxx ou OBS, et les réglages à saisir.',
+  description: 'Les identifiants des DJ et les réglages de leur logiciel pour passer en direct.',
   forbidden: 'Vous n’avez pas accès aux réglages du direct de cette station.',
 
   'connection.title': 'Réglages de connexion',
@@ -392,7 +390,7 @@ const fr: typeof en = {
 
   'events.title': 'Événements',
   'events.description':
-    'Des blocs en direct ponctuels, avec un titre, en dehors des émissions : un concert, une scène de festival. Leurs DJ se connectent jusqu’à {minutes} minutes avant et passent à l’antenne au début.',
+    'Des directs ponctuels hors émissions, comme un concert. Les DJ se connectent jusqu’à {minutes} minutes avant.',
   'events.new': 'Nouvel événement',
   'events.empty': 'Aucun événement à venir.',
   'events.anyStreamer': 'Tous les streamers',

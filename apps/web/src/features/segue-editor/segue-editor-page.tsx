@@ -3,7 +3,6 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router';
 import { cn } from 'cn';
 import {
-  ArrowLeftIcon,
   MaximizeIcon,
   MicIcon,
   PlayIcon,
@@ -42,6 +41,7 @@ import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert, useErrorMessage } from '../../app/forms.tsx';
+import { BackButton } from '../../app/page-header.tsx';
 import { DelayedSpinner, PageSkeleton } from '../../app/pending.tsx';
 import { useSseEvent } from '../../app/sse/sse.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
@@ -160,17 +160,14 @@ export function SegueEditorPage() {
   });
 
   const back = (
-    <Button
-      variant="ghost"
-      size="sm"
+    <BackButton
       nativeButton={false}
       render={
         <Link to="/stations/$stationId/log" params={{ stationId }} search={{ date: search.date }} />
       }
     >
-      <ArrowLeftIcon data-icon="inline-start" />
       {t('back')}
-    </Button>
+    </BackButton>
   );
   const problem = (message: React.ReactNode) => (
     <div className="flex flex-col items-start gap-4 p-6">

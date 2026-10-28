@@ -6,8 +6,7 @@ import type { Locale } from '../../../app/i18n/messages.ts';
 
 const en = {
   title: 'Live recording',
-  description:
-    'Every live show is recorded from the station’s output and becomes its episode’s audio, ready for reruns a few minutes after the show.',
+  description: 'Live shows are recorded and become their episode’s audio, ready for reruns.',
   readOnly: 'Only station managers can change these.',
   'enabled.label': 'Record live shows',
   'enabled.hint': 'Off: live shows aren’t kept. The engine’s files are deleted after a day.',
@@ -28,7 +27,7 @@ export type LiveRecordingMessageKey = keyof typeof en;
 const fr: Record<LiveRecordingMessageKey, string> = {
   title: 'Enregistrement des directs',
   description:
-    'Chaque émission en direct est enregistrée depuis la sortie de la station et devient le son de son épisode, prêt pour les rediffusions quelques minutes après l’émission.',
+    'Les directs sont enregistrés et deviennent le son de leur épisode, prêt pour les rediffusions.',
   readOnly: 'Seuls les responsables de la station peuvent les modifier.',
   'enabled.label': 'Enregistrer les directs',
   'enabled.hint':

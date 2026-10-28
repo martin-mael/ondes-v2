@@ -5,8 +5,7 @@ import type { Locale } from '../../../app/i18n/messages.ts';
 
 const en = {
   title: 'Categories',
-  description:
-    'Pools of songs with a rotation behaviour. A smart rule picks songs by their tags; you can also add or keep out songs by hand.',
+  description: 'Song pools with their rotation, filled by a smart rule or by hand.',
   'new': 'New category',
   empty: 'No category yet. Create one to start building rotations.',
   forbidden: "You don't have access to this station's categories.",
@@ -110,6 +109,7 @@ const en = {
 
   'preview.title': 'Preview',
   'preview.members': '{count} songs',
+  'preview.members.one': '1 song',
   'preview.schedulable': '{count} schedulable now',
   'preview.ruleMatches': '{count} matched by the rule',
   'preview.manualOnly': '{count} added by hand',
@@ -131,8 +131,7 @@ export type CategoryMessageKey = keyof typeof en;
 
 const fr: Record<CategoryMessageKey, string> = {
   title: 'Catégories',
-  description:
-    "Des ensembles de titres avec un comportement de rotation. Une règle intelligente choisit les titres d'après leurs tags ; vous pouvez aussi en ajouter ou en écarter à la main.",
+  description: 'Des ensembles de titres et leur rotation, remplis par une règle ou à la main.',
   'new': 'Nouvelle catégorie',
   empty: 'Aucune catégorie. Créez-en une pour commencer vos rotations.',
   forbidden: "Vous n'avez pas accès aux catégories de cette station.",
@@ -239,6 +238,7 @@ const fr: Record<CategoryMessageKey, string> = {
 
   'preview.title': 'Aperçu',
   'preview.members': '{count} titres',
+  'preview.members.one': '1 titre',
   'preview.schedulable': '{count} programmables maintenant',
   'preview.ruleMatches': '{count} trouvés par la règle',
   'preview.manualOnly': '{count} ajoutés à la main',

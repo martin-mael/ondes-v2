@@ -9,8 +9,7 @@ import type { Locale } from '../../app/i18n/messages.ts';
 const en = {
   forbidden: "You don't have access to this station's shows.",
   'list.title': 'Shows',
-  'list.description':
-    'The station’s programmes: when they air, their hosts and their episodes, pre-recorded or live.',
+  'list.description': 'The station’s programmes, their hosts and episodes.',
   'list.new': 'New show',
   'list.empty': 'No show yet.',
   'list.mine': 'Your shows',
@@ -241,7 +240,7 @@ const en = {
   'calendar.nothing': 'Nothing on air.',
   'calendar.dropFile': 'Drop to upload',
   'calendar.dragHelp':
-    'Drag an airing to move it (up to 7 days). Drop an audio file on an airing to upload its episode.',
+    'Drag an airing to move it, or drop an audio file on it to upload its episode.',
   'calendar.dropHelp': 'Drop an audio file on one of your airings to upload its episode.',
 
   'conflict.title': '{count} overlaps',
@@ -318,8 +317,7 @@ export type ShowMessageKey = keyof typeof en;
 const fr: Record<ShowMessageKey, string> = {
   forbidden: "Vous n'avez pas accès aux émissions de cette station.",
   'list.title': 'Émissions',
-  'list.description':
-    'Les émissions de la station : quand elles passent, leurs animateurs et leurs épisodes, enregistrés ou en direct.',
+  'list.description': 'Les émissions de la station, leurs animateurs et leurs épisodes.',
   'list.new': 'Nouvelle émission',
   'list.empty': 'Aucune émission pour l’instant.',
   'list.mine': 'Vos émissions',
@@ -559,7 +557,7 @@ const fr: Record<ShowMessageKey, string> = {
   'calendar.nothing': 'Rien à l’antenne.',
   'calendar.dropFile': 'Déposez pour envoyer',
   'calendar.dragHelp':
-    'Glissez une diffusion pour la déplacer (jusqu’à 7 jours). Déposez un fichier audio sur une diffusion pour envoyer son épisode.',
+    'Glissez une diffusion pour la déplacer, ou déposez-y un fichier audio pour envoyer son épisode.',
   'calendar.dropHelp':
     'Déposez un fichier audio sur une de vos diffusions pour envoyer son épisode.',
 

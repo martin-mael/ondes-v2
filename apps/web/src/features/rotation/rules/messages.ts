@@ -6,10 +6,9 @@ import type { Locale } from '../../../app/i18n/messages.ts';
 
 const en = {
   title: 'Rotation rules',
-  description:
-    'Separation and rotation rules applied to every song the scheduler picks. Rules higher in the list matter more.',
+  description: 'Separation rules for every song the scheduler picks. Rules higher up matter more.',
   ladder:
-    'When no song satisfies every rule, the lowest enabled rule that may be relaxed is dropped first, then the next one up. Each relaxation is recorded on the log item.',
+    'When no song meets every rule, the lowest rule that may be relaxed is dropped first, then the next one up.',
   'ladder.order': 'Relaxation order',
   'ladder.none': 'No rule can be relaxed.',
   'ignored.song_rest': 'Song rest is off: the categories’ rest times are ignored.',
@@ -109,9 +108,9 @@ export type RulesMessageKey = keyof typeof en;
 const fr: Record<RulesMessageKey, string> = {
   title: 'Règles de rotation',
   description:
-    'Règles de séparation et de rotation appliquées à chaque titre choisi par le programmateur. Les règles en haut de la liste comptent davantage.',
+    'Les règles de séparation de chaque titre choisi. Celles du haut comptent davantage.',
   ladder:
-    'Quand aucun titre ne respecte toutes les règles, la règle active la plus basse qui peut être assouplie est levée en premier, puis la suivante. Chaque assouplissement est noté sur l’élément du conducteur.',
+    'Si aucun titre ne respecte toutes les règles, la plus basse qui peut être assouplie est levée en premier, puis la suivante.',
   'ladder.order': 'Ordre d’assouplissement',
   'ladder.none': 'Aucune règle ne peut être assouplie.',
   'ignored.song_rest':

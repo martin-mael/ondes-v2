@@ -279,7 +279,8 @@ describe('library page', () => {
       await user.click(await screen.findByRole('button', { name: 'Été indien' }));
       const drawer = await screen.findByRole('dialog');
       expect(history.location.search).toContain(`asset=${ids[0]}`);
-      expect(await within(drawer).findByText('Le Costume Blanc')).toBeInTheDocument();
+      // The album is in the header's byline (artist · album · year), not repeated in a row.
+      expect(await within(drawer).findByText(/Le Costume Blanc/)).toBeInTheDocument();
       expect(within(drawer).getByText('−12.0 LUFS')).toBeInTheDocument();
       expect(within(drawer).getByText(/−4\.0 dB \(measured\)/)).toBeInTheDocument();
       // The slot replaced the built-in cue list.

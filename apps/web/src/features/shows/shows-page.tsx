@@ -1,13 +1,14 @@
 import type { Show } from '@ondes/shared';
 import { useQuery } from '@tanstack/react-query';
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router';
-import { CalendarDaysIcon, PlusIcon } from 'lucide-react';
+import { PlusIcon } from 'lucide-react';
 import { useState } from 'react';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Card, CardContent } from '@/ui/card';
 import { isApiError } from '../../app/api/client.ts';
 import { FormAlert } from '../../app/forms.tsx';
+import { PageHeader } from '../../app/page-header.tsx';
 import { ListSkeleton } from '../../app/pending.tsx';
 import { useShowAccess } from './access.ts';
 import { showsQuery } from './api.ts';
@@ -86,28 +87,18 @@ export function ShowsPage() {
 
   return (
     <div className="flex min-w-0 flex-col gap-6 p-4 sm:p-6">
-      <div className="flex flex-wrap items-start gap-4">
-        <div className="flex flex-col gap-1">
-          <h1 className="font-heading text-xl font-semibold">{t('list.title')}</h1>
-          <p className="max-w-2xl text-sm text-muted-foreground">{t('list.description')}</p>
-        </div>
-        <div className="ml-auto flex gap-2">
-          <Button
-            variant="outline"
-            nativeButton={false}
-            render={<Link to="/stations/$stationId/shows/calendar" params={{ stationId }} />}
-          >
-            <CalendarDaysIcon data-icon="inline-start" />
-            {t('calendar.title')}
-          </Button>
-          {access.canManage && (
+      <PageHeader
+        title={t('list.title')}
+        description={t('list.description')}
+        actions={
+          access.canManage && (
             <Button onClick={() => setCreating(true)}>
               <PlusIcon data-icon="inline-start" />
               {t('list.new')}
             </Button>
-          )}
-        </div>
-      </div>
+          )
+        }
+      />
 
       {list.isPending ? (
         <ListSkeleton />

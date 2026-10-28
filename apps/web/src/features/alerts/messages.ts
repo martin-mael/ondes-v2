@@ -7,8 +7,7 @@ import type { Locale } from '../../app/i18n/messages.ts';
 
 const en = {
   title: 'Alerts',
-  description:
-    'Problems on air and ahead of it. Alerts close by themselves once their cause is gone; acknowledging one tells the team someone is on it.',
+  description: 'Problems on air and ahead. An alert closes once its cause is gone.',
   'filter.status': 'Status',
   'filter.type': 'Type',
   'filter.allTypes': 'All types',
@@ -134,7 +133,7 @@ export type AlertMessageKey = keyof typeof en;
 const fr: Record<AlertMessageKey, string> = {
   title: 'Alertes',
   description:
-    'Les problèmes à l’antenne et à venir. Une alerte se ferme d’elle-même quand sa cause disparaît ; la prendre en charge indique à l’équipe que quelqu’un s’en occupe.',
+    'Les problèmes à l’antenne et à venir. Une alerte se ferme quand sa cause disparaît.',
   'filter.status': 'Statut',
   'filter.type': 'Type',
   'filter.allTypes': 'Tous les types',
