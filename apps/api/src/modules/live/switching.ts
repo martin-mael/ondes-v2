@@ -21,9 +21,10 @@ import type {
   RealtimeEvent,
 } from '@ondes/shared';
 import { LIVE_HANDOVER_FADE_MS_DEFAULT } from '@ondes/shared';
-import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { HttpError } from '../../plugins/errors.ts';
 import { bindLiveEntries } from '../asrun/repo.ts';
+import { EngineConflictError } from '../engine/adapter/errors.ts';
 import { type LiveEpisode, startLiveEpisode, undoLiveEpisode } from '../shows/live-slots.ts';
 import { statusOf } from './repo.ts';
 import * as requests from './requests.ts';
@@ -126,7 +127,10 @@ export type LiveSwitcher = {
   returnToAutomation(ctx: Ctx, reason?: LiveSessionEndReason): Promise<LiveSession | null>;
   /** Hangs up the DJ on `input` (a kick). False if nobody was connected there. */
   disconnect(ctx: Ctx, input: number): Promise<boolean>;
-  /** Mutes (or unmutes) what `input` sends on air (#66). False if nobody was connected there. */
+  /**
+   * Mutes (or unmutes) what `input` sends on air (#66). 409 when muting an input nobody is
+   * connected on (the mute would carry over to the next DJ); unmuting one is a no-op, false.
+   */
   mute(ctx: Ctx, input: number, muted: boolean): Promise<boolean>;
   /** Closes the open session if `streamerId` holds it (revocation). */
   endSessionOf(ctx: Ctx, streamerId: string, reason: LiveSessionEndReason): Promise<boolean>;
@@ -139,12 +143,18 @@ export type LiveSwitcher = {
 const SYSTEM: Actor = { type: 'system', name: 'live' };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Postgres unique violation (the open-session index): another replica opened one. */
-function isUniqueViolation(err: unknown): boolean {
+/** How long a switch waits for another one of the same station before a 409 (#66 review). */
+const SWITCH_LOCK_TIMEOUT_MS = 30_000;
+
+/** The Postgres error `code`, on the error or one of its causes. */
+function hasPgCode(err: unknown, code: string): boolean {
   const e = err as { code?: string; cause?: unknown } | undefined;
-  if (e?.code === '23505') return true;
-  return e?.cause ? isUniqueViolation(e.cause) : false;
+  if (e?.code === code) return true;
+  return e?.cause ? hasPgCode(e.cause, code) : false;
 }
+
+/** Postgres unique violation (the open-session index): another replica opened one. */
+const isUniqueViolation = (err: unknown) => hasPgCode(err, '23505');
 
 /** A streamer id the engine reported, if it is a uuid (anything else is not ours). */
 function streamerIdOf(value: string | null | undefined): string | null {
@@ -302,12 +312,44 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
     return row ? unsafeScope(row.orgId, stationId) : undefined;
   }
 
-  const goLive: LiveSwitcher['goLive'] = async (
-    ctx,
-    input,
-    trigger = 'manual',
-    bound,
-    goLiveOptions = {},
+  /**
+   * Runs `fn` alone for the station, across replicas (#66 review): a scheduled handover firing
+   * as a member puts someone on air by hand would otherwise commit one session and leave the
+   * engine on the other's input. A transaction holds a per-station advisory lock while `fn`
+   * writes on its own connections (it commits before telling the engine, see goLive) and talks
+   * to the engine; the lock goes with the transaction, or the connection if the replica dies.
+   */
+  async function serialised<T>(stationId: string, fn: () => Promise<T>): Promise<T> {
+    return db.transaction(async (tx) => {
+      // A switch stuck behind another for this long is refused rather than queued forever.
+      await tx.execute(
+        sql`set local lock_timeout = '${sql.raw(String(SWITCH_LOCK_TIMEOUT_MS))}ms'`,
+      );
+      try {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`live-switch:${stationId}`}, 0))`,
+        );
+      } catch (err) {
+        if (hasPgCode(err, '55P03')) {
+          throw new HttpError(409, 'live_switch_busy', 'another live switch is in progress');
+        }
+        throw err;
+      }
+      return fn();
+    });
+  }
+
+  const goLive: LiveSwitcher['goLive'] = (ctx, input, trigger = 'manual', bound, goLiveOptions) =>
+    serialised(ctx.scope.stationId, () =>
+      goLiveNow(ctx, input, trigger, bound, goLiveOptions ?? {}),
+    );
+
+  const goLiveNow = async (
+    ctx: Ctx,
+    input: number,
+    trigger: LiveSessionTrigger,
+    bound: LiveBinding | null | undefined,
+    goLiveOptions: GoLiveOptions,
   ) => {
     const engine = await engineOf(ctx.scope.stationId);
     const state = await engine.state();
@@ -363,6 +405,7 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
       return toSession(open, await streamerNames(db, ctx.scope.stationId, [open.streamerId]));
     }
 
+    const fadeMs = goLiveOptions.fadeMs ?? LIVE_HANDOVER_FADE_MS_DEFAULT;
     let previous: SessionRow | undefined;
     let created: SessionRow;
     let episode: LiveEpisode | null = null;
@@ -414,6 +457,7 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
             input: { from: open?.input ?? null, to: input },
             streamerId: { from: open?.streamerId ?? null, to: streamerId },
             trigger: { from: null, to: trigger },
+            fadeMs: { from: null, to: fadeMs },
             ...(occurrence
               ? {
                   slot: { from: null, to: `${occurrence.slotId}/${occurrence.date}` },
@@ -437,7 +481,7 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
       await engine.setLive(true, {
         input,
         sessionId: created.id,
-        fadeMs: goLiveOptions.fadeMs ?? LIVE_HANDOVER_FADE_MS_DEFAULT,
+        fadeMs,
       });
     } catch (err) {
       // The call may have failed after the engine applied it (a timeout): if the engine is on
@@ -918,11 +962,26 @@ export function createLiveSwitcher(options: LiveSwitcherOptions): LiveSwitcher {
 
     async mute(ctx, input, muted) {
       const engine = await engineOf(ctx.scope.stationId);
-      const connected = await engine.muteLive(input, muted);
+      const slot = (await engine.state()).live.inputs?.find((i) => i.input === input);
+      if (!slot) throw new HttpError(400, 'live_input_unknown', `the engine has no input ${input}`);
+      const notConnected = () =>
+        new HttpError(409, 'live_input_not_connected', `nobody is connected on input ${input}`);
+      if (muted && !slot.connected) throw notConnected();
+      let connected: boolean;
+      try {
+        connected = await engine.muteLive(input, muted);
+      } catch (err) {
+        // The DJ hung up since: the engine refuses too.
+        if (muted && err instanceof EngineConflictError) throw notConnected();
+        throw err;
+      }
       await writeAudit(db, ctx, {
         action: 'live.input.mute',
         entity: { type: 'station', id: ctx.scope.stationId },
-        diff: { input: { from: null, to: input }, muted: { from: !muted, to: muted } },
+        diff: {
+          input: { from: null, to: input },
+          muted: { from: slot.muted ?? false, to: muted },
+        },
       });
       return connected;
     },

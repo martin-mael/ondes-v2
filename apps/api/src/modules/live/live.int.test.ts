@@ -745,17 +745,36 @@ describe('events and ad-hoc requests (#65)', () => {
 
 describe('DJ handover (#66)', () => {
   it('mutes an input for engine:control only, audited', async () => {
-    expect((await call('presenter', 'PUT', '/inputs/2/mute', { muted: true })).statusCode).toBe(
-      403,
-    );
-    const res = await call('manager', 'PUT', '/inputs/2/mute', { muted: true });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ connected: true, muted: true });
-    expect(engine.muted).toEqual([[2, true]]);
-    expect((await auditRows(scope.stationId, 'station')).map((r) => r.action)).toContain(
-      'live.input.mute',
-    );
-    expect((await call('manager', 'PUT', '/inputs/0/mute', { muted: true })).statusCode).toBe(400);
+    // This one test's engine reports a pool: a DJ on input 2, nobody on 1.
+    const dj = { connected: true, ready: true, streamer_id: null, muted: false };
+    const nobody = { connected: false, ready: false, streamer_id: null };
+    Object.assign(engine.live, {
+      inputs: [
+        { input: 1, mount: 'live', ...nobody },
+        { input: 2, mount: 'live-2', ...dj },
+      ],
+    });
+    try {
+      expect((await call('presenter', 'PUT', '/inputs/2/mute', { muted: true })).statusCode).toBe(
+        403,
+      );
+      const res = await call('manager', 'PUT', '/inputs/2/mute', { muted: true });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ connected: true, muted: true });
+      expect(engine.muted).toEqual([[2, true]]);
+      expect((await auditRows(scope.stationId, 'station')).map((r) => r.action)).toContain(
+        'live.input.mute',
+      );
+      const nobodyThere = await call('manager', 'PUT', '/inputs/1/mute', { muted: true });
+      expect(nobodyThere.statusCode).toBe(409);
+      expect(nobodyThere.json()).toMatchObject({ error: 'live_input_not_connected' });
+      expect(engine.muted).toHaveLength(1);
+      expect((await call('manager', 'PUT', '/inputs/0/mute', { muted: true })).statusCode).toBe(
+        400,
+      );
+    } finally {
+      delete (engine.live as { inputs?: unknown }).inputs;
+    }
   });
 
   it('schedules, lists and cancels handovers; readers only list', async () => {

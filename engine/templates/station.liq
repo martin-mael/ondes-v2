@@ -756,6 +756,8 @@ def live_input_of(index) =
     fun (headers) ->
       begin
         connected := true
+        # DJ handover (#66): a new DJ always starts unmuted, whatever happened before.
+        muted := false
         streamer := pending()
         d = json.object()
         d.add("input", index)
@@ -1856,7 +1858,8 @@ end
 
 # DJ handover (#66, ADR 0038). POST /v1/live/mute {input, muted}: mutes (or unmutes) what an
 # input sends on air, over 100 ms. The DJ stays connected and, if on air, on air: silence
-# until unmuted. Pre-listen still hears them. Reset when the DJ hangs up.
+# until unmuted. Pre-listen still hears them. 409 when muting an input nobody is connected on;
+# reset when a DJ connects or hangs up, so a mute never carries over to the next DJ.
 def handle_live_mute(req, res) =
   if
     authorized(req, res)
@@ -1875,13 +1878,20 @@ def handle_live_mute(req, res) =
           fail(res, 400, "invalid mute: no input #{p.input}")
         else
           inp = null.get(inp)
-          inp.muted := p.muted
-          d = json.object()
-          d.add("input", p.input)
-          d.add("muted", p.muted)
-          d.add("connected", inp.connected())
-          emit("live.muted", d)
-          reply(res, 200, d.stringify(compact=true))
+          if
+            p.muted and not inp.connected()
+          then
+            # Nobody to mute: a mute set now would wait for the next DJ on this input.
+            fail(res, 409, "invalid mute: nobody is connected on input #{p.input}")
+          else
+            inp.muted := p.muted
+            d = json.object()
+            d.add("input", p.input)
+            d.add("muted", p.muted)
+            d.add("connected", inp.connected())
+            emit("live.muted", d)
+            reply(res, 200, d.stringify(compact=true))
+          end
         end
       catch err do
         fail(res, 400, "invalid mute: #{err.message}")
