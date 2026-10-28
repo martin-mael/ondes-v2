@@ -156,6 +156,8 @@ check of the auth plugin and must never be routed through the public proxy.
 | `ENGINE_LIVE_BIND_IP` | `0.0.0.0` | |
 | `ENGINE_CPUS` / `ENGINE_MEMORY_MB` / `ENGINE_PIDS` | `1` / `512` / `256` | 256 MB is not enough: Liquidsoap 2.4.6 is OOM-killed while loading. |
 | `ENGINE_RESTART_MAX` / `ENGINE_RESTART_WINDOW_SECONDS` | `5` / `600` | |
+| `ENGINE_PUBLISH_CONTROL_ON_LOOPBACK` | – | Dev only (`deploy/dev/engine`): `true` publishes the control port on 127.0.0.1, for an api outside Docker. The guard refuses it without `GUARD_ALLOW_LOOPBACK_CONTROL`. |
+| `ENGINE_EXTRA_HOSTS` | – | Dev only: comma-separated `/etc/hosts` entries (`host.docker.internal:host-gateway`). The guard refuses any not in `GUARD_EXTRA_HOSTS`. |
 
 **Rotating the secrets key**:
 1. Set the new key as `ENGINE_SECRETS_KEY` with a new `ENGINE_SECRETS_KEY_ID`, and move the old

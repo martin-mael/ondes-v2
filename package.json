@@ -14,6 +14,8 @@
     "dev:logs": "docker compose -f deploy/compose.dev.yml logs -f",
     "dev:ps": "docker compose -f deploy/compose.dev.yml ps -a",
     "dev:seed": "node --env-file-if-exists=.env deploy/dev/seed/index.ts",
+    "dev:engine": "node --env-file-if-exists=.env deploy/dev/engine/up.ts",
+    "dev:engine:down": "node --env-file-if-exists=.env deploy/dev/engine/up.ts down",
     "dev:seed:audio": "node --env-file-if-exists=.env deploy/dev/seed/audio.ts",
     "lint": "biome check .",
     "format": "biome check --write .",

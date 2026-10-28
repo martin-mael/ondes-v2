@@ -181,6 +181,12 @@ export function engineLifecycleConfigFromEnv(
     /(^|_)docker-socket$/.test(network)
   )
     throw new Error(`ENGINE_NETWORK must not be the Docker API network (${dockerNetwork})`);
+  // Dev only (`pnpm dev:engine`): the production images set NODE_ENV=production.
+  const devOnly = ['ENGINE_PUBLISH_CONTROL_ON_LOOPBACK', 'ENGINE_EXTRA_HOSTS'].filter(
+    (k) => env[k],
+  );
+  if (env.NODE_ENV === 'production' && devOnly.length)
+    throw new Error(`${devOnly.join(', ')}: development only, refused in production`);
   return {
     dockerUrl,
     secretKeys: engineSecretKeysFromEnv(env),
@@ -201,6 +207,12 @@ export function engineLifecycleConfigFromEnv(
         memoryMb: num('ENGINE_MEMORY_MB', 512),
         pids: num('ENGINE_PIDS', 256),
       },
+      // Dev only (`pnpm dev:engine`, deploy/dev/engine): the api runs outside Docker. The guard
+      // refuses both unless it was started with GUARD_ALLOW_LOOPBACK_CONTROL / GUARD_EXTRA_HOSTS.
+      ...(env.ENGINE_PUBLISH_CONTROL_ON_LOOPBACK === 'true'
+        ? { publishControlOnLoopback: true }
+        : {}),
+      ...(env.ENGINE_EXTRA_HOSTS ? { extraHosts: env.ENGINE_EXTRA_HOSTS.split(',') } : {}),
     },
     guard: {
       maxRestarts: num('ENGINE_RESTART_MAX', 5),
