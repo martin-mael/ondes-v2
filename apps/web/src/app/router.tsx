@@ -319,6 +319,8 @@ const segueRoute = createRoute({
     /** A take just recorded (#59) to place as a new voice, at axis position `at`. */
     voice: z.uuid().optional().catch(undefined),
     at: z.number().int().optional().catch(undefined),
+    /** Its length on the segue axis (samples), for smart placement (#61) before its ingest. */
+    length: z.number().int().positive().optional().catch(undefined),
     /** Back from the recorder (#59): restore the draft handed over to it. */
     resume: z.boolean().optional().catch(undefined),
   }),

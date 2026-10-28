@@ -62,16 +62,18 @@ import { useHistory } from './history.ts';
 import { Lane, type LaneStyle } from './lane.tsx';
 import { type SegueMessageKey, type SegueT, useSegueT } from './messages.ts';
 import {
+  addPlacedVoice,
   addRecordedVoice,
-  addVoice,
   applyDuck,
   applyFadeOut,
+  autoLanes,
   type Clip,
   clearEnvelopes,
   clipsOf,
   DUCK_PRESETS,
   emptyLanes,
   extentOf,
+  fitTrims,
   islandOf,
   islandRange,
   type LaneKey,
@@ -84,6 +86,7 @@ import {
   problemOf,
   removePoint,
   removeVoice,
+  replacesIn,
   SR,
   sameLanes,
   setLaneEnvelope,
@@ -203,7 +206,11 @@ export function SegueEditorPage() {
         segue={segue.data}
         back={back}
         date={date}
-        placed={search.voice ? { assetId: search.voice, at: search.at ?? null } : null}
+        placed={
+          search.voice
+            ? { assetId: search.voice, at: search.at ?? null, length: search.length ?? null }
+            : null
+        }
         resume={!!search.resume}
       />
     </PreviewProvider>
@@ -238,8 +245,11 @@ function Editor({
   segue: Segue | null;
   back: React.ReactNode;
   date: LocalDate;
-  /** A take just recorded (#59): added as a new voice once, then dropped from the URL. */
-  placed: { assetId: string; at: number | null } | null;
+  /**
+   * A take just recorded (#59): added as a new voice once, then dropped from the URL. `length`
+   * (axis samples) lets smart placement (#61) place it before its ingest.
+   */
+  placed: { assetId: string; at: number | null; length: number | null } | null;
   /** Back from the recorder without a take: restore the draft handed over to it. */
   resume: boolean;
 }) {
@@ -286,6 +296,11 @@ function Editor({
     [media.data, a.id, b.id],
   );
   const clips = useMemo(() => clipsOf(lanes, laneMedia), [lanes, laneMedia]);
+  /** "Reset to auto placement" (#61): null while some media is missing. */
+  const autoPlaced = useMemo(() => autoLanes(lanes, laneMedia), [lanes, laneMedia]);
+  // Read after an await (the voice picker): the lanes and media as they are then.
+  const latest = useRef({ lanes, laneMedia });
+  latest.current = { lanes, laneMedia };
   const extent = extentOf(clips);
   const bounds = padded(extent);
   const problem = useMemo(() => problemOf(lanes, laneMedia), [lanes, laneMedia]);
@@ -440,8 +455,9 @@ function Editor({
     setConflict(lanesOf(fresh));
   };
   const save = useMutation({
-    mutationFn: (body: Lanes) =>
-      saved.segueId
+    mutationFn: (lanes: Lanes) => {
+      const body = fitTrims(lanes, latest.current.laneMedia);
+      return saved.segueId
         ? segueApi.update(stationId, saved.segueId, {
             ...body,
             // Saved by a person: an `auto` segue (a generated promo's, #60) becomes theirs, and a
@@ -449,7 +465,8 @@ function Editor({
             origin: 'manual',
             ...(saved.version !== null ? { version: saved.version } : {}),
           })
-        : segueApi.create(stationId, { fromItemId: a.id, toItemId: b.id, ...body }),
+        : segueApi.create(stationId, { fromItemId: a.id, toItemId: b.id, ...body });
+    },
     onSuccess: (result, body) => {
       setSaved({ lanes: body, segueId: result.id, version: result.version });
       queryClient.setQueryData(segueKey(stationId, a.id, b.id), result);
@@ -535,6 +552,13 @@ function Editor({
 
   // --- Voices ----------------------------------------------------------------------------
   const [picking, setPicking] = useState(false);
+  // Auto placement waiting for a yes: it would replace B's start or envelopes a person set.
+  const [confirmAuto, setConfirmAuto] = useState<Lanes | null>(null);
+  const applyAuto = () => {
+    if (!autoPlaced) return;
+    if (replacesIn(lanes, autoPlaced)) setConfirmAuto(autoPlaced);
+    else edit(autoPlaced);
+  };
 
   // A take back from the recorder: one new voice (undoable), then off the URL so a reload or
   // a back navigation doesn't add it twice.
@@ -543,6 +567,8 @@ function Editor({
   useEffect(() => {
     const take = placing.current;
     if (!take && !resuming.current) return;
+    // Smart placement reads A's and B's markers: wait for their media (or its failure).
+    if (take && media.isPending) return;
     placing.current = null;
     resuming.current = false;
     void navigate({
@@ -559,7 +585,10 @@ function Editor({
       toast.warning(t('record.full'));
       return;
     }
-    const next = addRecordedVoice(lanes, take.assetId, take.at);
+    const next = addRecordedVoice(lanes, take.assetId, take.at, {
+      media: laneMedia,
+      length: take.length,
+    });
     history.change(next);
     setSelection({ lane: voiceKey(next.voices.length - 1), point: null });
   });
@@ -741,6 +770,8 @@ function Editor({
           if (preset) edit(applyDuck(lanes, laneMedia, preset));
         }}
         onFadeOut={() => edit(applyFadeOut(lanes, 2000))}
+        canAuto={autoPlaced !== null}
+        onAuto={applyAuto}
         onClear={() => edit(clearEnvelopes(lanes))}
       />
 
@@ -805,6 +836,28 @@ function Editor({
         </DialogContent>
       </Dialog>
 
+      <Dialog open={confirmAuto !== null} onOpenChange={(open) => !open && setConfirmAuto(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('auto.title')}</DialogTitle>
+            <DialogDescription>{t('auto.body')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmAuto(null)}>
+              {t('auto.cancel')}
+            </Button>
+            <Button
+              onClick={() => {
+                if (confirmAuto) edit(confirmAuto);
+                setConfirmAuto(null);
+              }}
+            >
+              {t('auto.confirm')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <AssetPickerDialog
         stationId={stationId}
         open={picking}
@@ -812,9 +865,33 @@ function Editor({
         title={t('voice.pick')}
         initialKind="vt"
         kinds={['vt', 'jingle', 'bed']}
-        onPick={(asset) => {
+        onPick={async (asset) => {
           setPicking(false);
-          const next = addVoice(lanes, asset.id);
+          // Smart placement (#61) needs the voice's length: its media first (a fast request,
+          // usually cached). Without it the voice goes where `addVoice` puts one, and says so.
+          const voices = await queryClient
+            .fetchQuery(
+              segueMediaQuery(stationId, a.id, b.id, [
+                ...latest.current.lanes.voices.map((v) => v.assetId),
+                asset.id,
+              ]),
+            )
+            .then((m) => m.assets)
+            .catch((error: unknown) => {
+              toast.warning(t('voice.placeError', { reason: errorMessage(error) }));
+              return {};
+            });
+          // Edits made while it loaded stay: place over the lanes as they are now.
+          const now = latest.current;
+          if (now.lanes.voices.length >= 4) {
+            toast.warning(t('voice.full'));
+            return;
+          }
+          const next = addPlacedVoice(
+            now.lanes,
+            { ...now.laneMedia, voices: { ...now.laneMedia.voices, ...voices } },
+            asset.id,
+          );
           edit(next);
           setSelection({ lane: voiceKey(next.voices.length - 1), point: null });
         }}
@@ -908,6 +985,8 @@ function Toolbar(props: {
   onDuck(index: number): void;
   onFadeOut(): void;
   onClear(): void;
+  canAuto: boolean;
+  onAuto(): void;
 }) {
   const { t } = props;
   return (
@@ -992,6 +1071,10 @@ function Toolbar(props: {
                 </DropdownMenuItem>
               ))}
               <DropdownMenuItem onClick={props.onFadeOut}>{t('preset.fadeOut')}</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={props.onAuto} disabled={!props.canAuto}>
+                {t('preset.auto')}
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={props.onClear}>{t('preset.clear')}</DropdownMenuItem>
             </DropdownMenuContent>

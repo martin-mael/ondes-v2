@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { PLAYOUT_FLAC_BLOCK_SIZE, PLAYOUT_SAMPLE_RATE, sha256HexSchema } from './library.ts';
+import {
+  assetTypeSchema,
+  PLAYOUT_FLAC_BLOCK_SIZE,
+  PLAYOUT_SAMPLE_RATE,
+  sha256HexSchema,
+} from './library.ts';
 import { logRangeQuerySchema } from './log.ts';
 import { uuidSchema } from './tenancy.ts';
 
@@ -398,8 +403,22 @@ export const segueMediaSchema = z.object({
   gainDb: z.number(),
   cueIn: samples,
   cueOut: samples,
+  /** The asset's type: smart placement (#61) lays a `bed` voice under the others. */
+  kind: assetTypeSchema.optional(),
+  /**
+   * The cue markers smart placement (#61, ADR 0037) reads, as samples of the playout copy (like
+   * `cueIn`/`cueOut`), null when unset. Absent from older responses.
+   */
+  markers: z
+    .object({
+      introEnd: samples.nullable(),
+      outroStart: samples.nullable(),
+      crossStartNext: samples.nullable(),
+    })
+    .optional(),
 });
 export type SegueMedia = z.infer<typeof segueMediaSchema>;
+export type SegueMarkers = NonNullable<SegueMedia['markers']>;
 
 const idList = (max: number) =>
   z

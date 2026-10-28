@@ -41,6 +41,7 @@ const en = {
 
   'preset.duck': 'Duck under the voice: {depth} dB, {ramp} ms ramps',
   'preset.fadeOut': 'Fade out the outgoing song (2 s)',
+  'preset.auto': 'Auto placement: move the voices and the next song, replace the envelopes',
   'preset.clear': 'Clear every envelope',
 
   'cursor.at': 'Cursor {offset} · on air ≈ {time}',
@@ -71,6 +72,14 @@ const en = {
   'save.error': 'The segue couldn’t be saved: {reason}',
   'audio.error': 'The audio couldn’t be loaded for the preview.',
   'voice.pick': 'Add a voice',
+  'voice.full': 'This segue already has 4 voices: remove one to add another.',
+  'voice.placeError':
+    'The voice’s audio couldn’t be loaded ({reason}): added after the other voices, without auto placement.',
+  'auto.title': 'Replace your placement?',
+  'auto.body':
+    'Auto placement moves the next song and replaces the envelopes of both songs, including the ones you set. Undo brings them back.',
+  'auto.confirm': 'Replace',
+  'auto.cancel': 'Keep mine',
 };
 
 export type SegueMessageKey = keyof typeof en;
@@ -113,6 +122,8 @@ const fr: Record<SegueMessageKey, string> = {
 
   'preset.duck': 'Atténuer sous la voix : {depth} dB, rampes de {ramp} ms',
   'preset.fadeOut': 'Fondu de sortie du titre sortant (2 s)',
+  'preset.auto':
+    'Placement automatique : déplacer les voix et le titre suivant, remplacer les enveloppes',
   'preset.clear': 'Effacer toutes les enveloppes',
 
   'cursor.at': 'Curseur {offset} · à l’antenne ≈ {time}',
@@ -143,6 +154,14 @@ const fr: Record<SegueMessageKey, string> = {
   'save.error': 'L’enchaînement n’a pas pu être enregistré : {reason}',
   'audio.error': 'L’audio n’a pas pu être chargé pour l’écoute.',
   'voice.pick': 'Ajouter une voix',
+  'voice.full': 'Cet enchaînement a déjà 4 voix : retirez-en une pour en ajouter une autre.',
+  'voice.placeError':
+    'L’audio de la voix n’a pas pu être chargé ({reason}) : ajoutée après les autres voix, sans placement automatique.',
+  'auto.title': 'Remplacer votre placement ?',
+  'auto.body':
+    'Le placement automatique déplace le titre suivant et remplace les enveloppes des deux titres, y compris celles que vous avez réglées. Annuler les ramène.',
+  'auto.confirm': 'Remplacer',
+  'auto.cancel': 'Garder le mien',
 };
 
 const messages: Record<Locale, Record<SegueMessageKey, string>> = { en, fr };

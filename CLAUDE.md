@@ -51,8 +51,8 @@ packages/
   shared/src/
     contracts/<domain>.ts  # zod schemas + inferred types: API DTOs, events, job payloads
     time/                  # timezone/DST helpers (station-local ↔ UTC)
-    segues/                # island derivation and hashing, default promo lanes (pure, shared
-                           # by api, worker, web)
+    segues/                # island derivation and hashing, smart VT placement (placement.ts),
+                           # default promo lanes (pure, shared by api, worker, web)
     markers/               # what a fixed-time marker times (pure, shared by the feeder and
                            # the log timeline)
   db/

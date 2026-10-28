@@ -446,6 +446,23 @@ describe('segue CRUD and islands', () => {
 });
 
 describe('editor media', () => {
+  it('gives the cue markers at the playout copy’s rate (#61)', async () => {
+    // Markers written at 48 kHz come back at the playout copy's 44.1 kHz.
+    await updateCues(t.tdb.db, { actor: system, scope }, assets.D as string, {
+      sampleRate: 48_000,
+      introEnd: { samples: 8 * 48_000 },
+      outroStart: { samples: 100 * 48_000 },
+    });
+    const media = await ok<SegueMediaResponse>(
+      await call('presenter', 'GET', `/segues/media?itemIds=${items.D}`),
+    );
+    expect(media.items[items.D as string]?.markers).toEqual({
+      introEnd: sec(8),
+      outroStart: sec(100),
+      crossStartNext: null,
+    });
+  });
+
   it('resolves A, B and voices as the island sync does, and stays in the station', async () => {
     const media = await ok<SegueMediaResponse>(
       await call(
@@ -463,6 +480,12 @@ describe('editor media', () => {
     });
     expect(typeof media.items[items.C as string]?.gainDb).toBe('number');
     expect(media.items[items.D as string]?.assetId).toBe(assets.D);
+    // Type and markers for smart placement (#61): none set on C yet.
+    expect(media.items[items.C as string]).toMatchObject({
+      kind: 'song',
+      markers: { introEnd: null, outroStart: null, crossStartNext: null },
+    });
+    expect(media.assets[assets.VT1 as string]?.kind).toBe('vt');
     expect(media.assets[assets.VT1 as string]).toMatchObject({ durationSamples: sec(5) });
     // No playout copy yet, and another tenant's asset: both null.
     expect(media.assets[assets.VT3 as string]).toBeNull();
