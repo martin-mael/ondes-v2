@@ -12,6 +12,7 @@ export * from './jobs.ts';
 export * from './library.ts';
 export * from './live.ts';
 export * from './live-metadata.ts';
+export * from './live-handover.ts';
 export * from './log.ts';
 export * from './promos.ts';
 export * from './regen.ts';

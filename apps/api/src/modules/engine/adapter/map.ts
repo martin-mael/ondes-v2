@@ -101,6 +101,12 @@ export function toRealtimeEvent(e: EngineEvent): EngineRealtimeEvent {
           artist: e.data.artist,
         },
       };
+    case 'live.muted':
+      return {
+        ...envelope,
+        type: 'engine.live.muted',
+        data: { ...origin, ...e.data },
+      };
     case 'blank.detected':
       return { ...envelope, type: 'engine.blank.detected', data: origin };
     case 'blank.recovered':

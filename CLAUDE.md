@@ -33,7 +33,7 @@ apps/
                         # clocks, shows, log, onair, public, jobs, alerts, cache, segues, live,
                         # listeners, prelisten, promos
                         # (live/: switching, standing, slot-check, requests, events,
-                        #  metadata (the live now-playing);
+                        #  metadata (the live now-playing), handover (scheduled handovers, #66);
                         #  live/testing/: the in-memory engine pool for its tests;
                         #  shows/live-slots.ts: live slot settings and live episodes)
   worker/src/

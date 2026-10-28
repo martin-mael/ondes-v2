@@ -15,6 +15,8 @@ const engine = [
   'apps/api/src/modules/live/live-switching.engine.int.test.ts',
   // Live metadata read back from Icecast (#68).
   'apps/api/src/modules/live/live-metadata.engine.int.test.ts',
+  // DJ handover: crossfade, mute and cut between two DJs, recorded (#66).
+  'apps/api/src/modules/live/live-handover.engine.int.test.ts',
   'apps/api/src/modules/prelisten/prelisten.engine.int.test.ts',
   // Fixed-time markers through the real feeder, recorded (#52).
   'engine/tests/markers/**/*.int.test.ts',

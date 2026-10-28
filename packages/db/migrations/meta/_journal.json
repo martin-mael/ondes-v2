@@ -274,6 +274,13 @@
       "when": 1793133391016,
       "tag": "20261027203631_live-metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1793200842341,
+      "tag": "20261028152042_live-handover",
+      "breakpoints": true
     }
   ]
 }

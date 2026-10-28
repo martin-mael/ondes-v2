@@ -20,6 +20,8 @@ import {
   engineLiveGateSchema,
   engineLiveMetadataResultSchema,
   engineLiveMetadataSchema,
+  engineLiveMuteResultSchema,
+  engineLiveMuteSchema,
   enginePushItemSchema,
   enginePushSegmentResultSchema,
   enginePushSegmentSchema,
@@ -80,6 +82,8 @@ export type EngineAdapter = {
   setLive(enabled: boolean, options?: LiveGateOptions): Promise<void>;
   /** Hangs up the DJ on one harbor input (#64). False if nobody was connected there. */
   disconnectLive(input: number): Promise<boolean>;
+  /** Mutes or unmutes what one harbor input sends on air (#66). False if nobody was connected. */
+  muteLive(input: number, muted: boolean): Promise<boolean>;
   /**
    * The now-playing while a DJ is on air (#68): on the streams at once if the gate is open, else
    * at the next takeover. `encoder`: let the DJ software's metadata through instead. Returns
@@ -102,7 +106,12 @@ export type EngineAdapter = {
   unschedule?(): Promise<EngineUnscheduleResult>;
 };
 
-export type LiveGateOptions = { input?: number; sessionId?: string };
+export type LiveGateOptions = {
+  input?: number;
+  sessionId?: string;
+  /** The crossfade, in ms, if this opening hands the air from one DJ to another (#66). */
+  fadeMs?: number;
+};
 
 export type EngineAdapterOptions = {
   stationId: string;
@@ -337,7 +346,12 @@ export function createEngineAdapter(options: EngineAdapterOptions): EngineAdapte
     async setLive(enabled, options = {}) {
       const body = command(
         engineLiveGateSchema,
-        { enabled, input: options.input, session_id: options.sessionId },
+        {
+          enabled,
+          input: options.input,
+          session_id: options.sessionId,
+          fade: options.fadeMs === undefined ? undefined : options.fadeMs / 1000,
+        },
         `POST ${ENGINE_ROUTES.live}`,
       );
       // The engine echoes the gate (selected input, session); nothing to read back here.
@@ -368,6 +382,16 @@ export function createEngineAdapter(options: EngineAdapterOptions): EngineAdapte
         repeatable: true,
       });
       return applied;
+    },
+    async muteLive(input, muted) {
+      const { connected } = await call(engineLiveMuteResultSchema, {
+        method: 'POST',
+        path: ENGINE_ROUTES.liveMute,
+        body: command(engineLiveMuteSchema, { input, muted }, `POST ${ENGINE_ROUTES.liveMute}`),
+        // Setting the same state twice is harmless.
+        repeatable: true,
+      });
+      return connected;
     },
 
     async listen(input, signal) {

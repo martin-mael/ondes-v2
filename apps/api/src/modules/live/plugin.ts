@@ -1,15 +1,19 @@
 import { NotFoundError } from '@ondes/db';
 import {
   createLiveEventSchema,
+  createLiveHandoverSchema,
   createStreamerSchema,
   liveConnectionInfoSchema,
   liveEventListSchema,
   liveEventSchema,
   liveNowPlayingResponseSchema,
   liveNowPlayingSchema,
+  liveHandoverListSchema,
+  liveHandoverSchema,
   liveRequestListSchema,
   liveSessionSchema,
   liveStatusSchema,
+  putLiveInputMuteSchema,
   putLiveOnAirSchema,
   realtimeEventSchema,
   setLiveNowPlayingSchema,
@@ -36,6 +40,7 @@ import {
 import { createLiveAuthHandler, type LoginFailureLimiter } from './auth.ts';
 import * as events from './events.ts';
 import { createLiveMetadata, getLiveNowPlaying } from './metadata.ts';
+import { createLiveHandovers } from './handover.ts';
 import * as repo from './repo.ts';
 import * as requests from './requests.ts';
 import { createLiveRevoker, liveHolder } from './revoke.ts';
@@ -53,6 +58,9 @@ import { LIVE_AUTH_ROUTE } from './url.ts';
 // - Live slots, ad-hoc live and events (#65, ADR 0033): `live:read` lists the pending ad-hoc
 //   requests and the events, `engine:control` approves or refuses a request, `live:manage`
 //   writes events. The switch sweep also runs the missed-live-slot check (`slot-check.ts`).
+// - DJ handover (#66, ADR 0038): `engine:control` hands over with a crossfade (`PUT on-air`
+//   `fadeMs`), mutes an input, and schedules or cancels handovers; `live:read` lists them. The
+//   switch sweep also arms the scheduled handovers due soon (`handover.ts`).
 
 export type LivePluginOptions = {
   /** Host name DJs connect to. Default: the app URL's host. */
@@ -84,6 +92,7 @@ const streamerParams = stationParams.extend({ streamerId: uuidSchema });
 const inputParams = stationParams.extend({ input: z.coerce.number().int().min(1).max(16) });
 const requestParams = stationParams.extend({ requestId: uuidSchema });
 const eventParams = stationParams.extend({ eventId: uuidSchema });
+const handoverParams = stationParams.extend({ handoverId: uuidSchema });
 const candidatesSchema = z.object({
   users: z.array(z.object({ id: uuidSchema, name: z.string() })),
 });
@@ -124,6 +133,14 @@ export const livePlugin = fp(
       publish: rabbit ? (event) => rabbit.events.publish(event) : undefined,
       logger: app.log,
     });
+    const handovers = createLiveHandovers({
+      db: app.db,
+      switcher,
+      engineFor: options.engineFor,
+      publish: rabbit ? (event) => rabbit.events.publish(event) : undefined,
+      logger: app.log,
+    });
+    app.addHook('onClose', () => handovers.close());
     const revoker = createLiveRevoker({
       db: app.db,
       engineFor: options.engineFor,
@@ -297,7 +314,10 @@ export const livePlugin = fp(
           response: { 200: liveSessionSchema },
         },
       },
-      (request) => switcher.goLive(ctx(request), request.body.input, 'manual'),
+      (request) =>
+        switcher.goLive(ctx(request), request.body.input, 'manual', undefined, {
+          fadeMs: request.body.fadeMs,
+        }),
     );
 
     // Back to automation: the return file, then the log at the current time.
@@ -359,6 +379,56 @@ export const livePlugin = fp(
         schema: { params: stationParams, response: { 200: liveNowPlayingSchema } },
       },
       (request) => metadata.clearManual(ctx(request)),
+    );
+
+    // Mutes (or unmutes) what one input of the pool sends on air (#66).
+    r.put(
+      `${BASE}/inputs/:input/mute`,
+      {
+        preHandler: control,
+        schema: {
+          params: inputParams,
+          body: putLiveInputMuteSchema,
+          response: { 200: z.object({ connected: z.boolean(), muted: z.boolean() }) },
+        },
+      },
+      async (request) => ({
+        connected: await switcher.mute(ctx(request), request.params.input, request.body.muted),
+        muted: request.body.muted,
+      }),
+    );
+
+    // Scheduled handovers (#66): at a time, a DJ takes the air with a crossfade.
+    r.get(
+      `${BASE}/handovers`,
+      {
+        preHandler: read,
+        schema: { params: stationParams, response: { 200: liveHandoverListSchema } },
+      },
+      async (request) => ({ handovers: await handovers.list(stationScopeOf(request)) }),
+    );
+
+    r.post(
+      `${BASE}/handovers`,
+      {
+        preHandler: control,
+        schema: {
+          params: stationParams,
+          body: createLiveHandoverSchema,
+          response: { 201: liveHandoverSchema },
+        },
+      },
+      async (request, reply) =>
+        reply.code(201).send(await handovers.schedule(ctx(request), request.body)),
+    );
+
+    r.delete(
+      `${BASE}/handovers/:handoverId`,
+      {
+        preHandler: control,
+        schema: { params: handoverParams, response: { 200: liveHandoverSchema } },
+      },
+      (request) => handovers.cancel(ctx(request), request.params.handoverId),
     );
 
     // Ad-hoc requests (#65): DJs connected outside their slots, waiting for a manager.
@@ -480,6 +550,11 @@ export const livePlugin = fp(
                   app.log.error({ err, stationId: scope.stationId }, 'Live metadata sweep failed'),
                 );
             }
+            await handovers
+              .sweep(scope)
+              .catch((err: unknown) =>
+                app.log.error({ err, stationId: scope.stationId }, 'Live handover sweep failed'),
+              );
           }
         })()
           .catch((err: unknown) => app.log.error({ err }, 'Live switching sweep failed'))

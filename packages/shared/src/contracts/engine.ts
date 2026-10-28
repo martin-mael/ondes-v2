@@ -35,6 +35,8 @@ export const ENGINE_ROUTES = {
   liveDisconnect: `${ENGINE_CONTROL_PREFIX}/live/disconnect`,
   /** Added by #68: the now-playing while a DJ is on air. */
   liveMetadata: `${ENGINE_CONTROL_PREFIX}/live/metadata`,
+  /** Added by #66: mutes or unmutes what one input of the pool sends on air. */
+  liveMute: `${ENGINE_CONTROL_PREFIX}/live/mute`,
   /** Added by #46: the hard start waiting for its time (`POST`), or cancelling it (`DELETE`). */
   schedule: `${ENGINE_CONTROL_PREFIX}/schedule`,
 } as const;
@@ -186,6 +188,11 @@ export const engineLiveGateSchema = z.object({
   enabled: z.boolean(),
   input: liveInput.optional(),
   session_id: engineId.optional(),
+  /**
+   * DJ handover (#66): the crossfade, in seconds, when this opening moves the air from one DJ
+   * to another (0: a cut). Absent: the last one asked (1 s at boot).
+   */
+  fade: z.number().min(0).max(10).optional(),
 });
 export type EngineLiveGate = z.infer<typeof engineLiveGateSchema>;
 
@@ -211,6 +218,20 @@ export const engineLiveMetadataSchema = z.object({
 });
 export type EngineLiveMetadata = z.infer<typeof engineLiveMetadataSchema>;
 export const engineLiveMetadataResultSchema = z.object({ applied: z.boolean() });
+
+/**
+ * `POST /v1/live/mute` (#66): mutes (or unmutes) what `input` sends on air, over 100 ms. The DJ
+ * stays connected, and on air if they were (silence until unmuted); pre-listen still hears
+ * them. The engine unmutes an input when its DJ hangs up. `400` for an input the pool lacks.
+ */
+export const engineLiveMuteSchema = z.object({ input: liveInput, muted: z.boolean() });
+export type EngineLiveMute = z.infer<typeof engineLiveMuteSchema>;
+export const engineLiveMuteResultSchema = z.object({
+  input: liveInput,
+  muted: z.boolean(),
+  /** Whether a DJ was connected on the input. */
+  connected: z.boolean(),
+});
 
 // `DELETE /v1/queue/:id` removes every queued entry whose item_id or segment_id is `id`
 // (404 if none). A segment can't be split: naming any of its parts removes all of it, and
@@ -322,6 +343,8 @@ export const engineStateSchema = z.object({
           ready: z.boolean(),
           /** The streamer Node's auth webhook accepted on this input, if any. */
           streamer_id: z.string().nullable(),
+          /** Muted on air (#66). Absent from engines rendered before #66. */
+          muted: z.boolean().optional(),
         }),
       )
       .optional(),
@@ -434,6 +457,12 @@ export const engineEventSchema = z.discriminatedUnion('type', [
       title: liveEncoderTextSchema.nullable(),
       artist: liveEncoderTextSchema.nullable(),
     }),
+  }),
+  z.object({
+    ...eventBase,
+    type: z.literal('live.muted'),
+    /** Added by #66: an input muted or unmuted (`POST /v1/live/mute`). */
+    data: z.object({ input: liveInput, muted: z.boolean(), connected: z.boolean() }),
   }),
   z.object({ ...eventBase, type: z.literal('blank.detected'), data: empty }),
   z.object({ ...eventBase, type: z.literal('blank.recovered'), data: empty }),

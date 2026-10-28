@@ -276,13 +276,19 @@ export const liveStatusSchema = z.object({
       /** Buffered enough to take the air. */
       ready: z.boolean(),
       streamer: z.object({ id: uuidSchema, displayName: z.string() }).nullable(),
+      /** Muted on air (#66): connected, silent until unmuted. */
+      muted: z.boolean().optional(),
     }),
   ),
 });
 export type LiveStatus = z.infer<typeof liveStatusSchema>;
 
 /** `PUT /api/v1/stations/:stationId/live/on-air`: put the DJ on this input on air. */
-export const putLiveOnAirSchema = z.object({ input: z.int().min(1).max(16) });
+export const putLiveOnAirSchema = z.object({
+  input: z.int().min(1).max(16),
+  /** The crossfade if another DJ is on air (#66); default `LIVE_HANDOVER_FADE_MS_DEFAULT`. */
+  fadeMs: z.int().min(0).max(10_000).optional(),
+});
 export type PutLiveOnAir = z.infer<typeof putLiveOnAirSchema>;
 
 // --- Ad-hoc requests (#65, ADR 0033) ------------------------------------------------------
