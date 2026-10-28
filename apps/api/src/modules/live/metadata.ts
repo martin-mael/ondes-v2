@@ -8,7 +8,8 @@ import {
   station,
   streamer,
   unsafeScope,
-  withAudit,
+  whereStation,
+  writeAudit,
 } from '@ondes/db';
 import type {
   Actor,
@@ -69,10 +70,15 @@ export type LiveMetadata = {
   setManual(ctx: Ctx, body: SetLiveNowPlaying): Promise<LiveNowPlaying>;
   /** Back to the encoder's (if allowed) or the default. 409 when nobody is on air. */
   clearManual(ctx: Ctx): Promise<LiveNowPlaying>;
-  /** Re-derives the now-playing of the session on air (a streamer's setting changed). */
+  /**
+   * Re-derives the now-playing of the session on air and sends it to the engine at once, even
+   * if its text is the same (a streamer's setting changed: the encoder may pass or not).
+   */
   refresh(scope: StationScope): Promise<void>;
-  /** A real-time event from the fanout. Never throws. */
+  /** A real-time event from the fanout, applied in order per station. Never throws. */
   onEvent(event: RealtimeEvent): Promise<void>;
+  /** The stations with a live session open: the only ones `sweep` has anything to do for. */
+  liveStationIds(): Promise<Set<string>>;
   /** Fills in a new session's now-playing and keeps the engine's in step, for one station. */
   sweep(scope: StationScope): Promise<void>;
 };
@@ -102,7 +108,7 @@ type Loaded = {
   stationName: string;
 };
 
-async function load(db: Executor, stationId: string): Promise<Loaded | undefined> {
+async function load(db: Executor, scope: StationScope): Promise<Loaded | undefined> {
   const [found] = await db
     .select({
       session: liveSession,
@@ -117,7 +123,13 @@ async function load(db: Executor, stationId: string): Promise<Loaded | undefined
       streamer,
       and(eq(streamer.id, liveSession.streamerId), eq(streamer.stationId, liveSession.stationId)),
     )
-    .where(and(eq(liveSession.stationId, stationId), isNull(liveSession.endedAt)));
+    .where(
+      and(
+        whereStation(liveSession, scope),
+        eq(liveSession.orgId, scope.orgId),
+        isNull(liveSession.endedAt),
+      ),
+    );
   if (!found) return undefined;
   return {
     session: found.session,
@@ -166,8 +178,8 @@ export async function getLiveNowPlaying(
   db: Executor,
   scope: StationScope,
 ): Promise<LiveNowPlaying | null> {
-  const l = await load(db, scope.stationId);
-  if (!l || l.session.orgId !== scope.orgId) return null;
+  const l = await load(db, scope);
+  if (!l) return null;
   const text = effective(l);
   return toDto(l, text, l.row?.updatedAt ?? l.session.startedAt);
 }
@@ -230,14 +242,22 @@ export function createLiveMetadata(options: LiveMetadataOptions): LiveMetadata {
     return row ? { text, at } : undefined;
   }
 
-  /** Re-derives and stores; publishes and pushes if it changed. */
-  async function sync(stationId: string, engineState?: EngineState) {
-    const l = await load(db, stationId);
+  /**
+   * Re-derives and stores; publishes and pushes if it changed. `force`: publishes and pushes
+   * anyway (the replica that changed a streamer's setting: the engine's `encoder` may change
+   * with the same text).
+   */
+  async function sync(
+    scope: StationScope,
+    { engineState, force = false }: { engineState?: EngineState; force?: boolean } = {},
+  ) {
+    const l = await load(db, scope);
     if (!l) return;
     const changed = await store(db, l);
-    if (changed) {
-      await publish(l, toDto(l, changed.text, changed.at));
-      await push(l, changed.text);
+    if (changed || force) {
+      const text = changed?.text ?? effective(l);
+      await publish(l, toDto(l, text, changed?.at ?? l.row?.updatedAt ?? now()));
+      await push(l, text);
       return;
     }
     // Unchanged here: re-send it if the engine holds something else for this session.
@@ -253,18 +273,29 @@ export function createLiveMetadata(options: LiveMetadataOptions): LiveMetadata {
     }
   }
 
-  async function onAir(ctx: Ctx): Promise<Loaded> {
-    const l = await load(db, ctx.scope.stationId);
-    if (!l || l.session.orgId !== ctx.scope.orgId) {
-      throw new HttpError(409, 'live_not_on_air', 'no DJ is on air');
-    }
+  async function onAir(tx: Executor, ctx: Ctx): Promise<Loaded> {
+    const l = await load(tx, ctx.scope);
+    if (!l) throw new HttpError(409, 'live_not_on_air', 'no DJ is on air');
     return l;
   }
 
   async function manual(ctx: Ctx, text: Text | null): Promise<LiveNowPlaying> {
-    const before = await onAir(ctx);
-    const after = await withAudit(db, ctx, async (tx, audit) => {
+    // Nothing to change (clearing with no manual text, or typing the one on air): no write, no
+    // audit row, no push. Hence `writeAudit` in the transaction rather than `withAudit`, which
+    // requires one.
+    const result = await db.transaction(async (tx) => {
+      const before = await onAir(tx, ctx);
       const previous = effective(before);
+      if (
+        text
+          ? previous.source === 'manual' &&
+            previous.title === text.title &&
+            previous.artist === text.artist
+          : previous.source !== 'manual'
+      ) {
+        const at = before.row?.updatedAt ?? before.session.startedAt;
+        return { changed: false as const, dto: toDto(before, previous, at) };
+      }
       const loaded: Loaded = {
         ...before,
         row: {
@@ -299,7 +330,7 @@ export function createLiveMetadata(options: LiveMetadataOptions): LiveMetadata {
           target: liveNowPlaying.sessionId,
           set: { title: next.title, artist: next.artist, source: next.source, updatedAt: now() },
         });
-      await audit({
+      await writeAudit(tx, ctx, {
         action: text ? 'live.now_playing.set' : 'live.now_playing.clear',
         entity: { type: 'live_session', id: before.session.id },
         diff: {
@@ -308,8 +339,10 @@ export function createLiveMetadata(options: LiveMetadataOptions): LiveMetadata {
           source: { from: previous.source, to: next.source },
         },
       });
-      return { loaded, next };
+      return { changed: true as const, loaded, next };
     });
+    if (!result.changed) return result.dto;
+    const after = result;
     const dto = toDto(after.loaded, after.next, now());
     await publish(after.loaded, dto);
     await push(after.loaded, after.next);
@@ -317,9 +350,9 @@ export function createLiveMetadata(options: LiveMetadataOptions): LiveMetadata {
   }
 
   /** The DJ's encoder sent metadata on the session on air: kept, and on air if allowed. */
-  async function encoderSent(stationId: string, sessionId: string | null, sent: Text) {
-    const l = await load(db, stationId);
-    if (!l || (sessionId && sessionId !== l.session.id)) return;
+  async function encoderSent(scope: StationScope, sessionId: string, sent: Text) {
+    const l = await load(db, scope);
+    if (!l || sessionId !== l.session.id) return;
     const at = now();
     const encoder = { encoderTitle: sent.title, encoderArtist: sent.artist, encoderAt: at };
     const first = effective(l);
@@ -335,7 +368,19 @@ export function createLiveMetadata(options: LiveMetadataOptions): LiveMetadata {
         ...encoder,
       })
       .onConflictDoUpdate({ target: liveNowPlaying.sessionId, set: encoder });
-    await sync(stationId);
+    await sync(scope);
+  }
+
+  // Events of one station apply in the order they arrived: an encoder's track change never
+  // overtakes the session start before it.
+  const queues = new Map<string, Promise<void>>();
+  function serial(stationId: string, task: () => Promise<void>): Promise<void> {
+    const next = (queues.get(stationId) ?? Promise.resolve()).then(task);
+    queues.set(stationId, next);
+    void next.finally(() => {
+      if (queues.get(stationId) === next) queues.delete(stationId);
+    });
+    return next;
   }
 
   async function scopeOf(stationId: string): Promise<StationScope | undefined> {
@@ -357,33 +402,56 @@ export function createLiveMetadata(options: LiveMetadataOptions): LiveMetadata {
     },
 
     async refresh(scope) {
-      await sync(scope.stationId);
+      await sync(scope, { force: true });
     },
 
-    async onEvent(event) {
-      try {
-        if (event.type === 'live.session.started') {
-          if (await scopeOf(event.stationId)) await sync(event.stationId);
-        } else if (event.type === 'engine.live.metadata') {
-          await encoderSent(event.stationId, event.data.sessionId, {
-            title: event.data.title,
-            artist: event.data.artist,
-          });
-        }
-      } catch (err) {
-        logger.error({ err, stationId: event.stationId, type: event.type }, 'Live metadata failed');
+    onEvent(event) {
+      if (event.type !== 'live.session.started' && event.type !== 'engine.live.metadata') {
+        return Promise.resolve();
       }
+      // An event with no session can't be told apart from a late one of the previous DJ.
+      if (event.type === 'engine.live.metadata' && !event.data.sessionId) {
+        return Promise.resolve();
+      }
+      return serial(event.stationId, async () => {
+        try {
+          const scope = await scopeOf(event.stationId);
+          if (!scope) return;
+          if (event.type === 'live.session.started') {
+            await sync(scope);
+          } else if (event.type === 'engine.live.metadata' && event.data.sessionId) {
+            await encoderSent(scope, event.data.sessionId, {
+              title: event.data.title,
+              artist: event.data.artist,
+            });
+          }
+        } catch (err) {
+          logger.error(
+            { err, stationId: event.stationId, type: event.type },
+            'Live metadata failed',
+          );
+        }
+      });
+    },
+
+    async liveStationIds() {
+      const rows = await db
+        .selectDistinct({ stationId: liveSession.stationId })
+        .from(liveSession)
+        .where(isNull(liveSession.endedAt));
+      return new Set(rows.map((r) => r.stationId));
     },
 
     async sweep(scope) {
+      if (!(await load(db, scope))) return; // nobody on air: nothing to ask the engine
       const engine = options.engineFor ? await options.engineFor(scope.stationId) : undefined;
-      let state: EngineState | undefined;
+      let engineState: EngineState | undefined;
       try {
-        state = engine ? await engine.state() : undefined;
+        engineState = engine ? await engine.state() : undefined;
       } catch {
-        state = undefined; // unreachable: store only, the next sweep pushes
+        engineState = undefined; // unreachable: store only, the next sweep pushes
       }
-      await sync(scope.stationId, state);
+      await sync(scope, { engineState });
     },
   };
 }

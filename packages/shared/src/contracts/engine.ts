@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { liveEncoderTextSchema } from './live-metadata.ts';
 
 /**
  * Engine adapter contract v1: the wire protocol between Node and one station's Liquidsoap
@@ -430,8 +431,8 @@ export const engineEventSchema = z.discriminatedUnion('type', [
       input: z.int().min(0),
       session_id: z.string().nullable(),
       streamer_id: z.string().nullable(),
-      title: z.string().nullable(),
-      artist: z.string().nullable(),
+      title: liveEncoderTextSchema.nullable(),
+      artist: liveEncoderTextSchema.nullable(),
     }),
   }),
   z.object({ ...eventBase, type: z.literal('blank.detected'), data: empty }),

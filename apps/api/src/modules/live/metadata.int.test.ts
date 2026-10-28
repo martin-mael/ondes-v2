@@ -7,9 +7,16 @@ import {
   resolveOrgScope,
   resolveStationScope,
   type StationScope,
+  unsafeScope,
 } from '@ondes/db';
 import { createTestDatabase } from '@ondes/db/testing';
-import type { Actor, EngineLiveMetadata, EngineState, RealtimeEvent } from '@ondes/shared';
+import {
+  type Actor,
+  type EngineLiveMetadata,
+  type EngineState,
+  type RealtimeEvent,
+  realtimeEventSchema,
+} from '@ondes/shared';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { HttpError } from '../../plugins/errors.ts';
@@ -92,7 +99,7 @@ async function deliver(metadata: LiveMetadata, from = 0) {
   for (const e of published.slice(from)) await metadata.onEvent(e);
 }
 
-function encoderEvent(sessionId: string, title: string | null, artist: string | null) {
+function encoderEvent(sessionId: string | null, title: string | null, artist: string | null) {
   return {
     id: crypto.randomUUID(),
     stationId: scope.stationId,
@@ -288,5 +295,48 @@ describe('live metadata', () => {
     expect(engine.sent).toHaveLength(sent + 1);
     expect(engine.held().title).toBe(`Night Shift #${session.episode?.number}`);
     expect(changes()).toHaveLength(1);
+  });
+
+  it("applies one station's events in order, and ignores metadata with no session", async () => {
+    await updateStreamer(tdb.db, ctx(), ids.nova ?? '', { encoderMetadata: true });
+    const a = replica();
+    const b = replica();
+    engine.connect(1, ids.nova ?? null);
+    const session = await a.switcher.goLive(ctx(), 1, 'slot');
+    // Both arrive at once: the encoder's track never overtakes the session start.
+    await Promise.all([
+      ...published.map((e) => b.metadata.onEvent(e)),
+      b.metadata.onEvent(encoderEvent(session.id, 'Encoder Song', null)),
+    ]);
+    expect(changes().map((c) => c.source)).toEqual(['default', 'encoder']);
+    expect(engine.held()).toMatchObject({ title: 'Encoder Song', encoder: true });
+
+    await b.metadata.onEvent(encoderEvent(null, 'No session', null));
+    expect((await getLiveNowPlaying(tdb.db, scope))?.title).toBe('Encoder Song');
+    expect(changes()).toHaveLength(2);
+  });
+
+  it('caps what the encoder sends, and keeps tenants apart', async () => {
+    const { switcher, metadata } = replica();
+    engine.connect(1, ids.nova ?? null);
+    const session = await switcher.goLive(ctx(), 1, 'slot');
+    await deliver(metadata);
+    expect(await metadata.liveStationIds()).toEqual(new Set([scope.stationId]));
+
+    // Through the contract, as the fanout delivers it.
+    const event = realtimeEventSchema.parse(encoderEvent(session.id, 'x'.repeat(800), null));
+    await metadata.onEvent(event);
+    const [row] = await tdb.db.select().from(liveNowPlaying);
+    expect(row?.encoderTitle).toHaveLength(500);
+
+    // The station's id under another org's scope reads nothing and can't write.
+    const foreign = unsafeScope(crypto.randomUUID(), scope.stationId);
+    expect(await getLiveNowPlaying(tdb.db, foreign)).toBeNull();
+    const err = await metadata
+      .setManual({ actor: system, scope: foreign }, { title: 'x' })
+      .catch((e: unknown) => e);
+    expect((err as HttpError).statusCode).toBe(409);
+    await metadata.sweep(foreign);
+    expect((await getLiveNowPlaying(tdb.db, scope))?.source).toBe('default');
   });
 });

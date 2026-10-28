@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { EngineEvent } from '@ondes/shared';
@@ -62,6 +63,7 @@ const hostPort = (container: string, port: number) =>
 let engine: EngineAdapter;
 let icecastUrl: string;
 let harborUrl: string;
+let controlUrl: string;
 
 type MountStatus = { listenurl: string; title?: string; artist?: string };
 
@@ -100,16 +102,41 @@ async function onStreams(
   throw new Error(`timed out waiting for ${what} on the streams: ${JSON.stringify(last)}`);
 }
 
-/** What DJ software sends for an MP3 stream when its track changes. */
-async function djSends(song: string) {
+/** What DJ software sends for an MP3 stream when its track changes: the answer's status. */
+async function metadataAs(login: string | null, song: string): Promise<number> {
   const url = new URL(`${harborUrl}/admin/metadata`);
   url.searchParams.set('mount', '/live');
   url.searchParams.set('mode', 'updinfo');
   url.searchParams.set('song', song);
   const res = await fetch(url, {
-    headers: { authorization: `Basic ${btoa(`source:${PASSWORD}`)}` },
+    headers: login ? { authorization: `Basic ${btoa(login)}` } : {},
   });
-  expect(res.status).toBe(200);
+  return res.status;
+}
+
+async function djSends(song: string) {
+  expect(await metadataAs(`source:${PASSWORD}`, song)).toBe(200);
+}
+
+/** A source connection to the live mount (Icecast PUT): the status harbor answers with. */
+function sourceLogin(login: string): Promise<number> {
+  return new Promise((resolvePromise, reject) => {
+    const req = request(`${harborUrl}/live`, {
+      method: 'PUT',
+      headers: {
+        authorization: `Basic ${btoa(login)}`,
+        'content-type': 'audio/mpeg',
+        'ice-public': '0',
+      },
+    });
+    req.on('response', (res) => {
+      resolvePromise(res.statusCode ?? 0);
+      res.resume();
+      req.destroy();
+    });
+    req.on('error', reject);
+    req.write(Buffer.alloc(4096));
+  });
 }
 
 async function eventsOf<T extends EngineEvent['type']>(type: T) {
@@ -187,9 +214,10 @@ beforeAll(async () => {
     '/work/station.liq',
   ]);
   harborUrl = `http://127.0.0.1:${hostPort(engineName, 8005)}`;
+  controlUrl = `http://127.0.0.1:${hostPort(engineName, 7000)}`;
   engine = createEngineAdapter({
     stationId: `live-meta-${run}`,
-    baseUrl: `http://127.0.0.1:${hostPort(engineName, 7000)}`,
+    baseUrl: controlUrl,
     token: TOKEN,
   });
   for (let i = 0; i < 120; i++) {
@@ -256,6 +284,14 @@ describe('live metadata on the real engine, read from Icecast', () => {
       encoder: false,
     });
 
+    // Only the DJ on air may send its track info, and nobody can take their mount, not even
+    // with the same login (the shared password here): harbor's auth stays "taken: refused".
+    expect(await metadataAs(`source:wrong-${PASSWORD}`, 'Intruder - Song')).toBe(401);
+    expect(await metadataAs(null, 'Intruder - Song')).toBe(401);
+    expect(await sourceLogin(`source:${PASSWORD}`)).toBe(401);
+    expect(await sourceLogin(`source:wrong-${PASSWORD}`)).toBe(401);
+    expect((await engine.state()).live).toMatchObject({ connected: true, on_air: 1 });
+
     // The encoder's track info isn't allowed: reported to Node, never on the streams.
     await djSends('Encoder Artist - First Song');
     for (let i = 0; i < 40 && !(await eventsOf('live.metadata')).length; i++) await sleep(250);
@@ -265,6 +301,19 @@ describe('live metadata on the real engine, read from Icecast', () => {
       session_id: session,
       title: 'Encoder Artist - First Song',
     });
+    // A runaway encoder is capped (characters) before it reaches Node or the streams.
+    await djSends(`${'é'.repeat(600)}`);
+    for (let i = 0; i < 40 && (await eventsOf('live.metadata')).length < 2; i++) await sleep(250);
+    // Read raw: the adapter's contract caps it too.
+    const raw = (await (
+      await fetch(`${controlUrl}/v1/events?after=0`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      })
+    ).json()) as { type: string; data: { title?: string } }[];
+    expect(raw.filter((e) => e.type === 'live.metadata').at(-1)?.data.title).toBe('é'.repeat(500));
+    expect((await eventsOf('live.metadata')).map((e) => e.data.title)).not.toContain(
+      'Intruder - Song',
+    );
     await sleep(2000);
     await onStreams('the default, still', {
       mp3: 'DJ Nova - Night Shift #12',

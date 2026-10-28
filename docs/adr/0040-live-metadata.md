@@ -44,7 +44,8 @@ slot. The station-wide case (a venue's own encoder at a festival) is the manual 
 Rejected: on the slot (ADR 0033 put live settings there, but a slot has many DJs over time and
 a show's guest DJ would inherit the resident's choice), on the station (one bad encoder turns it
 off for everyone). Changing it mid-set applies at once: the streamer `PATCH` re-derives the
-now-playing.
+now-playing and sends it to the engine even when its text is the same (the engine's `encoder`
+flag changes with it), without waiting for the sweep.
 
 ### The engine: Node decides, the template applies (a delimited block in `station.liq`)
 - `POST /v1/live/metadata {title, artist, encoder}` sets the now-playing and inserts it on the
@@ -56,26 +57,49 @@ now-playing.
   when a track has one (DJ software often sends only that), else `artist - title`.
 - Whatever the encoder sends on the input on air is reported, allowed or not: wire event
   `live.metadata {input, session_id, streamer_id, title, artist}` → domain
-  `engine.live.metadata`. `title` is the ICY `song` when there is no title.
+  `engine.live.metadata`. `title` is the ICY `song` when there is no title. Title and artist
+  are capped at 500 characters (`LIVE_ENCODER_TEXT_MAX`): by the template (`String.sub`, on
+  what it reports and on what it lets through) and again by the contract
+  (`liveEncoderTextSchema`), so a runaway encoder never fills the database or the dashboard.
 - With `encoder` on, the encoder's track changes reach the streams by themselves, without a
   round trip through Node (which then stores them and sends the same text back).
 - The takeover (`to_live`) inserts the now-playing with the session tags. A new session id on
   `POST /v1/live` clears it, so a handover never shows the previous DJ's text while Node's
   push for the new session is on the way (a blank title for a few ms instead).
-- **The DJ may log in again on their own mount.** MP3 and AAC sources send their track info
-  through harbor's `/admin/metadata`, which runs the auth callback like a connection. ADR
-  0027's "refuse any login on a taken input" refused it, so encoder metadata never arrived
-  for MP3 DJs. The callback now accepts, on a taken input, the login whose credentials match
-  the connected DJ's (a digest of them, kept from the accepted login until they hang up), and
-  still refuses anyone else; harbor refuses a second source on a taken mount anyway. These
-  re-logins never reach Node's auth webhook, so they are neither audited nor rate-limited.
+- **The DJ's own track info, without loosening the auth callback.** MP3 and AAC sources send
+  their track info through harbor's `/admin/metadata` (Shoutcast: `/admin.cgi`), which runs
+  the auth callback like a connection; ADR 0027's "refuse any login on a taken input" refused
+  it, so encoder metadata never arrived for MP3 DJs. The callback can't tell the two apart (it
+  gets user, password and address, not the path), so it stays as it was: **any** login on a
+  taken input is refused, the connected DJ's own included. Instead the template registers its
+  own `GET`/`POST /admin/metadata` and `GET /admin.cgi` on `live_port` (harbor tries registered
+  handlers before its built-in ones). They accept `mode=updinfo` only from the DJ connected to
+  that mount: a digest of their credentials is kept from the accepted login until they hang up
+  (HTTP Basic, or `user`/`pass` in the query; a Shoutcast `user:password` password is also
+  tried split, as harbor's ICY login splits it). Anything else is a 401: another DJ, a wrong
+  password, a free mount. Like harbor, `song` becomes the title when neither title nor artist
+  is sent, and the metadata is inserted on the input once its buffer has played (it goes with
+  the audio the DJ is sending now, as harbor's buffer does; inserted at once it would lead that
+  audio and could share a frame with a now-playing Node just sent, which would hide it). These
+  requests never reach Node's auth webhook, so they are neither audited nor rate-limited, and
+  the charset is taken as UTF-8 (harbor's guess for ISO-8859-1 encoders is lost).
+  `live-auth.engine.int.test.ts` checks the connected DJ's own login, another DJ's and a wrong
+  one are refused as sources on a taken input, and only the connected DJ's track info is taken.
 
 ### Node (`apps/api/src/modules/live/metadata.ts`)
 - On `live.session.started`: the session's default, sent to the engine.
 - On `engine.live.metadata` for the open session: stored; on air if allowed. Metadata of
-  another session (a late event after a handover) is ignored.
+  another session (a late event after a handover) or of none is ignored.
+- Events apply one at a time per station, in the order they arrived on this replica: an
+  encoder's track never overtakes the session start before it.
+- Every read and write is scoped to the station and its org (`whereStation`, `org_id`); the
+  events, which carry a station id only, resolve the scope from the station first.
+- A manual set or clear reads the session inside its own transaction. One that changes
+  nothing (clearing with no manual text, typing the text already on air) writes nothing, audits
+  nothing and sends nothing.
 - Every api replica receives the events and runs the 5 s switch sweep (ADR 0027), which also
-  calls `metadata.sweep`: it fills in a session whose start event was missed, picks up a
+  calls `metadata.sweep` for the stations with a live session open (one query for all
+  stations first; the others cost nothing, not even an engine state request): it fills in a session whose start event was missed, picks up a
   session bound to its slot in place (ADR 0033, no event: its default title changes), and
   re-sends the now-playing when the engine's `now_playing` differs from what Node wants (a
   failed push). The row update only matches when the now-playing actually changes
@@ -110,10 +134,16 @@ automatic" when one is set. Guarded by `useUnsavedChanges` while something is ty
 - No new engine setting, so no new template combo; `pnpm test:engine` checks the template.
 - Tests: `live-metadata.engine.int.test.ts` (engine project) runs the template with an MP3 and
   a Vorbis output to its own Icecast and a stand-in DJ, and reads `status-json.xsl`: automation
-  → default → encoder refused (reported, not on air) → encoder allowed → manual over the
-  encoder → a new session starts blank → automation. `metadata.int.test.ts` covers the order,
-  two replicas, the streamer switch, the audit, a handover, 409 and the sweep against a real
-  database; `live-now-playing.test.tsx` the dashboard widget.
+  → default → intruders refused (track info and source logins) → encoder refused (reported,
+  not on air) → a runaway title capped → encoder allowed → manual over the encoder → a new
+  session starts blank → automation. `live-auth.engine.int.test.ts` covers the same refusals
+  with the auth webhook. `metadata.int.test.ts` covers the order, two replicas, the streamer
+  switch, the audit, a handover, 409, the sweep, per-station ordering, events with no session,
+  the cap and tenant scoping against a real database; `metadata.routes.int.test.ts` the routes
+  (permissions, tenants, 409, validation, no-op audit, the streamer switch reaching the engine
+  at once); `onair.int.test.ts` the on-air snapshot; `adapter.test.ts` the engine command and
+  event; `live-now-playing.test.tsx` and `live.test.tsx` the dashboard widget and the streamer
+  setting.
 - A manual text lasts one session. A concert with several DJs on several inputs needs it typed
   again after a handover; keeping it per occurrence or per event can be added on the row
   without changing the engine side.

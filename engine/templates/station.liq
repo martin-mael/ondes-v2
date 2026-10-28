@@ -663,15 +663,14 @@ def live_login_key(login) =
 end
 
 # `pending`: the streamer id Node answered with, for the on_connect that follows.
-# `holder` / `candidate` (#68): the connected DJ's login key, and the last accepted one's.
-def live_auth(index, connected, pending, holder, candidate, login) =
+# `candidate` (#68): the last accepted login's key, kept by on_connect for the DJ's own track
+# info (`live_admin_metadata`).
+def live_auth(index, connected, pending, candidate, login) =
   if
     connected()
   then
-    # Harbor takes one source per mount: never let a login replace the DJ on this one. The
-    # DJ on it may log in again (#68): DJ software sends its track info for MP3 and AAC
-    # streams through harbor's /admin/metadata, which checks the login like a connection.
-    holder() != "" and holder() == live_login_key(login)
+    # Harbor takes one source per mount: never let a login replace the DJ on this one.
+    false
   elsif live_auth_url != "" then
     try
       body = json.object()
@@ -724,7 +723,7 @@ def live_input_of(index) =
       id="live_#{index}",
       port=live_port,
       icy=live_icy and index == 1,
-      auth=fun (login) -> live_auth(index, connected, pending, holder, candidate, login),
+      auth=fun (login) -> live_auth(index, connected, pending, candidate, login),
       buffer=live_buffer,
       max=live_max,
       live_mount_of(index)
@@ -768,10 +767,143 @@ def live_input_of(index) =
       end
   )
 
-  {index=index, mount=live_mount_of(index), connected=connected, streamer=streamer, source=s}
+  {
+    index=index,
+    mount=live_mount_of(index),
+    connected=connected,
+    streamer=streamer,
+    holder=holder,
+    source=s
+  }
 end
 
 live_pool = if live_input then list.init(live_inputs, fun (i) -> live_input_of(i + 1)) else [] end
+
+# --- #68 live metadata: the DJ's own track info (ADR 0040) --------------------------------
+# MP3 and AAC DJ software sends its track info through harbor's /admin/metadata (Icecast) or
+# /admin.cgi (Shoutcast), which checks the login with `live_auth` like a connection and so
+# refuses it: the input is taken. These handlers on live_port run before harbor's own and
+# accept `mode=updinfo` from the DJ connected to that mount only (their login's key, kept at
+# on_connect). `live_auth` itself never accepts a login on a taken input.
+
+# The (user, password) pairs a request may log in with: HTTP Basic, else `user` (default
+# "source", like harbor) and `pass` in the query. A Shoutcast password "user:password" is
+# also tried split, as harbor's ICY login splits it.
+def live_admin_logins(req) =
+  def split(s) =
+    m = r/^([^:]*):(.*)$/.exec(s)
+    if list.assoc.mem(1, m) then [{user=m[1], password=m[2]}] else [] end
+  end
+  auth =
+    if
+      list.assoc.mem("authorization", req.headers)
+    then
+      req.headers["authorization"]
+    else
+      ""
+    end
+  basic = r/^[Bb]asic\s+(.+)$/.exec(auth)
+  if
+    list.assoc.mem(1, basic)
+  then
+    split(string.base64.decode(basic[1]))
+  elsif
+    list.assoc.mem("pass", req.query)
+  then
+    user = if list.assoc.mem("user", req.query) then req.query["user"] else "source" end
+    login = {user=user, password=req.query["pass"]}
+    if user == "source" then [login, ...split(login.password)] else [login] end
+  else
+    []
+  end
+end
+
+def live_admin_metadata(req, res) =
+  def answer(code, body) =
+    res.status_code(code)
+    res.content_type("text/plain")
+    res.data(body)
+  end
+  def bare(m) =
+    if string.contains(prefix="/", m) then string.sub(m, start=1, length=string.length(m) - 1) else m end
+  end
+  mount =
+    if
+      list.assoc.mem("mount", req.query)
+    then
+      bare(req.query["mount"])
+    elsif
+      live_icy
+    then
+      # Shoutcast: no mount, the ICY input is the first.
+      bare(live_mount_of(1))
+    else
+      ""
+    end
+  match = list.filter(fun (inp) -> bare(inp.mount) == mount, live_pool)
+  if
+    not list.assoc.mem("mode", req.query) or req.query["mode"] != "updinfo"
+  then
+    answer(400, "unrecognised command")
+  elsif
+    list.is_empty(match)
+  then
+    answer(404, "This mountpoint isn't available.")
+  else
+    inp = list.hd(match)
+    keys = list.map(live_login_key, live_admin_logins(req))
+    if
+      inp.connected() and inp.holder() != "" and list.mem(inp.holder(), keys)
+    then
+      # As harbor does: `song` is the title when the request has neither title nor artist.
+      skipped = ["mount", "mode", "pass", "user", "charset"]
+      named =
+        list.assoc.mem("title", req.query) or list.assoc.mem("artist", req.query)
+      m =
+        list.filter_map(
+          fun (kv) ->
+            begin
+              let (k, v) = kv
+              if
+                list.mem(k, skipped) or (k == "song" and named)
+              then
+                null
+              elsif
+                k == "song"
+              then
+                ("title", v)
+              elsif
+                k == "url"
+              then
+                ("metadata_url", v)
+              else
+                (k, v)
+              end
+            end,
+          req.query
+        )
+      # Harbor puts it at the end of the input's buffer, with the audio the DJ is sending now;
+      # inserted at once it would lead that audio by the buffer (and could land in the frame
+      # of a now-playing Node just sent, which would hide it).
+      def insert() =
+        if inp.connected() then inp.source.insert_metadata(m) end
+      end
+      thread.run(delay=inp.source.buffer_length(), insert)
+      answer(200, "Updated metadatas for mount #{mount}")
+    else
+      answer(401, "Unauthorized")
+    end
+  end
+end
+
+if
+  live_input
+then
+  harbor.http.register(port=live_port, method="GET", "/admin/metadata", live_admin_metadata)
+  harbor.http.register(port=live_port, method="POST", "/admin/metadata", live_admin_metadata)
+  harbor.http.register(port=live_port, method="GET", "/admin.cgi", live_admin_metadata)
+end
+# --- end #68 live metadata: the DJ's own track info ---------------------------------------
 
 # Ready once input.harbor has buffered `buffer` seconds; only then can it take the air.
 def live_input_ready(inp) =
@@ -855,6 +987,18 @@ live_np_push = ref(fun () -> ())
 
 # Node's now-playing as metadata. `song` too: the Icecast output sends `song` as is when a
 # track has one (DJ software often sends only that), else `artist - title`.
+# What the DJ's encoder sends is capped (characters): Node keeps and shows it.
+live_np_max = 500
+def live_np_cap(s) =
+  if
+    string.length(encoding="utf8", s) > live_np_max
+  then
+    string.sub(encoding="utf8", s, start=0, length=live_np_max)
+  else
+    s
+  end
+end
+
 def live_np_tags() =
   t = live_np_title()
   a = live_np_artist()
@@ -924,8 +1068,9 @@ def with_live(auto) =
     then
       []
     else
-      title = if m["title"] != "" then m["title"] else m["song"] end
-      sent = title != "" or m["artist"] != ""
+      title = live_np_cap(if m["title"] != "" then m["title"] else m["song"] end)
+      artist = live_np_cap(m["artist"])
+      sent = title != "" or artist != ""
       if
         sent
       then
@@ -934,10 +1079,24 @@ def with_live(auto) =
         d.add("session_id", nullable_string(m["ondes_live_session"]))
         d.add("streamer_id", nullable_string(m["ondes_live_streamer"]))
         d.add("title", nullable_string(title))
-        d.add("artist", nullable_string(m["artist"]))
+        d.add("artist", nullable_string(artist))
         emit("live.metadata", d)
       end
-      if sent and live_np_encoder() then [] else live_np_tags() end
+      if
+        sent and live_np_encoder()
+      then
+        # Through, capped like what is reported.
+        list.filter(
+          fun (kv) -> snd(kv) != "",
+          [
+            ("title", live_np_cap(m["title"])),
+            ("artist", artist),
+            ("song", live_np_cap(m["song"]))
+          ]
+        )
+      else
+        live_np_tags()
+      end
     end
   end
   gated = metadata.map(fun (m) -> live_np_map(m), gated)

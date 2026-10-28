@@ -457,6 +457,11 @@ export const livePlugin = fp(
         if (running) return;
         running = true;
         (async () => {
+          // Live metadata only has work where a session is open: one query for all stations.
+          const live = await metadata.liveStationIds().catch((err: unknown) => {
+            app.log.error({ err }, 'Live metadata sweep failed');
+            return undefined; // sweeps every station instead
+          });
           for (const scope of await listRunningStationScopes(app.db)) {
             await switcher
               .sweep(scope)
@@ -468,11 +473,13 @@ export const livePlugin = fp(
               .catch((err: unknown) =>
                 app.log.error({ err, stationId: scope.stationId }, 'Live slot check failed'),
               );
-            await metadata
-              .sweep(scope)
-              .catch((err: unknown) =>
-                app.log.error({ err, stationId: scope.stationId }, 'Live metadata sweep failed'),
-              );
+            if (!live || live.has(scope.stationId)) {
+              await metadata
+                .sweep(scope)
+                .catch((err: unknown) =>
+                  app.log.error({ err, stationId: scope.stationId }, 'Live metadata sweep failed'),
+                );
+            }
           }
         })()
           .catch((err: unknown) => app.log.error({ err }, 'Live switching sweep failed'))

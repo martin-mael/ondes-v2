@@ -35,6 +35,20 @@ export const liveNowPlayingResponseSchema = z.object({
   nowPlaying: liveNowPlayingSchema.nullable(),
 });
 
+/**
+ * What the DJ's encoder sends is capped at this many characters: the engine cuts it first, the
+ * api again (`liveEncoderTextSchema`), so a runaway encoder never fills the database or the
+ * dashboard.
+ */
+export const LIVE_ENCODER_TEXT_MAX = 500;
+
+/** An encoder's title or artist, cut to `LIVE_ENCODER_TEXT_MAX` without splitting a character. */
+export const liveEncoderTextSchema = z
+  .string()
+  .transform((s) =>
+    s.length > LIVE_ENCODER_TEXT_MAX ? Array.from(s).slice(0, LIVE_ENCODER_TEXT_MAX).join('') : s,
+  );
+
 const text = z
   .string()
   .trim()

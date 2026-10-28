@@ -9,7 +9,7 @@ import {
   liveSessionEndReasonSchema,
   liveSessionTriggerSchema,
 } from './live.ts';
-import { liveNowPlayingSchema } from './live-metadata.ts';
+import { liveEncoderTextSchema, liveNowPlayingSchema } from './live-metadata.ts';
 import {
   localDateSchema,
   logItemChangeSchema,
@@ -162,8 +162,8 @@ export const engineLiveMetadataEventSchema = z.object({
     input: z.int(),
     sessionId: z.string().nullable(),
     streamerId: z.string().nullable(),
-    title: z.string().nullable(),
-    artist: z.string().nullable(),
+    title: liveEncoderTextSchema.nullable(),
+    artist: liveEncoderTextSchema.nullable(),
   }),
 });
 
