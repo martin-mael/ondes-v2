@@ -26,8 +26,8 @@ export type LiveHandoverStatus = z.infer<typeof liveHandoverStatusSchema>;
 
 /**
  * Why a scheduled handover failed. `not_connected`: the DJ wasn't connected at its time.
- * `streamer_not_allowed`: disabled, expired or deleted. `engine_unavailable`: the engine
- * didn't answer. `missed`: the api wasn't running at its time (more than a minute late).
+ * `streamer_not_allowed`: disabled or expired since it was scheduled. `engine_unavailable`:
+ * the engine didn't answer. `missed`: the api wasn't running at its time (more than a minute late).
  * `interrupted`: the replica carrying it out stopped. `error`: anything else (logged).
  */
 export const liveHandoverFailureSchema = z.enum([
@@ -42,7 +42,10 @@ export type LiveHandoverFailure = z.infer<typeof liveHandoverFailureSchema>;
 
 export const liveHandoverSchema = z.object({
   id: uuidSchema,
-  /** The DJ who takes the air; null once their streamer is deleted. */
+  /**
+   * The DJ who takes the air. Deleting the streamer deletes their handovers, so null only for
+   * one read while that delete happened.
+   */
   streamer: z.object({ id: uuidSchema, displayName: z.string() }).nullable(),
   at: z.coerce.date(),
   fadeMs: liveHandoverFadeMsSchema,

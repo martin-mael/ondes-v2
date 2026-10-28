@@ -28,11 +28,14 @@ import { type LiveSwitchEngineLookup, type LiveSwitcher, openLiveSession } from 
 // sweep late; scheduling one that is due sooner arms it at once. Whichever replica's timer fires
 // first claims the row (`pending` → `running`); the others find it claimed and do nothing.
 // A handover more than `MISSED_MS` late (no api was running) fails `missed` instead of switching
-// at a time nobody chose; a claim left `running` past `MISSED_MS` (its replica died) fails
-// `interrupted`.
+// at a time nobody chose. While a replica carries one out it renews its claim every
+// `LEASE_RENEW_MS`, so a slow switch (waiting for another one, a slow engine) keeps it; a claim
+// not renewed for `LEASE_MS` (its replica died) fails `interrupted`.
 
 const LOOKAHEAD_MS = 10_000;
 const MISSED_MS = 60_000;
+const LEASE_MS = 60_000;
+const LEASE_RENEW_MS = 15_000;
 /** The furthest ahead a handover may be scheduled. */
 const HORIZON_MS = 24 * 3600_000;
 
@@ -57,6 +60,8 @@ export type LiveHandoversOptions = {
   publish?: (event: RealtimeEvent) => unknown;
   logger: Logger;
   now?: () => Date;
+  /** How often a running handover renews its claim (default `LEASE_RENEW_MS`; for tests). */
+  leaseRenewMs?: number;
 };
 
 export type LiveHandovers = {
@@ -151,7 +156,13 @@ export function createLiveHandovers(options: LiveHandoversOptions): LiveHandover
           sessionId: outcome.sessionId ?? null,
           endedAt: now(),
         })
-        .where(and(eq(liveHandover.id, row.id), eq(liveHandover.status, from)))
+        .where(
+          and(
+            eq(liveHandover.id, row.id),
+            whereStation(liveHandover, scope),
+            eq(liveHandover.status, from),
+          ),
+        )
         .returning();
       // Ended meanwhile (another replica): nothing to write; the transaction rolls back.
       if (!updated) throw new StatusMoved();
@@ -226,18 +237,31 @@ export function createLiveHandovers(options: LiveHandoversOptions): LiveHandover
       await finish(scope, claimed, 'running', 'done', { sessionId: open.id });
       return;
     }
+    // The switch may wait for another one of the station (switching.ts): the claim is renewed
+    // meanwhile so the sweep doesn't take it for a dead replica's.
+    const renew = setInterval(() => {
+      db.update(liveHandover)
+        .set({ claimedAt: now() })
+        .where(
+          and(
+            eq(liveHandover.id, id),
+            whereStation(liveHandover, scope),
+            eq(liveHandover.status, 'running'),
+          ),
+        )
+        .catch((err: unknown) =>
+          logger.warn({ err, stationId: scope.stationId, handoverId: id }, 'Renewing failed'),
+        );
+    }, options.leaseRenewMs ?? LEASE_RENEW_MS);
+    renew.unref();
+    let session: { id: string };
     try {
-      const session = await options.switcher.goLive(
+      session = await options.switcher.goLive(
         { actor: SYSTEM, scope },
         slot.input,
         'manual',
         undefined,
         { fadeMs: claimed.fadeMs },
-      );
-      await finish(scope, claimed, 'running', 'done', { sessionId: session.id });
-      logger.info(
-        { stationId: scope.stationId, handoverId: id, input: slot.input },
-        'Scheduled handover done',
       );
     } catch (err) {
       const reason = failureOf(err);
@@ -245,7 +269,17 @@ export function createLiveHandovers(options: LiveHandoversOptions): LiveHandover
         logger.error({ err, stationId: scope.stationId, handoverId: id }, 'Handover failed');
       }
       await finish(scope, claimed, 'running', 'failed', { reason });
+      return;
+    } finally {
+      clearInterval(renew);
     }
+    // The DJ is on air: only a `done` from here (a failure to record it is logged by the timer,
+    // and the sweep fails it `interrupted` later; the session stands either way).
+    await finish(scope, claimed, 'running', 'done', { sessionId: session.id });
+    logger.info(
+      { stationId: scope.stationId, handoverId: id, input: slot.input },
+      'Scheduled handover done',
+    );
   }
 
   return {
@@ -323,7 +357,13 @@ export function createLiveHandovers(options: LiveHandoversOptions): LiveHandover
         const [updated] = await tx
           .update(liveHandover)
           .set({ status: 'cancelled', endedAt: now() })
-          .where(and(eq(liveHandover.id, id), eq(liveHandover.status, 'pending')))
+          .where(
+            and(
+              eq(liveHandover.id, id),
+              whereStation(liveHandover, ctx.scope),
+              eq(liveHandover.status, 'pending'),
+            ),
+          )
           .returning();
         if (!updated) {
           throw new HttpError(409, 'live_handover_ended', `the handover is ${existing.status}`);
@@ -367,7 +407,7 @@ export function createLiveHandovers(options: LiveHandoversOptions): LiveHandover
           and(
             whereStation(liveHandover, scope),
             eq(liveHandover.status, 'running'),
-            or(isNull(liveHandover.claimedAt), lt(liveHandover.claimedAt, new Date(t - MISSED_MS))),
+            or(isNull(liveHandover.claimedAt), lt(liveHandover.claimedAt, new Date(t - LEASE_MS))),
           ),
         );
       for (const row of stale) {

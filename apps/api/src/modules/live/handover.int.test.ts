@@ -3,6 +3,7 @@ import {
   createOrganization,
   createStation,
   liveHandover,
+  liveRequest,
   liveSession,
   resolveOrgScope,
   resolveStationScope,
@@ -106,6 +107,7 @@ beforeEach(async () => {
   h?.close();
   await tdb.db.delete(liveSession);
   await tdb.db.delete(liveHandover);
+  await tdb.db.delete(liveRequest);
   engine = fakeEngine();
   published = [];
   now = IN_SLOT;
@@ -148,6 +150,29 @@ describe('DJ handover', () => {
     );
   });
 
+  it('keeps the slot for a DJ approved ad hoc during it', async () => {
+    engine.connect(1, ids.resident ?? null);
+    engine.connect(2, ids.guest ?? null);
+    const resident = await s.goLive(ctx(), 1, 'slot');
+    const [request] = await tdb.db
+      .insert(liveRequest)
+      .values({
+        orgId: scope.orgId,
+        stationId: scope.stationId,
+        streamerId: ids.guest ?? '',
+        input: 2,
+        connectedAt: now,
+      })
+      .returning();
+    const approved = await s.approve(ctx(), request?.id ?? '');
+    expect(approved).toMatchObject({
+      trigger: 'ad_hoc',
+      streamer: { id: ids.guest },
+      show: { id: ids.show },
+      episode: resident.episode,
+    });
+  });
+
   it('carries nothing over once the slot is over, nor from an unbound session', async () => {
     engine.connect(1, ids.resident ?? null);
     engine.connect(2, ids.guest ?? null);
@@ -163,14 +188,77 @@ describe('DJ handover', () => {
     engine.connect(2, ids.guest ?? null);
     expect(await s.mute(ctx(), 2, true)).toBe(true);
     expect((await s.status(scope, true)).inputs.map((i) => i.muted)).toEqual([false, true]);
+    expect(await s.mute(ctx(), 2, true)).toBe(true); // again: muted from true
     expect(await s.mute(ctx(), 2, false)).toBe(true);
-    expect(await s.mute(ctx(), 1, true)).toBe(false); // nobody there
-    expect(engine.commands).toEqual(['mute 2', 'unmute 2', 'mute 1']);
+    expect(engine.commands).toEqual(['mute 2', 'mute 2', 'unmute 2']);
     const audits = await tdb.db
-      .select()
+      .select({ diff: auditLog.diff })
       .from(auditLog)
-      .where(and(eq(auditLog.stationId, scope.stationId), eq(auditLog.action, 'live.input.mute')));
-    expect(audits).toHaveLength(3);
+      .where(and(eq(auditLog.stationId, scope.stationId), eq(auditLog.action, 'live.input.mute')))
+      .orderBy(auditLog.at);
+    // The state before, as the engine reported it.
+    expect(audits.map((a) => (a.diff as { muted: unknown }).muted)).toEqual([
+      { from: false, to: true },
+      { from: true, to: true },
+      { from: true, to: false },
+    ]);
+  });
+
+  it('never lets a mute carry over to the next DJ on the input', async () => {
+    // Nobody connected: refused (the engine would keep it for whoever connects next).
+    await expect(s.mute(ctx(), 1, true)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'live_input_not_connected',
+    });
+    expect(await s.mute(ctx(), 1, false)).toBe(false); // unmuting nobody: harmless
+    // The DJ hangs up between Node's check and the engine's: the engine refuses, still a 409.
+    engine.connect(1, ids.guest ?? null);
+    const state = engine.state;
+    engine.state = async () => {
+      const st = await state();
+      engine.hangUp(1);
+      return st;
+    };
+    await expect(s.mute(ctx(), 1, true)).rejects.toMatchObject({
+      code: 'live_input_not_connected',
+    });
+    engine.state = state;
+    // Muted, then the DJ hangs up: the next one starts unmuted.
+    engine.connect(2, ids.guest ?? null);
+    await s.mute(ctx(), 2, true);
+    engine.hangUp(2);
+    engine.connect(2, ids.later ?? null);
+    expect((await s.status(scope, true)).inputs[1]?.muted).toBe(false);
+  });
+
+  it('serialises switches across replicas: the engine ends on the session the db has open', async () => {
+    const replica = createLiveSwitcher({
+      db: tdb.db,
+      engineFor: async () => engine as LiveSwitchEngine,
+      logger,
+      now: () => now,
+    });
+    engine.connect(1, ids.guest ?? null);
+    engine.connect(2, ids.later ?? null);
+    await s.goLive(ctx(), 1);
+    // A slow engine call for the handover to input 2 (a scheduled handover, say)…
+    let release = () => {};
+    engine.hold = new Promise((r) => {
+      release = r;
+    });
+    const toTwo = s.goLive(ctx(), 2);
+    for (let i = 0; i < 100 && engine.hold; i++) await sleep(10);
+    expect(engine.hold).toBeNull(); // its session is committed, the engine call on the way
+    // …while a member puts the first DJ back by hand on another replica: it waits.
+    const backToOne = replica.goLive(ctx(), 1);
+    await sleep(200);
+    expect(engine.commands).toEqual(['open 1']);
+    release();
+    await Promise.all([toTwo, backToOne]);
+    expect(engine.commands).toEqual(['open 1', 'open 2', 'open 1']);
+    const open = (await sessions()).filter((r) => r.endedAt === null);
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ input: 1, id: engine.sessionId });
   });
 });
 
@@ -249,7 +337,8 @@ describe('scheduled handovers', () => {
     expect((await h.list(scope)).find((x) => x.id === far.id)?.status).toBe('pending');
     now = later(29_800);
     await h.sweep(scope);
-    for (let i = 0; i < 40 && engine.selected !== 1; i++) await sleep(50);
+    const status = async () => (await h.list(scope)).find((x) => x.id === far.id)?.status;
+    for (let i = 0; i < 40 && (await status()) !== 'done'; i++) await sleep(50);
     expect((await h.list(scope)).find((x) => x.id === far.id)?.status).toBe('done');
   });
 
@@ -289,6 +378,39 @@ describe('scheduled handovers', () => {
       'missed',
     ]);
     expect(engine.commands).toEqual([]);
+  });
+
+  it('keeps the claim of a slow switch, and records it done', async () => {
+    h.close();
+    h = createLiveHandovers({
+      db: tdb.db,
+      switcher: s,
+      engineFor: async () => engine as LiveSwitchEngine,
+      logger,
+      now: () => now,
+      leaseRenewMs: 20,
+    });
+    engine.connect(2, ids.later ?? null);
+    const scheduled = await h.schedule(ctx(), {
+      streamerId: ids.later ?? '',
+      at: later(1000),
+      fadeMs: 2000,
+    });
+    let release = () => {};
+    engine.hold = new Promise((r) => {
+      release = r;
+    });
+    now = later(1000);
+    const running = h.run(scope, scheduled.id);
+    for (let i = 0; i < 100 && engine.hold; i++) await sleep(10);
+    // Past the lease while the engine call hangs: renewed, so not taken for a dead replica's.
+    now = later(70_000);
+    await sleep(100);
+    await h.sweep(scope);
+    expect((await h.list(scope))[0]?.status).toBe('running');
+    release();
+    await running;
+    expect((await h.list(scope))[0]).toMatchObject({ status: 'done', reason: null });
   });
 
   it('fails a claim left running by a replica that stopped', async () => {
@@ -333,6 +455,23 @@ describe('scheduled handovers', () => {
     await expect(bad(later(1000), crypto.randomUUID())).rejects.toMatchObject({
       name: 'NotFoundError',
     });
+    // Another station can't see it, let alone cancel it.
+    const pending = await h.schedule(ctx(), {
+      streamerId: ids.later ?? '',
+      at: later(60_000),
+      fadeMs: 2000,
+    });
+    const other = await createStation(
+      tdb.db,
+      { actor: system, scope: await resolveOrgScope(tdb.db, scope.orgId) },
+      { slug: `other-${crypto.randomUUID().slice(0, 8)}`, name: 'Other', timezone: 'Europe/Paris' },
+    );
+    const otherScope = await resolveStationScope(tdb.db, scope.orgId, other.id);
+    await expect(h.cancel({ actor: system, scope: otherScope }, pending.id)).rejects.toMatchObject({
+      name: 'NotFoundError',
+    });
+    await h.run(otherScope, pending.id);
+    expect((await h.list(scope)).find((x) => x.id === pending.id)?.status).toBe('pending');
     const audits = await tdb.db
       .select({ action: auditLog.action })
       .from(auditLog)
