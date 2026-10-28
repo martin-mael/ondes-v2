@@ -18,7 +18,7 @@ import { isApiError } from '../../app/api/client.ts';
 import { findStation, useMe, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
-import { PageHeader } from '../../app/page-header.tsx';
+import { Page, PageHeader } from '../../app/page-header.tsx';
 import { DelayedSpinner, ListSkeleton } from '../../app/pending.tsx';
 import { connectionQuery, invalidateLive, liveApi, streamersQuery } from './api.ts';
 import { LiveEvents } from './events.tsx';
@@ -330,20 +330,22 @@ export function LivePage() {
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-6 p-4 sm:p-6">
-      <PageHeader
-        title={t('title')}
-        description={t('description')}
-        actions={
-          access.canManage && (
-            <Button onClick={() => setEditing('new')}>
-              <PlusIcon data-icon="inline-start" />
-              {t('streamers.new')}
-            </Button>
-          )
-        }
-      />
-
+    <Page
+      header={
+        <PageHeader
+          title={t('title')}
+          description={t('description')}
+          actions={
+            access.canManage && (
+              <Button onClick={() => setEditing('new')}>
+                <PlusIcon data-icon="inline-start" />
+                {t('streamers.new')}
+              </Button>
+            )
+          }
+        />
+      }
+    >
       <LiveRequestPrompt stationId={stationId} />
 
       <section className="flex flex-col gap-3">
@@ -416,6 +418,6 @@ export function LivePage() {
         />
       )}
       <PasswordDialog result={password} onClose={() => setPassword(null)} copy={copy} />
-    </div>
+    </Page>
   );
 }

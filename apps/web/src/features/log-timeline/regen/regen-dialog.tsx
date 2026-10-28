@@ -57,7 +57,7 @@ export function RegenButton({
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Button className={className} size="sm" variant="outline" onClick={() => setOpen(true)}>
+      <Button className={className} variant="outline" onClick={() => setOpen(true)}>
         <RefreshCwIcon data-icon="inline-start" />
         {t('open')}
       </Button>

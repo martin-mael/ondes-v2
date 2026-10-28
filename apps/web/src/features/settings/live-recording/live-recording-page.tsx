@@ -15,7 +15,7 @@ import { Input } from '@/ui/input';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { findStation, useOrgs } from '../../../app/auth/session.ts';
 import { FormAlert } from '../../../app/forms.tsx';
-import { PageHeader } from '../../../app/page-header.tsx';
+import { Page, PageHeader } from '../../../app/page-header.tsx';
 import { DelayedSpinner, PageSkeleton } from '../../../app/pending.tsx';
 import { useUnsavedChanges } from '../../../app/unsaved.tsx';
 import { liveRecordingApi, liveRecordingSettingsQuery } from './api.ts';
@@ -71,10 +71,9 @@ export function LiveRecordingPage() {
 
   if (query.isError && !query.data) {
     return (
-      <div className="flex flex-col gap-6 p-4 sm:p-6">
-        <PageHeader title={t('title')} />
+      <Page width="form" header={<PageHeader title={t('title')} />}>
         <FormAlert error={query.error} />
-      </div>
+      </Page>
     );
   }
   if (query.isPending || !draft) return <PageSkeleton />;
@@ -89,8 +88,7 @@ export function LiveRecordingPage() {
   };
 
   return (
-    <div className="flex flex-col gap-6 p-4 sm:p-6">
-      <PageHeader title={t('title')} description={t('description')} />
+    <Page width="form" header={<PageHeader title={t('title')} description={t('description')} />}>
       {!canEdit && <p className="text-sm text-muted-foreground">{t('readOnly')}</p>}
       <Card className="max-w-2xl">
         <CardContent>
@@ -156,6 +154,6 @@ export function LiveRecordingPage() {
         </CardContent>
       </Card>
       {guard}
-    </div>
+    </Page>
   );
 }

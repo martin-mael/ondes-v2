@@ -8,7 +8,7 @@ import { Card, CardContent } from '@/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/ui/table';
 import { isApiError } from '../../app/api/client.ts';
 import { FormAlert } from '../../app/forms.tsx';
-import { PageHeader } from '../../app/page-header.tsx';
+import { Page, PageHeader } from '../../app/page-header.tsx';
 import { ListSkeleton } from '../../app/pending.tsx';
 import { clockKeys, clocksApi, clocksQuery } from './api.ts';
 import { ClockTimeline } from './clock-timeline.tsx';
@@ -49,21 +49,24 @@ export function ClocksPage() {
   };
 
   return (
-    <div className="flex flex-col gap-6 p-4 sm:p-6">
-      <PageHeader
-        title={t('title')}
-        description={t('description')}
-        actions={
-          <Button
-            nativeButton={false}
-            render={<Link to="/stations/$stationId/clocks/new" params={{ stationId }} />}
-          >
-            <PlusIcon data-icon="inline-start" />
-            {t('new')}
-          </Button>
-        }
-      />
-
+    <Page
+      width="list"
+      header={
+        <PageHeader
+          title={t('title')}
+          description={t('description')}
+          actions={
+            <Button
+              nativeButton={false}
+              render={<Link to="/stations/$stationId/clocks/new" params={{ stationId }} />}
+            >
+              <PlusIcon data-icon="inline-start" />
+              {t('new')}
+            </Button>
+          }
+        />
+      }
+    >
       {list.isPending ? (
         <ListSkeleton />
       ) : list.isError ? (
@@ -140,6 +143,6 @@ export function ClocksPage() {
           </TableBody>
         </Table>
       )}
-    </div>
+    </Page>
   );
 }

@@ -18,7 +18,7 @@ import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
-import { PageHeader } from '../../app/page-header.tsx';
+import { Page, PageHeader } from '../../app/page-header.tsx';
 import { DelayedSpinner, ListSkeleton } from '../../app/pending.tsx';
 import { invalidatePromos, promosApi, promosQuery, vtPoolsQuery } from './api.ts';
 import { type PromoT, usePromoError, usePromoT } from './messages.ts';
@@ -109,30 +109,93 @@ export function PromosPage() {
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-6 p-4 sm:p-6">
-      <PageHeader
-        title={t('title')}
-        description={t('description')}
-        actions={
-          access.canEdit && (
-            <Button onClick={() => setEditingPromo('new')}>
-              <PlusIcon data-icon="inline-start" />
-              {t('promos.new')}
-            </Button>
-          )
-        }
-      />
+    <Page
+      width="list"
+      header={
+        <PageHeader
+          title={t('title')}
+          description={t('description')}
+          actions={
+            access.canEdit && (
+              <Button onClick={() => setEditingPromo('new')}>
+                <PlusIcon data-icon="inline-start" />
+                {t('promos.new')}
+              </Button>
+            )
+          }
+        />
+      }
+    >
+      <section className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-sm font-medium">{t('promos.title')}</h2>
+          <div className="ml-auto flex flex-wrap gap-2">
+            <NativeSelect
+              aria-label={t('promos.filterPool')}
+              value={poolFilter}
+              onChange={(e) => setPoolFilter(e.target.value)}
+            >
+              <NativeSelectOption value="">{t('promos.allPools')}</NativeSelectOption>
+              {poolList.map((p) => (
+                <NativeSelectOption key={p.id} value={p.id}>
+                  {p.name}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+            <NativeSelect
+              aria-label={t('promos.filterStatus')}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as PromoStatus | '')}
+            >
+              <NativeSelectOption value="">{t('promos.allStatuses')}</NativeSelectOption>
+              {promoStatusSchema.options.map((s) => (
+                <NativeSelectOption key={s} value={s}>
+                  {t(`status.${s}`)}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </div>
+        </div>
+        {promos.isPending ? (
+          <ListSkeleton rows={4} />
+        ) : promos.isError ? (
+          <FormAlert error={promos.error} />
+        ) : list.length === 0 ? (
+          <Card>
+            <CardContent className="py-8 text-center text-sm text-muted-foreground">
+              {filtered ? t('promos.emptyFilter') : t('promos.empty')}
+            </CardContent>
+          </Card>
+        ) : (
+          <Card size="sm">
+            <CardContent>
+              <ul className="divide-y">
+                {list.map((promo) => (
+                  <PromoRow
+                    key={promo.id}
+                    promo={promo}
+                    pools={poolsById}
+                    timezone={access.timezone}
+                    canEdit={access.canEdit}
+                    busy={busy === promo.id}
+                    disabled={busy !== null}
+                    t={t}
+                    onEdit={() => setEditingPromo(promo)}
+                    onPlays={() => setPlaysOf(promo)}
+                    onDelete={() => removePromo(promo)}
+                  />
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        )}
+      </section>
 
       <section className="flex flex-col gap-3">
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-medium">{t('pools.title')}</h2>
           {access.canEdit && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="ml-auto"
-              onClick={() => setEditingPool('new')}
-            >
+            <Button variant="outline" className="ml-auto" onClick={() => setEditingPool('new')}>
               <PlusIcon data-icon="inline-start" />
               {t('pools.new')}
             </Button>
@@ -193,73 +256,6 @@ export function PromosPage() {
         )}
       </section>
 
-      <section className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-sm font-medium">{t('promos.title')}</h2>
-          <div className="ml-auto flex flex-wrap gap-2">
-            <NativeSelect
-              size="sm"
-              aria-label={t('promos.filterPool')}
-              value={poolFilter}
-              onChange={(e) => setPoolFilter(e.target.value)}
-            >
-              <NativeSelectOption value="">{t('promos.allPools')}</NativeSelectOption>
-              {poolList.map((p) => (
-                <NativeSelectOption key={p.id} value={p.id}>
-                  {p.name}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            <NativeSelect
-              size="sm"
-              aria-label={t('promos.filterStatus')}
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as PromoStatus | '')}
-            >
-              <NativeSelectOption value="">{t('promos.allStatuses')}</NativeSelectOption>
-              {promoStatusSchema.options.map((s) => (
-                <NativeSelectOption key={s} value={s}>
-                  {t(`status.${s}`)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-          </div>
-        </div>
-        {promos.isPending ? (
-          <ListSkeleton rows={4} />
-        ) : promos.isError ? (
-          <FormAlert error={promos.error} />
-        ) : list.length === 0 ? (
-          <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              {filtered ? t('promos.emptyFilter') : t('promos.empty')}
-            </CardContent>
-          </Card>
-        ) : (
-          <Card size="sm">
-            <CardContent>
-              <ul className="divide-y">
-                {list.map((promo) => (
-                  <PromoRow
-                    key={promo.id}
-                    promo={promo}
-                    pools={poolsById}
-                    timezone={access.timezone}
-                    canEdit={access.canEdit}
-                    busy={busy === promo.id}
-                    disabled={busy !== null}
-                    t={t}
-                    onEdit={() => setEditingPromo(promo)}
-                    onPlays={() => setPlaysOf(promo)}
-                    onDelete={() => removePromo(promo)}
-                  />
-                ))}
-              </ul>
-            </CardContent>
-          </Card>
-        )}
-      </section>
-
       {access.canEdit && (
         <>
           <PoolDialog
@@ -283,7 +279,7 @@ export function PromosPage() {
         promo={playsOf}
         onClose={() => setPlaysOf(null)}
       />
-    </div>
+    </Page>
   );
 }
 

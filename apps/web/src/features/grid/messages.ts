@@ -6,8 +6,7 @@ import type { Locale } from '../../app/i18n/messages.ts';
 
 const en = {
   title: 'Weekly grid',
-  description:
-    'Which clock airs each hour. Pick a clock, then click or drag over the hours; Shift-click fills a rectangle.',
+  description: 'Which clock airs at each hour of the week.',
   stationTime: 'Hours in station time ({timezone}).',
   forbidden: "You don't have access to this station's grid.",
   save: 'Save grid',
@@ -23,6 +22,8 @@ const en = {
   createClock: 'Create a clock',
 
   'brush.title': 'Clock to assign',
+  'brush.hint':
+    'Click or drag over the hours to give them this clock; Shift-click fills a rectangle.',
   'brush.default': 'Default clock',
   'brush.defaultHelp': 'Clears hours back to the default clock.',
   'default.label': 'Default clock',
@@ -98,8 +99,7 @@ type GridMessageKey = keyof typeof en;
 
 const fr: Record<GridMessageKey, string> = {
   title: 'Grille hebdomadaire',
-  description:
-    'L’horloge de chaque heure. Choisissez une horloge, puis cliquez ou glissez sur les heures ; Maj-clic remplit un rectangle.',
+  description: 'L’horloge diffusée à chaque heure de la semaine.',
   stationTime: 'Heures de la station ({timezone}).',
   forbidden: 'Vous n’avez pas accès à la grille de cette station.',
   save: 'Enregistrer la grille',
@@ -115,6 +115,8 @@ const fr: Record<GridMessageKey, string> = {
   createClock: 'Créer une horloge',
 
   'brush.title': 'Horloge à assigner',
+  'brush.hint':
+    'Cliquez ou glissez sur les heures pour leur donner cette horloge ; Maj-clic remplit un rectangle.',
   'brush.default': 'Horloge par défaut',
   'brush.defaultHelp': 'Remet les heures sur l’horloge par défaut.',
   'default.label': 'Horloge par défaut',

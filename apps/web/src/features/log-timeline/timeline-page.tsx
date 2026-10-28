@@ -33,7 +33,7 @@ import { Input } from '@/ui/input';
 import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert, useErrorMessage } from '../../app/forms.tsx';
-import { PageHeader } from '../../app/page-header.tsx';
+import { Page, PageHeader } from '../../app/page-header.tsx';
 import { ListSkeleton } from '../../app/pending.tsx';
 import { asRunDayQuery, assetDetailQuery, logDayQuery, logKey, timelineApi } from './api.ts';
 import {
@@ -339,51 +339,55 @@ function Timeline() {
   const onAirLog = onAir ? (log.data?.items ?? []).find((i) => i.id === onAir.itemId) : undefined;
 
   return (
-    <div className="flex min-w-0 flex-col gap-4 p-4 sm:p-6">
-      <PageHeader
-        title={t('title')}
-        description={t('description')}
-        actions={
-          <>
-            <Button
-              size="icon"
-              variant="outline"
-              aria-label={t('nav.previousDay')}
-              onClick={() => setDate(addDays(date, -1))}
-            >
-              <ChevronLeftIcon />
-            </Button>
-            <Input
-              type="date"
-              className="w-36"
-              aria-label={t('nav.date')}
-              value={date}
-              onChange={(e) => e.target.value && setDate(e.target.value)}
-            />
-            <Button
-              size="icon"
-              variant="outline"
-              aria-label={t('nav.nextDay')}
-              onClick={() => setDate(addDays(date, 1))}
-            >
-              <ChevronRightIcon />
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                landed.current = null;
-                if (date !== today) setDate(today);
-                else if (onAir) reveal(onAir.itemId);
-              }}
-            >
-              <CrosshairIcon data-icon="inline-start" />
-              {t('nav.now')}
-            </Button>
-          </>
-        }
-      />
-
-      <div className="flex flex-wrap items-center gap-3 text-sm">
+    <Page
+      className="gap-4"
+      header={
+        <PageHeader
+          title={t('title')}
+          description={t('timezone', { zone: `${timeZone}, ${formatOffset(dayStart, timeZone)}` })}
+          actions={
+            <>
+              <Button
+                size="icon"
+                variant="outline"
+                aria-label={t('nav.previousDay')}
+                onClick={() => setDate(addDays(date, -1))}
+              >
+                <ChevronLeftIcon />
+              </Button>
+              <Input
+                type="date"
+                className="w-36"
+                aria-label={t('nav.date')}
+                value={date}
+                onChange={(e) => e.target.value && setDate(e.target.value)}
+              />
+              <Button
+                size="icon"
+                variant="outline"
+                aria-label={t('nav.nextDay')}
+                onClick={() => setDate(addDays(date, 1))}
+              >
+                <ChevronRightIcon />
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  landed.current = null;
+                  if (date !== today) setDate(today);
+                  else if (onAir) reveal(onAir.itemId);
+                }}
+              >
+                <CrosshairIcon data-icon="inline-start" />
+                {t('nav.now')}
+              </Button>
+            </>
+          }
+        />
+      }
+    >
+      {/* The day's state on the left, what to do with the day on the right. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {date <= today && <TimelineViewTabs value={view} onChange={setView} />}
         {day && (
           <Badge variant={day.status === 'published' ? 'default' : 'outline'}>
@@ -398,34 +402,26 @@ function Timeline() {
             {t('day.summary', { count: items.length, duration: formatDuration(totalMs) })}
           </span>
         )}
-        <span className="text-muted-foreground">
-          {t('timezone', { zone: `${timeZone}, ${formatOffset(dayStart, timeZone)}` })}
-        </span>
-        {canWrite && day && (
-          <Button
-            className="ml-auto"
-            size="sm"
-            variant={day.status === 'published' ? 'outline' : 'default'}
-            disabled={status.isPending}
-            onClick={() => status.mutate(day.status === 'published' ? 'draft' : 'published')}
-          >
-            {t(day.status === 'published' ? 'day.unpublish' : 'day.publish')}
-          </Button>
-        )}
-        {canWrite && date >= today && (
-          <Button
-            className={day ? undefined : 'ml-auto'}
-            size="sm"
-            variant="outline"
-            onClick={() => setEditing({ type: 'marker', item: null })}
-          >
-            <FlagIcon data-icon="inline-start" />
-            {t('marker.add')}
-          </Button>
-        )}
-        {canWrite && date >= today && (
-          <RegenButton stationId={stationId} date={date} today={today} timeZone={timeZone} />
-        )}
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {canWrite && day && (
+            <Button
+              variant={day.status === 'published' ? 'outline' : 'default'}
+              disabled={status.isPending}
+              onClick={() => status.mutate(day.status === 'published' ? 'draft' : 'published')}
+            >
+              {t(day.status === 'published' ? 'day.unpublish' : 'day.publish')}
+            </Button>
+          )}
+          {canWrite && date >= today && (
+            <Button variant="outline" onClick={() => setEditing({ type: 'marker', item: null })}>
+              <FlagIcon data-icon="inline-start" />
+              {t('marker.add')}
+            </Button>
+          )}
+          {canWrite && date >= today && (
+            <RegenButton stationId={stationId} date={date} today={today} timeZone={timeZone} />
+          )}
+        </div>
       </div>
 
       {date === today && (
@@ -484,11 +480,13 @@ function Timeline() {
             blocks={blocks}
             onSelect={(item) => reveal(item.id)}
           />
-          <nav aria-label={t('nav.hour')} className="flex flex-wrap gap-1">
+          {/* One line of hours, spread across the width (scrolls on a narrow screen). */}
+          <nav aria-label={t('nav.hour')} className="no-scrollbar flex gap-0.5 overflow-x-auto">
             {groups.map((g) => (
               <Button
                 key={g.start}
                 size="xs"
+                className="flex-1 shrink-0"
                 variant={live.now >= g.start && live.now < g.end ? 'secondary' : 'ghost'}
                 onClick={() => revealHour(g.start)}
               >
@@ -496,7 +494,7 @@ function Timeline() {
               </Button>
             ))}
           </nav>
-          <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
             {groups.map((group) => (
               <HourSection key={group.start} group={group} t={t} now={live.now}>
                 {group.items.map((item) => {
@@ -649,7 +647,7 @@ function Timeline() {
       </Dialog>
 
       <PreviewBar />
-    </div>
+    </Page>
   );
 }
 
@@ -665,6 +663,24 @@ function HourSection({
   children: React.ReactNode;
 }) {
   const current = now >= group.start && now < group.end;
+  if (group.items.length === 0) {
+    // Nothing starts in this hour: one quiet line, so a mostly empty day stays readable.
+    return (
+      <section
+        id={`log-hour-${group.start}`}
+        aria-label={group.label}
+        className={`flex items-center gap-2 rounded-md border border-dashed px-3 py-1.5 text-sm ${current ? 'border-primary/50' : ''}`}
+      >
+        <h2 className="font-semibold tabular-nums">{group.label}</h2>
+        <span className="text-xs text-muted-foreground">{t('hour.empty')}</span>
+        {group.gapMs > 0 && (
+          <Badge variant="destructive">
+            {t('hour.gap', { duration: formatDuration(group.gapMs) })}
+          </Badge>
+        )}
+      </section>
+    );
+  }
   return (
     <section
       id={`log-hour-${group.start}`}
@@ -690,11 +706,7 @@ function HourSection({
           <Badge variant="outline">{t('hour.relaxed', { count: group.relaxed })}</Badge>
         )}
       </h2>
-      {group.items.length === 0 ? (
-        <p className="px-3 py-2 text-xs text-muted-foreground">{t('hour.empty')}</p>
-      ) : (
-        <ol className="flex flex-col divide-y">{children}</ol>
-      )}
+      <ol className="flex flex-col divide-y">{children}</ol>
     </section>
   );
 }

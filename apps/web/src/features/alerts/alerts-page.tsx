@@ -1,15 +1,13 @@
 import { alertTypes, rolePermissions } from '@ondes/shared';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router';
-import { useId } from 'react';
 import { z } from 'zod';
 import { Button } from '@/ui/button';
-import { Label } from '@/ui/label';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { Tabs, TabsList, TabsTrigger } from '@/ui/tabs';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert } from '../../app/forms.tsx';
-import { PageHeader } from '../../app/page-header.tsx';
+import { Page, PageHeader } from '../../app/page-header.tsx';
 import { DelayedSpinner, ListSkeleton } from '../../app/pending.tsx';
 import { AlertItem } from './alert-item.tsx';
 import { type AlertFilter, alertsQuery, useLiveAlerts } from './api.ts';
@@ -44,7 +42,6 @@ export function AlertsPage() {
   useLiveAlerts(queryClient, stationId);
   const query = useInfiniteQuery(alertsQuery(stationId, filter));
   const items = query.data?.pages.flatMap((page) => page.items) ?? [];
-  const typeId = useId();
 
   const setFilter = (next: Partial<AlertFilter>) =>
     void navigate({
@@ -59,9 +56,9 @@ export function AlertsPage() {
     });
 
   return (
-    <div className="flex flex-col gap-6 p-4 sm:p-6">
-      <PageHeader title={t('title')} description={t('description')} />
-      <div className="flex flex-wrap items-end gap-4">
+    <Page width="list" header={<PageHeader title={t('title')} description={t('description')} />}>
+      {/* One row on one baseline: which alerts (tabs) on the left, of what type on the right. */}
+      <div className="flex flex-wrap items-center gap-4">
         <Tabs
           value={filter.status}
           onValueChange={(value) => setFilter({ status: value as AlertFilter['status'] })}
@@ -74,24 +71,19 @@ export function AlertsPage() {
             ))}
           </TabsList>
         </Tabs>
-        <div className="flex flex-col gap-1">
-          <Label htmlFor={typeId} className="font-normal text-muted-foreground">
-            {t('filter.type')}
-          </Label>
-          <NativeSelect
-            id={typeId}
-            size="sm"
-            value={filter.type ?? ''}
-            onChange={(e) => setFilter({ type: e.target.value || undefined })}
-          >
-            <NativeSelectOption value="">{t('filter.allTypes')}</NativeSelectOption>
-            {typeOptions(filter.type).map((type) => (
-              <NativeSelectOption key={type} value={type}>
-                {alertTypeLabel(type, t)}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-        </div>
+        <NativeSelect
+          className="ml-auto"
+          aria-label={t('filter.type')}
+          value={filter.type ?? ''}
+          onChange={(e) => setFilter({ type: e.target.value || undefined })}
+        >
+          <NativeSelectOption value="">{t('filter.allTypes')}</NativeSelectOption>
+          {typeOptions(filter.type).map((type) => (
+            <NativeSelectOption key={type} value={type}>
+              {alertTypeLabel(type, t)}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
       </div>
       {query.isError && <FormAlert error={query.error} />}
       {query.isPending ? (
@@ -125,7 +117,7 @@ export function AlertsPage() {
           </Button>
         </div>
       )}
-    </div>
+    </Page>
   );
 }
 

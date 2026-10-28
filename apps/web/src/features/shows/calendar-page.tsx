@@ -29,7 +29,7 @@ import { cn } from '@/ui/lib/utils';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
-import { PageHeader } from '../../app/page-header.tsx';
+import { Page, PageHeader } from '../../app/page-header.tsx';
 import { ListSkeleton } from '../../app/pending.tsx';
 import { useShowAccess } from './access.ts';
 import { invalidateShows, occurrencesQuery, showsApi, showsQuery, slotsQuery } from './api.ts';
@@ -213,71 +213,79 @@ export function CalendarPage() {
 
   return (
     // `contain`: the shell's flex layout would otherwise widen the page to the grid's min width.
-    // The week view fills the window under the shell's 3rem header; its grid scrolls inside.
-    <div
-      className={cn(
-        'flex min-w-0 flex-col gap-4 p-4 [contain:inline-size] sm:p-6',
-        view === 'week' && 'h-[calc(100svh-3rem)] min-h-[32rem]',
-      )}
-    >
-      <PageHeader
-        title={t('calendar.title')}
-        description={t('upcoming.timezone', { timezone: tz })}
-        actions={
-          <>
-            <NativeSelect
-              size="sm"
-              aria-label={t('calendar.filter')}
-              value={search.show ?? ''}
-              onChange={(e) => go({ show: e.target.value || undefined })}
+    // The week view fills the window under the header bar; its grid scrolls inside. Every
+    // control is in the bar (period on the left, filter and view on the right), so the grid
+    // gets the whole height.
+    <Page
+      fill={view === 'week'}
+      className="gap-4 [contain:inline-size]"
+      header={
+        <PageHeader
+          title={t('calendar.title')}
+          description={t('upcoming.timezone', { timezone: tz })}
+          actions={
+            <>
+              <NativeSelect
+                aria-label={t('calendar.filter')}
+                value={search.show ?? ''}
+                onChange={(e) => go({ show: e.target.value || undefined })}
+              >
+                <NativeSelectOption value="">{t('calendar.allShows')}</NativeSelectOption>
+                {shows.data?.items.map((s) => (
+                  <NativeSelectOption key={s.id} value={s.id}>
+                    {s.name}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+              {/* Looks like the app's tabs (a muted track, the current one raised). */}
+              <fieldset
+                className="inline-flex h-8 items-center rounded-lg bg-muted p-[3px]"
+                aria-label={t('calendar.view')}
+              >
+                {calendarViews.map((v) => (
+                  <Button
+                    key={v}
+                    size="sm"
+                    variant="ghost"
+                    className={cn(
+                      'h-full px-2.5 text-muted-foreground hover:bg-transparent',
+                      v === view && 'bg-background text-foreground shadow-sm hover:bg-background',
+                    )}
+                    aria-pressed={v === view}
+                    onClick={() => go({ view: v })}
+                  >
+                    {t(`calendar.${v}`)}
+                  </Button>
+                ))}
+              </fieldset>
+            </>
+          }
+        >
+          <div className="flex items-center gap-1 sm:ml-4">
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label={t('calendar.previous')}
+              onClick={() => step(-1)}
             >
-              <NativeSelectOption value="">{t('calendar.allShows')}</NativeSelectOption>
-              {shows.data?.items.map((s) => (
-                <NativeSelectOption key={s.id} value={s.id}>
-                  {s.name}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            <fieldset className="flex" aria-label={t('calendar.view')}>
-              {calendarViews.map((v) => (
-                <Button
-                  key={v}
-                  size="sm"
-                  variant={v === view ? 'default' : 'outline'}
-                  aria-pressed={v === view}
-                  onClick={() => go({ view: v })}
-                >
-                  {t(`calendar.${v}`)}
-                </Button>
-              ))}
-            </fieldset>
-          </>
-        }
-      />
-
-      <div className="flex items-center gap-2">
-        <Button
-          size="icon-sm"
-          variant="outline"
-          aria-label={t('calendar.previous')}
-          onClick={() => step(-1)}
-        >
-          <ChevronLeftIcon />
-        </Button>
-        <Button size="sm" variant="outline" onClick={() => go({ date: undefined })}>
-          {t('calendar.today')}
-        </Button>
-        <Button
-          size="icon-sm"
-          variant="outline"
-          aria-label={t('calendar.next')}
-          onClick={() => step(1)}
-        >
-          <ChevronRightIcon />
-        </Button>
-        <h2 className="font-heading font-semibold first-letter:uppercase">{heading}</h2>
-      </div>
-
+              <ChevronLeftIcon />
+            </Button>
+            <Button variant="outline" onClick={() => go({ date: undefined })}>
+              {t('calendar.today')}
+            </Button>
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label={t('calendar.next')}
+              onClick={() => step(1)}
+            >
+              <ChevronRightIcon />
+            </Button>
+          </div>
+          <h2 className="truncate font-heading font-semibold first-letter:uppercase">{heading}</h2>
+        </PageHeader>
+      }
+    >
       {conflictCount > 0 && (
         <Alert variant="destructive">
           <CircleAlertIcon />
@@ -349,7 +357,7 @@ export function CalendarPage() {
         canEdit={canEdit}
         showNames={slotShowNames}
       />
-    </div>
+    </Page>
   );
 }
 

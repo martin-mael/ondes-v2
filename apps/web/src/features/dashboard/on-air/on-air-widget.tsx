@@ -43,32 +43,38 @@ export function OnAirWidget({ stationId }: { stationId: string }) {
         <CardTitle>{t('title')}</CardTitle>
         <CardAction>{snapshot && <ModeBadge t={t} mode={snapshot.mode} />}</CardAction>
       </CardHeader>
-      <CardContent className="flex flex-col gap-6">
-        <div>
-          <time
-            className="block font-mono text-5xl font-semibold tabular-nums tracking-tight sm:text-7xl"
-            dateTime={now === null ? undefined : new Date(now).toISOString()}
-            data-testid="station-clock"
-          >
-            {now === null || !timeZone ? '--:--:--' : clock(now)}
-          </time>
-          <p className="text-xs text-muted-foreground">
-            {t('stationTime', { timezone: timeZone ?? '' })}
-          </p>
+      {/* Two columns: the clock over what's playing, then the show and the next fixed time
+          beside them, so neither column leaves a hole the width of the card. */}
+      <CardContent className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="flex flex-col gap-6 lg:col-span-2">
+          <div>
+            <time
+              className="block font-mono text-5xl font-semibold tabular-nums tracking-tight sm:text-7xl"
+              dateTime={now === null ? undefined : new Date(now).toISOString()}
+              data-testid="station-clock"
+            >
+              {now === null || !timeZone ? '--:--:--' : clock(now)}
+            </time>
+            <p className="text-xs text-muted-foreground">
+              {t('stationTime', { timezone: timeZone ?? '' })}
+            </p>
+          </div>
+          {snapshot && ahead && timeZone ? (
+            <NowPlaying t={t} snapshot={snapshot} now={now} />
+          ) : query.isError && timeZone ? (
+            <p className="text-sm text-destructive">{t('error')}</p>
+          ) : (
+            <ListSkeleton rows={3} />
+          )}
         </div>
-        {snapshot && ahead && timeZone ? (
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-            <NowPlaying t={t} snapshot={snapshot} now={now} className="lg:col-span-2" />
+        {snapshot && ahead && timeZone && (
+          <>
             <div className="flex flex-col gap-6">
               <ShowBlock t={t} show={snapshot.show} clock={clock} />
               <NextEvent t={t} event={ahead.nextHardEvent} now={now} clock={clock} />
             </div>
             <UpNext t={t} items={ahead.next} clock={clock} className="lg:col-span-3" />
-          </div>
-        ) : query.isError && timeZone ? (
-          <p className="text-sm text-destructive">{t('error')}</p>
-        ) : (
-          <ListSkeleton rows={5} />
+          </>
         )}
       </CardContent>
     </Card>

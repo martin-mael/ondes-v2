@@ -20,7 +20,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { isApiError } from '../../app/api/client.ts';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
-import { BackButton } from '../../app/page-header.tsx';
+import { BackButton, Page, PageHeader } from '../../app/page-header.tsx';
 import { ListSkeleton, PageSkeleton } from '../../app/pending.tsx';
 import { type ShowAccess, useShowAccess } from './access.ts';
 import {
@@ -95,25 +95,58 @@ export function ShowPage() {
   const editedEpisode = episodes.data?.items.find((e) => e.id === episodeEdit?.episodeId);
 
   return (
-    <div className="flex min-w-0 flex-col gap-6 p-4 sm:p-6">
-      <div>
-        <BackButton
-          nativeButton={false}
-          render={<Link to="/stations/$stationId/shows" params={{ stationId }} />}
-        >
-          {t('show.back')}
-        </BackButton>
-      </div>
-
-      <header className="flex flex-wrap items-start gap-4">
-        <ShowArtwork show={data} className="size-20 sm:size-24" />
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <h1 className="font-heading text-xl font-semibold">{data.name}</h1>
-          <p className="text-sm text-muted-foreground">
-            {data.hosts.length > 0
+    // The show's identity (artwork, name, hosts) and its actions are the header bar; its tags
+    // and description, when it has any, open the page.
+    <Page
+      width="list"
+      header={
+        <PageHeader
+          back={
+            <>
+              <BackButton
+                nativeButton={false}
+                render={<Link to="/stations/$stationId/shows" params={{ stationId }} />}
+              >
+                {t('show.back')}
+              </BackButton>
+              <ShowArtwork show={data} className="size-10 text-xs" />
+            </>
+          }
+          title={data.name}
+          description={
+            data.hosts.length > 0
               ? t('show.hostedBy', { hosts: data.hosts.map((h) => h.name).join(', ') })
-              : t('list.noHosts')}
-          </p>
+              : t('list.noHosts')
+          }
+          actions={
+            <>
+              <Button
+                variant="outline"
+                nativeButton={false}
+                render={
+                  <Link
+                    to="/stations/$stationId/shows/calendar"
+                    params={{ stationId }}
+                    search={{ show: showId }}
+                  />
+                }
+              >
+                <CalendarDaysIcon data-icon="inline-start" />
+                {t('calendar.title')}
+              </Button>
+              {canEdit && (
+                <Button variant="outline" onClick={() => setEditingShow(true)}>
+                  <PencilIcon data-icon="inline-start" />
+                  {t('show.edit')}
+                </Button>
+              )}
+            </>
+          }
+        />
+      }
+    >
+      {(data.tags.length > 0 || data.description) && (
+        <div className="flex flex-col gap-2">
           {data.tags.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {data.tags.map((tag) => (
@@ -123,33 +156,9 @@ export function ShowPage() {
               ))}
             </div>
           )}
-          {data.description && (
-            <p className="max-w-2xl text-sm whitespace-pre-line">{data.description}</p>
-          )}
+          {data.description && <p className="max-w-2xl whitespace-pre-line">{data.description}</p>}
         </div>
-        <div className="flex basis-full gap-2 sm:basis-auto">
-          <Button
-            variant="outline"
-            nativeButton={false}
-            render={
-              <Link
-                to="/stations/$stationId/shows/calendar"
-                params={{ stationId }}
-                search={{ show: showId }}
-              />
-            }
-          >
-            <CalendarDaysIcon data-icon="inline-start" />
-            {t('calendar.title')}
-          </Button>
-          {canEdit && (
-            <Button variant="outline" onClick={() => setEditingShow(true)}>
-              <PencilIcon data-icon="inline-start" />
-              {t('show.edit')}
-            </Button>
-          )}
-        </div>
-      </header>
+      )}
 
       {detachedEpisodes.length > 0 && (
         <Alert>
@@ -289,7 +298,7 @@ export function ShowPage() {
         open={episodeEdit !== null && (!episodeEdit.episodeId || editedEpisode !== undefined)}
         onOpenChange={(open) => !open && setEpisodeEdit(null)}
       />
-    </div>
+    </Page>
   );
 }
 
@@ -361,8 +370,11 @@ function UpcomingSection({
 
   return (
     <section className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <h2 className="font-heading font-semibold">{t('upcoming.title')}</h2>
+        <span className="text-xs text-muted-foreground">
+          {t('upcoming.timezone', { timezone: access.timezone })}
+        </span>
         {canEdit && missing.length > 0 && (
           <Button
             className="ml-auto"
@@ -376,9 +388,6 @@ function UpcomingSection({
           </Button>
         )}
       </div>
-      <p className="text-muted-foreground">
-        {t('upcoming.timezone', { timezone: access.timezone })}
-      </p>
       {pending ? (
         <ListSkeleton />
       ) : error ? (
@@ -395,19 +404,21 @@ function UpcomingSection({
             const date = localDateOf(o.startsAt, access.timezone);
             const episode = o.episode;
             return (
+              // Three columns on wide screens: when, what (episode and status), and the
+              // actions, right-aligned so the buttons line up from one airing to the next.
               <li
                 key={occurrenceKey(o)}
-                className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3"
+                className="grid grid-cols-1 items-center gap-x-4 gap-y-2 p-3 sm:grid-cols-[9rem_minmax(0,1fr)_auto]"
                 data-testid="upcoming-row"
               >
-                <div className="flex min-w-36 flex-col">
+                <div className="flex flex-col">
                   <span className="font-medium">{formatDay(date, locale)}</span>
                   <span className="text-muted-foreground tabular-nums">
                     {formatTime(o.startsAt, access.timezone, locale)}–
                     {formatTime(o.endsAt, access.timezone, locale)}
                   </span>
                 </div>
-                <div className="flex flex-wrap items-center gap-1">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
                   {o.type === 'live' && (
                     <Badge variant="secondary">
                       <RadioIcon />
@@ -416,8 +427,6 @@ function UpcomingSection({
                   )}
                   {o.type === 'rerun' && <Badge variant="outline">{t('type.rerun')}</Badge>}
                   {o.moved && <Badge variant="outline">{t('occurrence.moved')}</Badge>}
-                </div>
-                <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
                   {episode ? (
                     <>
                       <button
@@ -430,61 +439,67 @@ function UpcomingSection({
                         {episode.title ? ` · ${episode.title}` : ''}
                       </button>
                       <EpisodeStatusBadge status={episode.status} episodeId={episode.id} />
-                      {canEdit && episode.kind === 'prerecorded' && !episode.assetId && (
-                        <UploadAudioButton
-                          variant="default"
-                          label={t('episode.uploadAudio')}
-                          onFile={(file) => upload({ showId, episodeId: episode.id }, file)}
-                        />
-                      )}
                     </>
                   ) : o.type === 'rerun' ? (
                     <RerunOf occurrence={o} />
-                  ) : canEdit ? (
+                  ) : canEdit && unscheduled.length > 0 ? (
+                    <NativeSelect
+                      size="sm"
+                      aria-label={t('upcoming.assign')}
+                      value=""
+                      disabled={busy}
+                      onChange={(e) => {
+                        const id = e.target.value;
+                        if (id) {
+                          void act(() =>
+                            showsApi.updateEpisode(stationId, showId, id, {
+                              slotId: o.slotId,
+                              occurrenceDate: o.date,
+                            }),
+                          );
+                        }
+                      }}
+                    >
+                      <NativeSelectOption value="">{t('upcoming.assign')}</NativeSelectOption>
+                      {unscheduled.map((e) => (
+                        <NativeSelectOption key={e.id} value={e.id}>
+                          {t('episode.label', { number: e.number })}
+                          {e.title ? ` · ${e.title}` : ''}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  ) : (
+                    <span className="text-muted-foreground">{t('upcoming.noEpisode')}</span>
+                  )}
+                </div>
+                {/* Row actions are outline: a page of airings shouldn't be a column of blue. */}
+                <div className="flex items-center gap-2 sm:justify-end">
+                  {episode ? (
+                    canEdit &&
+                    episode.kind === 'prerecorded' &&
+                    !episode.assetId && (
+                      <UploadAudioButton
+                        variant="outline"
+                        label={t('episode.uploadAudio')}
+                        onFile={(file) => upload({ showId, episodeId: episode.id }, file)}
+                      />
+                    )
+                  ) : o.type !== 'rerun' && canEdit ? (
                     <>
+                      <Button size="sm" variant="ghost" disabled={busy} onClick={() => onPlan(o)}>
+                        {t('upcoming.plan')}
+                      </Button>
                       {o.type === 'prerecorded' && (
                         <UploadAudioButton
-                          variant="default"
+                          variant="outline"
                           label={t('episode.uploadAudio')}
                           onFile={(file) =>
                             upload({ showId, slotId: o.slotId, occurrenceDate: o.date }, file)
                           }
                         />
                       )}
-                      {unscheduled.length > 0 && (
-                        <NativeSelect
-                          size="sm"
-                          aria-label={t('upcoming.assign')}
-                          value=""
-                          disabled={busy}
-                          onChange={(e) => {
-                            const id = e.target.value;
-                            if (id) {
-                              void act(() =>
-                                showsApi.updateEpisode(stationId, showId, id, {
-                                  slotId: o.slotId,
-                                  occurrenceDate: o.date,
-                                }),
-                              );
-                            }
-                          }}
-                        >
-                          <NativeSelectOption value="">{t('upcoming.assign')}</NativeSelectOption>
-                          {unscheduled.map((e) => (
-                            <NativeSelectOption key={e.id} value={e.id}>
-                              {t('episode.label', { number: e.number })}
-                              {e.title ? ` · ${e.title}` : ''}
-                            </NativeSelectOption>
-                          ))}
-                        </NativeSelect>
-                      )}
-                      <Button size="sm" variant="outline" disabled={busy} onClick={() => onPlan(o)}>
-                        {t('upcoming.plan')}
-                      </Button>
                     </>
-                  ) : (
-                    <span className="text-muted-foreground">{t('upcoming.noEpisode')}</span>
-                  )}
+                  ) : null}
                 </div>
               </li>
             );
