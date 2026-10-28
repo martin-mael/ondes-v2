@@ -16,7 +16,7 @@ import type { FeederLeases } from './leases.ts';
  * the free leases and drops the stations that stopped; every `tickMs` it syncs each feeder;
  * engine and log events from the fanout sync the station's feeder right away. A plan that holds
  * an item until its time (a not-before marker, #52) also wakes its feeder then, rather than
- * at the next tick, up to `tickMs` later.
+ * at the next tick, up to `tickMs` later, whether the plan came from a tick or an event.
  *
  * The fanout is best-effort (ADR 0006): a missed event only delays a sync to the next tick,
  * since each sync re-reads the engine state and the log. Only the lease holder acts on it, so
@@ -135,7 +135,13 @@ export function createFeederService(options: FeederServiceOptions): FeederServic
       const parsed = realtimeEventSchema.safeParse(event);
       if (!parsed.success) return;
       const e: RealtimeEvent = parsed.data;
-      feeders.get(e.stationId)?.onEvent(e);
+      const feeder = feeders.get(e.stationId);
+      // A log edit (a marker added on the timeline) can bring a hold within the tick too.
+      void feeder?.onEvent(e).then((result) => {
+        if (result && feeders.get(e.stationId) === feeder) {
+          wakeAt(feeder, result.plan?.hold?.untilMs ?? null);
+        }
+      });
     },
 
     feeder: (stationId) => feeders.get(stationId),

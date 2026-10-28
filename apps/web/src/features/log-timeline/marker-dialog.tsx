@@ -66,6 +66,7 @@ export function MarkerDialog({
   marker,
   hours,
   now,
+  blocked,
   pending,
   onOpenChange,
   onSave,
@@ -76,6 +77,8 @@ export function MarkerDialog({
   marker: LogItem | null;
   hours: readonly HourSlot[];
   now: number;
+  /** Whether a marker at this time would time nothing (another marker or a live slot first). */
+  blocked(anchorMs: number): 'marker' | 'live_slot' | null;
   pending: boolean;
   onOpenChange(open: boolean): void;
   onSave(value: MarkerValue): Promise<unknown>;
@@ -97,16 +100,20 @@ export function MarkerDialog({
     setErrors({});
   }, [open, marker, hours]);
 
+  const draftAnchor = markerAnchor(
+    hours.find((h) => String(h.start) === draft.hour),
+    draft.minSec,
+  );
+  // A calm warning, never a reason not to save (CLAUDE.md, "Saving work in progress").
+  const warning = draftAnchor === null ? null : blocked(draftAnchor);
+
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const next: typeof errors = {};
-    const anchorMs = markerAnchor(
-      hours.find((h) => String(h.start) === draft.hour),
-      draft.minSec,
-    );
+    const anchorMs = draftAnchor;
     if (anchorMs === null) next.time = 'marker.error.time';
     else if (anchorMs <= Date.now()) next.time = 'marker.error.past';
     const cap = Number(draft.capSeconds);
@@ -172,6 +179,11 @@ export function MarkerDialog({
               </Field>
             </div>
             {errors.time && <FieldError errors={[{ message: t(errors.time) }]} />}
+            {!errors.time && warning && (
+              <p role="status" className="text-xs text-amber-700 dark:text-amber-400">
+                {t(`marker.warning.${warning}`)}
+              </p>
+            )}
             <Field>
               <FieldLabel htmlFor="marker-timing">{t('marker.timing')}</FieldLabel>
               <NativeSelect

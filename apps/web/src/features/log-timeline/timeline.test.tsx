@@ -3,7 +3,7 @@ import { act, fireEvent, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeEventSource } from '../../app/testing/fake-event-source.ts';
 import { type ApiRoute, orgs, renderApp, signedIn, stationId } from '../../app/testing/render.tsx';
-import { asRunEntry, assetDetail, libraryAsset, logItem } from './testing.ts';
+import { asRunEntry, assetDetail, libraryAsset, logItem, playable } from './testing.ts';
 
 // The timeline on the whole app with a fake api and SSE stream: the day grouped by hour in
 // station time, the on-air item from the as-run and its live updates, passed-over items,
@@ -718,7 +718,7 @@ describe('log timeline: fixed-time markers (#52)', () => {
     timing: 'hard',
     anchorAt: '2026-10-21T11:00:00.000Z',
   });
-  const id = logItem({
+  const id = playable({
     kind: 'jingle',
     title: 'Station ID',
     plannedStart: '2026-10-21T11:00:00.000Z',
@@ -789,7 +789,7 @@ describe('log timeline: fixed-time markers (#52)', () => {
     expect(await screen.findByText('Marker added')).toBeInTheDocument();
   });
 
-  it('edits a marker, moving it when its time moves past other items', async () => {
+  it('edits a marker, moving it in the same write when its time moves past other items', async () => {
     const calls: { path: string; body: unknown }[] = [];
     const record = (path: string) => (b: unknown) => {
       calls.push({ path, body: b });
@@ -810,16 +810,105 @@ describe('log timeline: fixed-time markers (#52)', () => {
     await user.clear(within(dialog).getByLabelText('Minutes:seconds'));
     await user.type(within(dialog).getByLabelText('Minutes:seconds'), '00:10');
     await user.click(within(dialog).getByRole('button', { name: 'Save marker' }));
-    await waitFor(() => expect(calls.map((c) => c.path)).toEqual(['replace', 'move']));
+    await waitFor(() => expect(calls.map((c) => c.path)).toEqual(['replace']));
     expect(calls[0]?.body).toMatchObject({
       kind: 'marker',
       timing: 'hard',
       anchorAt: '2026-10-21T11:00:10.000Z',
       title: 'Top of hour',
       locked: false,
+      // Past the jingle and the song: at the end of the day's items.
+      placement: { after: after.id },
     });
-    // Past the jingle and the song: at the end of the day's items.
-    expect(calls[1]?.body).toEqual({ placement: { after: after.id } });
+  });
+
+  it('checks the cap inline, and only for a soft marker', async () => {
+    let posted = 0;
+    const { screen, user } = renderApp(
+      `${base}/log`,
+      markerRoutes({
+        [`POST ${base}/log/items`]: () => {
+          posted++;
+          return [201, { item: top, days: [day] }];
+        },
+      }),
+    );
+    await screen.findByText('Top of hour');
+    await user.click(screen.getByRole('button', { name: 'Add marker' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.selectOptions(
+      within(dialog).getByLabelText('Hour'),
+      within(dialog).getByRole('option', { name: '13:00' }),
+    );
+    await user.clear(within(dialog).getByLabelText('Minutes:seconds'));
+    await user.type(within(dialog).getByLabelText('Minutes:seconds'), '00:05');
+    await user.selectOptions(within(dialog).getByLabelText('Timing'), 'soft');
+    const cap = within(dialog).getByLabelText('Cap (seconds)');
+    for (const bad of ['601', '-1', '2.5', '']) {
+      await user.clear(cap);
+      if (bad) await user.type(cap, bad);
+      await user.click(within(dialog).getByRole('button', { name: 'Save marker' }));
+      expect(await within(dialog).findByText('The cap is 0 to 600 seconds.')).toBeInTheDocument();
+    }
+    expect(posted).toBe(0);
+    // A hard marker has no cap: the bad value left in the field doesn't count.
+    await user.type(cap, '999');
+    await user.selectOptions(within(dialog).getByLabelText('Timing'), 'hard');
+    await user.click(within(dialog).getByRole('button', { name: 'Save marker' }));
+    await waitFor(() => expect(posted).toBe(1));
+  });
+
+  it('warns, without blocking, when another marker comes right after the time', async () => {
+    let posted = 0;
+    const { screen, user } = renderApp(
+      `${base}/log`,
+      markerRoutes({
+        [`POST ${base}/log/items`]: () => {
+          posted++;
+          return [201, { item: top, days: [day] }];
+        },
+      }),
+    );
+    await screen.findByText('Top of hour');
+    await user.click(screen.getByRole('button', { name: 'Add marker' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.selectOptions(
+      within(dialog).getByLabelText('Hour'),
+      within(dialog).getByRole('option', { name: '13:00' }),
+    );
+    // 13:00:00: it would go right before "Top of hour", and time nothing.
+    await user.clear(within(dialog).getByLabelText('Minutes:seconds'));
+    await user.type(within(dialog).getByLabelText('Minutes:seconds'), '00:00');
+    expect(
+      within(dialog).getByText(/Another marker comes right after this time/),
+    ).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Save marker' }));
+    await waitFor(() => expect(posted).toBe(1));
+  });
+
+  it('says on the row when a marker times nothing because another marker follows it', async () => {
+    const early = logItem({
+      kind: 'marker',
+      title: 'Pre-top',
+      plannedStart: '2026-10-21T11:00:00.000Z',
+      plannedDurationMs: 0,
+      timing: 'not_before',
+      anchorAt: '2026-10-21T11:00:00.000Z',
+    });
+    const { screen } = renderApp(
+      `${base}/log`,
+      routes('programmer', {
+        [`GET ${base}/log`]: [
+          200,
+          range([...items.filter((i) => i !== locked), early, top, id, after]),
+        ],
+      }),
+    );
+    await screen.findByText('Pre-top');
+    expect(
+      within(row('Pre-top')).getByText('Times nothing: another marker comes right after it'),
+    ).toBeInTheDocument();
+    expect(within(row('Top of hour')).getByText('Times: Station ID')).toBeInTheDocument();
   });
 
   it('refuses a time that has passed, inline', async () => {

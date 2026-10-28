@@ -31,7 +31,9 @@ import type {
 //
 // Kept items and segments are never touched; VTs and jingles of the tail stay, only moving
 // up when a song before them changes. Every `hard` and `soft` anchor is back-timed, clock
-// markers included, and `not_before` markers (`isBackTimed` says why).
+// markers included, and `not_before` markers (`isBackTimed` says why). A `not_before` marker
+// only fills up to its anchor: it never cuts anything (ADR 0036), so a run that already ends
+// at or after it is left as it is, and nothing is dropped or shortened (steps 2 and 4).
 
 export interface BackTimingOptions {
   /** Below this, a residual is left to the feeder (re-plan, engine cut). */
@@ -104,6 +106,9 @@ export function backTimeRun(
   const run = [...context.run];
   if (!isBackTimed(anchor)) return run;
   const target = (anchor.anchorAt as Date).getTime();
+  // Not before: late is fine, so only a run that ends early is planned up to the anchor.
+  const fillOnly = anchor.timing === 'not_before';
+  if (fillOnly && target - context.runEndsAt.getTime() <= o.toleranceMs) return run;
   // The run's clock, else the anchor's (a marker right after a show has an empty run).
   const fill = fillSourceFor(snapshot, [...run, anchor]);
 
@@ -135,7 +140,7 @@ export function backTimeRun(
   };
 
   const cutOf = (item: PlannedItem | undefined) =>
-    item?.kind === 'song' && editable(item)
+    !fillOnly && item?.kind === 'song' && editable(item)
       ? Math.max(0, Math.min(o.maxSongCutMs, item.plannedDurationMs - o.minSongMs))
       : 0;
   /** The fill wanted for a gap, 0 without a fill source. */

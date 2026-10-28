@@ -39,6 +39,8 @@ import {
   logNowQuerySchema,
   type ParsedLogItemInput,
   type RelaxedRule,
+  type ReplaceLogItem,
+  replaceLogItemSchema,
 } from '@ondes/shared';
 import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { HttpError } from '../../plugins/errors.ts';
@@ -339,19 +341,24 @@ export async function insertLogItem(
   });
 }
 
-/** `PUT …/log/items/:itemId`: new content, same place. The item becomes `manual`. */
+/**
+ * `PUT …/log/items/:itemId`: new content, same place, or moved to `placement` in the same
+ * edit. The item becomes `manual`.
+ */
 export async function replaceLogItem(
   db: Db,
   ctx: StationContext,
   itemId: string,
-  input: LogItemInput,
+  input: ReplaceLogItem,
 ): Promise<LogEditOutcome> {
-  const parsed = logItemInputSchema.parse(input);
+  const { placement, ...parsed } = replaceLogItemSchema.parse(input);
   return edit(db, ctx, async (tx, audit) => {
+    if (placement) checkNotSelf(itemId, placement);
     await checkAssets(tx, ctx.scope, [parsed]);
     const { day } = await lockItem(tx, ctx.scope, itemId);
-    checkAnchor(parsed.anchorAt ? new Date(parsed.anchorAt) : null, day);
-    const layout = await loadDays(tx, ctx.scope, [day]);
+    const target = placement ? await resolvePlacement(tx, ctx.scope, placement) : null;
+    checkAnchor(parsed.anchorAt ? new Date(parsed.anchorAt) : null, target?.day ?? day);
+    const layout = await loadDays(tx, ctx.scope, target ? [day, target.day] : [day]);
     const { groups, index, row: before } = layout.editable(day.id, itemId, { unlocked: true });
     await assertNotAired(tx, ctx.scope, before);
     const snapshot = { ...before };
@@ -370,6 +377,12 @@ export async function replaceLogItem(
     const replaced: Row = { ...before, ...columnsOf(parsed, { type: 'manual' }, []) };
     const parts = await newParts(tx, ctx.scope, day.id, replaced, parsed, { type: 'manual' });
     groups[index] = [replaced, ...parts];
+    if (target) {
+      const [group] = groups.splice(index, 1);
+      if (!group) throw new NotFoundError('log_item', itemId);
+      for (const r of group) r.logDayId = target.day.id;
+      layout.groups(target.day.id).splice(target.index(layout), 0, group);
+    }
     layout.markContentChanged(itemId);
     const changed = await layout.persist(tx, oldParts);
     await audit({
@@ -381,6 +394,16 @@ export async function replaceLogItem(
   });
 }
 
+/** 422 when an item would be placed next to itself. */
+function checkNotSelf(itemId: string, placement: LogPlacement) {
+  if (
+    ('after' in placement && placement.after === itemId) ||
+    ('before' in placement && placement.before === itemId)
+  ) {
+    throw new HttpError(422, 'invalid_placement', 'an item cannot be placed next to itself');
+  }
+}
+
 /** `POST …/log/items/:itemId/move`. A segment moves with its parts. */
 export async function moveLogItem(
   db: Db,
@@ -389,12 +412,7 @@ export async function moveLogItem(
   placement: LogPlacement,
 ): Promise<LogEditOutcome> {
   return edit(db, ctx, async (tx, audit) => {
-    if (
-      ('after' in placement && placement.after === itemId) ||
-      ('before' in placement && placement.before === itemId)
-    ) {
-      throw new HttpError(422, 'invalid_placement', 'an item cannot be placed next to itself');
-    }
+    checkNotSelf(itemId, placement);
     const { day: fromDay } = await lockItem(tx, ctx.scope, itemId);
     const target = await resolvePlacement(tx, ctx.scope, placement);
     const layout = await loadDays(tx, ctx.scope, [fromDay, target.day]);

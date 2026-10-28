@@ -133,6 +133,12 @@ describe('not-before markers', () => {
     expect(due.wanted[0]).toMatchObject({ entry: { id: 'j' }, startMs: T0 + 6 * MIN + 2_000 });
   });
 
+  it('holds even for a gap within the tolerance: never a few ms early', () => {
+    const entries = [...songs(2), marker(T0 + 6 * MIN + 10, 'not_before'), jingle(at)];
+    const p = plan({ nowMs: T0, onAir: onAir('s0', 0), entries });
+    expect(p.hold).toEqual({ itemId: 'j', untilMs: T0 + 6 * MIN + 10 });
+  });
+
   it('late is fine: nothing is cut or skipped', () => {
     const entries = [...songs(3), marker(T0 + 5 * MIN, 'not_before'), jingle(T0 + 5 * MIN)];
     const p = plan({ nowMs: T0, onAir: onAir('s0', 0), entries, options: { engineCut: true } });

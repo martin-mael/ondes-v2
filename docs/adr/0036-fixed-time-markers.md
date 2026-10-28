@@ -26,7 +26,8 @@ applied to an anchored item that plays audio, and a marker plays none.
 
 ### Storage: the existing `marker` log item, no new table
 A marker stays a `log_item` of kind `marker`, with `timing`, `anchor_at`, `cap_ms` and `title`
-(its label). Nothing is added to the schema or the contracts, and there is no migration.
+(its label). Nothing is added to the schema and there is no migration. The contracts gain one
+optional field (`placement` on the replace body, below) and the shared target rule.
 - A separate table was rejected: the log is the one ordered list the feeder, the timeline,
   regeneration and the as-run matching all read. A marker in it keeps its place among the
   items, moves and deletes like one, and needs no join.
@@ -40,13 +41,17 @@ that can't play. It times nothing (and stays a plain timing point, as before) wh
 marker, a live slot, or an item with its own anchor comes first. A show starting at the
 marker's time keeps its own policy.
 
-`resolveMarkers` (`packages/scheduling/src/markers`) does this, pure. The feeder runs it on
-its entries before planning (`toEntries`). It moves each marker's `timing`, `anchorAtMs` and
+`markerTargetOf` (`packages/shared/src/markers`) is that rule, pure, and the only copy of it.
+`resolveMarkers` (`packages/scheduling/src/markers`) applies it: the feeder runs it on its
+entries before planning (`toEntries`). It moves each marker's `timing`, `anchorAtMs` and
 cap onto its item, and makes the marker `flow`. From there the planner and the engine cut
 treat the marker's item like any anchored item, through #46's machinery: the tail re-plan,
 `stretchTail`, `absorb`, `POST /v1/schedule` and the soft cap's backstop. There is no
-parallel mechanism. The timeline mirrors the rule (`markerTarget`, `apps/web/.../markers.ts`)
-without the feeder's view of what can't play.
+parallel mechanism. The timeline uses the same rule (`markerTarget`,
+`apps/web/.../markers.ts`). What it passes over as unplayable is what it can know: an item
+with no asset (a segment with a part without one), and an item the feeder reported passing
+over (`feeder.item.passed_over`) for a reason that keeps it off air. A cache miss the feeder
+hasn't reported yet is the one case where the two can still name different items.
 
 ### Semantics
 
@@ -54,12 +59,13 @@ without the feeder's view of what can't play.
 |---|---|---|---|
 | `hard` | The item starts at T; what is on air fades out under it (engine cut). | The tail stretches toward T; the engine cut covers the rest. | The tail is trimmed or dropped, then the engine cuts what's on air at T. |
 | `soft` | The item on air ends first, then the marker's item starts, at most `capMs` after T. | The tail stretches to just past T; a gap over 5 s holds the item until T. | Queued items that would start at or after T are skipped. Past `T + cap`, the engine cuts the item on air there. |
-| `not_before` | Never before T. Never cut, nothing skipped. | The tail stretches to just past T. What it can't cover waits: the safety source plays, and the item is pushed at T. | It starts when the music before ends. |
+| `not_before` | Never before T. Never cut, nothing skipped. | The tail stretches to just past T. What it can't cover waits, however short: the safety source plays, and the item is pushed at T. | It starts when the music before ends. |
 
 Two changes to the planner (`plan.ts`) make not-before mean "never early":
 - the tail stretches toward the anchor first (it only waited before);
-- any gap left holds the item, not only gaps over 5 s, and a held not-before item is pushed
-  at its anchor, not `pushLeadMs` before it. It airs a push's latency late, never early.
+- any gap left holds the item, not only gaps over 5 s (not even the planner's 20 ms
+  tolerance), and a held not-before item is pushed at its anchor, not `pushLeadMs` before it.
+  It airs a push's latency late, never early.
 
 The tail aims `cutOverlapMs` (500 ms) past a not-before anchor, as it already did for a soft
 one. The prediction is a frame or two off either way, and aiming at T started the item 40 ms
@@ -69,16 +75,23 @@ Every `not_before` item gets these changes, generator holes included (ADR 0026):
 already said "never before `anchorAt`".
 
 ### Generator and regeneration
-- **Back-timing** (`isBackTimed`): not-before *markers* are now back-timed like hard and soft
-  ones, so the music ends at T instead of leaving a wait. Other not-before items (a flow item
-  after a hole) wait on purpose and stay as they are.
+- **Back-timing** (`isBackTimed`): not-before *markers* are now back-timed, but only to fill
+  up: a run that ends early gets a fill (or re-picked songs) up to T, so it doesn't leave a
+  wait. Nothing is cut: a run that already ends at or after T is left as it is, and no song is
+  dropped or shortened for a not-before marker (the item starts late, which it allows). Other
+  not-before items (a flow item after a hole) wait on purpose and stay as they are.
 - **Fix in `DayBuilder.place`:** when `beforeAnchor` re-plans a run, the cursor now follows
   the new run's end. A not-before item started at the old cursor (the overrun end before
   back-timing). Hard and soft items start at their anchor, so they never showed it.
-- **Same output without markers:** a hash of the generator's output (the generator fixture
-  and the hard-start fixture, back-timing on and off, October and March DST weeks, markers on
-  and stripped) is identical to main. The fixtures' markers are all soft, so even their output
-  is unchanged. `GENERATOR_VERSION` stays `2`. Both `*.bench.test.ts` pass unchanged.
+- **`GENERATOR_VERSION` is `3`.** A day with a not-before clock marker comes out different
+  (the music before it is filled up, and the cursor fix below), so the same snapshot and seed
+  no longer give the same day for every station. The first regeneration after this writes
+  every such day again, as for any version bump (`sameDay` compares the version).
+- **Same items without not-before markers:** the items of the generator's output (the
+  generator fixture and the hard-start fixture, back-timing on and off, October and March DST
+  weeks, markers on and stripped) hash the same as on main, the version string aside. The
+  fixtures' markers are all soft, so even their output is unchanged. Both `*.bench.test.ts`
+  pass unchanged.
 - **Regeneration** keeps what ADR 0030 keeps. Clock markers come back from the clock with the
   same identity (`kind|origin|title`). A marker before `frozenUntil` is kept as is (`past`).
   A marker added by hand is `origin: manual`, and the `manual` policy keeps it; back-timing
@@ -96,17 +109,23 @@ already said "never before `anchorAt`".
   - The hour list is the day's real hours, so a DST day offers 02:00 twice, told apart by
     their offset.
   - The marker goes before the first item at or after its time, the item it then times. An
-    edit that moves its time past other items also moves it.
+    edit that moves its time past other items also moves it, in the same write: the replace
+    (`PUT …/log/items/:itemId`) takes an optional `placement`, so it is one transaction and
+    one audit row.
+  - When another marker or a live slot would come right after it (so it times nothing), the
+    dialog says so in a calm inline warning; saving stays possible.
   - A time that has passed is refused inline. The dialog is guarded by `useUnsavedChanges`.
   - FR + EN strings.
 - **Display:** a marker row has a flag icon, its timing badge, the item it times
-  ("Times: Station ID") or "Times nothing" for a plain timing point. Once that item has aired,
+  ("Times: Station ID") or "Times nothing" for a plain timing point; in amber when it's
+  because another marker or a live slot follows it. Once that item has aired,
   the row shows how far from T it started ("Aired +2 s"), in red when the marker's rule was
   missed (by more than a second; soft: past its cap).
 
 ### Holds wake the feeder
 The feeder service syncs a feeder when the item its plan holds is due, instead of at the next
-5 s tick. Before, a held item went up to 5 s late. Real timers stay in the service
+5 s tick, whether that plan came from a tick or from an event (a log edit, an engine event).
+Before, a held item went up to 5 s late. Real timers stay in the service
 (`service.ts`), so the feeder and its simulation stay clock-free.
 
 ### Planner fix: never back before what aired

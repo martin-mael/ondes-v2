@@ -74,18 +74,27 @@ const markersOf = (day: GeneratedDay) => top(day).filter((i) => i.kind === 'mark
 const generate = (snapshot: GeneratorSnapshot, date: LocalDate) =>
   generateDay(snapshot, date, { extensions: backTiming(snapshot) });
 
-/** Each marker's run ends at its time, the jingle after it starts there. */
+/**
+ * Each hard and soft marker's run ends at its time, the jingle after it starts there. A
+ * not-before marker's run is only filled up to it, never cut: it ends there or later (ADR 0036).
+ */
 function expectOnTime(day: GeneratedDay) {
   const items = top(day);
   for (const marker of markersOf(day)) {
     const i = items.indexOf(marker);
-    const at = marker.anchorAt?.getTime();
-    expect(marker.conflict).toBeNull();
-    expect(marker.plannedStart.getTime()).toBe(at);
+    const at = marker.anchorAt?.getTime() as number;
+    const start = marker.plannedStart.getTime();
+    if (marker.timing === 'not_before') {
+      expect(marker.conflict?.kind).not.toBe('gap');
+      expect(start).toBeGreaterThanOrEqual(at);
+    } else {
+      expect(marker.conflict).toBeNull();
+      expect(start).toBe(at);
+    }
     const before = items[i - 1];
-    if (before) expect(end(before)).toBe(at);
+    if (before) expect(end(before)).toBe(start);
     expect(items[i + 1]).toMatchObject({ kind: 'jingle', timing: 'flow' });
-    expect(items[i + 1]?.plannedStart.getTime()).toBe(at);
+    expect(items[i + 1]?.plannedStart.getTime()).toBe(start);
   }
 }
 
@@ -125,9 +134,11 @@ describe('markers in the generator', () => {
     const snapshot = markerSnapshot([DATE]);
     const day = generate(snapshot, DATE);
     expectOnTime(day);
-    // Before each marker, a sized bed takes what the songs leave.
+    // Before each marker the music reaches on time, a sized bed takes what the songs leave.
     const items = top(day);
-    for (const marker of markersOf(day)) {
+    const onTime = markersOf(day).filter((m) => m.plannedStart.getTime() === m.anchorAt?.getTime());
+    expect(onTime.filter((m) => m.timing === 'not_before').length).toBeGreaterThan(0);
+    for (const marker of onTime) {
       const before = items[items.indexOf(marker) - 1];
       if (before) expect(before.kind).toBe('fill');
     }

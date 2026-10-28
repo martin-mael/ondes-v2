@@ -1,37 +1,47 @@
-import type { AsRunEntry, LogItem, LogPlacement, MarkerTiming } from '@ondes/shared';
-import { startMs } from './model.ts';
+import {
+  type AsRunEntry,
+  type LogItem,
+  type LogPlacement,
+  type MarkerTarget,
+  type MarkerTiming,
+  markerTargetOf,
+} from '@ondes/shared';
+import { isAssetKind, startMs } from './model.ts';
 import type { HourSlot } from './time.ts';
+import type { PassedOver } from './use-live.ts';
 
 // Fixed-time markers on the timeline (#52, ADR 0036). Pure. A marker times the item right
-// after it: the feeder hands it the marker's timing (`resolveMarkers` in @ondes/scheduling),
-// so the timeline shows that item as the marker's, and how close to the marker it aired.
+// after it: the feeder hands it the marker's timing (`resolveMarkers` in @ondes/scheduling,
+// through `markerTargetOf` in @ondes/shared, the rule used here too), so the timeline shows
+// that item as the marker's, and how close to the marker it aired.
 
-/** Kinds a marker times (the kinds the feeder pushes). */
-const TIMED_KINDS: readonly string[] = [
-  'song',
-  'vt',
-  'jingle',
-  'bed',
-  'episode',
-  'fill',
-  'segment',
-];
+/** Why a marker times nothing (`markerTargetOf`). */
+export type MarkerNone = Extract<MarkerTarget, { none: unknown }>['none'];
 
 /**
- * The item marker `items[index]` times: the next one the feeder pushes, unless another marker,
- * a live slot or an item with its own anchor comes first (the marker is then a plain timing
- * point). Mirrors `resolveMarkers`, without the feeder's view of what can't play.
+ * Whether the feeder won't push `item`, as far as the timeline knows: no playout file (no
+ * asset), or the feeder reported passing it over for a reason that keeps it off air.
  */
-export function markerTarget(items: readonly LogItem[], index: number): LogItem | null {
+export function wontPush(item: LogItem, passedOver?: PassedOver): boolean {
+  if (passedOver && passedOver.reason !== 'dropped') return true;
+  if (item.kind === 'segment') return item.parts.length < 2 || item.parts.some((p) => !p.asset);
+  return isAssetKind(item.kind) && !item.asset;
+}
+
+/**
+ * The item marker `items[index]` times, or why it times none: the feeder's own rule
+ * (`markerTargetOf`, as `resolveMarkers` applies it), with the timeline's view of what it won't
+ * push (`wontPush`). Null for an item that isn't an anchored marker.
+ */
+export function markerTarget(
+  items: readonly LogItem[],
+  index: number,
+  passedOver: (id: string) => PassedOver | undefined = () => undefined,
+): { item: LogItem } | { none: MarkerNone } | null {
   const marker = items[index];
   if (marker?.kind !== 'marker' || marker.timing === 'flow') return null;
-  for (let j = index + 1; j < items.length; j++) {
-    const item = items[j] as LogItem;
-    if (item.kind === 'marker' || item.kind === 'live_slot') return null;
-    if (!TIMED_KINDS.includes(item.kind)) continue;
-    return item.timing === 'flow' ? item : null;
-  }
-  return null;
+  const found = markerTargetOf(items, index, (item) => wontPush(item, passedOver(item.id)));
+  return 'index' in found ? { item: items[found.index] as LogItem } : found;
 }
 
 /** Tolerance before a marker's item counts as early or late: a second, as the as-run rounds. */
@@ -79,6 +89,27 @@ export function markerPlacement(
   if (next) return { before: next.id };
   const last = others.at(-1);
   return last ? { after: last.id } : { localDate: date };
+}
+
+/**
+ * Why a marker at `anchorMs`, placed as `markerPlacement` would, would time nothing because
+ * another marker or a live slot comes first (a calm warning, saving stays possible); else null.
+ */
+export function markerBlocked(
+  items: readonly LogItem[],
+  anchorMs: number,
+  self?: LogItem,
+  passedOver: (id: string) => PassedOver | undefined = () => undefined,
+): 'marker' | 'live_slot' | null {
+  const others = items.filter((i) => i.id !== self?.id);
+  const at = others.findIndex((i) => startMs(i) >= anchorMs);
+  // The marker would sit just before `others[at]`: what follows it is scanned from there.
+  const found = markerTargetOf(others, (at < 0 ? others.length : at) - 1, (item) =>
+    wontPush(item, passedOver(item.id)),
+  );
+  return 'none' in found && (found.none === 'marker' || found.none === 'live_slot')
+    ? found.none
+    : null;
 }
 
 /** `mm:ss` (or `mm`) into ms, or null when it isn't a time within the hour. */

@@ -46,7 +46,13 @@ import { DayStrip } from './day-strip.tsx';
 import { LogHistory, TimelineViewTabs, useTimelineView } from './history/history-view.tsx';
 import { type ItemAction, ItemRow, itemTitle } from './item-row.tsx';
 import { MarkerDialog, type MarkerValue } from './marker-dialog.tsx';
-import { markerInput, markerOutcome, markerPlacement, markerTarget } from './markers.ts';
+import {
+  markerBlocked,
+  markerInput,
+  markerOutcome,
+  markerPlacement,
+  markerTarget,
+} from './markers.ts';
 import { type TimelineMessageKey, type TimelineT, useTimelineT } from './messages.ts';
 import {
   asRunByItem,
@@ -206,11 +212,12 @@ function Timeline() {
               item: body,
             });
           }
-          const replaced = await timelineApi.replace(stationId, op.item.id, {
+          // A new time past other items moves it too, in the same edit.
+          return timelineApi.replace(stationId, op.item.id, {
             ...body,
             locked: op.item.locked,
+            ...(placement ? { placement } : {}),
           });
-          return placement ? timelineApi.move(stationId, op.item.id, placement) : replaced;
         }
         case 'insert':
         case 'replace': {
@@ -495,7 +502,10 @@ function Timeline() {
                   const i = indexOf(item);
                   const prev = items[i - 1];
                   const next = items[i + 1];
-                  const timed = item.kind === 'marker' ? markerTarget(items, i) : null;
+                  const timed =
+                    item.kind === 'marker'
+                      ? markerTarget(items, i, (id) => live.passedOver.get(id))
+                      : null;
                   const prevFrozen = prev ? isFrozen(stateOf(prev)) : false;
                   const nextFrozen = next ? isFrozen(stateOf(next)) : false;
                   return (
@@ -518,10 +528,20 @@ function Timeline() {
                       next={next}
                       marker={
                         item.kind === 'marker'
-                          ? {
-                              target: timed,
-                              outcome: timed ? markerOutcome(item, aired.get(timed.id)) : null,
-                            }
+                          ? timed && 'item' in timed
+                            ? {
+                                target: timed.item,
+                                blocked: null,
+                                outcome: markerOutcome(item, aired.get(timed.item.id)),
+                              }
+                            : {
+                                target: null,
+                                blocked:
+                                  timed?.none === 'marker' || timed?.none === 'live_slot'
+                                    ? timed.none
+                                    : null,
+                                outcome: null,
+                              }
                           : undefined
                       }
                       canSegue={canSegue}
@@ -587,6 +607,14 @@ function Timeline() {
         marker={editing?.type === 'marker' ? editing.item : null}
         hours={hours}
         now={live.now}
+        blocked={(anchorMs) =>
+          markerBlocked(
+            items,
+            anchorMs,
+            editing?.type === 'marker' ? (editing.item ?? undefined) : undefined,
+            (id) => live.passedOver.get(id),
+          )
+        }
         pending={edit.isPending}
         onOpenChange={(open) => !open && setEditing(null)}
         onSave={(value) =>

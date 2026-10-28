@@ -1,4 +1,4 @@
-import type { LogItemKind, LogItemTiming } from '@ondes/shared';
+import { type LogItemKind, type LogItemTiming, markerTargetOf } from '@ondes/shared';
 
 // Fixed-time markers (#52, ADR 0036). Pure.
 //
@@ -18,18 +18,8 @@ import type { LogItemKind, LogItemTiming } from '@ondes/shared';
 // them. `resolveMarkers` hands each marker's timing to its item, so a marker gets the same
 // machinery as a show start: the re-plan of the tail, the engine-timed cut, the soft cap's
 // backstop. The log keeps the marker as its own item (what the timeline shows and edits,
-// what regeneration keeps); this is only the feeder's view of it.
-
-/** Kinds a marker can time: the kinds the feeder pushes. */
-export const MARKER_TARGET_KINDS: readonly LogItemKind[] = [
-  'song',
-  'vt',
-  'jingle',
-  'bed',
-  'episode',
-  'fill',
-  'segment',
-];
+// what regeneration keeps); this is only the feeder's view of it. Which item a marker times is
+// `markerTargetOf` (@ondes/shared), the rule the log timeline shows too.
 
 /** What `resolveMarkers` needs of a log entry. */
 export interface MarkerEntry {
@@ -62,8 +52,9 @@ export function resolveMarkers<T extends MarkerEntry>(entries: readonly T[]): Ma
     if (marker.kind !== 'marker' || marker.timing === 'flow' || marker.anchorAtMs === null) {
       continue;
     }
-    const j = targetOf(entries, i);
-    if (j === null) continue;
+    const found = markerTargetOf(entries, i, (e) => !!e.unplayable);
+    if (!('index' in found)) continue;
+    const j = found.index;
     out ??= [...entries];
     const target = entries[j] as T;
     out[i] = { ...marker, timing: 'flow', anchorAtMs: null, capMs: null };
@@ -76,16 +67,4 @@ export function resolveMarkers<T extends MarkerEntry>(entries: readonly T[]): Ma
     };
   }
   return out ?? (entries as MarkedEntry<T>[]);
-}
-
-/** Index of the item marker `i` times, or null when it times none (see `resolveMarkers`). */
-function targetOf(entries: readonly MarkerEntry[], i: number): number | null {
-  for (let j = i + 1; j < entries.length; j++) {
-    const e = entries[j] as MarkerEntry;
-    if (e.kind === 'marker' || e.kind === 'live_slot') return null;
-    if (!MARKER_TARGET_KINDS.includes(e.kind)) continue;
-    if (e.unplayable) continue;
-    return e.timing === 'flow' ? j : null;
-  }
-  return null;
 }

@@ -68,6 +68,12 @@ const en = {
 
   'marker.times': 'Times: {title}',
   'marker.timesNothing': 'Times nothing: a timing point',
+  'marker.blocked.marker': 'Times nothing: another marker comes right after it',
+  'marker.blocked.live_slot': 'Times nothing: a live slot comes right after it',
+  'marker.warning.marker':
+    'Another marker comes right after this time: this one will time nothing. Put an item between them.',
+  'marker.warning.live_slot':
+    'A live slot comes right after this time: this marker will time nothing.',
   'marker.met': 'Aired {delta}',
   'marker.missed': 'Aired {delta}: outside the marker',
   'marker.add': 'Add marker',
@@ -271,6 +277,12 @@ const fr: Record<TimelineMessageKey, string> = {
 
   'marker.times': 'Cale : {title}',
   'marker.timesNothing': 'Ne cale rien : simple repère horaire',
+  'marker.blocked.marker': 'Ne cale rien : un autre repère le suit directement',
+  'marker.blocked.live_slot': 'Ne cale rien : un créneau en direct le suit directement',
+  'marker.warning.marker':
+    'Un autre repère suit directement cette heure : celui-ci ne calera rien. Placez un élément entre les deux.',
+  'marker.warning.live_slot':
+    'Un créneau en direct suit directement cette heure : ce repère ne calera rien.',
   'marker.met': 'Diffusé {delta}',
   'marker.missed': 'Diffusé {delta} : hors du repère',
   'marker.add': 'Ajouter un repère',

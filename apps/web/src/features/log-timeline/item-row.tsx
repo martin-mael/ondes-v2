@@ -81,7 +81,12 @@ export interface ItemRowProps {
   /** May open the segue editor (#58) on the transition into the next item. */
   canSegue?: boolean;
   /** A marker (#52): the item it times (null: none, a timing point), and how it aired. */
-  marker?: { target: LogItem | null; outcome: { deltaMs: number; met: boolean } | null };
+  marker?: {
+    target: LogItem | null;
+    /** Times nothing because another marker or a live slot comes first: a calm warning. */
+    blocked: 'marker' | 'live_slot' | null;
+    outcome: { deltaMs: number; met: boolean } | null;
+  };
   onAction(action: ItemAction, item: LogItem): void;
   onDropItem(draggedId: string, target: LogItem, where: 'before' | 'after'): void;
 }
@@ -171,13 +176,18 @@ export function ItemRow(props: ItemRowProps) {
           )}
         </span>
         {artists && <span className="truncate pl-4 text-xs text-muted-foreground">{artists}</span>}
-        {props.marker && (
-          <span className="truncate pl-5 text-xs text-muted-foreground">
-            {props.marker.target
-              ? t('marker.times', { title: itemTitle(t, props.marker.target) })
-              : t('marker.timesNothing')}
-          </span>
-        )}
+        {props.marker &&
+          (props.marker.blocked ? (
+            <span className="pl-5 text-xs text-amber-700 dark:text-amber-400">
+              {t(`marker.blocked.${props.marker.blocked}`)}
+            </span>
+          ) : (
+            <span className="truncate pl-5 text-xs text-muted-foreground">
+              {props.marker.target
+                ? t('marker.times', { title: itemTitle(t, props.marker.target) })
+                : t('marker.timesNothing')}
+            </span>
+          ))}
         {item.relaxedRules.length > 0 && (
           <ul className="pl-4 text-xs text-amber-700 dark:text-amber-400">
             {item.relaxedRules.map((r) => (

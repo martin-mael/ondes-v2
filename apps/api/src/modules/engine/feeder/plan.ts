@@ -324,11 +324,11 @@ export function planFeed(input: PlanInput): FeedPlan {
       if (!waitFor(e, anchor)) break;
     } else if (anchor !== null && e.timing === 'not_before') {
       // Never early: the tail stretches a little past the anchor (like a soft one's: the
-      // prediction is a frame or two off either way), and what it can't cover waits; a held
-      // item is pushed at its anchor, not before (it airs a push's latency late).
+      // prediction is a frame or two off either way), and what it can't cover waits, however
+      // short; a held item is pushed at its anchor, not before (it airs a push's latency late).
       const aim = anchor + o.cutOverlapMs;
       if (aim - t > o.toleranceMs) t += stretchTail(wanted, tailFrom, aim - t);
-      if (!waitFor(e, anchor, o.toleranceMs, 0)) break;
+      if (!waitFor(e, anchor, 0, 0)) break;
     }
     // The tail of the next anchor starts after this one (a marker or a live slot included).
     if (anchor !== null) tailFrom = wanted.length;

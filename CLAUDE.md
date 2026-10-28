@@ -53,6 +53,8 @@ packages/
     time/                  # timezone/DST helpers (station-local ↔ UTC)
     segues/                # island derivation and hashing, default promo lanes (pure, shared
                            # by api, worker, web)
+    markers/               # what a fixed-time marker times (pure, shared by the feeder and
+                           # the log timeline)
   db/
     src/schema/<domain>.ts # one file per domain: tenancy, library, engine, asrun,
                            # rotation, clocks, shows, log, regen, segues, live, alerts,
