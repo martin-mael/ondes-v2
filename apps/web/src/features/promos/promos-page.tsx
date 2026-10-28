@@ -18,6 +18,7 @@ import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
+import { PageHeader } from '../../app/page-header.tsx';
 import { DelayedSpinner, ListSkeleton } from '../../app/pending.tsx';
 import { invalidatePromos, promosApi, promosQuery, vtPoolsQuery } from './api.ts';
 import { type PromoT, usePromoError, usePromoT } from './messages.ts';
@@ -109,18 +110,18 @@ export function PromosPage() {
 
   return (
     <div className="flex min-w-0 flex-col gap-6 p-4 sm:p-6">
-      <div className="flex flex-wrap items-start gap-4">
-        <div className="flex flex-col gap-1">
-          <h1 className="font-heading text-xl font-semibold">{t('title')}</h1>
-          <p className="max-w-2xl text-sm text-muted-foreground">{t('description')}</p>
-        </div>
-        {access.canEdit && (
-          <Button className="ml-auto" onClick={() => setEditingPromo('new')}>
-            <PlusIcon data-icon="inline-start" />
-            {t('promos.new')}
-          </Button>
-        )}
-      </div>
+      <PageHeader
+        title={t('title')}
+        description={t('description')}
+        actions={
+          access.canEdit && (
+            <Button onClick={() => setEditingPromo('new')}>
+              <PlusIcon data-icon="inline-start" />
+              {t('promos.new')}
+            </Button>
+          )
+        }
+      />
 
       <section className="flex flex-col gap-3">
         <div className="flex items-center gap-2">

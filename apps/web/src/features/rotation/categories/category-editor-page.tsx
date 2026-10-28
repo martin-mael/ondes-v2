@@ -13,7 +13,7 @@ import {
 } from '@ondes/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router';
-import { ArrowLeftIcon, CircleAlertIcon, Trash2Icon, XIcon } from 'lucide-react';
+import { CircleAlertIcon, Trash2Icon, XIcon } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { z } from 'zod';
@@ -26,6 +26,7 @@ import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { Textarea } from '@/ui/textarea';
 import { isApiError, request } from '../../../app/api/client.ts';
 import { type FieldErrors, FormAlert, fieldErrors } from '../../../app/forms.tsx';
+import { BackButton, PageHeader } from '../../../app/page-header.tsx';
 import { DelayedSpinner, PageSkeleton } from '../../../app/pending.tsx';
 import { useUnsavedChanges } from '../../../app/unsaved.tsx';
 import { categoriesApi, categoryKeys, categoryQuery, useDraftPreview } from './api.ts';
@@ -234,32 +235,31 @@ function CategoryEditor({
   return (
     <div className="flex flex-col gap-6 p-6">
       {guard}
-      <div className="flex flex-wrap items-center gap-3">
-        <Button
-          variant="ghost"
-          size="sm"
-          nativeButton={false}
-          render={<Link to="/stations/$stationId/categories" params={{ stationId }} />}
-        >
-          <ArrowLeftIcon data-icon="inline-start" />
-          {t('editor.back')}
-        </Button>
-        <h1 className="font-heading text-xl font-semibold">
-          {category ? t('editor.editTitle') : t('editor.newTitle')}
-        </h1>
-        <div className="ml-auto flex gap-2">
-          {category && (
-            <Button variant="destructive" onClick={remove}>
-              <Trash2Icon data-icon="inline-start" />
-              {t('editor.delete')}
+      <PageHeader
+        back={
+          <BackButton
+            nativeButton={false}
+            render={<Link to="/stations/$stationId/categories" params={{ stationId }} />}
+          >
+            {t('editor.back')}
+          </BackButton>
+        }
+        title={category ? t('editor.editTitle') : t('editor.newTitle')}
+        actions={
+          <>
+            {category && (
+              <Button variant="destructive" onClick={remove}>
+                <Trash2Icon data-icon="inline-start" />
+                {t('editor.delete')}
+              </Button>
+            )}
+            <Button onClick={save} disabled={pending}>
+              <DelayedSpinner when={pending} data-icon="inline-start" />
+              {category ? t('editor.save') : t('editor.create')}
             </Button>
-          )}
-          <Button onClick={save} disabled={pending}>
-            <DelayedSpinner when={pending} data-icon="inline-start" />
-            {category ? t('editor.save') : t('editor.create')}
-          </Button>
-        </div>
-      </div>
+          </>
+        }
+      />
       {typeof formError === 'string' ? (
         <Alert variant="destructive">
           <CircleAlertIcon />

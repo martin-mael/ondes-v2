@@ -7,7 +7,7 @@ import type { Locale } from '../../app/i18n/messages.ts';
 const en = {
   title: 'Weekly grid',
   description:
-    'Which clock airs in each hour of the week. Pick a clock, then click or drag across the hours to assign it to them. Shift-click assigns it to the rectangle from the last hour you clicked.',
+    'Which clock airs each hour. Pick a clock, then click or drag over the hours; Shift-click fills a rectangle.',
   stationTime: 'Hours in station time ({timezone}).',
   forbidden: "You don't have access to this station's grid.",
   save: 'Save grid',
@@ -99,7 +99,7 @@ type GridMessageKey = keyof typeof en;
 const fr: Record<GridMessageKey, string> = {
   title: 'Grille hebdomadaire',
   description:
-    'L’horloge diffusée à chaque heure de la semaine. Choisissez une horloge, puis cliquez ou glissez sur les heures pour la leur assigner. Maj-clic l’assigne au rectangle depuis la dernière heure cliquée.',
+    'L’horloge de chaque heure. Choisissez une horloge, puis cliquez ou glissez sur les heures ; Maj-clic remplit un rectangle.',
   stationTime: 'Heures de la station ({timezone}).',
   forbidden: 'Vous n’avez pas accès à la grille de cette station.',
   save: 'Enregistrer la grille',

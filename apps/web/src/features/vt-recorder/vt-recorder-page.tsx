@@ -1,14 +1,7 @@
 import { type LocalDate, type LogItem, rolePermissions, zonedParts } from '@ondes/shared';
 import { useQuery } from '@tanstack/react-query';
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router';
-import {
-  ArrowLeftIcon,
-  CircleIcon,
-  MicIcon,
-  PlayIcon,
-  RotateCcwIcon,
-  SquareIcon,
-} from 'lucide-react';
+import { CircleIcon, MicIcon, PlayIcon, RotateCcwIcon, SquareIcon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Alert, AlertDescription } from '@/ui/alert';
@@ -19,6 +12,7 @@ import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert, useErrorMessage } from '../../app/forms.tsx';
+import { BackButton } from '../../app/page-header.tsx';
 import { DelayedSpinner, PageSkeleton } from '../../app/pending.tsx';
 import { useSseEvent } from '../../app/sse/sse.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
@@ -109,9 +103,7 @@ export function SegueRecorderPage() {
   // Back to the editor carries the draft back (`resume`); `beforeLeave` lets it through the
   // unsaved guard when only the draft is unsaved, since it isn't lost.
   const back = (beforeLeave?: () => void) => (
-    <Button
-      variant="ghost"
-      size="sm"
+    <BackButton
       nativeButton={false}
       render={
         <Link
@@ -122,9 +114,8 @@ export function SegueRecorderPage() {
         />
       }
     >
-      <ArrowLeftIcon data-icon="inline-start" />
       {t('back.segue')}
-    </Button>
+    </BackButton>
   );
   const problem = (message: React.ReactNode) => (
     <div className="flex flex-col items-start gap-4 p-6">
@@ -184,15 +175,12 @@ export function VtRecorderPage() {
   const navigate = useNavigate();
   const { timeZone, canRecord } = useStation(stationId);
   const back = () => (
-    <Button
-      variant="ghost"
-      size="sm"
+    <BackButton
       nativeButton={false}
       render={<Link to="/stations/$stationId/library" params={{ stationId }} />}
     >
-      <ArrowLeftIcon data-icon="inline-start" />
       {t('back.library')}
-    </Button>
+    </BackButton>
   );
   if (!canRecord) {
     return (

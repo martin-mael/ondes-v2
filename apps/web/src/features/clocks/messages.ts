@@ -5,8 +5,7 @@ import type { Locale } from '../../app/i18n/messages.ts';
 
 const en = {
   title: 'Clocks',
-  description:
-    'Hour templates: an ordered list of slots (songs from a category, jingles, voice tracks, fixed items, timing markers). The weekly grid places them on the schedule.',
+  description: 'Hour templates that the weekly grid puts on the schedule.',
   'new': 'New clock',
   empty: 'No clock yet. Create one to design an hour.',
   forbidden: "You don't have access to this station's clocks.",
@@ -130,8 +129,7 @@ type ClockMessageKey = keyof typeof en;
 
 const fr: Record<ClockMessageKey, string> = {
   title: 'Horloges',
-  description:
-    'Modèles d’heure : une suite de cases (titres d’une catégorie, jingles, voice tracks, éléments fixes, repères horaires). La grille hebdomadaire les place dans la programmation.',
+  description: 'Des modèles d’heure, placés dans la semaine par la grille.',
   'new': 'Nouvelle horloge',
   empty: 'Aucune horloge pour l’instant. Créez-en une pour construire une heure.',
   forbidden: 'Vous n’avez pas accès aux horloges de cette station.',

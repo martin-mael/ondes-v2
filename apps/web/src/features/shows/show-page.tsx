@@ -2,7 +2,6 @@ import { type Episode, localDateOf, type ShowOccurrence, type ShowSlot } from '@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router';
 import {
-  ArrowLeftIcon,
   CalendarDaysIcon,
   CircleAlertIcon,
   PencilIcon,
@@ -21,6 +20,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { isApiError } from '../../app/api/client.ts';
 import { FormAlert } from '../../app/forms.tsx';
 import { useI18n } from '../../app/i18n/i18n.tsx';
+import { BackButton } from '../../app/page-header.tsx';
 import { ListSkeleton, PageSkeleton } from '../../app/pending.tsx';
 import { type ShowAccess, useShowAccess } from './access.ts';
 import {
@@ -96,20 +96,20 @@ export function ShowPage() {
 
   return (
     <div className="flex min-w-0 flex-col gap-6 p-4 sm:p-6">
-      <Link
-        to="/stations/$stationId/shows"
-        params={{ stationId }}
-        className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeftIcon className="size-3.5" />
-        {t('show.back')}
-      </Link>
+      <div>
+        <BackButton
+          nativeButton={false}
+          render={<Link to="/stations/$stationId/shows" params={{ stationId }} />}
+        >
+          {t('show.back')}
+        </BackButton>
+      </div>
 
       <header className="flex flex-wrap items-start gap-4">
         <ShowArtwork show={data} className="size-20 sm:size-24" />
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <h1 className="font-heading text-xl font-semibold">{data.name}</h1>
-          <p className="text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             {data.hosts.length > 0
               ? t('show.hostedBy', { hosts: data.hosts.map((h) => h.name).join(', ') })
               : t('list.noHosts')}

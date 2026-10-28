@@ -6,8 +6,7 @@ import type { Locale } from '../../app/i18n/messages.ts';
 
 const en = {
   title: 'Log',
-  description:
-    'What airs, hour by hour. Edits to upcoming items reach the engine on its next re-plan.',
+  description: 'What airs, hour by hour.',
   timezone: 'Station time ({zone})',
 
   'nav.previousDay': 'Previous day',
@@ -215,8 +214,7 @@ export type TimelineMessageKey = keyof typeof en;
 
 const fr: Record<TimelineMessageKey, string> = {
   title: 'Conducteur',
-  description:
-    'Ce qui passe à l’antenne, heure par heure. Les modifications à venir arrivent au moteur à sa prochaine replanification.',
+  description: 'Ce qui passe à l’antenne, heure par heure.',
   timezone: 'Heure de la station ({zone})',
 
   'nav.previousDay': 'Jour précédent',

@@ -59,7 +59,9 @@ export function PreviewPanel({
         {counts && (
           <CardDescription className="flex flex-wrap gap-x-3 gap-y-1">
             <span className="font-medium text-foreground" data-testid="preview-members">
-              {t('preview.members', { count: counts.members })}
+              {counts.members === 1
+                ? t('preview.members.one')
+                : t('preview.members', { count: counts.members })}
             </span>
             <span>{t('preview.schedulable', { count: counts.schedulable })}</span>
             {counts.ruleMatches > 0 && (

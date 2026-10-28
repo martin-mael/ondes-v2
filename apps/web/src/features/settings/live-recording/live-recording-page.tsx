@@ -8,13 +8,14 @@ import { useParams } from '@tanstack/react-router';
 import { type FormEvent, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/ui/card';
+import { Card, CardContent } from '@/ui/card';
 import { Checkbox } from '@/ui/checkbox';
 import { Field, FieldDescription, FieldLabel } from '@/ui/field';
 import { Input } from '@/ui/input';
 import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { findStation, useOrgs } from '../../../app/auth/session.ts';
 import { FormAlert } from '../../../app/forms.tsx';
+import { PageHeader } from '../../../app/page-header.tsx';
 import { DelayedSpinner, PageSkeleton } from '../../../app/pending.tsx';
 import { useUnsavedChanges } from '../../../app/unsaved.tsx';
 import { liveRecordingApi, liveRecordingSettingsQuery } from './api.ts';
@@ -70,8 +71,8 @@ export function LiveRecordingPage() {
 
   if (query.isError && !query.data) {
     return (
-      <div className="flex flex-col gap-6 p-6">
-        <h1 className="font-heading text-xl font-semibold">{t('title')}</h1>
+      <div className="flex flex-col gap-6 p-4 sm:p-6">
+        <PageHeader title={t('title')} />
         <FormAlert error={query.error} />
       </div>
     );
@@ -88,17 +89,10 @@ export function LiveRecordingPage() {
   };
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      <div className="flex flex-col gap-2">
-        <h1 className="font-heading text-xl font-semibold">{t('title')}</h1>
-        <p className="max-w-2xl text-muted-foreground">{t('description')}</p>
-        {!canEdit && <p className="text-muted-foreground">{t('readOnly')}</p>}
-      </div>
+    <div className="flex flex-col gap-6 p-4 sm:p-6">
+      <PageHeader title={t('title')} description={t('description')} />
+      {!canEdit && <p className="text-sm text-muted-foreground">{t('readOnly')}</p>}
       <Card className="max-w-2xl">
-        <CardHeader>
-          <CardTitle className="text-sm">{t('title')}</CardTitle>
-          <CardDescription>{t('retention.hint')}</CardDescription>
-        </CardHeader>
         <CardContent>
           <form className="flex flex-col gap-5" onSubmit={submit}>
             <Field orientation="horizontal">
@@ -129,6 +123,7 @@ export function LiveRecordingPage() {
                 ))}
                 <NativeSelectOption value="custom">{t('retention.custom')}</NativeSelectOption>
               </NativeSelect>
+              <FieldDescription>{t('retention.hint')}</FieldDescription>
             </Field>
             {draft.choice === 'custom' && (
               <Field>

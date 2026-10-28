@@ -43,7 +43,11 @@ export function StationSwitcher({ stationId }: { stationId: string | undefined }
                 {current?.station.name ?? t('app.name')}
               </span>
               <span className="truncate text-xs text-muted-foreground">
-                {current?.org.name ?? t('shell.stations')}
+                {!current
+                  ? t('shell.stations')
+                  : current.org.name === current.station.name
+                    ? t(`role.${current.station.role}`)
+                    : current.org.name}
               </span>
             </div>
             {hasStations && <ChevronsUpDownIcon className="ml-auto" />}

@@ -33,6 +33,7 @@ import { Input } from '@/ui/input';
 import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert, useErrorMessage } from '../../app/forms.tsx';
+import { PageHeader } from '../../app/page-header.tsx';
 import { ListSkeleton } from '../../app/pending.tsx';
 import { asRunDayQuery, assetDetailQuery, logDayQuery, logKey, timelineApi } from './api.ts';
 import {
@@ -338,49 +339,49 @@ function Timeline() {
   const onAirLog = onAir ? (log.data?.items ?? []).find((i) => i.id === onAir.itemId) : undefined;
 
   return (
-    <div className="flex min-w-0 flex-col gap-4 p-6">
-      <header className="flex flex-wrap items-start gap-4">
-        <div className="flex flex-col gap-1">
-          <h1 className="font-heading text-xl font-semibold">{t('title')}</h1>
-          <p className="max-w-2xl text-sm text-muted-foreground">{t('description')}</p>
-        </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Button
-            size="icon"
-            variant="outline"
-            aria-label={t('nav.previousDay')}
-            onClick={() => setDate(addDays(date, -1))}
-          >
-            <ChevronLeftIcon />
-          </Button>
-          <Input
-            type="date"
-            className="w-36"
-            aria-label={t('nav.date')}
-            value={date}
-            onChange={(e) => e.target.value && setDate(e.target.value)}
-          />
-          <Button
-            size="icon"
-            variant="outline"
-            aria-label={t('nav.nextDay')}
-            onClick={() => setDate(addDays(date, 1))}
-          >
-            <ChevronRightIcon />
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => {
-              landed.current = null;
-              if (date !== today) setDate(today);
-              else if (onAir) reveal(onAir.itemId);
-            }}
-          >
-            <CrosshairIcon data-icon="inline-start" />
-            {t('nav.now')}
-          </Button>
-        </div>
-      </header>
+    <div className="flex min-w-0 flex-col gap-4 p-4 sm:p-6">
+      <PageHeader
+        title={t('title')}
+        description={t('description')}
+        actions={
+          <>
+            <Button
+              size="icon"
+              variant="outline"
+              aria-label={t('nav.previousDay')}
+              onClick={() => setDate(addDays(date, -1))}
+            >
+              <ChevronLeftIcon />
+            </Button>
+            <Input
+              type="date"
+              className="w-36"
+              aria-label={t('nav.date')}
+              value={date}
+              onChange={(e) => e.target.value && setDate(e.target.value)}
+            />
+            <Button
+              size="icon"
+              variant="outline"
+              aria-label={t('nav.nextDay')}
+              onClick={() => setDate(addDays(date, 1))}
+            >
+              <ChevronRightIcon />
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                landed.current = null;
+                if (date !== today) setDate(today);
+                else if (onAir) reveal(onAir.itemId);
+              }}
+            >
+              <CrosshairIcon data-icon="inline-start" />
+              {t('nav.now')}
+            </Button>
+          </>
+        }
+      />
 
       <div className="flex flex-wrap items-center gap-3 text-sm">
         {date <= today && <TimelineViewTabs value={view} onChange={setView} />}

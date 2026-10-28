@@ -6,8 +6,7 @@ import type { Locale } from '../../../app/i18n/messages.ts';
 
 const en = {
   title: 'Safety & emergency',
-  description:
-    'What the station plays when the log runs dry or its files aren’t ready: the safety playlist first, then the emergency file on a loop.',
+  description: 'What airs when the log runs dry: the safety playlist, then the emergency file.',
   'onAir.safety': 'Safety mode: safety playlist on air',
   'onAir.emergency': 'Safety mode: emergency file on air',
   'onAir.normal': 'On schedule',
@@ -70,7 +69,7 @@ export type SafetyMessageKey = keyof typeof en;
 const fr: Record<SafetyMessageKey, string> = {
   title: 'Secours et urgence',
   description:
-    'Ce que la station diffuse quand le conducteur est vide ou que ses fichiers ne sont pas prêts : d’abord la playlist de secours, puis le fichier d’urgence en boucle.',
+    'Ce qui passe quand le conducteur est vide : la playlist de secours, puis le fichier d’urgence.',
   'onAir.safety': 'Mode secours : playlist de secours à l’antenne',
   'onAir.emergency': 'Mode secours : fichier d’urgence à l’antenne',
   'onAir.normal': 'Programme normal',

@@ -1,5 +1,5 @@
 import { rolePermissions } from '@ondes/shared';
-import { Link, Outlet, useParams } from '@tanstack/react-router';
+import { Link, Outlet, useLocation, useParams } from '@tanstack/react-router';
 import { RadioTowerIcon } from 'lucide-react';
 import { useEffect } from 'react';
 import { Button } from '@/ui/button';
@@ -56,37 +56,43 @@ export function AppLayout() {
 function StationNav({ stationId }: { stationId: string }) {
   const { t } = useI18n();
   const found = findStation(useOrgs(), stationId);
+  const pathname = useLocation({ select: (location) => location.pathname });
   if (!found) return null;
   const allowed = new Set(rolePermissions[found.station.role]);
-  return (
-    <SidebarGroup>
-      <SidebarGroupLabel>{found.station.name}</SidebarGroupLabel>
+  const groups = stationNav
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !item.permission || allowed.has(item.permission)),
+    }))
+    .filter((group) => group.items.length > 0);
+  // The deepest entry containing the current page is the active one, so the calendar
+  // (`/shows/calendar`) doesn't also light up the shows entry (`/shows`).
+  const active = groups
+    .flatMap((group) => group.items)
+    .map((item) => ({ to: item.to, path: item.to.replace('$stationId', stationId) }))
+    .filter(({ path }) => pathname === path || pathname.startsWith(`${path}/`))
+    .sort((a, b) => b.path.length - a.path.length)[0]?.to;
+  return groups.map((group) => (
+    <SidebarGroup key={group.label}>
+      <SidebarGroupLabel>{t(group.label)}</SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
-          {stationNav
-            .filter((item) => !item.permission || allowed.has(item.permission))
-            .map((item) => (
-              <SidebarMenuItem key={item.to}>
-                <SidebarMenuButton
-                  tooltip={t(item.label)}
-                  render={
-                    <Link
-                      to={item.to}
-                      params={{ stationId }}
-                      activeOptions={{ exact: item.to === '/stations/$stationId' }}
-                      activeProps={{ 'data-active': true }}
-                    />
-                  }
-                >
-                  <item.icon />
-                  <span>{t(item.label)}</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            ))}
+          {group.items.map((item) => (
+            <SidebarMenuItem key={item.to}>
+              <SidebarMenuButton
+                tooltip={t(item.label)}
+                isActive={item.to === active}
+                render={<Link to={item.to} params={{ stationId }} />}
+              >
+                <item.icon />
+                <span>{t(item.label)}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
-  );
+  ));
 }
 
 /** `/stations/$stationId`: opens the station's event stream for every page below. */

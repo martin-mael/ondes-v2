@@ -1,12 +1,11 @@
 import { rolePermissions } from '@ondes/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi, Link } from '@tanstack/react-router';
-import { ArrowLeftIcon } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from '@/ui/button';
 import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert } from '../../app/forms.tsx';
+import { BackButton, PageHeader } from '../../app/page-header.tsx';
 import { PageSkeleton } from '../../app/pending.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
 import { assetQuery, invalidateLibrary } from '../library/api.ts';
@@ -36,10 +35,7 @@ export function CueEditorPage() {
   const { guard } = useUnsavedChanges(dirty);
 
   const back = (
-    <Button
-      variant="ghost"
-      size="sm"
-      className="self-start"
+    <BackButton
       nativeButton={false}
       render={
         <Link
@@ -49,9 +45,8 @@ export function CueEditorPage() {
         />
       }
     >
-      <ArrowLeftIcon data-icon="inline-start" />
       {t('page.back')}
-    </Button>
+    </BackButton>
   );
 
   if (detail.isPending) return <PageSkeleton />;
@@ -72,16 +67,18 @@ export function CueEditorPage() {
 
   return (
     <div className="flex min-w-0 flex-col gap-4 p-4 text-sm sm:p-6">
-      <header className="flex flex-col gap-1">
-        {back}
-        <h1 className="font-heading text-xl font-semibold">
-          {asset.title}
-          {asset.version && (
-            <span className="font-normal text-muted-foreground"> ({asset.version})</span>
-          )}
-        </h1>
-        {subtitle && <p className="text-muted-foreground">{subtitle}</p>}
-      </header>
+      <PageHeader
+        back={back}
+        title={
+          <>
+            {asset.title}
+            {asset.version && (
+              <span className="font-normal text-muted-foreground"> ({asset.version})</span>
+            )}
+          </>
+        }
+        description={subtitle || undefined}
+      />
       <CueEditorSection
         layout="page"
         stationId={stationId}

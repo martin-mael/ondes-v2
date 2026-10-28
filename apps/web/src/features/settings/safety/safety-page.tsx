@@ -31,6 +31,7 @@ import { isApiError } from '../../../app/api/client.ts';
 import { findStation, useOrgs } from '../../../app/auth/session.ts';
 import { FormAlert, useErrorMessage } from '../../../app/forms.tsx';
 import { useI18n } from '../../../app/i18n/i18n.tsx';
+import { PageHeader } from '../../../app/page-header.tsx';
 import { useSseEvent } from '../../../app/sse/sse.tsx';
 import { safetyApi, safetyQuery, type UploadProgress, uploadToLibrary } from './api.ts';
 import { AssetPicker } from './asset-picker.tsx';
@@ -61,16 +62,14 @@ export function SafetyPage() {
     queryClient.setQueryData(safetyQuery(stationId).queryKey, data);
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      <div className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="font-heading text-xl font-semibold">{t('title')}</h1>
-          {query.data && <OnAirBadge status={query.data} />}
-        </div>
-        <p className="max-w-2xl text-muted-foreground">{t('description')}</p>
-        {query.data && <SyncedAt at={query.data.syncedAt} />}
-        {!canEdit && <p className="text-muted-foreground">{t('readOnly')}</p>}
-      </div>
+    <div className="flex flex-col gap-6 p-4 sm:p-6">
+      <PageHeader
+        title={t('title')}
+        description={t('description')}
+        badge={query.data && <OnAirBadge status={query.data} />}
+        actions={query.data && <SyncedAt at={query.data.syncedAt} />}
+      />
+      {!canEdit && <p className="text-sm text-muted-foreground">{t('readOnly')}</p>}
       {query.isError && <FormAlert error={query.error} />}
       {query.isPending ? (
         <Skeleton className="h-48" />
@@ -122,7 +121,7 @@ function SyncedAt({ at }: { at: Date | null }) {
   const t = useSafetyT();
   const { locale } = useI18n();
   return (
-    <p className="text-muted-foreground">
+    <p className="text-xs text-muted-foreground">
       {at
         ? t('syncedAt', { time: at.toLocaleString(locale, { hour12: false }) })
         : t('neverSynced')}

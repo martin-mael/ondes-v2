@@ -7,8 +7,7 @@ import type { Locale } from '../../app/i18n/messages.ts';
 
 const en = {
   title: 'Promos',
-  description:
-    'Voice tracks that promote shows and events. Clock slots draw them from VT pools and the log generator voices them between two songs.',
+  description: 'Voice tracks announcing shows and events, placed by the clocks’ promo slots.',
   forbidden: "You don't have access to this station's promos.",
 
   'pools.title': 'VT pools',
@@ -139,7 +138,7 @@ const en = {
 const fr: typeof en = {
   title: 'Promos',
   description:
-    'Des voix qui annoncent émissions et événements. Les créneaux des horloges les tirent de groupes de promos, et le générateur les place entre deux titres.',
+    'Des voix qui annoncent émissions et événements, placées par les créneaux promo des horloges.',
   forbidden: 'Vous n’avez pas accès aux promos de cette station.',
 
   'pools.title': 'Groupes de promos',

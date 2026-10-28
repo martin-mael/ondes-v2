@@ -20,8 +20,8 @@ import {
 } from 'lucide-react';
 import type { MessageKey } from '../i18n/messages.ts';
 
-// Station navigation in the sidebar. Features add one entry here when they add their route
-// under `/stations/$stationId` (app/router.tsx).
+// Station navigation in the sidebar, in groups. Features add one entry to a group here when
+// they add their route under `/stations/$stationId` (app/router.tsx).
 
 type StationPath = Extract<NonNullable<LinkProps['to']>, `/stations/$stationId${string}`>;
 
@@ -34,95 +34,120 @@ export interface NavItem {
   permission?: Permission;
 }
 
-export const stationNav: NavItem[] = [
+export interface NavGroup {
+  label: MessageKey;
+  items: NavItem[];
+}
+
+export const stationNav: NavGroup[] = [
   {
-    to: '/stations/$stationId',
-    label: 'shell.nav.dashboard',
-    icon: LayoutDashboardIcon,
-    permission: 'dashboard:read',
+    label: 'shell.navGroup.onAir',
+    items: [
+      {
+        to: '/stations/$stationId',
+        label: 'shell.nav.dashboard',
+        icon: LayoutDashboardIcon,
+        permission: 'dashboard:read',
+      },
+      {
+        to: '/stations/$stationId/alerts',
+        label: 'shell.nav.alerts',
+        icon: BellIcon,
+        permission: 'alert:read',
+      },
+      {
+        to: '/stations/$stationId/log',
+        label: 'shell.nav.log',
+        icon: CalendarClockIcon,
+        permission: 'log:read',
+      },
+      {
+        to: '/stations/$stationId/live',
+        label: 'shell.nav.live',
+        icon: RadioTowerIcon,
+        permission: 'live:read',
+      },
+    ],
   },
   {
-    to: '/stations/$stationId/alerts',
-    label: 'shell.nav.alerts',
-    icon: BellIcon,
-    permission: 'alert:read',
+    label: 'shell.navGroup.programming',
+    items: [
+      {
+        to: '/stations/$stationId/shows/calendar',
+        label: 'shell.nav.calendar',
+        icon: CalendarDaysIcon,
+        permission: 'show:read',
+      },
+      {
+        to: '/stations/$stationId/shows',
+        label: 'shell.nav.shows',
+        icon: MicIcon,
+        permission: 'show:read',
+      },
+      {
+        to: '/stations/$stationId/clocks',
+        label: 'shell.nav.clocks',
+        icon: ClockIcon,
+        permission: 'clock:read',
+      },
+      {
+        to: '/stations/$stationId/grid',
+        label: 'shell.nav.grid',
+        icon: CalendarRangeIcon,
+        permission: 'clock:read',
+      },
+      {
+        to: '/stations/$stationId/categories',
+        label: 'shell.nav.categories',
+        icon: ListMusicIcon,
+        permission: 'rotation:read',
+      },
+      {
+        to: '/stations/$stationId/rotation/rules',
+        label: 'shell.nav.rotationRules',
+        icon: SlidersHorizontalIcon,
+        permission: 'rotation:read',
+      },
+    ],
   },
   {
-    to: '/stations/$stationId/shows/calendar',
-    label: 'shell.nav.calendar',
-    icon: CalendarDaysIcon,
-    permission: 'show:read',
+    label: 'shell.navGroup.content',
+    items: [
+      {
+        to: '/stations/$stationId/library',
+        label: 'shell.nav.library',
+        icon: LibraryBigIcon,
+        permission: 'library:read',
+      },
+      {
+        to: '/stations/$stationId/voice-tracks/record',
+        label: 'shell.nav.recordVt',
+        icon: AudioLinesIcon,
+        permission: 'voice_track:write_own',
+      },
+      {
+        to: '/stations/$stationId/promos',
+        label: 'shell.nav.promos',
+        icon: MegaphoneIcon,
+        permission: 'voice_track:read',
+      },
+    ],
   },
   {
-    to: '/stations/$stationId/shows',
-    label: 'shell.nav.shows',
-    icon: MicIcon,
-    permission: 'show:read',
-  },
-  {
-    to: '/stations/$stationId/live',
-    label: 'shell.nav.live',
-    icon: RadioTowerIcon,
-    permission: 'live:read',
-  },
-  {
-    to: '/stations/$stationId/log',
-    label: 'shell.nav.log',
-    icon: CalendarClockIcon,
-    permission: 'log:read',
-  },
-  {
-    to: '/stations/$stationId/voice-tracks/record',
-    label: 'shell.nav.recordVt',
-    icon: AudioLinesIcon,
-    permission: 'voice_track:write_own',
-  },
-  {
-    to: '/stations/$stationId/promos',
-    label: 'shell.nav.promos',
-    icon: MegaphoneIcon,
-    permission: 'voice_track:read',
-  },
-  {
-    to: '/stations/$stationId/library',
-    label: 'shell.nav.library',
-    icon: LibraryBigIcon,
-    permission: 'library:read',
-  },
-  {
-    to: '/stations/$stationId/categories',
-    label: 'shell.nav.categories',
-    icon: ListMusicIcon,
-    permission: 'rotation:read',
-  },
-  {
-    to: '/stations/$stationId/rotation/rules',
-    label: 'shell.nav.rotationRules',
-    icon: SlidersHorizontalIcon,
-    permission: 'rotation:read',
-  },
-  {
-    to: '/stations/$stationId/clocks',
-    label: 'shell.nav.clocks',
-    icon: ClockIcon,
-    permission: 'clock:read',
-  },
-  {
-    to: '/stations/$stationId/grid',
-    label: 'shell.nav.grid',
-    icon: CalendarRangeIcon,
-    permission: 'clock:read',
-  },
-  {
-    to: '/stations/$stationId/settings/safety',
-    label: 'shell.nav.safety',
-    icon: LifeBuoyIcon,
-    permission: 'engine:read',
-  },
-  {
-    to: '/stations/$stationId/settings/live-recording',
-    label: 'shell.nav.liveRecording',
-    icon: DiscIcon,
-    permission: 'live:read',
+    label: 'shell.navGroup.settings',
+    items: [
+      {
+        to: '/stations/$stationId/settings/safety',
+        label: 'shell.nav.safety',
+        icon: LifeBuoyIcon,
+        permission: 'engine:read',
+      },
+      {
+        to: '/stations/$stationId/settings/live-recording',
+        label: 'shell.nav.liveRecording',
+        icon: DiscIcon,
+        permission: 'live:read',
+      },
+    ],
   },
 ];

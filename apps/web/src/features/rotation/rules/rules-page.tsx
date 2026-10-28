@@ -25,6 +25,7 @@ import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { isApiError } from '../../../app/api/client.ts';
 import { findStation, useOrgs } from '../../../app/auth/session.ts';
 import { FormAlert } from '../../../app/forms.tsx';
+import { PageHeader } from '../../../app/page-header.tsx';
 import { DelayedSpinner, ListSkeleton } from '../../../app/pending.tsx';
 import { useUnsavedChanges } from '../../../app/unsaved.tsx';
 import { categoriesQuery } from '../categories/api.ts';
@@ -94,11 +95,8 @@ export function RulesPage() {
   const settings = useQuery(rulesQuery(stationId));
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      <div className="flex flex-col gap-1">
-        <h1 className="font-heading text-xl font-semibold">{t('title')}</h1>
-        <p className="max-w-2xl text-sm text-muted-foreground">{t('description')}</p>
-      </div>
+    <div className="flex flex-col gap-6 p-4 sm:p-6">
+      <PageHeader title={t('title')} description={t('description')} />
       {settings.isPending ? (
         <ListSkeleton />
       ) : settings.isError ? (

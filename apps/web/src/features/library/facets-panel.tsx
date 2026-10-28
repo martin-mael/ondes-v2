@@ -6,6 +6,7 @@ import {
   tagKeySchema,
   VALIDITIES,
 } from '@ondes/shared';
+import { ChevronDownIcon, ChevronRightIcon } from 'lucide-react';
 import { type ReactNode, useId, useState } from 'react';
 import { Button } from '@/ui/button';
 import { Checkbox } from '@/ui/checkbox';
@@ -77,31 +78,45 @@ export function FacetsPanel({
         />
       ))}
 
-      <FacetGroup title={t('facets.analysis')}>
-        {ANALYSIS_STATES.map((state: AnalysisState) => (
-          <FacetOption
-            key={state}
-            label={t(`analysis.${state}`)}
-            count={count(facets?.analysis.find((a) => a.state === state)?.count)}
-            checked={params.analysis?.includes(state) ?? false}
-            onChange={() => update({ analysis: toggled(params.analysis, state) })}
-          />
-        ))}
-      </FacetGroup>
+      <ChoiceGroup
+        title={t('facets.analysis')}
+        options={ANALYSIS_STATES.map((state: AnalysisState) => ({
+          key: state,
+          label: t(`analysis.${state}`),
+          count: count(facets?.analysis.find((a) => a.state === state)?.count),
+          checked: params.analysis?.includes(state) ?? false,
+          onChange: () => update({ analysis: toggled(params.analysis, state) }),
+        }))}
+      />
 
-      <FacetGroup title={t('facets.validity')}>
-        {VALIDITIES.map((v) => (
-          <FacetOption
-            key={v}
-            label={t(`validity.${v}`)}
-            count={count(facets?.validity.find((f) => f.validity === v)?.count)}
-            checked={params.validity?.includes(v) ?? false}
-            onChange={() => update({ validity: toggled(params.validity, v) })}
-          />
-        ))}
-      </FacetGroup>
+      <ChoiceGroup
+        title={t('facets.validity')}
+        options={VALIDITIES.map((v) => ({
+          key: v,
+          label: t(`validity.${v}`),
+          count: count(facets?.validity.find((f) => f.validity === v)?.count),
+          checked: params.validity?.includes(v) ?? false,
+          onChange: () => update({ validity: toggled(params.validity, v) }),
+        }))}
+      />
 
-      <FacetGroup title={t('facets.more')}>
+      <MoreFilters
+        title={t('facets.more')}
+        active={
+          [
+            params.durMin,
+            params.durMax,
+            params.bpmMin,
+            params.bpmMax,
+            params.yearMin,
+            params.yearMax,
+            params.addedFrom,
+            params.addedTo,
+            params.explicit,
+            params.notPlayedDays,
+          ].some((v) => v !== undefined) || params.never === true
+        }
+      >
         <RangeFilter
           label={t('facets.duration')}
           min={params.durMin}
@@ -170,7 +185,67 @@ export function FacetsPanel({
             })
           }
         />
-      </FacetGroup>
+      </MoreFilters>
+    </div>
+  );
+}
+
+/**
+ * Status facets (analysis, scheduling window): only the states some asset is in, or that are
+ * checked. A single state left is no choice at all, so the group is then hidden.
+ */
+function ChoiceGroup({
+  title,
+  options,
+}: {
+  title: string;
+  options: (Parameters<typeof FacetOption>[0] & { key: string })[];
+}) {
+  const shown = options.filter((o) => o.count > 0 || o.checked);
+  if (shown.length < 2 && !shown.some((o) => o.checked)) return null;
+  return (
+    <FacetGroup title={title}>
+      {shown.map(({ key, ...option }) => (
+        <FacetOption key={key} {...option} />
+      ))}
+    </FacetGroup>
+  );
+}
+
+/** The range and select filters, folded away until opened (open while one of them is set). */
+function MoreFilters({
+  title,
+  active,
+  children,
+}: {
+  title: string;
+  active: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(active);
+  const id = useId();
+  return (
+    <div className="flex flex-col gap-2">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="-ml-2 self-start font-semibold"
+        aria-expanded={open || active}
+        aria-controls={id}
+        onClick={() => setOpen(!open)}
+      >
+        {open || active ? (
+          <ChevronDownIcon data-icon="inline-start" />
+        ) : (
+          <ChevronRightIcon data-icon="inline-start" />
+        )}
+        {title}
+      </Button>
+      {(open || active) && (
+        <div id={id} className="flex flex-col gap-1">
+          {children}
+        </div>
+      )}
     </div>
   );
 }
