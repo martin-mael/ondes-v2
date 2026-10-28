@@ -28,9 +28,9 @@ import { Textarea } from '@/ui/textarea';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { useI18n } from '../../app/i18n/i18n.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
-import { EpisodeRecording } from '../settings/live-recording/episode-recording.tsx';
 import { invalidateShows, showsApi } from './api.ts';
 import { EpisodeAssetPicker } from './asset-picker.tsx';
+import { EpisodeRecording } from './episode-recording.tsx';
 import { formatDay, formatTime } from './format.ts';
 import { useShowError, useShowT } from './messages.ts';
 import { AUDIO_ACCEPT, useEpisodeUpload, useUploadProgress } from './upload.ts';
@@ -140,7 +140,7 @@ export function EpisodeDialog({
   const upload = useEpisodeUpload(stationId);
   // A live episode's recording (#67): managers may process it again.
   const role = findStation(useOrgs(), stationId)?.station.role;
-  const canRebuildRecording = role ? rolePermissions[role].includes('live:manage') : false;
+  const canManageRecording = role ? rolePermissions[role].includes('live:manage') : false;
   const [number, setNumber] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -361,8 +361,9 @@ export function EpisodeDialog({
                 stationId={stationId}
                 showId={show.id}
                 episodeId={episode.id}
+                episodeAssetId={episode.assetId}
                 timezone={timezone}
-                canRebuild={canRebuildRecording}
+                canManage={canManageRecording}
               />
             )}
 

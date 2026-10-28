@@ -653,6 +653,67 @@ describe('show page', () => {
     expect(calls.some((c) => c.method === 'POST' && c.path.endsWith('/rebuild'))).toBe(true);
   });
 
+  it('offers the recording over other audio a build kept, and says when it cannot be read (#67)', async () => {
+    const recordingId = '01a15ddf-0000-7000-8000-00000000c0df';
+    const liveAssetId = '01a15ddf-0000-7000-8000-00000000a55e';
+    const recording = {
+      id: recordingId,
+      stationId,
+      episodeId,
+      eventId: null,
+      sessionId: null,
+      title: 'La Matinale #12',
+      status: 'ready',
+      version: 1,
+      durationMs: 3_600_000,
+      assetId: liveAssetId,
+      error: null,
+      builtAt: at,
+      buildMs: 30_000,
+      expiresAt: null,
+      parts: [],
+      createdAt: at,
+    };
+    const { screen, user, calls } = renderApp(
+      showBase,
+      showRoutes('station_manager', {
+        [`GET ${base}/show-occurrences`]: occurrences([]),
+        [`GET ${showBase}/episodes`]: [
+          200,
+          { items: [episode({ kind: 'live', status: 'aired', assetId })] },
+        ],
+        [`GET ${showBase}/episodes/${episodeId}/recording`]: [200, { recording }],
+        [`POST ${base}/live/recordings/${recordingId}/attach`]: [200, recording],
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Episode #12' }));
+    const section = within(await screen.findByTestId('episode-recording'));
+    expect(section.getByText(/The episode already had other audio, which was kept/)).toBeVisible();
+    await user.click(section.getByRole('button', { name: 'Use the recording' }));
+    expect(await screen.findByText('The recording is now the episode’s audio')).toBeVisible();
+    expect(calls.some((c) => c.method === 'POST' && c.path.endsWith('/attach'))).toBe(true);
+  });
+
+  it("says calmly when a live episode's recording can't be read (#67)", async () => {
+    const { screen, user } = renderApp(
+      showBase,
+      showRoutes('station_manager', {
+        [`GET ${base}/show-occurrences`]: occurrences([]),
+        [`GET ${showBase}/episodes`]: [
+          200,
+          { items: [episode({ kind: 'live', status: 'aired', assetId })] },
+        ],
+        [`GET ${showBase}/episodes/${episodeId}/recording`]: [
+          500,
+          { error: 'internal', message: 'boom' },
+        ],
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Episode #12' }));
+    const section = within(await screen.findByTestId('episode-recording', {}, { timeout: 5000 }));
+    expect(section.getByText(/The recording couldn’t be read/)).toBeVisible();
+  });
+
   it('plans an unscheduled episode on a free airing', async () => {
     const free = occurrence(9);
     const { screen, user, calls } = renderApp(

@@ -43,6 +43,12 @@ describe('engine container policy', () => {
     expect(checkEngineCreate(policy, NAME, good())).toBeNull();
   });
 
+  it('allows the engine to run as a numeric non-root user (#67)', () => {
+    const body = good();
+    body.User = '1000:1000';
+    expect(checkEngineCreate(policy, NAME, body)).toBeNull();
+  });
+
   const refuses: [string, (b: ReturnType<typeof good>) => void, RegExp][] = [
     ['privileged mode', (b) => (b.HostConfig.Privileged = true), /Privileged/],
     ['host binds', (b) => (b.HostConfig.Binds = ['/:/host']), /Binds/],
@@ -78,6 +84,21 @@ describe('engine container policy', () => {
       (b) => (recordingsMount(b).Source = '/srv/ondes/cache/st-1'),
       /bind source/,
     ],
+    [
+      "another station's recordings",
+      (b) =>
+        (recordingsMount(b).Source =
+          '/srv/ondes/cache/0199a4e2-7c1d-7000-8000-000000000002/recordings'),
+      /bind source must be \/srv\/ondes\/cache\/0199a4e2-7c1d-7000-8000-000000000001\/recordings/,
+    ],
+    [
+      "another station's cache",
+      (b) => (firstMount(b).Source = '/srv/ondes/cache/0199a4e2-7c1d-7000-8000-000000000002'),
+      /bind source/,
+    ],
+    ['running as root', (b) => (b.User = '0:0'), /user/],
+    ['a named user', (b) => (b.User = 'root'), /user/],
+    ['a uid without a group', (b) => (b.User = '1000'), /user/],
     [
       'the recordings directory at the cache target',
       (b) => {

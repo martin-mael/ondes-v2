@@ -73,6 +73,13 @@ export type EngineLifecycleConfig = {
   extraHosts?: string[];
   /** Extra labels on every engine container (tests use them to clean up). */
   labels?: Record<string, string>;
+  /**
+   * `uid:gid` the engine runs as: the api's own user (ENGINE_USER overrides), which also owns
+   * the recordings directory the lifecycle makes and runs the worker that deletes its files
+   * (ADR 0039). Null (an api running as root): the image's user, and the directory is made
+   * world-writable instead.
+   */
+  engineUser?: string | null;
 };
 
 export function containerName(
@@ -197,11 +204,14 @@ export function engineContainerSpec(
     Image: config.image,
     Entrypoint: [...ENGINE_ENTRYPOINT],
     Cmd: [],
+    ...(config.engineUser ? { User: config.engineUser } : {}),
     Env: [
       `ENGINE_CONTROL_TOKEN=${input.secrets.controlToken}`,
       `ENGINE_LIVE_PASSWORD=${input.secrets.livePassword}`,
       `ICECAST_SOURCE_PASSWORD=${input.secrets.icecastSourcePassword}`,
       `${ENGINE_SCRIPT_ENV}=${input.script}`,
+      // Another user than the image's has no home there: the tmpfs is one.
+      ...(config.engineUser ? ['HOME=/tmp'] : []),
     ],
     Labels: {
       ...config.labels,

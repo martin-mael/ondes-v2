@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   addMembership,
   auditLog,
+  createAsset,
   createOrganization,
   createStation,
   episode,
@@ -268,6 +269,38 @@ describe('live recording recorder', () => {
     expect(updates().at(-1)).toMatchObject({ episodeId, status: 'pending', version: 1 });
   });
 
+  it('interrupts an earlier file of the same boot that never closed when the next one starts', async () => {
+    const s1 = await session({ episodeId });
+    const s2 = await session({ episodeId });
+    // The first file's close was never announced (a write error, a lost event).
+    await recorder.handle(
+      engineEvent('engine.live.recording.started', {
+        file: `live-${seq}-g-1.flac`,
+        sessionId: s1,
+        startedAt: at(0),
+      }),
+    );
+    await recordFile(`live-${seq}-g-2.flac`, s2, 10, 20);
+    const parts = await t.tdb.db
+      .select()
+      .from(liveRecordingPart)
+      .where(eq(liveRecordingPart.stationId, scope.stationId));
+    const status = (file: string) => parts.find((p) => p.file === file)?.status;
+    expect(status(`live-${seq}-g-1.flac`)).toBe('interrupted');
+    expect(status(`live-${seq}-g-2.flac`)).toBe('closed');
+    // Both counted, none open: the recording builds.
+    expect(updates().at(-1)).toMatchObject({ episodeId, status: 'pending', version: 2 });
+    // A redelivered start of the first file doesn't touch the second one.
+    await recorder.handle(
+      engineEvent('engine.live.recording.started', {
+        file: `live-${seq}-g-1.flac`,
+        sessionId: s1,
+        startedAt: at(0),
+      }),
+    );
+    expect((await recordingOf({ episodeId }))[0]?.version).toBe(2);
+  });
+
   it('ignores files of unknown sessions and of engines opened by hand', async () => {
     await recordFile(`live-${seq}-d-1.flac`, randomUUID(), 0, 10);
     await recorder.handle(
@@ -384,6 +417,15 @@ describe('live recording routes', () => {
         })
       ).statusCode,
     ).toBe(403);
+    // Waiting for its build already: nothing to rebuild.
+    const busy = await t.app.inject({
+      method: 'POST',
+      url: rebuildUrl,
+      cookies: { ondes_session: cookies.manager },
+    });
+    expect(busy.statusCode).toBe(409);
+    expect(busy.json()).toMatchObject({ error: 'live_recording_state' });
+    await t.tdb.sql`update live_recording set status = 'failed' where id = ${recording.id}`;
     const rebuilt = await t.app.inject({
       method: 'POST',
       url: rebuildUrl,
@@ -396,5 +438,46 @@ describe('live recording routes', () => {
       .from(auditLog)
       .where(eq(auditLog.entityId, recording.id));
     expect(audits.map((a) => a.action)).toEqual(['live_recording.rebuild']);
+  });
+
+  it('makes a ready recording the episode audio over other audio, for managers only', async () => {
+    const ctx = { actor: system, scope };
+    const manual = await createAsset(t.tdb.db, ctx, { type: 'episode', title: 'manual' });
+    const built = await createAsset(t.tdb.db, ctx, { type: 'episode', title: 'live' });
+    await t.tdb.sql`update episode set asset_id = ${manual.id} where id = ${episodeId}`;
+    const [rec] = await t.tdb.db
+      .insert(liveRecording)
+      .values({ ...scope, episodeId, showId, status: 'ready', version: 1, builtVersion: 1 })
+      .returning();
+    if (!rec) throw new Error('no recording');
+    const url = `/api/v1/stations/${scope.stationId}/live/recordings/${rec.id}/attach`;
+    // Not built yet (no asset): refused.
+    const early = await t.app.inject({
+      method: 'POST',
+      url,
+      cookies: { ondes_session: cookies.manager },
+    });
+    expect(early.statusCode).toBe(409);
+    await t.tdb.sql`update live_recording set asset_id = ${built.id} where id = ${rec.id}`;
+    const denied = await t.app.inject({
+      method: 'POST',
+      url,
+      cookies: { ondes_session: cookies.presenter },
+    });
+    expect(denied.statusCode).toBe(403);
+    const ok = await t.app.inject({
+      method: 'POST',
+      url,
+      cookies: { ondes_session: cookies.manager },
+    });
+    expect(ok.statusCode).toBe(200);
+    const [ep] = await t.tdb.sql<{ asset_id: string }[]>`
+      select asset_id from episode where id = ${episodeId}`;
+    expect(ep?.asset_id).toBe(built.id);
+    const audits = await t.tdb.db.select().from(auditLog).where(eq(auditLog.entityId, episodeId));
+    expect(audits.at(-1)).toMatchObject({
+      action: 'episode.update',
+      diff: { assetId: { from: manual.id, to: built.id } },
+    });
   });
 });

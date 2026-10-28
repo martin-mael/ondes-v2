@@ -28,8 +28,10 @@ export const LIVE_RECORDING_CLEANUP_JOB = 'live-recording-cleanup';
 
 /**
  * `recording`: the engine is writing it. `closed`: complete. `interrupted`: the engine
- * restarted while writing it (the file is readable up to the crash). `deleted`: the local
- * file was removed (after its recording was built, or by the retention sweep).
+ * restarted while writing it (the file is readable up to the crash), or a newer file of the
+ * same boot started before it closed; the build uses what the file holds, if anything.
+ * `deleted`: the local file was removed (after its recording was built, or by the retention
+ * sweep); a later build starts from the recording's last audio instead.
  */
 export const liveRecordingPartStatusSchema = z.enum([
   'recording',
@@ -114,6 +116,20 @@ export const liveRecordingSchema = z.object({
 });
 export type LiveRecording = z.infer<typeof liveRecordingSchema>;
 
+/** `GET …/shows/:showId/episodes/:episodeId/recording`. */
+export const episodeLiveRecordingSchema = z.object({ recording: liveRecordingSchema.nullable() });
+export type EpisodeLiveRecording = z.infer<typeof episodeLiveRecordingSchema>;
+
+/**
+ * Statuses a recording can be built again from (`POST …/rebuild`): the others are building
+ * already, or have no audio left to build from.
+ */
+export const LIVE_RECORDING_REBUILDABLE: readonly LiveRecordingStatus[] = [
+  'ready',
+  'failed',
+  'skipped',
+];
+
 /** `live-recording` job: build one version of a recording. */
 export const liveRecordingJobPayloadSchema = z.object({
   orgId: uuidSchema,
@@ -133,5 +149,20 @@ export const liveRecordingCleanupJobPayloadSchema = z.object({
 });
 export type LiveRecordingCleanupJobPayload = z.infer<typeof liveRecordingCleanupJobPayloadSchema>;
 
-/** Local engine files are kept this long after their recording was built (a rebuild needs them). */
+/**
+ * Local engine files are kept this long after their recording was built. A later build (a
+ * late part, a rebuild) starts from the recording's last audio in the bucket once they are gone.
+ */
 export const LIVE_RECORDING_LOCAL_KEEP_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A failed recording (nothing built) is expired, and its files swept, this long after its
+ * show when the station keeps recordings for good: someone had a month to fix it.
+ */
+export const LIVE_RECORDING_FAILED_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * A build's claim on a recording: another build waits (retries) while it holds; a claim older
+ * than this is a crashed worker's and is taken over.
+ */
+export const LIVE_RECORDING_BUILD_LEASE_MS = 30 * 60 * 1000;

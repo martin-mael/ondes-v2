@@ -106,6 +106,12 @@ export const liveRecording = pgTable(
     error: text('error'),
     builtAt: timestamp('built_at', { withTimezone: true }),
     buildMs: integer('build_ms'),
+    /**
+     * The build working on it (a random id per attempt) and since when: one build at a time,
+     * and only the claim's holder may record its result (#67 review). Null: none.
+     */
+    buildClaim: uuid('build_claim'),
+    buildClaimedAt: timestamp('build_claimed_at', { withTimezone: true }),
     /** End of the last part: what the retention counts from. */
     endedAt: timestamp('ended_at', { withTimezone: true }),
     createdAt: createdAt(),

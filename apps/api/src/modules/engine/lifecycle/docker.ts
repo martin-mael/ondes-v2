@@ -66,6 +66,7 @@ export type ContainerCreateBody = {
   Image: string;
   Entrypoint?: string[];
   Cmd?: string[];
+  User?: string;
   Env?: string[];
   Labels?: Record<string, string>;
   ExposedPorts?: Record<string, Record<string, never>>;

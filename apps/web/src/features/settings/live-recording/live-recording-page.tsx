@@ -68,6 +68,14 @@ export function LiveRecordingPage() {
     },
   });
 
+  if (query.isError && !query.data) {
+    return (
+      <div className="flex flex-col gap-6 p-6">
+        <h1 className="font-heading text-xl font-semibold">{t('title')}</h1>
+        <FormAlert error={query.error} />
+      </div>
+    );
+  }
   if (query.isPending || !draft) return <PageSkeleton />;
   const retention = retentionOf(draft);
   const submit = (e: FormEvent) => {
@@ -86,7 +94,6 @@ export function LiveRecordingPage() {
         <p className="max-w-2xl text-muted-foreground">{t('description')}</p>
         {!canEdit && <p className="text-muted-foreground">{t('readOnly')}</p>}
       </div>
-      {query.isError && <FormAlert error={query.error} />}
       <Card className="max-w-2xl">
         <CardHeader>
           <CardTitle className="text-sm">{t('title')}</CardTitle>

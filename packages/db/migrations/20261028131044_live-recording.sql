@@ -16,6 +16,8 @@ CREATE TABLE "live_recording" (
 	"error" text,
 	"built_at" timestamp with time zone,
 	"build_ms" integer,
+	"build_claim" uuid,
+	"build_claimed_at" timestamp with time zone,
 	"ended_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,

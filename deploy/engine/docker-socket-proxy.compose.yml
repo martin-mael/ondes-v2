@@ -8,8 +8,8 @@
 # - docker-proxy-guard (apps/api/src/modules/engine/lifecycle/proxy-guard.ts): checks every
 #   request against the engine container policy (container-policy.ts): only the pinned
 #   engine image, the engine network, a read-only cache bind under ENGINE_CACHE_ROOT (and its
-#   station's read-write `recordings` directory, #67),
-#   tmpfs, limits, no capabilities, no privileged mode, binds, devices or host namespaces,
+#   station's read-write `recordings` directory, #67), both for the container's own station,
+#   a non-root numeric user, tmpfs, limits, no capabilities, no privileged mode, binds, devices or host namespaces,
 #   ondes.* labels only; only engine containers can be inspected, started, stopped, updated
 #   or removed; no archive, no exec. ENGINE_DOCKER_URL=http://docker-proxy-guard:2375.
 #

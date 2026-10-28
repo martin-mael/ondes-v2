@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import {
+  attachLiveRecording,
   episode,
   getEpisodeLiveRecording,
   getLiveRecordingSettings,
+  type LiveRecordingRow,
+  LiveRecordingStateError,
   listLiveRecordingParts,
   requestLiveRecordingRebuild,
   type StationScope,
@@ -12,6 +15,7 @@ import {
 } from '@ondes/db';
 import { consumeEventsDurable, type EventSubscription } from '@ondes/queue';
 import {
+  episodeLiveRecordingSchema,
   liveRecordingSchema,
   liveRecordingSettingsSchema,
   type RealtimeEvent,
@@ -25,6 +29,7 @@ import fp from 'fastify-plugin';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { actorOf, stationScopeOf } from '../../../plugins/auth.ts';
+import { HttpError } from '../../../plugins/errors.ts';
 import { createLiveRecordingRecorder, recordingUpdatedEvent } from './recorder.ts';
 
 // Live recording (#67, ADR 0039), under /api/v1/stations/:stationId:
@@ -32,7 +37,9 @@ import { createLiveRecordingRecorder, recordingUpdatedEvent } from './recorder.t
 // - `GET  …/shows/:showId/episodes/:episodeId/recording` (`show:read`): the episode's
 //   recording, its parts and status, or null;
 // - `POST …/live/recordings/:recordingId/rebuild` (`live:manage`, audited): build it again
-//   (after a failure, or a part that came in late).
+//   (after a failure, or to redo a ready one); 409 while it records or builds, or once expired;
+// - `POST …/live/recordings/:recordingId/attach` (`live:manage`, audited): make a ready
+//   recording its episode's audio, over the other audio a build found there and left alone.
 // With RabbitMQ, it also records the engine's `live.recording.*` events from the durable
 // `live-recording` queue (recorder.ts).
 
@@ -47,7 +54,6 @@ export type LiveRecordingPluginOptions = {
 const stationParams = z.object({ stationId: z.string() });
 const episodeParams = stationParams.extend({ showId: uuidSchema, episodeId: uuidSchema });
 const recordingParams = stationParams.extend({ recordingId: uuidSchema });
-const episodeRecordingSchema = z.object({ recording: liveRecordingSchema.nullable() });
 
 export const liveRecordingPlugin = fp(
   async (app: FastifyInstance, options: LiveRecordingPluginOptions) => {
@@ -90,7 +96,7 @@ export const liveRecordingPlugin = fp(
       '/api/v1/stations/:stationId/shows/:showId/episodes/:episodeId/recording',
       {
         preHandler: showRead,
-        schema: { params: episodeParams, response: { 200: episodeRecordingSchema } },
+        schema: { params: episodeParams, response: { 200: episodeLiveRecordingSchema } },
       },
       async (request) => {
         const scope = stationScopeOf(request);
@@ -109,18 +115,45 @@ export const liveRecordingPlugin = fp(
         schema: { params: recordingParams, response: { 202: liveRecordingSchema } },
       },
       async (request, reply) => {
-        const scope = stationScopeOf(request);
-        const row = await requestLiveRecordingRebuild(
-          app.db,
-          ctx(request),
-          request.params.recordingId,
+        const row = await stateChecked(() =>
+          requestLiveRecordingRebuild(app.db, ctx(request), request.params.recordingId),
         );
         await publish(recordingUpdatedEvent(randomUUID(), new Date().toISOString(), row));
-        const parts = await listLiveRecordingParts(app.db, scope, row.id);
-        const settings = await getLiveRecordingSettings(app.db, scope);
-        return reply.code(202).send(toLiveRecording(row, parts, settings));
+        return reply.code(202).send(await dto(stationScopeOf(request), row));
       },
     );
+
+    r.post(
+      '/api/v1/stations/:stationId/live/recordings/:recordingId/attach',
+      {
+        preHandler: liveManage,
+        schema: { params: recordingParams, response: { 200: liveRecordingSchema } },
+      },
+      async (request) => {
+        const row = await stateChecked(() =>
+          attachLiveRecording(app.db, ctx(request), request.params.recordingId),
+        );
+        await publish(recordingUpdatedEvent(randomUUID(), new Date().toISOString(), row));
+        return dto(stationScopeOf(request), row);
+      },
+    );
+
+    async function stateChecked(fn: () => Promise<LiveRecordingRow>) {
+      try {
+        return await fn();
+      } catch (err) {
+        if (err instanceof LiveRecordingStateError) {
+          throw new HttpError(409, 'live_recording_state', err.message, { status: err.status });
+        }
+        throw err;
+      }
+    }
+
+    async function dto(scope: StationScope, row: LiveRecordingRow) {
+      const parts = await listLiveRecordingParts(app.db, scope, row.id);
+      const settings = await getLiveRecordingSettings(app.db, scope);
+      return toLiveRecording(row, parts, settings);
+    }
 
     async function showOf(scope: StationScope, episodeId: string): Promise<string | null> {
       const [row] = await app.db

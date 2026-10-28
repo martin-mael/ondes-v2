@@ -289,6 +289,28 @@ const en = {
   'error.empty': 'This audio file is empty.',
   'error.quota_exceeded': 'The organisation’s storage is full.',
   'error.upload_failed': 'The file couldn’t be sent.',
+  'recording.title': 'Live recording',
+  'recording.none':
+    'Not recorded: nobody went on air in this episode yet, or it aired before recording was on.',
+  'recording.loadFailed': 'The recording couldn’t be read. It will show here once it can.',
+  'recording.status.recording': 'Recording now',
+  'recording.status.pending': 'Waiting to be processed',
+  'recording.status.processing': 'Processing',
+  'recording.status.ready': 'Ready for reruns',
+  'recording.status.failed': 'Failed',
+  'recording.status.expired': 'Deleted by the retention policy',
+  'recording.status.skipped': 'Not kept: recording is off',
+  'recording.parts': '{count} parts joined (the DJ reconnected or handed over)',
+  'recording.duration': '{duration} of audio',
+  'recording.builtIn': 'processed in {seconds} s',
+  'recording.expires': 'Audio deleted after {date}',
+  'recording.otherAudio':
+    'The episode already had other audio, which was kept. The recording is in the library.',
+  'recording.attach': 'Use the recording',
+  'recording.attached': 'The recording is now the episode’s audio',
+  'recording.rebuild': 'Process again',
+  'recording.rebuilt': 'The recording is processed again',
+  'error.live_recording_state': 'The recording can’t do that right now. Try again in a moment.',
 };
 
 export type ShowMessageKey = keyof typeof en;
@@ -589,6 +611,30 @@ const fr: Record<ShowMessageKey, string> = {
   'error.empty': 'Ce fichier audio est vide.',
   'error.quota_exceeded': 'Le stockage de l’organisation est plein.',
   'error.upload_failed': 'Le fichier n’a pas pu être envoyé.',
+  'recording.title': 'Enregistrement du direct',
+  'recording.none':
+    'Pas d’enregistrement : personne n’est encore passé à l’antenne dans cet épisode, ou il a été diffusé avant l’activation.',
+  'recording.loadFailed':
+    'L’enregistrement n’a pas pu être lu. Il s’affichera ici dès que possible.',
+  'recording.status.recording': 'Enregistrement en cours',
+  'recording.status.pending': 'En attente de traitement',
+  'recording.status.processing': 'Traitement en cours',
+  'recording.status.ready': 'Prêt pour les rediffusions',
+  'recording.status.failed': 'Échec',
+  'recording.status.expired': 'Supprimé par la durée de conservation',
+  'recording.status.skipped': 'Non conservé : l’enregistrement est désactivé',
+  'recording.parts': '{count} parties assemblées (reconnexion ou passage de relais)',
+  'recording.duration': '{duration} de son',
+  'recording.builtIn': 'traité en {seconds} s',
+  'recording.expires': 'Son supprimé après le {date}',
+  'recording.otherAudio':
+    'L’épisode avait déjà un autre son, qui a été gardé. L’enregistrement est dans la médiathèque.',
+  'recording.attach': 'Utiliser l’enregistrement',
+  'recording.attached': 'L’enregistrement est maintenant le son de l’épisode',
+  'recording.rebuild': 'Retraiter',
+  'recording.rebuilt': 'L’enregistrement est retraité',
+  'error.live_recording_state':
+    'L’enregistrement ne peut pas faire cela pour l’instant. Réessayez dans un moment.',
 };
 
 const messages: Record<Locale, Record<ShowMessageKey, string>> = { en, fr };

@@ -1,12 +1,15 @@
+import { randomUUID } from 'node:crypto';
 import {
   DEFAULT_LIVE_RECORDING_SETTINGS,
+  LIVE_RECORDING_BUILD_LEASE_MS,
+  LIVE_RECORDING_REBUILDABLE,
   type LiveRecording,
   type LiveRecordingPartStatus,
   type LiveRecordingSettings,
   type LiveRecordingStatus,
   type UpdateLiveRecordingSettings,
 } from '@ondes/shared';
-import { and, asc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { auditDiff, withAudit, writeAudit } from '../audit.ts';
 import type { Db, Executor } from '../client.ts';
 import { NotFoundError } from '../errors.ts';
@@ -118,11 +121,11 @@ export async function recordPartStarted(
     await tx
       .update(liveRecordingPart)
       .set({ recordingId: recording.id })
-      .where(eq(liveRecordingPart.id, row.id));
+      .where(and(whereStation(liveRecordingPart, scope), eq(liveRecordingPart.id, row.id)));
     const [updated] = await tx
       .update(liveRecording)
       .set({ status: 'recording' })
-      .where(eq(liveRecording.id, recording.id))
+      .where(and(whereStation(liveRecording, scope), eq(liveRecording.id, recording.id)))
       .returning();
     return updated ? { recording: updated, changed: updated.status !== recording.status } : null;
   });
@@ -156,13 +159,17 @@ export async function recordPartClosed(
     await tx
       .update(liveRecordingPart)
       .set({ status: part.status, endedAt: part.endedAt, recordingId: recording?.id ?? null })
-      .where(eq(liveRecordingPart.id, row.id));
+      .where(and(whereStation(liveRecordingPart, scope), eq(liveRecordingPart.id, row.id)));
     if (!recording) return null;
     const [open] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(liveRecordingPart)
       .where(
-        and(eq(liveRecordingPart.recordingId, recording.id), eq(liveRecordingPart.status, OPEN)),
+        and(
+          whereStation(liveRecordingPart, scope),
+          eq(liveRecordingPart.recordingId, recording.id),
+          eq(liveRecordingPart.status, OPEN),
+        ),
       );
     const settings = await getLiveRecordingSettings(tx, scope);
     const status: LiveRecordingStatus =
@@ -174,7 +181,7 @@ export async function recordPartClosed(
         version: sql`${liveRecording.version} + 1`,
         endedAt: sql`greatest(${liveRecording.endedAt}, ${part.endedAt.toISOString()}::timestamptz)`,
       })
-      .where(eq(liveRecording.id, recording.id))
+      .where(and(whereStation(liveRecording, scope), eq(liveRecording.id, recording.id)))
       .returning();
     return updated ? { recording: updated, changed: true } : null;
   });
@@ -194,6 +201,31 @@ export async function openPartsOfOtherBoots(
         whereStation(liveRecordingPart, scope),
         eq(liveRecordingPart.status, OPEN),
         ne(liveRecordingPart.bootId, bootId),
+      ),
+    );
+}
+
+/**
+ * Earlier files of the same boot still open when `file` starts at `startedAt`. The engine
+ * writes one file at a time and announces a file's close before the next one's start, so
+ * these never closed (a write error, a lost event): without this they would hold their
+ * recording's build forever.
+ */
+export async function openPartsSupersededBy(
+  db: Executor,
+  scope: StationScope,
+  part: { bootId: string; file: string; startedAt: Date },
+): Promise<LiveRecordingPartRow[]> {
+  return db
+    .select()
+    .from(liveRecordingPart)
+    .where(
+      and(
+        whereStation(liveRecordingPart, scope),
+        eq(liveRecordingPart.status, OPEN),
+        eq(liveRecordingPart.bootId, part.bootId),
+        ne(liveRecordingPart.file, part.file),
+        lt(liveRecordingPart.startedAt, part.startedAt),
       ),
     );
 }
@@ -275,33 +307,53 @@ async function recordingOfSession(
 
 // --- Builds (worker) ---------------------------------------------------------------------
 
+export type BuildClaim =
+  /** This build holds the recording; only it may record a result (`claim`). */
+  | { status: 'claimed'; row: LiveRecordingRow; claim: string }
+  /** Another build holds a live claim: retry later. */
+  | { status: 'busy' }
+  /** Nothing to do: a newer part came, a part is still open, or this version is built. */
+  | { status: 'skip' };
+
 /**
- * Claims a build of `version`: the recording is still at that version, has no open part and
- * isn't built at it yet. Null otherwise (a newer part came, or it is already done): the job
- * does nothing.
+ * Claims a build of `version`: the recording is still at that version, has no open part,
+ * isn't built at it yet, and no other build holds it (a claim older than the lease is a
+ * crashed worker's and is taken over). One build per recording at a time.
  */
 export async function claimLiveRecordingBuild(
   db: Db,
   scope: StationScope,
   id: string,
   version: number,
-): Promise<LiveRecordingRow | null> {
+  now: Date = new Date(),
+): Promise<BuildClaim> {
   return db.transaction(async (tx) => {
     const row = await lockRow(tx, scope, id);
-    if (!row || row.version !== version || row.builtVersion === version) return null;
-    if (!['pending', 'processing', 'failed'].includes(row.status)) return null;
+    if (!row || row.version !== version || row.builtVersion === version) return { status: 'skip' };
+    if (!['pending', 'processing', 'failed'].includes(row.status)) return { status: 'skip' };
+    const leaseStart = now.getTime() - LIVE_RECORDING_BUILD_LEASE_MS;
+    if (row.buildClaim && row.buildClaimedAt && row.buildClaimedAt.getTime() > leaseStart) {
+      return { status: 'busy' };
+    }
     const [open] = await tx
       .select({ id: liveRecordingPart.id })
       .from(liveRecordingPart)
-      .where(and(eq(liveRecordingPart.recordingId, id), eq(liveRecordingPart.status, OPEN)))
+      .where(
+        and(
+          whereStation(liveRecordingPart, scope),
+          eq(liveRecordingPart.recordingId, id),
+          eq(liveRecordingPart.status, OPEN),
+        ),
+      )
       .limit(1);
-    if (open) return null;
+    if (open) return { status: 'skip' };
+    const claim = randomUUID();
     const [updated] = await tx
       .update(liveRecording)
-      .set({ status: 'processing', error: null })
-      .where(eq(liveRecording.id, id))
+      .set({ status: 'processing', error: null, buildClaim: claim, buildClaimedAt: now })
+      .where(and(whereStation(liveRecording, scope), eq(liveRecording.id, id)))
       .returning();
-    return updated ?? null;
+    return updated ? { status: 'claimed', row: updated, claim } : { status: 'skip' };
   });
 }
 
@@ -320,54 +372,151 @@ export async function listLiveRecordingParts(
     .orderBy(asc(liveRecordingPart.startedAt), asc(liveRecordingPart.file));
 }
 
+export type FinishedBuild =
+  | {
+      status: 'finished';
+      row: LiveRecordingRow;
+      /** The recording's previous asset, now replaced (null: none, or the same audio). */
+      replacedAssetId: string | null;
+      /**
+       * False when the episode already had other audio (a manual upload): it is left as it
+       * is, and the recording's asset waits in the library for an explicit choice (`…/attach`).
+       */
+      attached: boolean;
+    }
+  /** Another build took the recording over (a newer claim): this one's result is dropped. */
+  | { status: 'lost' }
+  | { status: 'episode-gone' };
+
 /**
- * Records a finished build of `version`, unless a newer version arrived meanwhile (then the
- * row stays `pending` for that one). Returns the row and the asset the build replaced.
+ * Records a finished build of `version`, if `claim` still holds the recording, and makes the
+ * asset the episode's audio in the same transaction. A newer version that arrived meanwhile
+ * keeps the row `pending` (or `recording`) for its own build.
  */
 export async function finishLiveRecordingBuild(
-  db: Executor,
-  scope: StationScope,
+  db: Db,
+  ctx: StationContext,
   id: string,
   version: number,
+  claim: string,
   result: { assetId: string; uploadId: string; durationMs: number; buildMs: number },
-): Promise<{ row: LiveRecordingRow; replacedAssetId: string | null } | null> {
-  const before = await getRow(db, scope, id);
-  if (!before) return null;
-  const [row] = await db
-    .update(liveRecording)
-    .set({
-      ...result,
-      builtVersion: version,
-      builtAt: new Date(),
-      error: null,
-      status: sql`case when ${liveRecording.version} = ${version} then 'ready' else ${liveRecording.status} end`,
-    })
-    .where(and(whereStation(liveRecording, scope), eq(liveRecording.id, id)))
-    .returning();
-  if (!row) return null;
-  const replaced = before.assetId && before.assetId !== result.assetId ? before.assetId : null;
-  return { row, replacedAssetId: replaced };
+): Promise<FinishedBuild> {
+  const { scope } = ctx;
+  return db.transaction(async (tx) => {
+    const before = await lockRow(tx, scope, id);
+    if (!before || before.buildClaim !== claim) return { status: 'lost' };
+    let attached = false;
+    if (before.episodeId) {
+      const outcome = await attachIfOurs(tx, ctx, before.episodeId, before.assetId, result.assetId);
+      if (outcome === 'gone') return { status: 'episode-gone' };
+      attached = outcome === 'attached';
+    }
+    const [row] = await tx
+      .update(liveRecording)
+      .set({
+        ...result,
+        builtVersion: version,
+        builtAt: new Date(),
+        error: null,
+        buildClaim: null,
+        buildClaimedAt: null,
+        status: sql`case when ${liveRecording.version} = ${version} then 'ready' else ${liveRecording.status} end`,
+      })
+      .where(and(whereStation(liveRecording, scope), eq(liveRecording.id, id)))
+      .returning();
+    if (!row) return { status: 'lost' };
+    const replaced = before.assetId && before.assetId !== result.assetId ? before.assetId : null;
+    return { status: 'finished', row, replacedAssetId: replaced, attached };
+  });
 }
 
+/**
+ * A failed build of `version`: `failed` if no newer version came meanwhile (that one gets its
+ * own build). Null when `claim` no longer holds the recording.
+ */
 export async function failLiveRecordingBuild(
   db: Executor,
   scope: StationScope,
   id: string,
   version: number,
+  claim: string,
   error: string,
 ): Promise<LiveRecordingRow | null> {
   const [row] = await db
     .update(liveRecording)
-    .set({ status: 'failed', error: error.slice(0, 2000) })
+    .set({
+      status: sql`case when ${liveRecording.version} = ${version} then 'failed' else ${liveRecording.status} end`,
+      error: error.slice(0, 2000),
+      buildClaim: null,
+      buildClaimedAt: null,
+    })
     .where(
       and(
         whereStation(liveRecording, scope),
         eq(liveRecording.id, id),
-        eq(liveRecording.version, version),
+        eq(liveRecording.buildClaim, claim),
       ),
     )
     .returning();
   return row ?? null;
+}
+
+/** A build attempt that will be retried lets go of the recording (the retry claims it again). */
+export async function releaseLiveRecordingBuild(
+  db: Executor,
+  scope: StationScope,
+  id: string,
+  claim: string,
+): Promise<void> {
+  await db
+    .update(liveRecording)
+    .set({
+      status: sql`case when ${liveRecording.status} = 'processing' then 'pending' else ${liveRecording.status} end`,
+      buildClaim: null,
+      buildClaimedAt: null,
+    })
+    .where(
+      and(
+        whereStation(liveRecording, scope),
+        eq(liveRecording.id, id),
+        eq(liveRecording.buildClaim, claim),
+      ),
+    );
+}
+
+/**
+ * Recordings waiting for a build that nothing is running: `pending` (or `processing` under a
+ * crashed worker's claim) for longer than the lease. They go back to `pending` without a
+ * claim, for the retention sweep to announce again.
+ */
+export async function resetStaleLiveRecordingBuilds(
+  db: Executor,
+  scope: StationScope,
+  now: Date,
+): Promise<LiveRecordingRow[]> {
+  const leaseStart = new Date(now.getTime() - LIVE_RECORDING_BUILD_LEASE_MS);
+  return db
+    .update(liveRecording)
+    .set({ status: 'pending', buildClaim: null, buildClaimedAt: null })
+    .where(
+      and(
+        whereStation(liveRecording, scope),
+        inArray(liveRecording.status, ['pending', 'processing']),
+        lt(liveRecording.updatedAt, leaseStart),
+        or(isNull(liveRecording.buildClaim), lt(liveRecording.buildClaimedAt, leaseStart)),
+      ),
+    )
+    .returning();
+}
+
+/** The recording can't be built again in its state (`LIVE_RECORDING_REBUILDABLE`). */
+export class LiveRecordingStateError extends Error {
+  readonly status: LiveRecordingStatus;
+  constructor(status: LiveRecordingStatus) {
+    super(`a ${status} recording can't be built again`);
+    this.name = 'LiveRecordingStateError';
+    this.status = status;
+  }
 }
 
 /** Asks for another build of the current parts (`POST …/recording/rebuild`). */
@@ -379,10 +528,13 @@ export async function requestLiveRecordingRebuild(
   return withAudit(db, ctx, async (tx, audit) => {
     const before = await lockRow(tx, ctx.scope, id);
     if (!before) throw new NotFoundError('live_recording', id);
+    if (!LIVE_RECORDING_REBUILDABLE.includes(before.status)) {
+      throw new LiveRecordingStateError(before.status);
+    }
     const [row] = await tx
       .update(liveRecording)
       .set({ status: 'pending', version: sql`${liveRecording.version} + 1`, error: null })
-      .where(eq(liveRecording.id, id))
+      .where(and(whereStation(liveRecording, ctx.scope), eq(liveRecording.id, id)))
       .returning();
     if (!row) throw new NotFoundError('live_recording', id);
     await audit({
@@ -466,27 +618,12 @@ export function toLiveRecording(
 
 // --- Retention (worker) ------------------------------------------------------------------
 
-/** Every station with a retention, for the cleanup sweep. */
-export async function liveRecordingRetentions(
-  db: Executor,
-): Promise<{ orgId: string; stationId: string; retentionDays: number }[]> {
-  const rows = await db
-    .select({
-      orgId: liveRecordingSettings.orgId,
-      stationId: liveRecordingSettings.stationId,
-      retentionDays: liveRecordingSettings.retentionDays,
-    })
-    .from(liveRecordingSettings);
-  return rows.flatMap((r) =>
-    r.retentionDays === null ? [] : [{ ...r, retentionDays: r.retentionDays }],
-  );
-}
-
-/** Built recordings of the station whose last part ended before `before`. */
+/** Settled recordings of the station (`statuses`) whose last part ended before `before`. */
 export async function liveRecordingsEndedBefore(
   db: Executor,
   scope: StationScope,
   before: Date,
+  statuses: readonly LiveRecordingStatus[] = ['ready', 'failed', 'skipped'],
 ): Promise<LiveRecordingRow[]> {
   return db
     .select()
@@ -494,7 +631,7 @@ export async function liveRecordingsEndedBefore(
     .where(
       and(
         whereStation(liveRecording, scope),
-        inArray(liveRecording.status, ['ready', 'failed', 'skipped']),
+        inArray(liveRecording.status, [...statuses]),
         sql`${liveRecording.endedAt} < ${before.toISOString()}::timestamptz`,
       ),
     );
@@ -622,35 +759,76 @@ export async function findUploadByStagingKey(
   return row ?? null;
 }
 
+type AttachOutcome = 'attached' | 'kept' | 'gone';
+
 /**
- * Makes `assetId` the episode's audio (audited as an episode update). A `planned` or
- * `missing` episode stays as it is but for the audio: it aired live, the as-run says so.
- * False when the episode is gone.
+ * Makes `assetId` the episode's audio when the episode has none, or has the recording's
+ * previous build (`ownAssetId`): other audio (a manual upload) is never overwritten. A
+ * `planned` or `missing` episode stays as it is but for the audio: it aired live, the as-run
+ * says so. Audited as an episode update.
  */
-export async function attachLiveRecordingAsset(
-  db: Db,
+async function attachIfOurs(
+  tx: Executor,
   ctx: StationContext,
   episodeId: string,
+  ownAssetId: string | null,
   assetId: string,
-): Promise<boolean> {
+): Promise<AttachOutcome> {
+  const [before] = await tx
+    .select({ assetId: episode.assetId })
+    .from(episode)
+    .where(and(whereStation(episode, ctx.scope), eq(episode.id, episodeId)))
+    .for('update');
+  if (!before) return 'gone';
+  if (before.assetId === assetId) return 'attached';
+  if (before.assetId !== null && before.assetId !== ownAssetId) return 'kept';
+  await setEpisodeAudio(tx, ctx, episodeId, before.assetId, assetId);
+  return 'attached';
+}
+
+async function setEpisodeAudio(
+  tx: Executor,
+  ctx: StationContext,
+  episodeId: string,
+  previous: string | null,
+  assetId: string,
+) {
+  await tx
+    .update(episode)
+    .set({ assetId })
+    .where(and(whereStation(episode, ctx.scope), eq(episode.id, episodeId)));
+  await writeAudit(tx, ctx, {
+    action: 'episode.update',
+    entity: { type: 'episode', id: episodeId },
+    diff: auditDiff({ assetId: previous }, { assetId }),
+  });
+}
+
+/**
+ * Makes a built recording the episode's audio, replacing what it has (`POST …/attach`: the
+ * explicit choice when a build found other audio there).
+ */
+export async function attachLiveRecording(
+  db: Db,
+  ctx: StationContext,
+  id: string,
+): Promise<LiveRecordingRow> {
   return db.transaction(async (tx) => {
-    const [before] = await tx
+    const row = await lockRow(tx, ctx.scope, id);
+    if (!row) throw new NotFoundError('live_recording', id);
+    if (row.status !== 'ready' || !row.assetId || !row.episodeId) {
+      throw new LiveRecordingStateError(row.status);
+    }
+    const [ep] = await tx
       .select({ assetId: episode.assetId })
       .from(episode)
-      .where(and(whereStation(episode, ctx.scope), eq(episode.id, episodeId)))
+      .where(and(whereStation(episode, ctx.scope), eq(episode.id, row.episodeId)))
       .for('update');
-    if (!before) return false;
-    if (before.assetId === assetId) return true;
-    await tx
-      .update(episode)
-      .set({ assetId })
-      .where(and(whereStation(episode, ctx.scope), eq(episode.id, episodeId)));
-    await writeAudit(tx, ctx, {
-      action: 'episode.update',
-      entity: { type: 'episode', id: episodeId },
-      diff: auditDiff(before, { assetId }),
-    });
-    return true;
+    if (!ep) throw new NotFoundError('episode', row.episodeId);
+    if (ep.assetId !== row.assetId) {
+      await setEpisodeAudio(tx, ctx, row.episodeId, ep.assetId, row.assetId);
+    }
+    return row;
   });
 }
 
@@ -676,6 +854,31 @@ export async function assetPlannedInLog(
     )
     .limit(1);
   return !!row;
+}
+
+/**
+ * Whether a recording's asset is still used: by a recording (as its audio), an episode (as
+ * its audio), or the log (planned to air after `after`). Unused ones can go.
+ */
+export async function liveRecordingAssetInUse(
+  db: Executor,
+  scope: StationScope,
+  assetId: string,
+  after: Date = new Date(),
+): Promise<boolean> {
+  const [byRecording] = await db
+    .select({ id: liveRecording.id })
+    .from(liveRecording)
+    .where(and(whereStation(liveRecording, scope), eq(liveRecording.assetId, assetId)))
+    .limit(1);
+  if (byRecording) return true;
+  const [byEpisode] = await db
+    .select({ id: episode.id })
+    .from(episode)
+    .where(and(whereStation(episode, scope), eq(episode.assetId, assetId)))
+    .limit(1);
+  if (byEpisode) return true;
+  return assetPlannedInLog(db, scope, assetId, after);
 }
 
 /** Every station (any of them may record): the cleanup sweep's list. */

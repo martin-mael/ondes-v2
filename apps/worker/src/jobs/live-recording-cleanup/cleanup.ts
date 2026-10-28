@@ -1,4 +1,5 @@
-import { chmod, mkdir, readdir, rm, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   assetPlannedInLog,
@@ -6,15 +7,18 @@ import {
   deleteAsset,
   getLiveRecordingSettings,
   knownLivePartFiles,
+  type LiveRecordingRow,
   livePartsToDelete,
   liveRecordingsEndedBefore,
   markLivePartsDeleted,
   markLiveRecordingExpired,
   NotFoundError,
+  resetStaleLiveRecordingBuilds,
   resolveStationScope,
   type StationContext,
 } from '@ondes/db';
 import {
+  LIVE_RECORDING_FAILED_KEEP_MS,
   LIVE_RECORDING_LOCAL_KEEP_MS,
   type LiveRecordingCleanupJobPayload,
   type RealtimeEvent,
@@ -26,15 +30,20 @@ import { isPartFile } from '../live-recording/join.ts';
 // `live-recording-cleanup` job (#67, ADR 0039): one station's retention, hourly.
 //
 // - Audio: a recording whose show ended more than `retentionDays` ago loses its asset (the
-//   episode stays, without audio; ADR 0028 then never picks it for a rerun) and turns
-//   `expired`. An asset the log still plans to air is kept until that has aired.
+//   episode stays, without audio; a `ready` episode turns `planned` through the
+//   `episode_asset_cleared` trigger, so `episode_ready_asset_check` holds; ADR 0028 then
+//   never picks it for a rerun) and turns `expired`. An asset the log still plans to air is
+//   kept until that has aired. A failed recording (no audio) expires after the retention, or
+//   after `LIVE_RECORDING_FAILED_KEEP_MS` when the station keeps recordings for good.
+// - Builds nothing is running (a lost `pending` event, a crashed worker's claim) are
+//   announced again, so the `live-recording` trigger enqueues them.
 // - Local files (the engine's, in `<cache>/<station>/recordings`): deleted a day after their
-//   recording was built (a rebuild needs them), or a day after they closed when nothing will
-//   build them (recording off, or no session). Files the database doesn't know (a lost
-//   event, an engine opened by hand) go a day after their last write.
-// - The directory itself is made here, world-writable: the engine runs as another user than
-//   the worker, and Docker would create a missing mount point owned by root.
+//   recording was built (a later build starts from that build's audio in the bucket), at once
+//   when it expired, or a day after they closed when nothing will build them (recording off,
+//   or no session). Files the database doesn't know (a lost event, an engine opened by hand)
+//   go a day after their last write.
 //
+// Each recording and file is its own step: one that fails is logged and the rest go on.
 // Idempotent: every step looks at what is there now.
 
 export const LIVE_RECORDING_CLEANUP_ACTOR = {
@@ -50,7 +59,7 @@ export interface CleanupDeps {
   log?: (entry: Record<string, unknown>) => void;
 }
 
-export type CleanupResult = { expired: number; filesDeleted: number };
+export type CleanupResult = { expired: number; filesDeleted: number; failed: number };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -62,12 +71,53 @@ export async function cleanupLiveRecordings(
   const scope = await resolveStationScope(deps.db, payload.orgId, payload.stationId);
   const ctx: StationContext = { actor: LIVE_RECORDING_CLEANUP_ACTOR, scope };
   const settings = await getLiveRecordingSettings(deps.db, scope);
-  let expired = 0;
+  const result: CleanupResult = { expired: 0, filesDeleted: 0, failed: 0 };
+  const step = async (what: string, fields: Record<string, unknown>, fn: () => Promise<void>) => {
+    try {
+      await fn();
+    } catch (err) {
+      result.failed++;
+      deps.log?.({
+        level: 'error',
+        msg: `live recording cleanup: ${what} failed`,
+        stationId: scope.stationId,
+        ...fields,
+        err: String(err),
+      });
+    }
+  };
+  const announce = async (row: LiveRecordingRow) => {
+    await deps.publish?.(
+      realtimeEventSchema.parse({
+        id: crypto.randomUUID(),
+        stationId: row.stationId,
+        at: now.toISOString(),
+        type: 'live.recording.updated',
+        data: {
+          orgId: row.orgId,
+          recordingId: row.id,
+          episodeId: row.episodeId,
+          showId: row.showId,
+          status: row.status,
+          version: row.version,
+        },
+      }),
+    );
+  };
+
+  const expiring = new Map<string, LiveRecordingRow>();
   if (settings.retentionDays !== null) {
     const before = new Date(now.getTime() - settings.retentionDays * DAY_MS);
-    for (const recording of await liveRecordingsEndedBefore(deps.db, scope, before)) {
+    for (const r of await liveRecordingsEndedBefore(deps.db, scope, before)) expiring.set(r.id, r);
+  }
+  const failedBefore = new Date(now.getTime() - LIVE_RECORDING_FAILED_KEEP_MS);
+  for (const r of await liveRecordingsEndedBefore(deps.db, scope, failedBefore, ['failed'])) {
+    expiring.set(r.id, r);
+  }
+  for (const recording of expiring.values()) {
+    await step('expiry', { recordingId: recording.id }, async () => {
       if (recording.assetId) {
-        if (await assetPlannedInLog(deps.db, scope, recording.assetId, now)) continue;
+        if (await assetPlannedInLog(deps.db, scope, recording.assetId, now)) return;
         try {
           await deleteAsset(deps.db, ctx, recording.assetId);
         } catch (err) {
@@ -76,73 +126,73 @@ export async function cleanupLiveRecordings(
         }
       }
       const row = await markLiveRecordingExpired(deps.db, scope, recording.id);
-      expired++;
-      if (row && deps.publish) {
-        await deps.publish(
-          realtimeEventSchema.parse({
-            id: crypto.randomUUID(),
-            stationId: row.stationId,
-            at: now.toISOString(),
-            type: 'live.recording.updated',
-            data: {
-              orgId: row.orgId,
-              recordingId: row.id,
-              episodeId: row.episodeId,
-              showId: row.showId,
-              status: row.status,
-              version: row.version,
-            },
-          }),
-        );
-      }
-    }
+      result.expired++;
+      if (row) await announce(row);
+    });
   }
 
-  let filesDeleted = 0;
+  await step('stale builds', {}, async () => {
+    for (const row of await resetStaleLiveRecordingBuilds(deps.db, scope, now)) {
+      deps.log?.({
+        level: 'warn',
+        msg: 'live recording build announced again',
+        stationId: scope.stationId,
+        recordingId: row.id,
+        version: row.version,
+      });
+      await announce(row);
+    }
+  });
+
   if (deps.cacheRoot) {
     const dir = recordingsDir(deps.cacheRoot, scope.stationId);
-    await ensureDir(dir);
+    await step('recordings directory', { dir }, () => ensureDir(dir));
     const parts = await livePartsToDelete(deps.db, scope, now, LIVE_RECORDING_LOCAL_KEEP_MS);
+    const deleted: string[] = [];
     for (const part of parts) {
-      if (isPartFile(part.file)) await rm(join(dir, part.file), { force: true });
-      filesDeleted++;
+      await step('file', { file: part.file }, async () => {
+        if (isPartFile(part.file)) await rm(join(dir, part.file), { force: true });
+        deleted.push(part.id);
+        result.filesDeleted++;
+      });
     }
-    await markLivePartsDeleted(
-      deps.db,
-      scope,
-      parts.map((p) => p.id),
-    );
+    await markLivePartsDeleted(deps.db, scope, deleted);
     const known = await knownLivePartFiles(deps.db, scope);
-    for (const name of await readdir(dir)) {
+    const names = await readdir(dir).catch(() => [] as string[]);
+    for (const name of names) {
       if (!isPartFile(name) || known.has(name)) continue;
-      const info = await stat(join(dir, name)).catch(() => null);
-      if (info && now.getTime() - info.mtimeMs > LIVE_RECORDING_LOCAL_KEEP_MS) {
-        await rm(join(dir, name), { force: true });
-        filesDeleted++;
-      }
+      await step('stray file', { file: name }, async () => {
+        const info = await stat(join(dir, name)).catch(() => null);
+        if (info && now.getTime() - info.mtimeMs > LIVE_RECORDING_LOCAL_KEEP_MS) {
+          await rm(join(dir, name), { force: true });
+          result.filesDeleted++;
+        }
+      });
     }
   }
-  if (expired || filesDeleted) {
+  if (result.expired || result.filesDeleted || result.failed) {
     deps.log?.({
-      level: 'info',
+      level: result.failed ? 'warn' : 'info',
       msg: 'live recording cleanup',
       stationId: scope.stationId,
-      expired,
-      filesDeleted,
+      ...result,
     });
   }
-  return { expired, filesDeleted };
+  return result;
 }
 
-/** `<cache>/<station>/recordings`, writable by the engine's user (uid 100 in the image). */
+/**
+ * `<cache>/<station>/recordings`, made if missing. The api's engine lifecycle makes it first
+ * (owned by its user, which the engine runs as; ADR 0039); this worker runs as the same user
+ * and must be able to delete the engine's files there.
+ */
 export async function ensureDir(dir: string): Promise<void> {
-  await mkdir(dir, { recursive: true });
-  const info = await stat(dir);
-  // 0777 without the sticky bit: the worker must delete files the engine wrote. Fails when
-  // Docker made the directory first (owned by root): the error says what to fix.
-  if ((info.mode & 0o777) !== 0o777) {
-    await chmod(dir, 0o777).catch((err: unknown) => {
-      throw new Error(`${dir} is not writable by the engine (chmod 0777 it): ${String(err)}`);
-    });
+  await mkdir(dir, { recursive: true, mode: 0o750 });
+  try {
+    await access(dir, constants.W_OK | constants.X_OK);
+  } catch (err) {
+    throw new Error(
+      `${dir} is not writable by the worker: it must belong to the user the api and the worker run as (${String(err)})`,
+    );
   }
 }

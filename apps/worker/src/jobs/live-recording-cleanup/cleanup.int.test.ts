@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -19,7 +19,7 @@ import {
   updateLiveRecordingSettings,
 } from '@ondes/db';
 import { createTestDatabase, type TestDatabase } from '@ondes/db/testing';
-import type { Actor } from '@ondes/shared';
+import type { Actor, RealtimeEvent } from '@ondes/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { defaultTools } from '../ingest/ffmpeg.ts';
 import { buildLiveRecording } from '../live-recording/build.ts';
@@ -27,7 +27,9 @@ import { cleanupLiveRecordings, ensureDir } from './cleanup.ts';
 
 // Live recording retention (#67, ADR 0039) against a real database and a scratch cache root:
 // expired audio is deleted (unless the log still plans it), local files go a day after their
-// build, strays a day after their last write; and a build whose file is gone fails calmly.
+// build, strays a day after their last write, failed recordings expire after a month, builds
+// nothing runs are announced again, one failing step doesn't stop the others; and a build
+// whose file is gone fails calmly.
 
 const system: Actor = { type: 'system', name: 'test' };
 const DAY = 24 * 60 * 60 * 1000;
@@ -65,7 +67,12 @@ afterAll(async () => {
 const dir = () => join(root, scope.stationId, 'recordings');
 
 /** A built recording of an episode, ended `endedDaysAgo`, built `builtDaysAgo`, with one file. */
-async function built(endedDaysAgo: number, builtDaysAgo = endedDaysAgo) {
+async function built(
+  endedDaysAgo: number,
+  builtDaysAgo = endedDaysAgo,
+  status: 'ready' | 'failed' = 'ready',
+  episodeStatus: 'aired' | 'ready' = 'aired',
+) {
   n++;
   const asset = await createAsset(
     tdb.db,
@@ -74,7 +81,7 @@ async function built(endedDaysAgo: number, builtDaysAgo = endedDaysAgo) {
   );
   const [ep] = await tdb.db
     .insert(episode)
-    .values({ ...scope, showId, number: n, kind: 'live', status: 'aired', assetId: asset.id })
+    .values({ ...scope, showId, number: n, kind: 'live', status: episodeStatus, assetId: asset.id })
     .returning();
   const endedAt = new Date(NOW.getTime() - endedDaysAgo * DAY);
   const [rec] = await tdb.db
@@ -83,10 +90,10 @@ async function built(endedDaysAgo: number, builtDaysAgo = endedDaysAgo) {
       ...scope,
       episodeId: ep?.id,
       showId,
-      status: 'ready',
+      status,
       version: 1,
-      builtVersion: 1,
-      assetId: asset.id,
+      builtVersion: status === 'ready' ? 1 : null,
+      assetId: status === 'ready' ? asset.id : null,
       endedAt,
       builtAt: new Date(NOW.getTime() - builtDaysAgo * DAY),
     })
@@ -109,10 +116,23 @@ async function built(endedDaysAgo: number, builtDaysAgo = endedDaysAgo) {
       updatedAt: new Date(NOW.getTime() - builtDaysAgo * DAY),
     })
     .returning();
+  if (!part) throw new Error('insert failed');
   return { rec, ep, asset, file, part };
 }
 
-const deps = () => ({ db: tdb.db, cacheRoot: root, now: () => NOW });
+const published: RealtimeEvent[] = [];
+const logs: Record<string, unknown>[] = [];
+const deps = () => ({
+  db: tdb.db,
+  cacheRoot: root,
+  now: () => NOW,
+  publish: async (e: RealtimeEvent) => {
+    published.push(e);
+  },
+  log: (entry: Record<string, unknown>) => {
+    logs.push(entry);
+  },
+});
 
 describe('live recording cleanup', () => {
   it('deletes local files a day after their build, keeps fresher ones, and sweeps strays', async () => {
@@ -126,12 +146,66 @@ describe('live recording cleanup', () => {
     await utimes(join(dir(), 'live-stray-2.flac'), NOW, NOW);
 
     const result = await cleanupLiveRecordings(deps(), scope);
-    expect(result).toEqual({ expired: 0, filesDeleted: 2 });
+    expect(result).toEqual({ expired: 0, filesDeleted: 2, failed: 0 });
     const left = await readdir(dir());
     expect(left.sort()).toEqual([fresh.file, 'live-stray-2.flac'].sort());
     expect(left).not.toContain(old.file);
-    // The engine (another user) must be able to write there.
-    expect((await stat(dir())).mode & 0o777).toBe(0o777);
+    await rm(join(dir(), fresh.file));
+    await rm(join(dir(), 'live-stray-2.flac'));
+  });
+
+  it('goes on past a step that fails, and says so', async () => {
+    const a = await built(3, 2);
+    const b = await built(3, 2);
+    // `a`'s file can't be deleted (a directory took its name).
+    await rm(join(dir(), a.file));
+    await mkdir(join(dir(), a.file));
+    await writeFile(join(dir(), a.file, 'x'), 'x');
+    logs.length = 0;
+    const result = await cleanupLiveRecordings(deps(), scope);
+    expect(result).toMatchObject({ filesDeleted: 1, failed: 1 });
+    expect(await readdir(dir())).toEqual([a.file]);
+    expect(logs.find((l) => l.level === 'error')).toMatchObject({ file: a.file });
+    const parts = await tdb.sql<{ file: string; status: string }[]>`
+      select file, status from live_recording_part where id in (${a.part.id}, ${b.part.id})`;
+    expect(Object.fromEntries(parts.map((p) => [p.file, p.status]))).toEqual({
+      [a.file]: 'closed',
+      [b.file]: 'deleted',
+    });
+    await rm(join(dir(), a.file), { recursive: true });
+    await tdb.sql`update live_recording_part set status = 'deleted' where id = ${a.part.id}`;
+  });
+
+  it('expires a failed recording after a month when recordings are kept for good', async () => {
+    const recent = await built(20, 20, 'failed');
+    const old = await built(31, 31, 'failed');
+    const result = await cleanupLiveRecordings(deps(), scope);
+    expect(result.expired).toBe(1);
+    expect((await getLiveRecording(tdb.db, scope, old.rec.id)).status).toBe('expired');
+    expect((await getLiveRecording(tdb.db, scope, recent.rec.id)).status).toBe('failed');
+    // Its file goes with it; the recent one's stays.
+    expect(await readdir(dir())).toEqual([recent.file]);
+    await rm(join(dir(), recent.file));
+  });
+
+  it('announces again a build nothing is running', async () => {
+    const { rec } = await built(1);
+    await tdb.sql`
+      update live_recording set status = 'processing', version = 2,
+        build_claim = ${randomUUID()},
+        build_claimed_at = ${new Date(NOW.getTime() - DAY).toISOString()}::timestamptz,
+        updated_at = ${new Date(NOW.getTime() - DAY).toISOString()}::timestamptz
+      where id = ${rec.id}`;
+    published.length = 0;
+    await cleanupLiveRecordings(deps(), scope);
+    expect(published.flatMap((e) => (e.type === 'live.recording.updated' ? [e.data] : []))).toEqual(
+      [expect.objectContaining({ recordingId: rec.id, status: 'pending', version: 2 })],
+    );
+    expect(await getLiveRecording(tdb.db, scope, rec.id)).toMatchObject({
+      status: 'pending',
+      buildClaim: null,
+    });
+    await tdb.sql`update live_recording set status = 'ready', version = 1 where id = ${rec.id}`;
   });
 
   it('expires audio past the retention, unless the log still plans it', async () => {
@@ -139,6 +213,8 @@ describe('live recording cleanup', () => {
     const expired = await built(40);
     const kept = await built(10);
     const planned = await built(45);
+    // A `ready` episode losing its audio turns `planned` (episode_ready_asset_check holds).
+    const readyEpisode = await built(50, 50, 'ready', 'ready');
     // A rerun of the third one is planned tomorrow.
     const [day] = await tdb.db
       .insert(logDay)
@@ -162,7 +238,10 @@ describe('live recording cleanup', () => {
     });
 
     const result = await cleanupLiveRecordings(deps(), scope);
-    expect(result.expired).toBe(1);
+    expect(result).toMatchObject({ expired: 2, failed: 0 });
+    const [readyAfter] = await tdb.sql<{ asset_id: string | null; status: string }[]>`
+      select asset_id, status from episode where id = ${readyEpisode.ep.id}`;
+    expect(readyAfter).toEqual({ asset_id: null, status: 'planned' });
     expect(await getLiveRecording(tdb.db, scope, expired.rec.id)).toMatchObject({
       status: 'expired',
       assetId: null,

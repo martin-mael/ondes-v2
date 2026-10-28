@@ -1,6 +1,6 @@
 import { execFile, spawnSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -50,6 +50,9 @@ import { buildLiveRecording, type LiveRecordingDeps } from './build.ts';
 // durable consumer would), the `live-recording` build joins the three files, uploads and
 // ingests them, and attaches the asset to the episode; the peaks job then draws its waveform.
 // The joined audio must be DJ 1, DJ 2, DJ 2 with no silence and none of the automation.
+// Then a second show: the recordings directory isn't writable when the DJ goes on air (the
+// engine retries the open every 10 s, announcing nothing), then is; the DJ hangs up with no
+// session after it (the day's last show): the one file closes and builds.
 // Needs Docker, the dev Postgres and Garage, and the worker image's ffmpeg
 // (PATH=$PWD/apps/worker/test/bin:$PATH, like CI). Own network and containers.
 
@@ -455,4 +458,93 @@ describe.skipIf(!enabled)('live recording on the real engine', () => {
       }),
     );
   }, 300_000);
+
+  it("announces only the file it could open, and closes the day's last show on hang-up", async () => {
+    const [created] = await tdb.db
+      .insert(show)
+      .values({ ...scope, name: 'Nocturne', defaultSlotType: 'live' })
+      .returning();
+    if (!created) throw new Error('no show');
+    const [createdEpisode] = await tdb.db
+      .insert(episode)
+      .values({ ...scope, showId: created.id, number: 1, kind: 'live', status: 'aired' })
+      .returning();
+    if (!createdEpisode) throw new Error('no episode');
+    const ep = createdEpisode;
+    const S4 = randomUUID();
+    const seqBefore = (await engine.events(0)).at(-1)?.seq ?? 0;
+    const before = new Set(readdirSync(recordings));
+    for (const id of ['night-1', 'night-2'])
+      await engine.push({ item_id: id, uri: '/work/auto.wav', title: id });
+
+    // The directory isn't writable when the DJ goes on air: the engine can't open its file.
+    chmodSync(recordings, 0o555);
+    startDj('dj1', 'live', TONES.dj1);
+    await until('DJ 1 ready', (st) => st.live.inputs?.[0]?.ready === true);
+    await tdb.db.insert(liveSession).values({
+      ...scope,
+      id: S4,
+      input: 1,
+      trigger: 'slot',
+      showId: created.id,
+      episodeId: ep.id,
+      episodeNumber: 1,
+      title: 'Nocturne',
+    });
+    await engine.setLive(true, { input: 1, sessionId: S4 });
+    await until('DJ 1 on air', (st) => st.live.on_air === 1);
+    await sleep(3000);
+    expect(readdirSync(recordings).filter((f) => !before.has(f))).toEqual([]);
+    // Fixed: the engine's next try (every 10 s) opens it.
+    chmodSync(recordings, 0o755);
+    for (let waited = 0; ; waited += 500) {
+      if (readdirSync(recordings).some((f) => !before.has(f))) break;
+      if (waited > 20_000) throw new Error('the engine never opened its file');
+      await sleep(500);
+    }
+    await sleep(3000);
+
+    // The DJ hangs up and nothing follows: the last show of the day.
+    docker(['rm', '-f', `ondes-live-rec-dj1-${run}`], false);
+    await until('DJ 1 gone', (st) => st.live.inputs?.[0]?.connected === false);
+    await engine.setLive(false);
+    await tdb.sql`update live_session set ended_at = now(), end_reason = 'disconnected' where id = ${S4}`;
+    await until('automation back', (st) => st.live.on_air == null);
+    await sleep(500);
+
+    const wire = (await engine.events(seqBefore)).filter((e) => e.seq > seqBefore);
+    const ofS4 = (type: string) =>
+      wire.filter((e) => e.type === type && 'session_id' in e.data && e.data.session_id === S4);
+    // One file, announced once open, and closed by the hang-up.
+    expect(ofS4('live.recording.started')).toHaveLength(1);
+    expect(ofS4('live.recording.closed')).toHaveLength(1);
+    const created_ = readdirSync(recordings).filter((f) => !before.has(f));
+    expect(created_).toHaveLength(1);
+
+    const recorder = createLiveRecordingRecorder({ db: tdb.db, logger: silentLogger });
+    for (const e of wire) await recorder.handle(toRealtimeEvent(e) as RealtimeEvent);
+    const [rec] = await tdb.sql<{ id: string; status: string; version: number }[]>`
+      select id, status, version from live_recording where episode_id = ${ep.id}`;
+    expect(rec).toMatchObject({ status: 'pending', version: 1 });
+    if (!rec) throw new Error('no recording');
+    const parts = await listLiveRecordingParts(tdb.db, scope, rec.id);
+    expect(parts.map((p) => [p.file, p.status])).toEqual([[created_[0], 'closed']]);
+
+    const result = await buildLiveRecording(
+      {
+        db: tdb.db,
+        storage,
+        tools,
+        publish: async () => {},
+        cacheRoot: join(work, 'cache'),
+        tmpDir: work,
+      },
+      { orgId: scope.orgId, stationId: scope.stationId, recordingId: rec.id, version: 1 },
+      { attempt: 1, isLastAttempt: true },
+    );
+    expect(result.status).toBe('ready');
+    const [after] = await tdb.sql<{ asset_id: string }[]>`
+      select asset_id from episode where id = ${ep.id}`;
+    expect(after?.asset_id).toBe(result.status === 'ready' ? result.assetId : 'none');
+  }, 180_000);
 });

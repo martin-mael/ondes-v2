@@ -61,11 +61,14 @@ being one of them.
 - **Playout cache**: `<ENGINE_CACHE_ROOT>/<stationId>` bind-mounted read-only at `/cache`
   (ADR 0004), created if missing.
 - **Live recordings**: `<ENGINE_CACHE_ROOT>/<stationId>/recordings` bind-mounted read-write at
-  `/recordings` (ADR 0039), the only path the engine writes to. The lifecycle creates it mode
-  0777 before creating the container (the engine runs as another user than the worker, and a
-  directory Docker creates is root's); the worker's sweep makes it too, and logs one it can't
-  make writable (`chmod 0777`).
-  The template's `live.recordDir` points there.
+  `/recordings` (ADR 0039), the only path the engine writes to. The lifecycle creates it before
+  creating the container (a directory Docker creates is root's), mode 0750, and runs the engine
+  as its own `uid:gid` (`User`, with `HOME=/tmp`; `ENGINE_USER` overrides), the user the worker
+  runs as too: the engine writes and the worker deletes as the owner. An api running as root
+  (or an `ENGINE_USER` of someone else) leaves the engine on the image's user and makes the
+  directory 0777 instead. The worker's sweep makes it too, and logs one it can't write to.
+  The template's `live.recordDir` points there. The guard allows binds of the container's own
+  station only, and `User` only as a numeric, non-root `uid:gid`.
 - **Network**: `ENGINE_NETWORK`, shared with the api and Icecast; the container is reachable as
   `<prefix>-<stationId>`. The control port is never published.
 - **Metrics**: the Prometheus server is off (it has no auth, and engines share a network). Turn

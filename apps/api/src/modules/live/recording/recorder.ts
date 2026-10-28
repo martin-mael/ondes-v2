@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import {
   type Db,
+  type LiveRecordingPartRow,
   type LiveRecordingRow,
   openPartsOfOtherBoots,
+  openPartsSupersededBy,
   type PartChange,
   recordPartClosed,
   recordPartStarted,
@@ -18,8 +20,11 @@ import type { Logger } from '../../engine/adapter/index.ts';
 // station; see plugin.ts). Every write is idempotent (parts are unique per station and file),
 // so a redelivery changes nothing and republishes the same event:
 //
-// - `engine.live.recording.started`: the part, assigned to its recording, which is now
-//   `recording` (a build of an earlier version waits for it);
+// - `engine.live.recording.started` (sent once the file is open and has audio, so a file the
+//   engine couldn't open is never a part): the part, assigned to its recording, which is now
+//   `recording` (a build of an earlier version waits for it). Other parts of the same boot
+//   still open never closed (a write error, a lost event): they are `interrupted`, so their
+//   recording isn't held forever;
 // - `engine.live.recording.closed`: the part is complete; the recording's version goes up and
 //   it is `pending` once no part is open (`skipped` when the station records nothing);
 // - `engine.booted`: parts of earlier boots still open are `interrupted` (the file is readable
@@ -88,9 +93,13 @@ export function createLiveRecordingRecorder(options: LiveRecordingRecorderOption
     }
   }
 
-  async function interruptOtherBoots(source: RealtimeEvent, scope: StationScope, bootId: string) {
+  async function interrupt(
+    source: RealtimeEvent,
+    scope: StationScope,
+    parts: LiveRecordingPartRow[],
+  ) {
     const at = new Date(source.at);
-    for (const part of await openPartsOfOtherBoots(db, scope, bootId)) {
+    for (const part of parts) {
       const change = await recordPartClosed(db, scope, {
         file: part.file,
         sessionId: part.sessionId,
@@ -113,8 +122,17 @@ export function createLiveRecordingRecorder(options: LiveRecordingRecorderOption
     }
     const scope = await stationScopeById(db, event.stationId);
     if (!scope) return;
-    await interruptOtherBoots(event, scope, event.data.bootId);
+    await interrupt(event, scope, await openPartsOfOtherBoots(db, scope, event.data.bootId));
     if (event.type === 'engine.booted') return;
+    if (event.type === 'engine.live.recording.started') {
+      const { bootId, file, startedAt } = event.data;
+      const superseded = await openPartsSupersededBy(db, scope, {
+        bootId,
+        file,
+        startedAt: new Date(startedAt),
+      });
+      await interrupt(event, scope, superseded);
+    }
     // Sessions are Node's uuids; anything else is an engine opened by hand.
     if (!uuidSchema.safeParse(event.data.sessionId).success) return;
     const part = {

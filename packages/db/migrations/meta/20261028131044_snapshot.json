@@ -1,5 +1,5 @@
 {
-  "id": "f106db02-be94-4fac-b523-3c9687ef8fa1",
+  "id": "8b9a4914-b685-4186-8dfb-6fdad1ce00f8",
   "prevId": "64bb6f79-c280-4ddd-934f-1cf7911848d6",
   "version": "7",
   "dialect": "postgresql",
@@ -5941,6 +5941,18 @@
         "build_ms": {
           "name": "build_ms",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "build_claim": {
+          "name": "build_claim",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "build_claimed_at": {
+          "name": "build_claimed_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
