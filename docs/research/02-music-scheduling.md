@@ -179,10 +179,9 @@ Consolidated from the sources above (MusicMaster, GSelector, NextKast, CloudRadi
 - RadioKing blog: AI automates much playlist curation previously done by PDs/MDs. https://www.radioking.com/blog/ (snippet)
 - Market: QYResearch music scheduling software 2026-2032 report (snippet; no pricing).
 - Trend observations:
-  - Attribute-driven selection (tempo, mood, energy embeddings) replacing hand-coded sound codes.
+  - Attribute-driven selection (tempo, mood, energy) replacing hand-coded sound codes.
   - Optimization (constraint programming / MIP / local search) replacing greedy pick-by-pick scheduling.
   - Listener-data feedback (skip rates, completion, tune-in) replacing or augmenting callout.
-  - LLM-based metadata enrichment (mood/era/gender tags) to reduce manual coding; unverified in our sources.
 - Limitation to remember: AI generation without human "music director" judgment has been criticised by consultants; research and PD goals remain the control surface.
 
 ---
@@ -225,7 +224,6 @@ Priority legend: Must (MVP), Should (v1.x), Could (later).
 - Scheduler API surface to Node backend: job per station per day, RabbitMQ job for generation, idempotent output IDs.
 
 ### Could
-- AI/ML scoring for next-track suggestion (tempo/mood embeddings; listener skip/completion feedback); keep it as a suggestion layer with explicit rule enforcement underneath.
 - Listener-data ingestion (Icecast/Liquidsoap logs, tune-in or skip data) to update song scores.
 - Smart playlists (criteria-based auto-population) for non-music uses (e.g., "all 80s female-vocal Currents").
 - Lunar rotation and off-peak placement rules.
