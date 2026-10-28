@@ -226,9 +226,16 @@ export function ScheduledHandovers({ stationId }: { stationId: string }) {
   const [cancelling, setCancelling] = useState<string | null>(null);
   if (!canControl) return null;
 
-  // Station time only (CLAUDE.md "Web app").
+  // Station time only (CLAUDE.md "Web app"), with the day: the list spans up to 48 h.
   const time = (at: Date) =>
-    new Intl.DateTimeFormat(locale, { timeZone: timezone, timeStyle: 'short' }).format(at);
+    new Intl.DateTimeFormat(locale, {
+      timeZone: timezone,
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(at);
   const cancel = async (handover: LiveHandover) => {
     setCancelling(handover.id);
     try {

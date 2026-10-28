@@ -1,6 +1,13 @@
-import { type MyOrg, zonedParts } from '@ondes/shared';
-import { act, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import {
+  type LiveHandover,
+  type LiveSession,
+  liveHandoverSchema,
+  liveSessionSchema,
+  type MyOrg,
+  zonedParts,
+} from '@ondes/shared';
+import { act, waitFor, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FakeEventSource } from '../../app/testing/fake-event-source.ts';
 import { type ApiRoute, orgs, renderApp, signedIn, stationId } from '../../app/testing/render.tsx';
 
@@ -43,6 +50,41 @@ const streamer = (s: { id: string; displayName: string }) => ({
   updatedAt: '2026-10-27T10:00:00.000Z',
 });
 
+// Answers shaped like the api's, checked against the contracts the client parses them with.
+function handover(over: Partial<Record<keyof LiveHandover, unknown>> = {}) {
+  const h = {
+    id: handoverId,
+    streamer: kai,
+    // 23:00 in Paris.
+    at: '2026-10-27T22:00:00.000Z',
+    fadeMs: 3000,
+    status: 'pending',
+    reason: null,
+    sessionId: null,
+    createdAt: '2026-10-27T10:00:00.000Z',
+    ...over,
+  };
+  liveHandoverSchema.parse(h);
+  return h;
+}
+
+function session(): Record<keyof LiveSession, unknown> {
+  const s = {
+    id: '01a169cc-0000-7000-8000-0000000000d1',
+    streamer: kai,
+    input: 1,
+    trigger: 'manual',
+    startedAt: '2026-10-27T21:00:00.000Z',
+    endedAt: null,
+    endReason: null,
+    show: null,
+    episode: null,
+    title: null,
+  };
+  liveSessionSchema.parse({ ...s, startedAt: new Date(s.startedAt) });
+  return s;
+}
+
 function routes(role: 'station_manager' | 'presenter'): Record<string, ApiRoute> {
   const copy = structuredClone(orgs) as MyOrg[];
   const st = copy[0]?.stations[0];
@@ -51,33 +93,23 @@ function routes(role: 'station_manager' | 'presenter'): Record<string, ApiRoute>
     ...signedIn(),
     'GET /orgs': [200, { orgs: copy }],
     [`GET ${base}/status`]: [200, status()],
-    [`GET ${base}/handovers`]: [
-      200,
-      {
-        handovers: [
-          {
-            id: handoverId,
-            streamer: kai,
-            // 23:00 in Paris.
-            at: '2026-10-27T22:00:00.000Z',
-            fadeMs: 3000,
-            status: 'pending',
-            reason: null,
-            sessionId: null,
-            createdAt: '2026-10-27T10:00:00.000Z',
-          },
-        ],
-      },
-    ],
+    [`GET ${base}/handovers`]: [200, { handovers: [handover()] }],
     [`GET ${base}/streamers`]: [200, { streamers: [streamer(nova), streamer(kai)] }],
-    [`PUT ${base}/on-air`]: [200, {}],
+    [`PUT ${base}/on-air`]: [200, session()],
     [`DELETE ${base}/on-air`]: [204],
     [`PUT ${base}/inputs/2/mute`]: [200, { connected: true, muted: true }],
     [`POST ${base}/inputs/1/disconnect`]: [200, { disconnected: true }],
-    [`DELETE ${base}/handovers/${handoverId}`]: [200, {}],
-    [`POST ${base}/handovers`]: [201, {}],
+    [`DELETE ${base}/handovers/${handoverId}`]: [200, handover({ status: 'cancelled' })],
+    [`POST ${base}/handovers`]: [
+      201,
+      handover({ id: '01a169cc-0000-7000-8000-0000000000e2', fadeMs: 0 }),
+    ],
   };
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('DJ handover controls', () => {
   it('hands over with the chosen crossfade, returns, mutes and disconnects', async () => {
@@ -125,7 +157,8 @@ describe('DJ handover controls', () => {
   it('lists scheduled handovers in station time, cancels one and schedules another', async () => {
     const { screen, user, calls } = renderApp(url, routes('station_manager'));
     const list = within(await screen.findByTestId('scheduled-handovers'));
-    expect(await list.findByText('11:00 PM: Kai, 3 s')).toBeVisible();
+    // With the day: station time, never the browser's.
+    expect(await list.findByText('Tue, Oct 27, 11:00 PM: Kai, 3 s')).toBeVisible();
     await user.click(list.getByRole('button', { name: 'Cancel' }));
     expect(calls.some((c) => c.method === 'DELETE' && c.path.endsWith(handoverId))).toBe(true);
 
@@ -149,6 +182,42 @@ describe('DJ handover controls', () => {
     expect(post?.body).toMatchObject({ streamerId: kai.id, fadeMs: 0 });
     const at = new Date((post?.body as { at: string } | undefined)?.at ?? 0);
     expect(zonedParts(at, 'Europe/Paris')).toMatchObject({ date: target.date, time: target.time });
+    expect(await screen.findByText('Handover scheduled.')).toBeVisible();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  // The night the clocks change in Paris (last Sundays of March and October 2026): the time
+  // typed is the station's wall clock on that day, whichever offset it has.
+  it.each([
+    // Saturday 28 March, 21:00 in Paris (CET). Sunday 03:30 is CEST (+2): 01:30 UTC.
+    ['spring forward', '2026-03-28T20:00:00Z', '2026-03-29', '03:30', '2026-03-29T01:30:00.000Z'],
+    // Sunday 01:30 is still CET (+1): 00:30 UTC.
+    [
+      'before the change',
+      '2026-03-28T20:00:00Z',
+      '2026-03-29',
+      '01:30',
+      '2026-03-29T00:30:00.000Z',
+    ],
+    // Saturday 24 October, 22:00 in Paris (CEST). Sunday 03:30 is CET (+1): 02:30 UTC.
+    ['fall back', '2026-10-24T20:00:00Z', '2026-10-25', '03:30', '2026-10-25T02:30:00.000Z'],
+    // Sunday 01:30 is still CEST (+2): 23:30 UTC the day before.
+    ['before fall back', '2026-10-24T20:00:00Z', '2026-10-25', '01:30', '2026-10-24T23:30:00.000Z'],
+  ])('schedules in station time across the DST change (%s)', async (_, now, date, time, utc) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(now));
+    const { screen, user, calls } = renderApp(url, routes('station_manager'));
+    const list = within(await screen.findByTestId('scheduled-handovers'));
+    await user.click(list.getByRole('button', { name: 'Schedule a handover' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    await user.selectOptions(await dialog.findByLabelText('DJ'), kai.id);
+    const day = dialog.getByLabelText('At', { selector: 'input[type=date]' });
+    await user.clear(day);
+    await user.type(day, date);
+    await user.type(dialog.getByLabelText('At', { selector: 'input[type=time]' }), time);
+    await user.click(dialog.getByRole('button', { name: 'Schedule' }));
+    const post = calls.find((c) => c.method === 'POST' && c.path === `${base}/handovers`);
+    expect((post?.body as { at: string } | undefined)?.at).toBe(utc);
   });
 
   it('shows no controls to a member without engine:control', async () => {
