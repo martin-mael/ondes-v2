@@ -1,7 +1,7 @@
 # Opt-in local station engines for `pnpm dev` (README.md here). Its own compose project, so
 # `ondes-dev` is never touched: `pnpm dev:engine` starts it, `pnpm dev:engine:down` stops it.
 #
-#   api (host, pnpm dev) ──127.0.0.1:2376──> docker-proxy-guard ──> docker-socket-proxy ──> docker.sock
+#   api (host, pnpm dev) ──127.0.0.1:23750──> docker-proxy-guard ──> docker-socket-proxy ──> docker.sock
 #        │  ▲                                  (production file + guard-override.yml)
 #        │  └── engine events: http://host.docker.internal:3000/internal/... (ENGINE_API_URL)
 #        └───── engine control: 127.0.0.1:<random> (ENGINE_PUBLISH_CONTROL_ON_LOOPBACK)
@@ -13,8 +13,9 @@
 # writes to ICECAST_CONFIG_PATH, one source password per station), on 127.0.0.1:8010.
 # The ondes-dev Icecast on :8000 keeps its static config and the test tone.
 #
-# Needs ENGINE_NETWORK, ENGINE_CACHE_ROOT and ICECAST_CONFIG_PATH in the environment: up.sh
-# reads them from the root .env.
+# Needs ENGINE_NETWORK, ENGINE_CACHE_ROOT and ICECAST_CONFIG_DIR in the environment: up.ts
+# sets them from the root .env. Ports: ENGINE_DEV_DOCKER_PORT (guard, 23750) and
+# ENGINE_DEV_ICECAST_PORT (Icecast, 8010).
 
 name: ondes-dev-engine
 

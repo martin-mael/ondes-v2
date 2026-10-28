@@ -181,6 +181,12 @@ export function engineLifecycleConfigFromEnv(
     /(^|_)docker-socket$/.test(network)
   )
     throw new Error(`ENGINE_NETWORK must not be the Docker API network (${dockerNetwork})`);
+  // Dev only (`pnpm dev:engine`): the production images set NODE_ENV=production.
+  const devOnly = ['ENGINE_PUBLISH_CONTROL_ON_LOOPBACK', 'ENGINE_EXTRA_HOSTS'].filter(
+    (k) => env[k],
+  );
+  if (env.NODE_ENV === 'production' && devOnly.length)
+    throw new Error(`${devOnly.join(', ')}: development only, refused in production`);
   return {
     dockerUrl,
     secretKeys: engineSecretKeysFromEnv(env),
