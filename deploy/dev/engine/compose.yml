@@ -1,0 +1,52 @@
+# Opt-in local station engines for `pnpm dev` (README.md here). Its own compose project, so
+# `ondes-dev` is never touched: `pnpm dev:engine` starts it, `pnpm dev:engine:down` stops it.
+#
+#   api (host, pnpm dev) ──127.0.0.1:23750──> docker-proxy-guard ──> docker-socket-proxy ──> docker.sock
+#        │  ▲                                  (production file + guard-override.yml)
+#        │  └── engine events: http://host.docker.internal:3000/internal/... (ENGINE_API_URL)
+#        └───── engine control: 127.0.0.1:<random> (ENGINE_PUBLISH_CONTROL_ON_LOOPBACK)
+#
+#   engine (ondes-engine-<stationId>, created by the api) ──ondes-dev-engines──> icecast:8000
+#        reads <ENGINE_CACHE_ROOT>/<stationId> (the worker's PLAYOUT_CACHE_ROOT) at /cache
+#
+# Icecast here is the production one (deploy/icecast/entrypoint.sh on the config the api
+# writes to ICECAST_CONFIG_PATH, one source password per station), on 127.0.0.1:8010.
+# The ondes-dev Icecast on :8000 keeps its static config and the test tone.
+#
+# Needs ENGINE_NETWORK, ENGINE_CACHE_ROOT and ICECAST_CONFIG_DIR in the environment: up.ts
+# sets them from the root .env. Ports: ENGINE_DEV_DOCKER_PORT (guard, 23750) and
+# ENGINE_DEV_ICECAST_PORT (Icecast, 8010).
+
+name: ondes-dev-engine
+
+include:
+  - path:
+      - ../../engine/docker-socket-proxy.compose.yml
+      - ./guard-override.yml
+
+services:
+  icecast:
+    image: libretime/icecast:2.5.0-alpine
+    entrypoint: [sh, /ondes/entrypoint.sh]
+    restart: unless-stopped
+    environment:
+      # No ICECAST_SOURCE_PASSWORD: the global one is random, only per-station passwords work.
+      ICECAST_ADMIN_USER: ${ICECAST_ADMIN_USER:-admin}
+      ICECAST_ADMIN_PASSWORD: ${ICECAST_ADMIN_PASSWORD:-ondes-dev-admin}
+    ports:
+      - 127.0.0.1:${ENGINE_DEV_ICECAST_PORT:-8010}:8000
+    volumes:
+      - ../../icecast/entrypoint.sh:/ondes/entrypoint.sh:ro
+      # The directory of ICECAST_CONFIG_PATH: the api writes icecast.xml there.
+      - ${ICECAST_CONFIG_DIR:?ICECAST_CONFIG_DIR is required}:/config:ro
+    networks: [engines]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8000/status-json.xsl]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+networks:
+  # ENGINE_NETWORK: engines and this Icecast (reachable from engines as `icecast`).
+  engines:
+    name: ${ENGINE_NETWORK:?ENGINE_NETWORK is required}

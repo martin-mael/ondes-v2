@@ -12,8 +12,10 @@ import {
   ENGINE_ENTRYPOINT,
   ENGINE_LABELS,
   ENGINE_PORTS,
+  ENGINE_RECORDINGS_MOUNT,
   ENGINE_SCRIPT_ENV,
   ENGINE_TMPFS,
+  RECORDINGS_DIR,
 } from './container-policy.ts';
 import type { ContainerCreateBody } from './docker.ts';
 import type { PortRange } from './repo.ts';
@@ -29,8 +31,10 @@ export {
   ENGINE_ENTRYPOINT,
   ENGINE_LABELS,
   ENGINE_PORTS,
+  ENGINE_RECORDINGS_MOUNT,
   ENGINE_SCRIPT_ENV,
   ENGINE_TMPFS,
+  RECORDINGS_DIR,
 } from './container-policy.ts';
 
 /** Restart policy of a running engine: Docker retries a few crashes, then the guard decides. */
@@ -69,6 +73,13 @@ export type EngineLifecycleConfig = {
   extraHosts?: string[];
   /** Extra labels on every engine container (tests use them to clean up). */
   labels?: Record<string, string>;
+  /**
+   * `uid:gid` the engine runs as: the api's own user (ENGINE_USER overrides), which also owns
+   * the recordings directory the lifecycle makes and runs the worker that deletes its files
+   * (ADR 0039). Null (an api running as root): the image's user, and the directory is made
+   * world-writable instead.
+   */
+  engineUser?: string | null;
 };
 
 export function containerName(
@@ -112,6 +123,8 @@ export function engineSettingsFor(
       authUrl: liveAuthUrl(config.internalApiUrl, station.stationId),
       // Played once after a live show, when the file is in the cache (#64, ADR 0027).
       returnFile: `${ENGINE_CACHE_MOUNT}/live-return.flac`,
+      // Each live session's audio, for its episode (#67, ADR 0039).
+      recordDir: ENGINE_RECORDINGS_MOUNT,
     },
     paths: {
       safetyDir: `${ENGINE_CACHE_MOUNT}/safety`,
@@ -191,11 +204,14 @@ export function engineContainerSpec(
     Image: config.image,
     Entrypoint: [...ENGINE_ENTRYPOINT],
     Cmd: [],
+    ...(config.engineUser ? { User: config.engineUser } : {}),
     Env: [
       `ENGINE_CONTROL_TOKEN=${input.secrets.controlToken}`,
       `ENGINE_LIVE_PASSWORD=${input.secrets.livePassword}`,
       `ICECAST_SOURCE_PASSWORD=${input.secrets.icecastSourcePassword}`,
       `${ENGINE_SCRIPT_ENV}=${input.script}`,
+      // Another user than the image's has no home there: the tmpfs is one.
+      ...(config.engineUser ? ['HOME=/tmp'] : []),
     ],
     Labels: {
       ...config.labels,
@@ -213,6 +229,13 @@ export function engineContainerSpec(
           Source: `${config.cacheRoot.replace(/\/+$/, '')}/${stationId}`,
           Target: ENGINE_CACHE_MOUNT,
           ReadOnly: true,
+          BindOptions: { CreateMountpoint: true },
+        },
+        {
+          Type: 'bind',
+          Source: `${config.cacheRoot.replace(/\/+$/, '')}/${stationId}/${RECORDINGS_DIR}`,
+          Target: ENGINE_RECORDINGS_MOUNT,
+          ReadOnly: false,
           BindOptions: { CreateMountpoint: true },
         },
         ...ENGINE_TMPFS.map((target) => ({

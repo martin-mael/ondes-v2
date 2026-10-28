@@ -1,15 +1,22 @@
 import { NotFoundError } from '@ondes/db';
 import {
   createLiveEventSchema,
+  createLiveHandoverSchema,
   createStreamerSchema,
   liveConnectionInfoSchema,
   liveEventListSchema,
   liveEventSchema,
+  liveHandoverListSchema,
+  liveHandoverSchema,
+  liveNowPlayingResponseSchema,
+  liveNowPlayingSchema,
   liveRequestListSchema,
   liveSessionSchema,
   liveStatusSchema,
+  putLiveInputMuteSchema,
   putLiveOnAirSchema,
   realtimeEventSchema,
+  setLiveNowPlayingSchema,
   setStreamerPasswordSchema,
   streamerListSchema,
   streamerSchema,
@@ -32,6 +39,8 @@ import {
 } from '../shows/episode-check/fallback.ts';
 import { createLiveAuthHandler, type LoginFailureLimiter } from './auth.ts';
 import * as events from './events.ts';
+import { createLiveHandovers } from './handover.ts';
+import { createLiveMetadata, getLiveNowPlaying } from './metadata.ts';
 import * as repo from './repo.ts';
 import * as requests from './requests.ts';
 import { createLiveRevoker, liveHolder } from './revoke.ts';
@@ -49,6 +58,9 @@ import { LIVE_AUTH_ROUTE } from './url.ts';
 // - Live slots, ad-hoc live and events (#65, ADR 0033): `live:read` lists the pending ad-hoc
 //   requests and the events, `engine:control` approves or refuses a request, `live:manage`
 //   writes events. The switch sweep also runs the missed-live-slot check (`slot-check.ts`).
+// - DJ handover (#66, ADR 0038): `engine:control` hands over with a crossfade (`PUT on-air`
+//   `fadeMs`), mutes an input, and schedules or cancels handovers; `live:read` lists them. The
+//   switch sweep also arms the scheduled handovers due soon (`handover.ts`).
 
 export type LivePluginOptions = {
   /** Host name DJs connect to. Default: the app URL's host. */
@@ -80,6 +92,7 @@ const streamerParams = stationParams.extend({ streamerId: uuidSchema });
 const inputParams = stationParams.extend({ input: z.coerce.number().int().min(1).max(16) });
 const requestParams = stationParams.extend({ requestId: uuidSchema });
 const eventParams = stationParams.extend({ eventId: uuidSchema });
+const handoverParams = stationParams.extend({ handoverId: uuidSchema });
 const candidatesSchema = z.object({
   users: z.array(z.object({ id: uuidSchema, name: z.string() })),
 });
@@ -113,6 +126,21 @@ export const livePlugin = fp(
       onNotAllowed: (scope, streamerId, reason) => revoker.revoke(scope, streamerId, reason),
       onSlotLive: (scope, occurrence) => slotCheck.onSlotLive(scope, occurrence),
     });
+    // Live metadata (#68, ADR 0040).
+    const metadata = createLiveMetadata({
+      db: app.db,
+      engineFor: options.engineFor,
+      publish: rabbit ? (event) => rabbit.events.publish(event) : undefined,
+      logger: app.log,
+    });
+    const handovers = createLiveHandovers({
+      db: app.db,
+      switcher,
+      engineFor: options.engineFor,
+      publish: rabbit ? (event) => rabbit.events.publish(event) : undefined,
+      logger: app.log,
+    });
+    app.addHook('onClose', () => handovers.close());
     const revoker = createLiveRevoker({
       db: app.db,
       engineFor: options.engineFor,
@@ -208,6 +236,12 @@ export const livePlugin = fp(
         if (updated.status !== 'active') {
           await revoker.revoke(stationScopeOf(request), updated.id, updated.status);
         }
+        // Their encoder's metadata allowed or not while on air (#68).
+        if (request.body.encoderMetadata !== undefined) {
+          await metadata
+            .refresh(stationScopeOf(request))
+            .catch((err: unknown) => app.log.warn({ err }, 'Refreshing live metadata failed'));
+        }
         return updated;
       },
     );
@@ -280,7 +314,10 @@ export const livePlugin = fp(
           response: { 200: liveSessionSchema },
         },
       },
-      (request) => switcher.goLive(ctx(request), request.body.input, 'manual'),
+      (request) =>
+        switcher.goLive(ctx(request), request.body.input, 'manual', undefined, {
+          fadeMs: request.body.fadeMs,
+        }),
     );
 
     // Back to automation: the return file, then the log at the current time.
@@ -306,6 +343,92 @@ export const livePlugin = fp(
       async (request) => ({
         disconnected: await switcher.disconnect(ctx(request), request.params.input),
       }),
+    );
+
+    // Live metadata (#68): what the streams show while a DJ is on air. Null when nobody is.
+    r.get(
+      `${BASE}/now-playing`,
+      {
+        preHandler: read,
+        schema: { params: stationParams, response: { 200: liveNowPlayingResponseSchema } },
+      },
+      async (request) => ({
+        nowPlaying: await getLiveNowPlaying(app.db, stationScopeOf(request)),
+      }),
+    );
+
+    // A manual now-playing (a concert: the artist on stage), until cleared or the session ends.
+    r.put(
+      `${BASE}/now-playing`,
+      {
+        preHandler: control,
+        schema: {
+          params: stationParams,
+          body: setLiveNowPlayingSchema,
+          response: { 200: liveNowPlayingSchema },
+        },
+      },
+      (request) => metadata.setManual(ctx(request), request.body),
+    );
+
+    // Back to the DJ's encoder (if allowed) or the show and DJ.
+    r.delete(
+      `${BASE}/now-playing`,
+      {
+        preHandler: control,
+        schema: { params: stationParams, response: { 200: liveNowPlayingSchema } },
+      },
+      (request) => metadata.clearManual(ctx(request)),
+    );
+
+    // Mutes (or unmutes) what one input of the pool sends on air (#66).
+    r.put(
+      `${BASE}/inputs/:input/mute`,
+      {
+        preHandler: control,
+        schema: {
+          params: inputParams,
+          body: putLiveInputMuteSchema,
+          response: { 200: z.object({ connected: z.boolean(), muted: z.boolean() }) },
+        },
+      },
+      async (request) => ({
+        connected: await switcher.mute(ctx(request), request.params.input, request.body.muted),
+        muted: request.body.muted,
+      }),
+    );
+
+    // Scheduled handovers (#66): at a time, a DJ takes the air with a crossfade.
+    r.get(
+      `${BASE}/handovers`,
+      {
+        preHandler: read,
+        schema: { params: stationParams, response: { 200: liveHandoverListSchema } },
+      },
+      async (request) => ({ handovers: await handovers.list(stationScopeOf(request)) }),
+    );
+
+    r.post(
+      `${BASE}/handovers`,
+      {
+        preHandler: control,
+        schema: {
+          params: stationParams,
+          body: createLiveHandoverSchema,
+          response: { 201: liveHandoverSchema },
+        },
+      },
+      async (request, reply) =>
+        reply.code(201).send(await handovers.schedule(ctx(request), request.body)),
+    );
+
+    r.delete(
+      `${BASE}/handovers/:handoverId`,
+      {
+        preHandler: control,
+        schema: { params: handoverParams, response: { 200: liveHandoverSchema } },
+      },
+      (request) => handovers.cancel(ctx(request), request.params.handoverId),
     );
 
     // Ad-hoc requests (#65): DJs connected outside their slots, waiting for a manager.
@@ -387,7 +510,10 @@ export const livePlugin = fp(
     if (options.engineFor && rabbit) {
       const subscription = rabbit.subscribeEvents((raw) => {
         const event = realtimeEventSchema.safeParse(raw);
-        if (event.success) void switcher.onEvent(event.data);
+        if (event.success) {
+          void switcher.onEvent(event.data);
+          void metadata.onEvent(event.data);
+        }
       });
       app.addHook('onClose', async () => {
         await subscription.close();
@@ -401,6 +527,11 @@ export const livePlugin = fp(
         if (running) return;
         running = true;
         (async () => {
+          // Live metadata only has work where a session is open: one query for all stations.
+          const live = await metadata.liveStationIds().catch((err: unknown) => {
+            app.log.error({ err }, 'Live metadata sweep failed');
+            return undefined; // sweeps every station instead
+          });
           for (const scope of await listRunningStationScopes(app.db)) {
             await switcher
               .sweep(scope)
@@ -411,6 +542,18 @@ export const livePlugin = fp(
               .sweep(scope)
               .catch((err: unknown) =>
                 app.log.error({ err, stationId: scope.stationId }, 'Live slot check failed'),
+              );
+            if (!live || live.has(scope.stationId)) {
+              await metadata
+                .sweep(scope)
+                .catch((err: unknown) =>
+                  app.log.error({ err, stationId: scope.stationId }, 'Live metadata sweep failed'),
+                );
+            }
+            await handovers
+              .sweep(scope)
+              .catch((err: unknown) =>
+                app.log.error({ err, stationId: scope.stationId }, 'Live handover sweep failed'),
               );
           }
         })()

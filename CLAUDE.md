@@ -32,31 +32,36 @@ apps/
                         # auth, orgs, stations, library, engine, asrun, rotation,
                         # clocks, shows, log, onair, public, jobs, alerts, cache, segues, live,
                         # listeners, prelisten, promos
-                        # (live/: switching, standing, slot-check, requests, events;
+                        # (live/: switching, standing, slot-check, requests, events,
+                        #  metadata (the live now-playing), handover (scheduled handovers, #66);
+                        #  live/recording/: live sessions' audio into episodes (#67);
                         #  live/testing/: the in-memory engine pool for its tests;
                         #  shows/live-slots.ts: live slot settings and live episodes)
   worker/src/
     jobs/<job>/         # one folder per job type: ingest, loudness, autocue, analysis,
                         # peaks, dedupe, cache-sync (+ cache-fetch, its urgent
                         # one-file variant), episode-check, log-generate,
-                        # log-horizon, island-render, …
+                        # log-horizon, island-render, live-recording (+ its
+                        # live-recording-cleanup retention sweep), …
   web/src/
     app/                # shell, routing (router.tsx), auth pages, layout, api client,
                         # SSE client (sse/), i18n
     features/<feature>/ # library, cue-editor, rotation, clocks, grid, shows,
-                        # log-timeline, segue-editor, live, dashboard, alerts, settings,
-                        # promos
+                        # log-timeline, segue-editor, live, dashboard, alerts, settings
+                        # (safety, live-recording), promos
     ui/                 # shared design-system components (shadcn/ui on Base UI)
 packages/
   shared/src/
     contracts/<domain>.ts  # zod schemas + inferred types: API DTOs, events, job payloads
     time/                  # timezone/DST helpers (station-local ↔ UTC)
-    segues/                # island derivation and hashing, default promo lanes (pure, shared
-                           # by api, worker, web)
+    segues/                # island derivation and hashing, smart VT placement (placement.ts),
+                           # default promo lanes (pure, shared by api, worker, web)
+    markers/               # what a fixed-time marker times (pure, shared by the feeder and
+                           # the log timeline)
   db/
     src/schema/<domain>.ts # one file per domain: tenancy, library, engine, asrun,
-                           # rotation, clocks, shows, log, regen, segues, live, alerts,
-                           # cache, safety, promos
+                           # rotation, clocks, shows, log, regen, segues, live, live-metadata,
+                           # live-handover, alerts, cache, safety, promos, live-recording
     migrations/            # generated, timestamp-prefixed
   storage/                 # S3-compatible abstraction
   queue/                   # RabbitMQ job framework
@@ -64,10 +69,13 @@ packages/
                            # clock expansion, log generator (generator/), log timing
                            # (log/: retime), regeneration (regen/), promo placement
                            # (promos/), back-timing (backtiming/: the generator's
-                           # beforeAnchor); test fixtures at `@ondes/scheduling/testing`
+                           # beforeAnchor), fixed-time markers (markers/: what a
+                           # marker times, for the feeder); test fixtures at
+                           # `@ondes/scheduling/testing`
 engine/
   templates/               # Liquidsoap script templates (pinned 2.4.x)
-  tests/                   # engine fixtures, seam/timing tests
+  tests/                   # engine fixtures, seam/timing tests; markers/: the feeder's
+                           # fixed-time markers on the real engine (#52)
 deploy/                    # compose files, installer, Caddyfile
 docs/                      # research, ADRs (docs/adr/NNNN-title.md)
 ```
@@ -82,6 +90,7 @@ Created by #3. Packages are named `@ondes/<folder>` (e.g. `@ondes/shared`) and a
 - **Time:** store UTC (`timestamptz`); compute in the station's IANA timezone through `packages/shared/src/time`. Any scheduling code needs DST tests (last Sunday of March and October, Europe/Paris).
 - **Audit:** every mutation through the API writes an `audit_log` row.
 - **Jobs:** idempotent, keyed by content hash or `entity:version`; payloads defined in contracts; retries come from the queue framework, not ad-hoc loops. A job started by an event (e.g. `asset.ingested`) declares `export const triggers: JobTrigger[]` in its `index.ts` (`apps/worker/src/registry.ts`); the worker runs each on a durable event queue, so don't edit `main.ts` for it (ADR 0006, "Event transport").
+- **Public API:** `/api/v1/public/…` (`apps/api/src/modules/public`, ADR 0041) is the api's only unauthenticated surface: anonymous, by station slug, CORS `*`, rate limited per IP. Everything it returns goes through the public contracts (`packages/shared/src/contracts/public.ts`), never internal ids, users or alerts. A new public route goes in `publicOperations` (`openapi.ts`) so it is documented.
 - **Engine:** Liquidsoap control ports are never exposed publicly. Node talks to the engine only through the engine adapter (`apps/api/src/modules/engine`).
 - **Real time:** SSE only, through the api's SSE plugin. Event names and payloads live in `packages/shared/src/contracts/events.ts`; a new event type also needs its read permission in `realtimeEventPermissions` there (undeclared types are never forwarded). The browser fanout is best-effort: side effects go through durable queues. In the web app, read events with `useSse` / `useSseEvent` (`apps/web/src/app/sse/sse.tsx`).
 - **Web app:** `docs/adr/0009-ui.md`. Components come from the pinned shadcn CLI into `apps/web/src/ui/` (`pnpm dlx shadcn@4.22.1 add <name>` in `apps/web`, then `pnpm format`); don't hand-edit them for style. Base UI composes with `render={…}`, not `asChild`. A feature adds its route in `apps/web/src/app/router.tsx` (under `stationRoute`), a nav entry in `app/shell/nav.ts`, calls the api through `app/api/client.ts` with its contract schemas, and keeps UI strings in FR + EN. UI rules the owner asked for:
@@ -115,16 +124,17 @@ Every PR must pass, locally and in CI:
   - **Never run `pnpm dev:down`, `pnpm dev:reset` or `docker compose … down` from a session**, and don't restart or recreate its services. You'd cut off every other session mid-test. Stopping the stack is for the human.
   - Integration tests stay isolated on the shared stack: a throwaway database per test file (`createTestDatabase`), random queue prefixes, random S3 keys. Keep it that way in new tests.
   - If you need extra containers (e.g. a spike's own engine), use your own compose project name and your own ports, like `engine/spikes/control` does.
-- Integration tests are split into the projects of `vitest.integration.config.ts`: `core`, `engine` (tests that start their own Liquidsoap/Icecast compose project) and `worker` (worker jobs, which need the ffmpeg image above). `pnpm test:integration` runs all three; `pnpm test:integration --project worker` runs one. A new `*.int.test.ts` lands in `core` unless it's under `apps/worker/src` or `apps/api/src/modules/engine`; add it to `engine` in that config if it starts Liquidsoap. (e.g. `apps/api/src/modules/live/live-auth.engine.int.test.ts`, the harbor auth callback on the real template).
+  - **Local station engines** are opt-in: `pnpm dev:engine` (`deploy/dev/engine/README.md`, ADR 0042) starts its own `ondes-dev-engine` project (Docker proxy guard on 127.0.0.1:23750, the production Icecast on 127.0.0.1:8010) and marks the seeded station's engine running; with its `.env` lines, the api of `pnpm dev` creates the station's real engine through the guard. One checkout per machine runs it. The station's `desired_state` is in the shared database, so `pnpm dev:engine:down` (marks it stopped, removes the engines and the project) affects everyone: it's for the human only, never run it from a session.
+- Integration tests are split into the projects of `vitest.integration.config.ts`: `core`, `engine` (tests that start their own Liquidsoap/Icecast compose project) and `worker` (worker jobs, which need the ffmpeg image above). `pnpm test:integration` runs all three; `pnpm test:integration --project worker` runs one. A new `*.int.test.ts` lands in `core` unless it's under `apps/worker/src` or `apps/api/src/modules/engine`; add it to `engine` in that config if it starts Liquidsoap. (e.g. `apps/api/src/modules/live/live-auth.engine.int.test.ts`, the harbor auth callback on the real template). `engine/tests/markers/*.int.test.ts` (#52, the feeder's markers on the real template) is in `engine` too; type-check it with `pnpm exec tsc --noEmit -p engine/tests/markers` (the engine integration job does).
 - CI (`.github/workflows/ci.yml`) runs only what a PR needs. A `changes` job (path filters) decides; on `main`, on manual runs and on a PR labelled `ci:full`, everything runs. To force a full run that gates a PR, add the `ci:full` label: it starts a new pull_request run on the PR head (other labels don't cancel the run in flight). `gh workflow run ci.yml --ref <branch>` is for ad-hoc runs only: it isn't the PR's pull_request run, so don't rely on it for the PR's `CI ok`.
 
   | Job | Runs on a PR when it touches |
   |---|---|
   | Lint, typecheck, unit tests | always |
   | Web build | `apps/web`, `packages/shared` |
-  | Integration (core) | `apps/api`, `packages`, `deploy/compose.dev.yml`, `deploy/dev` |
+  | Integration (core) | `apps/api`, `packages`, `engine/tests/markers`, `deploy/compose.dev.yml`, `deploy/dev` |
   | Integration (engine) | same as core, plus everything that triggers the engine jobs |
-  | Integration (worker) | `apps/worker`, `apps/api/src/modules/library`, `packages`, `deploy/docker/worker.Dockerfile`, `deploy/compose.dev.yml`, `deploy/dev` |
+  | Integration (worker) | `apps/worker`, `apps/api/src/modules/library`, `packages`, `deploy/docker/worker.Dockerfile`, `deploy/compose.dev.yml`, `deploy/dev`, plus what the live recording test runs (`engine/templates`, the engine config and adapter, `live/recording`) |
   | Engine templates, Engine island splice | `engine`, `apps/api/src/modules/engine/config`, `apps/api/src/modules/engine/feeder/push.ts`, `apps/worker/src/jobs/island-render`, `packages/shared`, `deploy/compose.dev.yml` |
 
   Changes to `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.nvmrc`, `tsconfig.base.json` or `ci.yml` run every job. Skipped jobs report as skipped, not pending: **branch protection on `main` should require only the `CI ok` check** (never the individual jobs), which fails when any job failed or was cancelled. The repo has no branch protection rule yet. When you add a job, add it to `CI ok`'s `needs`; when you add a test folder, check the filters in the `changes` job cover it.

@@ -18,11 +18,10 @@ import {
   type Actor,
   defaultPromoLanes,
   PLAYOUT_SAMPLE_RATE,
-  type PlacementMedia,
   type PromoPlacementStatus,
+  placementMediaOf,
   promoValidOnAir,
   promoVoiceMs,
-  type SegueMedia,
 } from '@ondes/shared';
 import { and, eq, gte, inArray, isNotNull, or } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
@@ -290,12 +289,11 @@ async function place(
     deps.logger.debug({ placementId: row.id }, 'promo placement waits for media');
     return 'waiting';
   }
-  const markers = await markersOf(db, scope, [a.assetId, b.assetId]);
-  const lanes = defaultPromoLanes(
-    placementMedia(aMedia, markers.get(a.assetId)),
-    placementMedia(bMedia, markers.get(b.assetId)),
-    { assetId: row.assetId, cueIn: voice.cueIn, cueOut: voice.cueOut },
-  );
+  const lanes = defaultPromoLanes(placementMediaOf(aMedia), placementMediaOf(bMedia), {
+    assetId: row.assetId,
+    cueIn: voice.cueIn,
+    cueOut: voice.cueOut,
+  });
   const { segue: created, sync } = await createSegue(db, ctx, {
     fromItemId: a.id,
     toItemId: b.id,
@@ -321,41 +319,6 @@ async function place(
   );
   await requestRenders(deps.jobs, scope, sync, deps.logger);
   return 'placed';
-}
-
-type Markers = {
-  sampleRate: number;
-  outroStart: number | null;
-  introEnd: number | null;
-  crossStartNext: number | null;
-};
-
-async function markersOf(db: Db, scope: StationScope, assetIds: string[]) {
-  const rows = await db
-    .select({
-      assetId: assetCues.assetId,
-      sampleRate: assetCues.sampleRate,
-      outroStart: assetCues.outroStart,
-      introEnd: assetCues.introEnd,
-      crossStartNext: assetCues.crossStartNext,
-    })
-    .from(assetCues)
-    .where(and(whereStation(assetCues, scope), inArray(assetCues.assetId, assetIds)));
-  return new Map<string, Markers>(rows.map((r) => [r.assetId, r]));
-}
-
-/** The lane's effective cues with its markers, rescaled to the playout copy's rate. */
-function placementMedia(media: SegueMedia, markers: Markers | undefined): PlacementMedia {
-  const scale = markers ? media.sampleRate / markers.sampleRate : 1;
-  const at = (samples: number | null | undefined) =>
-    samples === null || samples === undefined ? null : Math.round(samples * scale);
-  return {
-    cueIn: media.cueIn,
-    cueOut: media.cueOut,
-    outroStart: at(markers?.outroStart),
-    introEnd: at(markers?.introEnd),
-    crossStartNext: at(markers?.crossStartNext),
-  };
 }
 
 /**

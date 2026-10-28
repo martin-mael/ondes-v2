@@ -2,14 +2,18 @@ import { clipEnvelope, envelopeGainAt, type SegueMedia, sourceGainAt } from '@on
 import { describe, expect, it } from 'vitest';
 import { type History, historyReducer, initialHistory } from './history.ts';
 import {
+  addPlacedVoice,
   addPoint,
   addRecordedVoice,
   addVoice,
   applyDuck,
+  autoLanes,
   clipsOf,
   emptyLanes,
   extentOf,
+  fitTrims,
   gainToY,
+  handPlaced,
   islandOf,
   islandRange,
   type LaneMedia,
@@ -18,6 +22,7 @@ import {
   movePoint,
   ms,
   problemOf,
+  replacesIn,
   SR,
   transitionStart,
   voiceKey,
@@ -263,5 +268,155 @@ describe('recorded voices (#59)', () => {
     });
     // Clamped to the api's ±10 minutes.
     expect(addRecordedVoice(emptyLanes(), 'take', -s(3600)).voices[0]?.start).toBe(-s(600));
+  });
+
+  it('clamps a pinned cue-out to a playout copy a little shorter than the take', () => {
+    const take = media('t', 4);
+    const lanes = addRecordedVoice(emptyLanes(), take.assetId, -s(2), {
+      media: { from: null, to: null, voices: {} },
+      length: s(4) + 2,
+    });
+    expect(lanes.voices[0]?.cueOut).toBe(s(4) + 2);
+    const fitted = fitTrims(lanes, { from: A, to: B, voices: { [take.assetId]: take } });
+    expect(fitted.voices[0]?.cueOut).toBe(s(4));
+    expect(problemOf(lanes, { from: A, to: B, voices: { [take.assetId]: take } })).toBeNull();
+    // Nothing to do: the same lanes back.
+    expect(fitTrims(fitted, { from: A, to: B, voices: { [take.assetId]: take } })).toBe(fitted);
+  });
+});
+
+describe('smart default placement (#61)', () => {
+  // A: outro from 12 s before its end, B's natural start 7 s before; B: an 8 s intro.
+  const markers = (m: Partial<NonNullable<SegueMedia['markers']>>) => ({
+    introEnd: null,
+    outroStart: null,
+    crossStartNext: null,
+    ...m,
+  });
+  const a = { ...A, markers: markers({ outroStart: s(166), crossStartNext: s(171) }) };
+  const b = { ...B, markers: markers({ introEnd: s(8.5) }) };
+  const BED = media('d', 60, { kind: 'bed' });
+  const placed: LaneMedia = { from: a, to: b, voices: { [VT.assetId]: VT, [BED.assetId]: BED } };
+
+  it('places the first voice from the library over the outro, ending on B’s intro end', () => {
+    const lanes = addPlacedVoice(emptyLanes(), placed, VT.assetId);
+    expect(lanes.in.start).toBe(-s(7));
+    expect(lanes.voices).toEqual([
+      { assetId: VT.assetId, start: -s(7) + s(8) - s(5), gainDb: 0, envelope: [] },
+    ]);
+    expect(lanes.out.envelope.at(-1)).toEqual({ at: -s(4), gainDb: -8 });
+    expect(problemOf(lanes, placed)).toBeNull();
+    // The next voices go after the last one, and nothing else moves.
+    const two = addPlacedVoice(lanes, placed, BED.assetId);
+    expect(two.in).toEqual(lanes.in);
+    expect(two.voices[1]?.start).toBe((lanes.voices[0]?.start ?? 0) + s(1));
+  });
+
+  it('falls back to addVoice while the media is missing', () => {
+    const none: LaneMedia = { from: null, to: null, voices: {} };
+    expect(addPlacedVoice(emptyLanes(), none, VT.assetId)).toEqual(
+      addVoice(emptyLanes(), VT.assetId),
+    );
+  });
+
+  it('places a take spoken over the music where it was spoken, B and ducks after it', () => {
+    const lanes = addRecordedVoice(emptyLanes(), 'take', -s(10), { media: placed, length: s(12) });
+    // Its whole length, pinned: autocue's cues later never trim the take B was placed on.
+    expect(lanes.voices).toEqual([
+      { assetId: 'take', start: -s(10), cueIn: 0, cueOut: s(12), gainDb: 0, envelope: [] },
+    ]);
+    // Ends at +2 s; B's 8 s intro ends there.
+    expect(lanes.in.start).toBe(-s(6));
+    expect(lanes.out.envelope).not.toEqual([]);
+  });
+
+  it('places a take recorded without music like a voice from the library', () => {
+    const lanes = addRecordedVoice(emptyLanes(), 'take', null, { media: placed, length: s(5) });
+    expect(lanes.voices[0]).toMatchObject({ start: -s(4), cueIn: 0, cueOut: s(5) });
+    expect(lanes.in.start).toBe(-s(7));
+    // A second take goes where it was recorded, its length pinned too.
+    const two = addRecordedVoice(lanes, 'take-2', s(1), { media: placed, length: s(3) });
+    expect(two.in).toEqual(lanes.in);
+    expect(two.voices[1]).toEqual({
+      assetId: 'take-2',
+      start: s(1),
+      cueIn: 0,
+      cueOut: s(3),
+      gainDb: 0,
+      envelope: [],
+    });
+  });
+
+  it('keeps B and the envelopes a person set when placing the first voice', () => {
+    const fresh = emptyLanes();
+    expect(handPlaced(fresh, placed)).toBe(false);
+    expect(handPlaced({ ...fresh, in: { start: -s(7), envelope: [] } }, placed)).toBe(false);
+    expect(handPlaced({ ...fresh, in: { start: -s(2), envelope: [] } }, placed)).toBe(true);
+    const faded = { ...fresh, out: { envelope: [{ at: -s(2), gainDb: 0 }] } };
+    expect(handPlaced(faded, placed)).toBe(true);
+    expect(handPlaced(fresh, { ...placed, from: null })).toBeNull();
+
+    // B moved by hand to −2 s: the voice ends where B's 8 s intro does, at +6 s.
+    const moved = { ...fresh, in: { start: -s(2), envelope: [{ at: s(1), gainDb: -3 }] } };
+    const lanes = addPlacedVoice(moved, placed, VT.assetId);
+    expect(lanes.in).toEqual(moved.in);
+    expect(lanes.out).toEqual(moved.out);
+    expect(lanes.voices[0]?.start).toBe(-s(2) + s(8) - s(5));
+    // A take spoken over the music stays where it was spoken; B too.
+    const take = addRecordedVoice(faded, 'take', -s(9), { media: placed, length: s(4) });
+    expect(take.in).toEqual(faded.in);
+    expect(take.out).toEqual(faded.out);
+    expect(take.voices[0]).toMatchObject({ start: -s(9), cueIn: 0, cueOut: s(4) });
+  });
+
+  it('tells when auto placement would replace B or the envelopes', () => {
+    const lanes = addPlacedVoice(emptyLanes(), placed, VT.assetId);
+    const auto = autoLanes(lanes, placed);
+    expect(auto && replacesIn(lanes, auto)).toBe(false);
+    const moved = { ...lanes, in: { ...lanes.in, start: lanes.in.start + s(1) } };
+    expect(auto && replacesIn(moved, auto)).toBe(true);
+    const drawn = { ...lanes, out: { envelope: [] } };
+    expect(auto && replacesIn(drawn, auto)).toBe(true);
+  });
+
+  it('keeps a bed and what a person set on it', () => {
+    let lanes = addVoice(addVoice(emptyLanes(), VT.assetId), BED.assetId);
+    // The 5 s voice fits: there is nothing for the bed to cover, and it stays as it was.
+    const fits = autoLanes(lanes, placed);
+    expect(fits?.voices).toHaveLength(2);
+    expect(fits?.voices[1]).toEqual(lanes.voices[1]);
+    // A bed a person shaped keeps its gain trim and envelope (moved with it) under a long voice.
+    const LONG = media('e', 25);
+    const all: LaneMedia = { ...placed, voices: { ...placed.voices, [LONG.assetId]: LONG } };
+    lanes = addVoice(addVoice(emptyLanes(), LONG.assetId), BED.assetId);
+    const shaped = { start: lanes.voices[1]?.start ?? 0, gainDb: -14 };
+    lanes = {
+      ...lanes,
+      voices: lanes.voices.map((v, i) =>
+        i === 1
+          ? { ...v, gainDb: shaped.gainDb, envelope: [{ at: shaped.start + s(2), gainDb: -3 }] }
+          : v,
+      ),
+    };
+    const reset = autoLanes(lanes, all);
+    const bed = reset?.voices[1];
+    expect(bed).toMatchObject({ assetId: BED.assetId, start: -s(1), gainDb: -14 });
+    expect(bed?.envelope).toEqual([{ at: -s(1) + s(2), gainDb: -3 }]);
+    expect(reset && problemOf(reset, all)).toBeNull();
+  });
+
+  it('resets to auto placement, a bed among the voices becoming the bed', () => {
+    const LONG = media('e', 25);
+    const all: LaneMedia = { ...placed, voices: { ...placed.voices, [LONG.assetId]: LONG } };
+    let lanes = addVoice(addVoice(emptyLanes(), LONG.assetId), BED.assetId);
+    lanes = { ...lanes, voices: lanes.voices.map((v, i) => (i === 0 ? { ...v, gainDb: 3 } : v)) };
+    const reset = autoLanes(lanes, all);
+    expect(reset).not.toBeNull();
+    // 25 s from the outro (−12 s) ends at +13 s; the 8 s intro starts B at +5 s.
+    expect(reset?.voices[0]).toMatchObject({ assetId: LONG.assetId, start: -s(12), gainDb: 3 });
+    expect(reset?.in.start).toBe(s(5));
+    expect(reset?.voices[1]).toMatchObject({ assetId: BED.assetId, start: -s(1), gainDb: -10 });
+    expect(reset && problemOf(reset, all)).toBeNull();
+    expect(autoLanes(lanes, { ...all, to: null })).toBeNull();
   });
 });

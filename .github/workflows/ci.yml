@@ -77,6 +77,8 @@ jobs:
             integration:
               - *tooling
               - apps/api/**
+              # The markers engine test (#52) plays the api's feeder into the template.
+              - engine/tests/markers/**
               - packages/**
               - deploy/compose.dev.yml
               - deploy/dev/**
@@ -85,6 +87,12 @@ jobs:
               - *tooling
               - apps/worker/**
               - apps/api/src/modules/library/**
+              # The live recording test (#67) runs the station template on the real engine
+              # through the api's recorder and the engine adapter.
+              - engine/templates/**
+              - apps/api/src/modules/engine/config/**
+              - apps/api/src/modules/engine/adapter/**
+              - apps/api/src/modules/live/recording/**
               - packages/**
               - deploy/docker/worker.Dockerfile
               - deploy/compose.dev.yml
@@ -194,6 +202,8 @@ jobs:
       - *pnpm
       - *node
       - *install
+      # Outside any package: `pnpm typecheck` doesn't see it.
+      - run: pnpm exec tsc --noEmit -p engine/tests/markers
       # These tests start their own Liquidsoap/Icecast compose projects (testing/compose.yml).
       - run: pnpm test:integration --project engine
 

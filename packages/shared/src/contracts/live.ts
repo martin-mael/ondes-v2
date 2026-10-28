@@ -75,6 +75,11 @@ export const streamerSchema = z.object({
    * payloads still parse.
    */
   adHoc: liveAdHocPolicySchema.default('approval'),
+  /**
+   * While on air, the metadata their DJ software sends reaches the streams (#68). Off: the
+   * show and DJ name. Optional with a default so older api versions' payloads still parse.
+   */
+  encoderMetadata: z.boolean().default(false),
   /** Shows whose slots this streamer may connect for. */
   shows: z.array(z.object({ id: uuidSchema, name: z.string(), colour: z.string().nullable() })),
   status: streamerStatusSchema,
@@ -96,6 +101,7 @@ const streamerFields = z.object({
   expiresAt: dateInputSchema.nullable(),
   anyTime: z.boolean(),
   adHoc: liveAdHocPolicySchema,
+  encoderMetadata: z.boolean(),
   showIds: z
     .array(uuidSchema)
     .max(100)
@@ -110,6 +116,7 @@ export const createStreamerSchema = streamerFields
     expiresAt: true,
     anyTime: true,
     adHoc: true,
+    encoderMetadata: true,
     showIds: true,
   })
   .extend({ password: streamerPasswordSchema.optional() });
@@ -269,13 +276,19 @@ export const liveStatusSchema = z.object({
       /** Buffered enough to take the air. */
       ready: z.boolean(),
       streamer: z.object({ id: uuidSchema, displayName: z.string() }).nullable(),
+      /** Muted on air (#66): connected, silent until unmuted. */
+      muted: z.boolean().optional(),
     }),
   ),
 });
 export type LiveStatus = z.infer<typeof liveStatusSchema>;
 
 /** `PUT /api/v1/stations/:stationId/live/on-air`: put the DJ on this input on air. */
-export const putLiveOnAirSchema = z.object({ input: z.int().min(1).max(16) });
+export const putLiveOnAirSchema = z.object({
+  input: z.int().min(1).max(16),
+  /** The crossfade if another DJ is on air (#66); default `LIVE_HANDOVER_FADE_MS_DEFAULT`. */
+  fadeMs: z.int().min(0).max(10_000).optional(),
+});
 export type PutLiveOnAir = z.infer<typeof putLiveOnAirSchema>;
 
 // --- Ad-hoc requests (#65, ADR 0033) ------------------------------------------------------

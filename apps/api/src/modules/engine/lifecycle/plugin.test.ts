@@ -36,6 +36,33 @@ describe('engine lifecycle config from env', () => {
     });
   });
 
+  it('publishes the control port on loopback and adds hosts only when asked (dev)', () => {
+    const config = engineLifecycleConfigFromEnv(base)?.config;
+    expect(config?.publishControlOnLoopback).toBeUndefined();
+    expect(config?.extraHosts).toBeUndefined();
+    expect(
+      engineLifecycleConfigFromEnv({
+        ...base,
+        ENGINE_PUBLISH_CONTROL_ON_LOOPBACK: 'true',
+        ENGINE_EXTRA_HOSTS: 'host.docker.internal:host-gateway',
+      })?.config,
+    ).toMatchObject({
+      publishControlOnLoopback: true,
+      extraHosts: ['host.docker.internal:host-gateway'],
+    });
+  });
+
+  it('refuses the dev-only settings in production', () => {
+    for (const extra of [
+      { ENGINE_PUBLISH_CONTROL_ON_LOOPBACK: 'true' },
+      { ENGINE_EXTRA_HOSTS: 'host.docker.internal:host-gateway' },
+    ]) {
+      expect(() =>
+        engineLifecycleConfigFromEnv({ ...base, ...extra, NODE_ENV: 'production' }),
+      ).toThrow(/development only/);
+    }
+  });
+
   it('refuses to put engines on the Docker API networks', () => {
     for (const network of ['docker-api', 'ondes_docker-api', 'ondes_docker-socket']) {
       expect(() => engineLifecycleConfigFromEnv({ ...base, ENGINE_NETWORK: network })).toThrow(

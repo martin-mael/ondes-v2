@@ -657,8 +657,15 @@ def nullable_string(s) =
   if s == "" then json.value(null) else json.value(s) end
 end
 
+# #68: a digest of a login's credentials, so the connected DJ's are known without keeping them.
+def live_login_key(login) =
+  string.digest("#{string.length(login.user)}:#{login.user}#{login.password}")
+end
+
 # `pending`: the streamer id Node answered with, for the on_connect that follows.
-def live_auth(index, connected, pending, login) =
+# `candidate` (#68): the last accepted login's key, kept by on_connect for the DJ's own track
+# info (`live_admin_metadata`).
+def live_auth(index, connected, pending, candidate, login) =
   if
     connected()
   then
@@ -681,6 +688,7 @@ def live_auth(index, connected, pending, login) =
       if
         r.status_code >= 200 and r.status_code < 300
       then
+        candidate := live_login_key(login)
         pending :=
           try
             let json.parse (a : {streamer_id: string?}) = r
@@ -698,7 +706,9 @@ def live_auth(index, connected, pending, login) =
     end
   else
     pending := ""
-    live_password != "" and login.password == live_password
+    ok = live_password != "" and login.password == live_password
+    if ok then candidate := live_login_key(login) end
+    ok
   end
 end
 
@@ -706,16 +716,43 @@ def live_input_of(index) =
   connected = ref(false)
   streamer = ref("")
   pending = ref("")
+  holder = ref("")
+  candidate = ref("")
   s =
     input.harbor(
       id="live_#{index}",
       port=live_port,
       icy=live_icy and index == 1,
-      auth=fun (login) -> live_auth(index, connected, pending, login),
+      auth=fun (login) -> live_auth(index, connected, pending, candidate, login),
       buffer=live_buffer,
       max=live_max,
       live_mount_of(index)
     )
+
+  # DJ handover (#66, ADR 0038): mute. What goes on air (`aired`) is the DJ through a gain
+  # that ramps to 0 or 1 over 100 ms, so muting never clicks; `source` stays what the DJ
+  # sends (pre-listen hears a muted DJ). A DJ's own `liq_amplify` metadata is ignored. The
+  # getter runs once per frame of `aired`; a jump while it isn't pulled is never heard.
+  muted = ref(false)
+  gain = ref(1.)
+  gain_at = ref(time())
+  def mute_gain() =
+    t = time()
+    step = (t - gain_at()) / 0.1
+    gain_at := t
+    g =
+      if
+        muted()
+      then
+        max(0., gain() - step)
+      else
+        min(1., gain() + step)
+      end
+    gain := g
+    g
+  end
+  aired = amplify(id="live_#{index}_gain", override=null, mute_gain, s)
+  # End of DJ handover (#66).
 
   # Only the headers that describe the client and its stream: never the DJ's credentials
   # (Authorization) or anything else they send.
@@ -731,7 +768,10 @@ def live_input_of(index) =
     fun (headers) ->
       begin
         connected := true
+        # DJ handover (#66): a new DJ always starts unmuted, whatever happened before.
+        muted := false
         streamer := pending()
+        holder := candidate()
         d = json.object()
         d.add("input", index)
         d.add("streamer_id", nullable_string(streamer()))
@@ -745,6 +785,9 @@ def live_input_of(index) =
     fun () ->
       begin
         connected := false
+        holder := ""
+        # DJ handover (#66): the next DJ on this input starts unmuted.
+        muted := false
         d = json.object()
         d.add("input", index)
         d.add("streamer_id", nullable_string(streamer()))
@@ -753,10 +796,145 @@ def live_input_of(index) =
       end
   )
 
-  {index=index, mount=live_mount_of(index), connected=connected, streamer=streamer, source=s}
+  {
+    index=index,
+    mount=live_mount_of(index),
+    connected=connected,
+    streamer=streamer,
+    holder=holder,
+    source=s,
+    aired=aired,
+    muted=muted
+  }
 end
 
 live_pool = if live_input then list.init(live_inputs, fun (i) -> live_input_of(i + 1)) else [] end
+
+# --- #68 live metadata: the DJ's own track info (ADR 0040) --------------------------------
+# MP3 and AAC DJ software sends its track info through harbor's /admin/metadata (Icecast) or
+# /admin.cgi (Shoutcast), which checks the login with `live_auth` like a connection and so
+# refuses it: the input is taken. These handlers on live_port run before harbor's own and
+# accept `mode=updinfo` from the DJ connected to that mount only (their login's key, kept at
+# on_connect). `live_auth` itself never accepts a login on a taken input.
+
+# The (user, password) pairs a request may log in with: HTTP Basic, else `user` (default
+# "source", like harbor) and `pass` in the query. A Shoutcast password "user:password" is
+# also tried split, as harbor's ICY login splits it.
+def live_admin_logins(req) =
+  def split(s) =
+    m = r/^([^:]*):(.*)$/.exec(s)
+    if list.assoc.mem(1, m) then [{user=m[1], password=m[2]}] else [] end
+  end
+  auth =
+    if
+      list.assoc.mem("authorization", req.headers)
+    then
+      req.headers["authorization"]
+    else
+      ""
+    end
+  basic = r/^[Bb]asic\s+(.+)$/.exec(auth)
+  if
+    list.assoc.mem(1, basic)
+  then
+    split(string.base64.decode(basic[1]))
+  elsif
+    list.assoc.mem("pass", req.query)
+  then
+    user = if list.assoc.mem("user", req.query) then req.query["user"] else "source" end
+    login = {user=user, password=req.query["pass"]}
+    if user == "source" then [login, ...split(login.password)] else [login] end
+  else
+    []
+  end
+end
+
+def live_admin_metadata(req, res) =
+  def answer(code, body) =
+    res.status_code(code)
+    res.content_type("text/plain")
+    res.data(body)
+  end
+  def bare(m) =
+    if string.contains(prefix="/", m) then string.sub(m, start=1, length=string.length(m) - 1) else m end
+  end
+  mount =
+    if
+      list.assoc.mem("mount", req.query)
+    then
+      bare(req.query["mount"])
+    elsif
+      live_icy
+    then
+      # Shoutcast: no mount, the ICY input is the first.
+      bare(live_mount_of(1))
+    else
+      ""
+    end
+  match = list.filter(fun (inp) -> bare(inp.mount) == mount, live_pool)
+  if
+    not list.assoc.mem("mode", req.query) or req.query["mode"] != "updinfo"
+  then
+    answer(400, "unrecognised command")
+  elsif
+    list.is_empty(match)
+  then
+    answer(404, "This mountpoint isn't available.")
+  else
+    inp = list.hd(match)
+    keys = list.map(live_login_key, live_admin_logins(req))
+    if
+      inp.connected() and inp.holder() != "" and list.mem(inp.holder(), keys)
+    then
+      # As harbor does: `song` is the title when the request has neither title nor artist.
+      skipped = ["mount", "mode", "pass", "user", "charset"]
+      named =
+        list.assoc.mem("title", req.query) or list.assoc.mem("artist", req.query)
+      m =
+        list.filter_map(
+          fun (kv) ->
+            begin
+              let (k, v) = kv
+              if
+                list.mem(k, skipped) or (k == "song" and named)
+              then
+                null
+              elsif
+                k == "song"
+              then
+                ("title", v)
+              elsif
+                k == "url"
+              then
+                ("metadata_url", v)
+              else
+                (k, v)
+              end
+            end,
+          req.query
+        )
+      # Harbor puts it at the end of the input's buffer, with the audio the DJ is sending now;
+      # inserted at once it would lead that audio by the buffer (and could land in the frame
+      # of a now-playing Node just sent, which would hide it).
+      def insert() =
+        if inp.connected() then inp.source.insert_metadata(m) end
+      end
+      thread.run(delay=inp.source.buffer_length(), insert)
+      answer(200, "Updated metadatas for mount #{mount}")
+    else
+      answer(401, "Unauthorized")
+    end
+  end
+end
+
+if
+  live_input
+then
+  harbor.http.register(port=live_port, method="GET", "/admin/metadata", live_admin_metadata)
+  harbor.http.register(port=live_port, method="POST", "/admin/metadata", live_admin_metadata)
+  harbor.http.register(port=live_port, method="GET", "/admin.cgi", live_admin_metadata)
+end
+# --- end #68 live metadata: the DJ's own track info ---------------------------------------
 
 # Ready once input.harbor has buffered `buffer` seconds; only then can it take the air.
 def live_input_ready(inp) =
@@ -827,20 +1005,85 @@ def live_gate_index() =
   if null.defined(inp) then null.get(inp).index else 0 end
 end
 
+# --- #68 live metadata (ADR 0040): what listeners see while a DJ is on air ---------------
+# Node sends the now-playing (`POST /v1/live/metadata {title, artist, encoder}`): the show and
+# DJ by default, or what a manager typed. `encoder`: let the metadata the DJ's software sends
+# through instead. Whatever the encoder sends on the input on air is reported to Node
+# (`live.metadata`), allowed or not. Written by harbor handlers, read on the clock thread.
+live_np_title = ref("")
+live_np_artist = ref("")
+live_np_encoder = ref(false)
+# Inserts Node's now-playing on the live branch now (set by with_live).
+live_np_push = ref(fun () -> ())
+
+# Node's now-playing as metadata. `song` too: the Icecast output sends `song` as is when a
+# track has one (DJ software often sends only that), else `artist - title`.
+# What the DJ's encoder sends is capped (characters): Node keeps and shows it.
+live_np_max = 500
+def live_np_cap(s) =
+  if
+    string.length(encoding="utf8", s) > live_np_max
+  then
+    string.sub(encoding="utf8", s, start=0, length=live_np_max)
+  else
+    s
+  end
+end
+
+def live_np_tags() =
+  t = live_np_title()
+  a = live_np_artist()
+  [
+    ("title", t),
+    ("artist", a),
+    ("song", if a == "" then t elsif t == "" then a else "#{a} - #{t}" end),
+    ("ondes_live_np", "1")
+  ]
+end
+# --- end #68 live metadata -----------------------------------------------------------------
+
+# DJ handover (#66, ADR 0038): the crossfade between two DJs, in seconds (`POST /v1/live`
+# `fade`; 0: a cut). Equal-power fades: two DJs are unrelated signals, so the summed level
+# stays flat through the overlap instead of dipping 3 dB in the middle (linear) or bumping
+# 3 dB (both at full level). Liquidsoap's `sin` is an S-curve (in + out = 1, not
+# in² + out² = 1); `log` with curve 6, ln(1 + 6x) / ln 7, keeps in² + out² within 0.15 dB of 1.
+live_handover_fade = ref(1.)
+
+def live_handover(a, b) =
+  # Only from a DJ on air. The input switch also changes input when the gate opens on another
+  # input than the last show's; the gate's own fade covers that one, and the input it leaves
+  # isn't on air.
+  d = live_handover_fade()
+  if
+    live_on_air() == 0 or d <= 0.
+  then
+    (b : source)
+  else
+    add(
+      normalize=false,
+      [
+        fade.in(type="log", curve=6., duration=d, b),
+        fade.out(type="log", curve=6., duration=d, a)
+      ]
+    )
+  end
+end
+# End of DJ handover (#66).
+
 def with_live(auto) =
   def live_fade(a, b) =
     add(normalize=false, [fade.in(duration=1., b), fade.out(duration=1., a)])
   end
 
   # Which DJ: the selected input (or the first ready one). Switching inputs while the gate
-  # is open is a handover, with the same crossfade. This switch doesn't look at the gate
+  # is open is a handover, with its own crossfade (#66). This switch doesn't look at the gate
   # itself, so the DJ stays available while they fade out when the gate closes.
   gated =
     switch(
       id="live_inputs",
       track_sensitive=false,
-      transitions=list.map(fun (_) -> live_fade, live_pool),
-      list.map(fun (inp) -> ({live_gate_index() == inp.index}, inp.source), live_pool)
+      transitions=list.map(fun (_) -> live_handover, live_pool),
+      list.map(fun (inp) -> ({live_gate_index() == inp.index}, inp.aired), live_pool)
     )
 
   # What the live branch is tagged with: the as-run callback keys on it.
@@ -875,6 +1118,52 @@ def with_live(auto) =
   # starts when the DJ connects, not when they go on air.
   gated = metadata.map(insert_missing=true, fun (_) -> live_tags(), gated)
 
+  # --- #68 live metadata (ADR 0040) ---------------------------------------------------------
+  # Metadata from the DJ's encoder (anything but Node's own inserts, `ondes_live_np`) is
+  # reported, then replaced by Node's now-playing unless Node lets the encoder through.
+  def live_np_map(m) =
+    if
+      m["ondes_live_np"] != ""
+    then
+      []
+    else
+      title = live_np_cap(if m["title"] != "" then m["title"] else m["song"] end)
+      artist = live_np_cap(m["artist"])
+      sent = title != "" or artist != ""
+      if
+        sent
+      then
+        d = json.object()
+        d.add("input", int_of_string(default=0, m["ondes_live_input"]))
+        d.add("session_id", nullable_string(m["ondes_live_session"]))
+        d.add("streamer_id", nullable_string(m["ondes_live_streamer"]))
+        d.add("title", nullable_string(title))
+        d.add("artist", nullable_string(artist))
+        emit("live.metadata", d)
+      end
+      if
+        sent and live_np_encoder()
+      then
+        # Through, capped like what is reported.
+        list.filter(
+          fun (kv) -> snd(kv) != "",
+          [
+            ("title", live_np_cap(m["title"])),
+            ("artist", artist),
+            ("song", live_np_cap(m["song"]))
+          ]
+        )
+      else
+        live_np_tags()
+      end
+    end
+  end
+  gated = metadata.map(fun (m) -> live_np_map(m), gated)
+  live_np_push :=
+    fun () ->
+      if live_enabled() then gated.insert_metadata([...live_tags(), ...live_np_tags()]) end
+  # --- end #68 live metadata ----------------------------------------------------------------
+
   # Taking the air. The automation track on air is faded out under the DJ and frozen
   # there (Liquidsoap doesn't pull a source that isn't selected): it must never come back.
   # A zero end duration is set on it now, while it is still the current track, so that
@@ -887,7 +1176,7 @@ def with_live(auto) =
     auto_feed.insert_metadata([("liq_cross_end_duration", "0."), ("liq_fade_out", "0.")])
     # Fresh tags for this takeover: the input switch may still be on the same input as the
     # previous show, so no new track (and no metadata) would come from below.
-    gated.insert_metadata(live_tags())
+    gated.insert_metadata([...live_tags(), ...live_np_tags()])
     live_fade(a, b)
   end
 
@@ -1192,6 +1481,148 @@ radio.on_noise(synchronous=true, fun () -> emit("blank.recovered", json.object()
 blank_source = radio
 
 # ---------------------------------------------------------------------------------------
+# Live recording (#67, ADR 0039). BEGIN live recording (owned by #67; keep other changes out)
+#
+# While a DJ is on air (live_on_air != 0, after the takeover's fade) the final mix is
+# written to live_record_dir as FLAC, one file per live session: a new file starts on the frame where the session on air
+# changes (a handover, or a reconnect), so every file is one session's on-air span and
+# consecutive files join without a gap. Off when live_record_dir is "" (the lifecycle mounts
+# the station's `<cache>/recordings` there, read-write; the playout cache stays read-only).
+#
+# The session on air is the `ondes_live_session` tag of the final mix, as the as-run reads
+# it. Files are `live-<boot>-<n>.flac`. Each one is announced (`live.recording.started`) on
+# its first frame once its session is known, so a file the engine could not open (the
+# directory not writable yet) is never announced: Liquidsoap retries the open every 10 s
+# without calling `reopen_when`, and the recording never stops the air. A file is announced
+# closed (`live.recording.closed`) when it is closed: on the next session, when the gate
+# below shuts (the DJ's last session of the day; `fallible=true` stops the output, which
+# closes the file), or on a clean shutdown. A write error mid-file is not announced: the
+# file is announced again (a no-op for Node) on the reopen's first frame, and if Liquidsoap
+# opens a new file instead, Node interrupts the old one when the new one starts. Node turns
+# the files into the episode's audio. A file that never saw a session (an engine opened by
+# hand without one) is not announced, and the worker sweeps it.
+#
+# Threads: everything below runs on the clock thread (metadata, filename, reopen, error and
+# close callbacks), so the refs have a single writer.
+
+if
+  live_input and live_record_dir != ""
+then
+  live_record_seq = ref(0)
+  # The latest session tag on air (kept while automation airs: nothing is recorded then).
+  live_record_air_session = ref("")
+  # The file being written and the one before it: whichever on_close names. `session` is set
+  # (and the file announced) on its first frame with a session; `closed` once announced closed.
+  live_record_none = {file="", session="", started=0., closed=false}
+  live_record_cur = ref(live_record_none)
+  live_record_prev = ref(live_record_none)
+
+  radio.on_metadata(
+    synchronous=true,
+    fun (m) ->
+      begin
+        session = m["ondes_live_session"]
+        if session != "" then live_record_air_session := session end
+      end
+  )
+
+  def live_record_filename() =
+    live_record_seq := live_record_seq() + 1
+    name = "live-#{boot_id}-#{live_record_seq()}.flac"
+    live_record_prev := live_record_cur()
+    live_record_cur := live_record_none.{file=name}
+    "#{live_record_dir}/#{name}"
+  end
+
+  # Checked on every frame of an open file: true closes this file and opens the next one.
+  def live_record_reopen() =
+    session = live_record_air_session()
+    cur = live_record_cur()
+    if
+      session == "" or session == cur.session
+    then
+      false
+    elsif cur.session == "" then
+      # The file's first frame with a session: it is open, and that session's.
+      live_record_cur := cur.{session=session, started=time()}
+      d = json.object()
+      d.add("file", cur.file)
+      d.add("session_id", session)
+      d.add("started_at", live_record_cur().started)
+      emit("live.recording.started", d)
+      false
+    else
+      true
+    end
+  end
+
+  def live_record_on_close(filename) =
+    name = path.basename(filename)
+    is_cur = name == live_record_cur().file
+    r = if is_cur then live_record_cur() else live_record_prev() end
+    if
+      r.file == name and r.session != "" and not r.closed
+    then
+      d = json.object()
+      d.add("file", r.file)
+      d.add("session_id", r.session)
+      d.add("started_at", r.started)
+      d.add("ended_at", time())
+      emit("live.recording.closed", d)
+      if
+        is_cur
+      then
+        live_record_cur := r.{closed=true}
+      else
+        live_record_prev := r.{closed=true}
+      end
+    end
+  end
+
+  # Open or write error: retried in 10 s. The file is announced again on its first frame.
+  def live_record_on_error(err) =
+    message = if null.defined(err) then error.message(null.get(err)) else "unknown error" end
+    log.important(label="live", "Live recording failed, retrying in 10 s: #{message}")
+    cur = live_record_cur()
+    if not cur.closed then live_record_cur := cur.{session=""} end
+    10.
+  end
+
+  # Only while a DJ is on air, from the end of the takeover's 1 s crossfade (the automation
+  # fading out under the DJ is not part of the show). A handover keeps a DJ on air, so it
+  # skips nothing: the next session's file starts on the handover's frame.
+  live_record_on_air_since = ref(-1.)
+  def live_record_live() =
+    if
+      live_on_air() == 0
+    then
+      live_record_on_air_since := -1.
+      false
+    else
+      if live_record_on_air_since() < 0. then live_record_on_air_since := time() end
+      time() - live_record_on_air_since() >= 1.
+    end
+  end
+  live_recorded =
+    switch(id="live_record_gate", track_sensitive=false, [(live_record_live, radio)])
+
+  output.file(
+    id="live_record",
+    fallible=true,
+    perm=0o644,
+    dir_perm=0o755,
+    reopen_when=live_record_reopen,
+    reopen_delay={0.},
+    reopen_on_error=live_record_on_error,
+    on_close=live_record_on_close,
+    %flac(samplerate=44100, channels=2, bits_per_sample=16, compression=5),
+    live_record_filename,
+    live_recorded
+  )
+end
+# END live recording
+
+# ---------------------------------------------------------------------------------------
 # Metrics. Built-in server on metrics_port plus a few station gauges.
 
 queue_length_metric =
@@ -1326,6 +1757,12 @@ def state_json() =
   l.add("selected", if live_selected() == 0 then json.value(null) else json.value(live_selected()) end)
   l.add("on_air", if live_on_air() == 0 then json.value(null) else json.value(live_on_air()) end)
   l.add("session_id", nullable_string(live_session_id()))
+  # #68: the now-playing Node last sent.
+  np = json.object()
+  np.add("title", live_np_title())
+  np.add("artist", live_np_artist())
+  np.add("encoder", live_np_encoder())
+  l.add("now_playing", np)
   l.add(
     "inputs",
     list.map(
@@ -1337,6 +1774,7 @@ def state_json() =
           i.add("connected", inp.connected())
           i.add("ready", live_input_ready(inp))
           i.add("streamer_id", nullable_string(inp.streamer()))
+          i.add("muted", inp.muted())
           i
         end,
       live_pool
@@ -1719,13 +2157,19 @@ def handle_live(req, res) =
       fail(res, 409, "live input is disabled for this station")
     else
       try
-        let json.parse (p : {enabled: bool, input: int?, session_id: string?}) = req.body()
+        let json.parse (p : {enabled: bool, input: int?, session_id: string?, fade: float?}) =
+          req.body()
         wanted = p.input ?? 0
+        handover_fade = p.fade ?? live_handover_fade()
         if
           wanted < 0 or wanted > live_inputs
         then
           fail(res, 400, "invalid live command: no input #{wanted}")
+        elsif handover_fade < 0. or handover_fade > 10. then
+          fail(res, 400, "invalid live command: fade #{handover_fade} s")
         else
+          # DJ handover (#66): the crossfade of this handover, if it is one.
+          live_handover_fade := handover_fade
           if
             p.enabled
           then
@@ -1734,6 +2178,14 @@ def handle_live(req, res) =
               session != live_session_id() or wanted != live_selected()
             then
               live_previous_session := live_session_id()
+            end
+            # #68: a new session shows nothing of the previous DJ's until Node sends its own.
+            if
+              session != live_session_id()
+            then
+              live_np_title := ""
+              live_np_artist := ""
+              live_np_encoder := false
             end
             live_session_id := session
             live_selected := wanted
@@ -1784,6 +2236,79 @@ def handle_live_disconnect(req, res) =
   end
 end
 
+# --- #68 live metadata (ADR 0040) ---------------------------------------------------------
+# POST /v1/live/metadata {title, artist, encoder}: the now-playing while live. On air at once
+# if the gate is open, else at the next takeover.
+def handle_live_metadata(req, res) =
+  if
+    authorized(req, res)
+  then
+    if
+      not live_input
+    then
+      fail(res, 409, "live input is disabled for this station")
+    else
+      try
+        let json.parse (p : {title: string?, artist: string?, encoder: bool?}) = req.body()
+        live_np_title := p.title ?? ""
+        live_np_artist := p.artist ?? ""
+        live_np_encoder := p.encoder ?? false
+        push = live_np_push()
+        push()
+        reply(res, 200, json.stringify({applied=live_enabled()}))
+      catch err do
+        fail(res, 400, "invalid live metadata: #{err.message}")
+      end
+    end
+  end
+end
+# --- end #68 live metadata ----------------------------------------------------------------
+
+# DJ handover (#66, ADR 0038). POST /v1/live/mute {input, muted}: mutes (or unmutes) what an
+# input sends on air, over 100 ms. The DJ stays connected and, if on air, on air: silence
+# until unmuted. Pre-listen still hears them. 409 when muting an input nobody is connected on;
+# reset when a DJ connects or hangs up, so a mute never carries over to the next DJ.
+def handle_live_mute(req, res) =
+  if
+    authorized(req, res)
+  then
+    if
+      not live_input
+    then
+      fail(res, 409, "live input is disabled for this station")
+    else
+      try
+        let json.parse (p : {input: int, muted: bool}) = req.body()
+        inp = live_input_at(p.input)
+        if
+          not null.defined(inp)
+        then
+          fail(res, 400, "invalid mute: no input #{p.input}")
+        else
+          inp = null.get(inp)
+          if
+            p.muted and not inp.connected()
+          then
+            # Nobody to mute: a mute set now would wait for the next DJ on this input.
+            fail(res, 409, "invalid mute: nobody is connected on input #{p.input}")
+          else
+            inp.muted := p.muted
+            d = json.object()
+            d.add("input", p.input)
+            d.add("muted", p.muted)
+            d.add("connected", inp.connected())
+            emit("live.muted", d)
+            reply(res, 200, d.stringify(compact=true))
+          end
+        end
+      catch err do
+        fail(res, 400, "invalid mute: #{err.message}")
+      end
+    end
+  end
+end
+# End of DJ handover (#66).
+
 def handle_state(req, res) =
   if authorized(req, res) then reply(res, 200, state_json().stringify(compact=true)) end
 end
@@ -1833,6 +2358,11 @@ harbor.http.register(port=control_port, method="POST", "/v1/live", handle_live)
 harbor.http.register(
   port=control_port, method="POST", "/v1/live/disconnect", handle_live_disconnect
 )
+# #68 live metadata
+harbor.http.register(
+  port=control_port, method="POST", "/v1/live/metadata", handle_live_metadata
+)
+harbor.http.register(port=control_port, method="POST", "/v1/live/mute", handle_live_mute)
 
 emit(
   "engine.started",

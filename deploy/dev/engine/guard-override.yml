@@ -1,0 +1,21 @@
+# Dev-only changes to deploy/engine/docker-socket-proxy.compose.yml (which stays as production
+# runs it). The api runs on the host, so:
+# - the guard is also on a non-internal network and published on 127.0.0.1 (the api's
+#   ENGINE_DOCKER_URL). Publishing needs a non-internal network; `published` holds the guard
+#   only, and docker-api / docker-socket stay internal. Loopback only: nothing off this
+#   machine reaches it, and a local process that can reach it could use the Docker socket
+#   itself anyway (the guard only narrows that). Port 23750, not 2376 (Docker's TLS port);
+# - it lets engines publish their control port on 127.0.0.1 only (random host port), so the
+#   api can reach it, and resolve host.docker.internal, so engines can post events to the api.
+# Both are refused by a guard started without these variables, whatever the api asks for.
+services:
+  docker-proxy-guard:
+    environment:
+      GUARD_ALLOW_LOOPBACK_CONTROL: 'true'
+      GUARD_EXTRA_HOSTS: host.docker.internal:host-gateway
+    networks: [docker-api, docker-socket, published]
+    ports:
+      - 127.0.0.1:${ENGINE_DEV_DOCKER_PORT:-23750}:2375
+
+networks:
+  published: {}

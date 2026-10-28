@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +20,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { registerEngineEventRoutes, StationEngines } from '../adapter/index.ts';
 import { createDockerClient, type DockerClient } from './docker.ts';
+import { engineUserFromEnv } from './plugin.ts';
 import { createEngineSecretBox } from './secrets.ts';
 import { createEngineLifecycle, type EngineLifecycle } from './service.ts';
 import { containerName, type EngineLifecycleConfig } from './spec.ts';
@@ -148,6 +149,8 @@ beforeAll(async () => {
     publishControlOnLoopback: true,
     extraHosts: ['host.docker.internal:host-gateway'],
     labels: { 'ondes.test': runId },
+    // As in production: the engine runs as this process's user (#67, ADR 0039).
+    engineUser: engineUserFromEnv({}),
   };
   lifecycle = createEngineLifecycle({
     db: tdb.db,
@@ -254,6 +257,18 @@ describe('station engine lifecycle (real Docker)', () => {
     expect(inspected.Mounts).toContainEqual(
       expect.objectContaining({ Destination: '/cache', RW: false }),
     );
+    // Live recordings (#67): the one writable mount, a directory the lifecycle made itself
+    // (Docker would have made it root's: then nobody could clean it up), owned by the user
+    // the engine runs as, and not world-writable.
+    expect(inspected.Mounts).toContainEqual(
+      expect.objectContaining({ Destination: '/recordings', RW: true }),
+    );
+    const recordings = statSync(join(cacheRoot, scope.stationId, 'recordings'));
+    if (process.getuid && process.getgid && process.getuid() !== 0) {
+      expect(inspected.Config.User).toBe(`${process.getuid()}:${process.getgid()}`);
+      expect(recordings.mode & 0o777).toBe(0o750);
+      expect(recordings.uid).toBe(process.getuid());
+    }
     expect(inspected.Config.Env.join('\n')).toContain('ENGINE_CONTROL_TOKEN=');
 
     // Its default output is live on Icecast, with the station's own source password (the

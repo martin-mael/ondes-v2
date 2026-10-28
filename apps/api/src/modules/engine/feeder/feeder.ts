@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { StationScope } from '@ondes/db';
+import { resolveMarkers } from '@ondes/scheduling';
 import {
   alertTypes,
   type EnginePushItem,
@@ -477,7 +478,9 @@ export function createStationFeeder(deps: FeederDeps) {
       entries.push(entry);
       if (b) built.set(item.id, b);
     }
-    return { entries, built };
+    // A marker's timing goes to the item after it (#52): the planner and the engine cut then
+    // treat it like any anchored item.
+    return { entries: resolveMarkers(entries), built };
   }
 
   function body(
@@ -999,9 +1002,12 @@ export function createStationFeeder(deps: FeederDeps) {
     stationId: scope.stationId,
     sync,
 
-    /** Engine and log events: note what aired, then re-sync. */
-    onEvent(event: RealtimeEvent): void {
-      if (event.stationId !== scope.stationId) return;
+    /**
+     * Engine and log events: note what aired, then re-sync. Resolves to the sync's result, or
+     * null when the event isn't this feeder's business or the sync failed (logged).
+     */
+    onEvent(event: RealtimeEvent): Promise<SyncResult | null> {
+      if (event.stationId !== scope.stationId) return Promise.resolve(null);
       switch (event.type) {
         case 'engine.booted':
           // The next run enters the new boot (and loads what was pushed to it, if anything).
@@ -1017,10 +1023,11 @@ export function createStationFeeder(deps: FeederDeps) {
         case 'log.updated':
           break;
         default:
-          return;
+          return Promise.resolve(null);
       }
-      void sync().catch((err: unknown) => {
+      return sync().catch((err: unknown) => {
         logger.warn({ err, stationId: scope.stationId }, 'Feeder sync failed');
+        return null;
       });
     },
 

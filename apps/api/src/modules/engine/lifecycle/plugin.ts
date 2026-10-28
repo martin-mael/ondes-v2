@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { actorOf, stationScopeOf } from '../../../plugins/auth.ts';
 import { HttpError } from '../../../plugins/errors.ts';
 import { registerEngineEventRoutes, StationEngines } from '../adapter/index.ts';
+import { ENGINE_USER_PATTERN } from './container-policy.ts';
 import { createDockerClient, type DockerClient, DockerError } from './docker.ts';
 import { RestartGuard, type RestartGuardOptions } from './guard.ts';
 import { PortPoolExhaustedError } from './repo.ts';
@@ -181,6 +182,12 @@ export function engineLifecycleConfigFromEnv(
     /(^|_)docker-socket$/.test(network)
   )
     throw new Error(`ENGINE_NETWORK must not be the Docker API network (${dockerNetwork})`);
+  // Dev only (`pnpm dev:engine`): the production images set NODE_ENV=production.
+  const devOnly = ['ENGINE_PUBLISH_CONTROL_ON_LOOPBACK', 'ENGINE_EXTRA_HOSTS'].filter(
+    (k) => env[k],
+  );
+  if (env.NODE_ENV === 'production' && devOnly.length)
+    throw new Error(`${devOnly.join(', ')}: development only, refused in production`);
   return {
     dockerUrl,
     secretKeys: engineSecretKeysFromEnv(env),
@@ -201,10 +208,34 @@ export function engineLifecycleConfigFromEnv(
         memoryMb: num('ENGINE_MEMORY_MB', 512),
         pids: num('ENGINE_PIDS', 256),
       },
+      // Dev only (`pnpm dev:engine`, deploy/dev/engine): the api runs outside Docker. The guard
+      // refuses both unless it was started with GUARD_ALLOW_LOOPBACK_CONTROL / GUARD_EXTRA_HOSTS.
+      ...(env.ENGINE_PUBLISH_CONTROL_ON_LOOPBACK === 'true'
+        ? { publishControlOnLoopback: true }
+        : {}),
+      ...(env.ENGINE_EXTRA_HOSTS ? { extraHosts: env.ENGINE_EXTRA_HOSTS.split(',') } : {}),
+      engineUser: engineUserFromEnv(env),
     },
     guard: {
       maxRestarts: num('ENGINE_RESTART_MAX', 5),
       windowSeconds: num('ENGINE_RESTART_WINDOW_SECONDS', 600),
     },
   };
+}
+
+/**
+ * The engine's `uid:gid`: ENGINE_USER, else the api's own user (not root), so the engine
+ * writes its recordings as the user that owns their directory (ADR 0039).
+ */
+export function engineUserFromEnv(env: NodeJS.ProcessEnv = process.env): string | null {
+  const explicit = env.ENGINE_USER?.trim();
+  if (explicit) {
+    if (!ENGINE_USER_PATTERN.test(explicit)) {
+      throw new Error('ENGINE_USER must be <uid>:<gid>, numeric and not root');
+    }
+    return explicit;
+  }
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  return uid && gid ? `${uid}:${gid}` : null;
 }

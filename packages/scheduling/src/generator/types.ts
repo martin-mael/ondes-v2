@@ -19,7 +19,7 @@ import type { PickCandidate, PickCategory, PlayedItem } from '../rules/index.ts'
 // do. No I/O: the same snapshot and seed always give the same day.
 
 /** Bumped when the same snapshot and seed would give a different day. Stored on `log_day`. */
-export const GENERATOR_VERSION = '2';
+export const GENERATOR_VERSION = '3';
 
 /** A library asset as the generator sees it: what the rules read, and how long it plays. */
 export interface GeneratorAsset extends PickCandidate {

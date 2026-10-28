@@ -204,6 +204,10 @@ export async function startFakeEngine(
       if (body.input !== 1 && body.input !== 2) return send(res, 400, { error: 'no input' });
       return send(res, 200, { disconnected: false });
     }
+    if (route === 'POST /v1/live/metadata') {
+      if (engine.liveDisabled) return send(res, 409, { error: 'live input is disabled' });
+      return send(res, 200, { applied: false });
+    }
     return send(res, 404, { error: 'no route' });
   }
 

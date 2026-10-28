@@ -31,7 +31,8 @@ being one of them.
 - **Proxy guard**: filters bodies and targets.
   - Creates: only `<prefix>-<id>` names, the pinned image, the engine entrypoint, `ondes.*`
     labels with `ondes.engine=true`, the engine network, a read-only bind of
-    `<ENGINE_CACHE_ROOT>/<id>` at `/cache`, tmpfs `/tmp`, a read-only root, CPU/memory/pids
+    `<ENGINE_CACHE_ROOT>/<id>` at `/cache`, a read-write bind of
+    `<ENGINE_CACHE_ROOT>/<id>/recordings` at `/recordings` (live recording, #67), tmpfs `/tmp`, a read-only root, CPU/memory/pids
     limits, no swap, `CapDrop: ALL`, `no-new-privileges`, only the live port published. No
     privileged mode, binds, devices, added capabilities, host namespaces or volumes.
   - Inspect, start, stop, update (restart policy only) and remove: only engine containers (label
@@ -59,6 +60,15 @@ being one of them.
   `CapDrop: ALL`, `no-new-privileges`; json-file logs capped at 30 MB.
 - **Playout cache**: `<ENGINE_CACHE_ROOT>/<stationId>` bind-mounted read-only at `/cache`
   (ADR 0004), created if missing.
+- **Live recordings**: `<ENGINE_CACHE_ROOT>/<stationId>/recordings` bind-mounted read-write at
+  `/recordings` (ADR 0039), the only path the engine writes to. The lifecycle creates it before
+  creating the container (a directory Docker creates is root's), mode 0750, and runs the engine
+  as its own `uid:gid` (`User`, with `HOME=/tmp`; `ENGINE_USER` overrides), the user the worker
+  runs as too: the engine writes and the worker deletes as the owner. An api running as root
+  (or an `ENGINE_USER` of someone else) leaves the engine on the image's user and makes the
+  directory 0777 instead. The worker's sweep makes it too, and logs one it can't write to.
+  The template's `live.recordDir` points there. The guard allows binds of the container's own
+  station only, and `User` only as a numeric, non-root `uid:gid`.
 - **Network**: `ENGINE_NETWORK`, shared with the api and Icecast; the container is reachable as
   `<prefix>-<stationId>`. The control port is never published.
 - **Metrics**: the Prometheus server is off (it has no auth, and engines share a network). Turn
@@ -156,6 +166,8 @@ check of the auth plugin and must never be routed through the public proxy.
 | `ENGINE_LIVE_BIND_IP` | `0.0.0.0` | |
 | `ENGINE_CPUS` / `ENGINE_MEMORY_MB` / `ENGINE_PIDS` | `1` / `512` / `256` | 256 MB is not enough: Liquidsoap 2.4.6 is OOM-killed while loading. |
 | `ENGINE_RESTART_MAX` / `ENGINE_RESTART_WINDOW_SECONDS` | `5` / `600` | |
+| `ENGINE_PUBLISH_CONTROL_ON_LOOPBACK` | – | Dev only (`deploy/dev/engine`): `true` publishes the control port on 127.0.0.1, for an api outside Docker. The guard refuses it without `GUARD_ALLOW_LOOPBACK_CONTROL`. |
+| `ENGINE_EXTRA_HOSTS` | – | Dev only: comma-separated `/etc/hosts` entries (`host.docker.internal:host-gateway`). The guard refuses any not in `GUARD_EXTRA_HOSTS`. |
 
 **Rotating the secrets key**:
 1. Set the new key as `ENGINE_SECRETS_KEY` with a new `ENGINE_SECRETS_KEY_ID`, and move the old

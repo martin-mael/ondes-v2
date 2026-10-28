@@ -29,6 +29,7 @@ import {
 } from '../features/rotation/categories/category-editor-page.tsx';
 import { RulesPage } from '../features/rotation/rules/rules-page.tsx';
 import { SegueEditorPage } from '../features/segue-editor/segue-editor-page.tsx';
+import { LiveRecordingPage } from '../features/settings/live-recording/live-recording-page.tsx';
 import { SafetyPage } from '../features/settings/safety/safety-page.tsx';
 import { CalendarPage, calendarViews } from '../features/shows/calendar-page.tsx';
 import { ShowPage } from '../features/shows/show-page.tsx';
@@ -286,6 +287,13 @@ const alertsRoute = createRoute({
   component: AlertsPage,
 });
 
+// Live recording (#67): live shows into their episodes, and the audio's retention.
+const liveRecordingSettingsRoute = createRoute({
+  getParentRoute: () => stationRoute,
+  path: '/settings/live-recording',
+  component: LiveRecordingPage,
+});
+
 const safetySettingsRoute = createRoute({
   getParentRoute: () => stationRoute,
   path: '/settings/safety',
@@ -319,6 +327,8 @@ const segueRoute = createRoute({
     /** A take just recorded (#59) to place as a new voice, at axis position `at`. */
     voice: z.uuid().optional().catch(undefined),
     at: z.number().int().optional().catch(undefined),
+    /** Its length on the segue axis (samples), for smart placement (#61) before its ingest. */
+    length: z.number().int().positive().optional().catch(undefined),
     /** Back from the recorder (#59): restore the draft handed over to it. */
     resume: z.boolean().optional().catch(undefined),
   }),
@@ -381,6 +391,7 @@ const routeTree = rootRoute.addChildren([
       showsCalendarRoute,
       showRoute,
       safetySettingsRoute,
+      liveRecordingSettingsRoute,
       liveRoute,
       logRoute,
       segueRoute,

@@ -25,13 +25,19 @@ import { libraryPlugin } from './modules/library/plugin.ts';
 import { librarySearchRoutes } from './modules/library/search-routes.ts';
 import { type UploadPluginOptions, uploadPlugin } from './modules/library/upload-plugin.ts';
 import { listenerRoutes } from './modules/listeners/routes.ts';
+import { getLiveNowPlaying } from './modules/live/metadata.ts';
 import { type LivePluginOptions, livePlugin } from './modules/live/plugin.ts';
+import {
+  type LiveRecordingPluginOptions,
+  liveRecordingPlugin,
+} from './modules/live/recording/plugin.ts';
 import { type RegenPluginOptions, regenPlugin } from './modules/log/regen-plugin.ts';
 import { logRoutes } from './modules/log/routes.ts';
 import { onAirRoutes } from './modules/onair/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
 import { type PrelistenRoutesOptions, prelistenRoutes } from './modules/prelisten/routes.ts';
 import { type PromosPluginOptions, promosPlugin } from './modules/promos/plugin.ts';
+import { type PublicPluginOptions, publicPlugin } from './modules/public/plugin.ts';
 import { rotationRoutes } from './modules/rotation/routes.ts';
 import { rotationRulesRoutes } from './modules/rotation/rules/routes.ts';
 import { type SeguesPluginOptions, seguesPlugin } from './modules/segues/plugin.ts';
@@ -84,10 +90,13 @@ export interface AppOptions {
    * auth route (default: the engine lifecycle's, when it runs).
    */
   live?: LivePluginOptions;
+  liveRecording?: LiveRecordingPluginOptions;
   /** Pre-listen (#71); defaults to the engine lifecycle's adapters. */
   prelisten?: PrelistenRoutesOptions;
   /** Team onboarding (#113): DNS resolver and sending limits. */
   invitations?: InvitationsOptions;
+  /** Public now-playing API (#74): live metadata reader, rate limits, snapshot lifetimes. */
+  publicApi?: PublicPluginOptions;
   /** Real-time stream tuning (tests shorten the timers). */
   sse?: Partial<SseOptions>;
   fastify?: FastifyServerOptions;
@@ -131,6 +140,12 @@ export async function buildApp(options: AppOptions) {
   await app.register(showsRoutes, { prefix: '/api/v1' });
   // On air (#70): the dashboard's snapshot of the air.
   await app.register(onAirRoutes, { prefix: '/api/v1' });
+  // Public API (#74): now playing, history and their SSE stream, by station slug, anonymous.
+  // The live now-playing (#68) gives the public live item its title (ADR 0041).
+  await app.register(publicPlugin, {
+    liveNowPlaying: getLiveNowPlaying,
+    ...options.publicApi,
+  });
   // Segues and islands (#55): routes, and log/asset events -> island re-sync (durable queue).
   await app.register(seguesPlugin, options.segues ?? {});
   // Promo VTs and VT pools (#60): routes, and log/asset events -> promo segues (durable queue).
@@ -167,6 +182,8 @@ export async function buildApp(options: AppOptions) {
       : {}),
     ...options.live,
   });
+  // Live recording (#67): sessions' audio into their episodes, and its settings.
+  await app.register(liveRecordingPlugin, options.liveRecording ?? {});
   // Listener counts for the dashboard (#71): what the Icecast poller (#32) recorded.
   await app.register(listenerRoutes, { prefix: '/api/v1' });
   // Pre-listen of the live inputs (#71), proxied from the station's engine.

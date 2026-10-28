@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { chmod, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { type Db, type Executor, NotFoundError, type StationScope } from '@ondes/db';
 import type { EngineRealtimeEvent } from '@ondes/shared';
 import {
@@ -36,6 +38,7 @@ import {
   type EngineLifecycleConfig,
   engineContainerSpec,
   engineSettingsFor,
+  RECORDINGS_DIR,
 } from './spec.ts';
 
 /**
@@ -244,6 +247,26 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
   }
 
   /**
+   * The station's live recordings directory (#67, ADR 0039), made before the container so
+   * Docker never creates it (as root: then neither the engine could write to it nor the
+   * worker delete from it). Owned by this process's user, which the engine runs as
+   * (`engineUser`) and the worker too, so 0750 is enough. An engine running as another user
+   * (an api running as root, an ENGINE_USER of someone else) gets 0777 without the sticky
+   * bit: the engine writes, the worker deletes. Best effort: an api that doesn't see the
+   * host's cache root leaves it to the worker's sweep, which makes it too.
+   */
+  async function prepareRecordingsDir(stationId: string) {
+    const dir = join(config.cacheRoot, stationId, RECORDINGS_DIR);
+    try {
+      await mkdir(dir, { recursive: true });
+      const self = process.getuid && process.getgid && `${process.getuid()}:${process.getgid()}`;
+      await chmod(dir, config.engineUser && config.engineUser === self ? 0o750 : 0o777);
+    } catch (err) {
+      logger.warn({ stationId, dir, err }, 'Could not prepare the live recordings directory');
+    }
+  }
+
+  /**
    * Creates and starts the container. Any failure after `create` removes it again, so an
    * interrupted create never leaves a dead container behind.
    */
@@ -255,6 +278,7 @@ export function createEngineLifecycle(options: EngineLifecycleOptions) {
   ): Promise<ContainerInfo> {
     const name = containerName(config, scope.stationId);
     for (const hook of beforeCreate) await hook(scope, secrets);
+    await prepareRecordingsDir(scope.stationId);
     await docker.ensureImage(config.image);
     const id = await docker.create(name, body);
     try {

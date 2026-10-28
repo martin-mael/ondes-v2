@@ -22,6 +22,8 @@ const REFRESH_ON: ReadonlySet<StreamEventType> = new Set<StreamEventType>([
   'log.item.changed',
   'live.session.started',
   'live.session.ended',
+  // The live now-playing (#68): the item on air reads what the streams show.
+  'live.metadata.changed',
   'feeder.item.passed_over',
   // Cue edits (intro/outro markers) and the station's own settings (its timezone).
   'asset.updated',

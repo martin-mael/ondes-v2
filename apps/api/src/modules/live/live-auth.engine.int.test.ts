@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { request } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -63,6 +64,7 @@ let close: () => Promise<void> = async () => {};
 let db: Awaited<ReturnType<typeof createTestDatabase>>['db'];
 let scope: StationScope;
 let engine: EngineAdapter;
+let harborUrl: string;
 const passwords: Record<string, string> = {};
 const ids: Record<string, string> = {};
 
@@ -137,6 +139,8 @@ beforeAll(async () => {
     'ICECAST_SOURCE_PASSWORD=unused',
     '-p',
     '127.0.0.1::7000',
+    '-p',
+    '127.0.0.1::8005',
     '-v',
     `${work}:/work`,
     liquidsoapImage(),
@@ -156,6 +160,7 @@ beforeAll(async () => {
   };
 
   const port = docker(['port', engineName, '7000/tcp']).split('\n')[0]?.split(':').pop();
+  harborUrl = `http://127.0.0.1:${docker(['port', engineName, '8005/tcp']).split('\n')[0]?.split(':').pop()}`;
   engine = createEngineAdapter({
     stationId: st.id,
     baseUrl: `http://127.0.0.1:${port}`,
@@ -221,6 +226,32 @@ async function connects(username: string, password: string, ms = 8000): Promise<
     for (let i = 0; i < 40 && (await engine.state()).live.connected; i++) await sleep(250);
   }
   return connected;
+}
+
+/** A source connection to `mount` (Icecast PUT): the status harbor answers with. */
+function sourceLogin(login: string, mount = 'live'): Promise<number> {
+  return new Promise((resolvePromise, reject) => {
+    const req = request(`${harborUrl}/${mount}`, {
+      method: 'PUT',
+      headers: { authorization: `Basic ${btoa(login)}`, 'content-type': 'audio/mpeg' },
+    });
+    req.on('response', (res) => {
+      resolvePromise(res.statusCode ?? 0);
+      res.resume();
+      req.destroy();
+    });
+    req.on('error', reject);
+    req.write(Buffer.alloc(4096));
+  });
+}
+
+/** Track info the way DJ software sends it for MP3 (#68): the status harbor answers with. */
+async function metadataAs(login: string, song: string): Promise<number> {
+  const url = new URL(`${harborUrl}/admin/metadata`);
+  url.searchParams.set('mount', '/live');
+  url.searchParams.set('mode', 'updinfo');
+  url.searchParams.set('song', song);
+  return (await fetch(url, { headers: { authorization: `Basic ${btoa(login)}` } })).status;
 }
 
 // Each attempt starts a DJ container and waits for the engine: slower than the 30 s default.
@@ -300,6 +331,49 @@ describe('harbor auth callback on the real engine', () => {
         await engine.setLive(false);
         stopOne();
         stopTwo();
+        for (let i = 0; i < 40 && (await engine.state()).live.connected; i++) await sleep(250);
+      }
+    },
+    SLOW,
+  );
+
+  it(
+    'refuses any source on a taken input, and track info from anyone but its DJ (#68)',
+    async () => {
+      const good = `dj-good:${passwords['dj-good']}`;
+      const stop = startDj('dj-good', passwords['dj-good'] ?? '');
+      try {
+        for (let i = 0; i < 40 && !(await engine.state()).live.connected; i++) await sleep(250);
+        expect((await engine.state()).live.connected).toBe(true);
+        const before = await db
+          .select()
+          .from(auditLog)
+          .where(eq(auditLog.action, 'streamer.connect'));
+        // The connected DJ's own login, another DJ's, a wrong one: refused by the callback,
+        // which never asks the api about a taken input.
+        expect(await sourceLogin(good)).toBe(401);
+        expect(await sourceLogin(`dj-two:${passwords['dj-two']}`)).toBe(401);
+        expect(await sourceLogin('dj-good:wrong-password-123')).toBe(401);
+        const after = await db
+          .select()
+          .from(auditLog)
+          .where(eq(auditLog.action, 'streamer.connect'));
+        expect(after).toHaveLength(before.length);
+        // Track info: only the DJ connected there.
+        expect(await metadataAs(`dj-two:${passwords['dj-two']}`, 'Intruder')).toBe(401);
+        expect(await metadataAs('dj-good:wrong-password-123', 'Intruder')).toBe(401);
+        expect(await metadataAs(good, 'Artist - Song')).toBe(200);
+        // Nobody connected on the second input: no track info for it either.
+        const free = new URL(`${harborUrl}/admin/metadata`);
+        free.searchParams.set('mount', '/live-2');
+        free.searchParams.set('mode', 'updinfo');
+        free.searchParams.set('song', 'Intruder');
+        expect(
+          (await fetch(free, { headers: { authorization: `Basic ${btoa(good)}` } })).status,
+        ).toBe(401);
+        expect((await engine.state()).live.inputs?.[0]?.streamer_id).toBe(ids['dj-good']);
+      } finally {
+        stop();
         for (let i = 0; i < 40 && (await engine.state()).live.connected; i++) await sleep(250);
       }
     },

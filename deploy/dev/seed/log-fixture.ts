@@ -56,7 +56,7 @@ const LEGACY_ISLAND_PREFIX = 'Island: ';
 type Ctx = { actor: Actor; scope: StationScope };
 
 /** Where the seed's events and render jobs go: RabbitMQ when reachable, else nowhere. */
-type Bus = {
+export type Bus = {
   events?: { publish(event: RealtimeEvent): Promise<void> };
   jobs?: JobPublisher;
   close(): Promise<void>;
@@ -66,7 +66,7 @@ const log = {
   error: (obj: unknown, msg: string) => console.error(`dev:seed: ${msg}`, obj),
 } as unknown as Parameters<typeof publishEdit>[1];
 
-async function connectBus(): Promise<Bus> {
+export async function connectBus(): Promise<Bus> {
   const url = process.env.RABBITMQ_URL;
   if (!url) return { close: async () => {} };
   try {
