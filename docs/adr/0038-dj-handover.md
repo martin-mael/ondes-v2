@@ -52,8 +52,11 @@ between full level and silence on each side. `POST /v1/live/mute {input, muted}`
 stays connected, and on air if they were: silence until unmuted. It's for a moment (a mic left
 open, a bad feed while someone calls the DJ); a longer silence is the blank detector's, and
 "take them off" is back to automation or the kick. Pre-listen taps the input before the gain,
-so a manager hears the muted DJ and knows when to unmute. An input is unmuted when its DJ hangs
-up, so the next DJ there never starts muted. Rejected: muting by closing the gate (that is a
+so a manager hears the muted DJ and knows when to unmute. A mute never carries over to the next
+DJ on the input: the engine resets it when a DJ connects and when one hangs up, and refuses
+(409) to mute an input nobody is connected on, as does the api (`live_input_not_connected`),
+which checks the engine's state first and maps the engine's refusal when the DJ hung up in
+between. Unmuting an empty input is a harmless no-op. Rejected: muting by closing the gate (that is a
 return to automation, which ends the session and plays the return file).
 
 ### Kick
@@ -69,14 +72,29 @@ event, title and end. So a night of three DJs in one slot is three `live_session
 `handover`, all with the slot's `episode_id`: the as-run shows one programme, #67 records one
 episode (it groups by episode, else event), and the slot never counts as missed. The trigger
 stays `manual`: ADR 0033's takeover never takes the air back from a DJ put on air by hand, and a
-DJ whose own slot starts later is bound in place as before (`bind`). Past the slot's end nothing
+DJ whose own slot starts later is bound in place as before (`bind`). The same goes for a DJ
+approved ad hoc (ADR 0027's request) while a slot or event of someone else runs: the approval is
+the manager handing them the air within that programme, so the session (trigger `ad_hoc`)
+carries the slot's show and episode or the event, exactly like a DJ put on by hand; an ad-hoc DJ
+with an unlisted event of their own keeps that one. Past the slot's end nothing
 is carried over. `bindingOfSession` rebuilds the binding from the row; the occurrence's start
 isn't stored on the session and isn't read by anything that reopens a binding, so the session's
 start stands in for it.
 
+### One switch at a time per station
+`goLive` (by hand, an approval, the slot takeover or a scheduled handover, on any replica) runs
+under a per-station Postgres advisory lock (`pg_advisory_xact_lock` on `live-switch:<station>`),
+held by a transaction for the whole switch: the database writes (committed on their own before
+the engine is told, as in ADR 0027) and the engine call, and its undo. Without it, a handover
+firing while a member puts someone on air could commit one session last and leave the engine on
+the other's input. The lock goes with the transaction, or with the connection if the replica
+dies. A switch that waits more than 30 s (`lock_timeout`) gets a 409 `live_switch_busy` rather
+than queueing forever.
+
 ### Scheduled handovers (`apps/api/src/modules/live/handover.ts`)
 `live_handover` (new schema file `live-handover.ts`): station, streamer (composite key, so never
-another tenant's DJ; deleting the streamer deletes them), `at`, `fade_ms` (0–10 000), `status`
+another tenant's DJ; deleting the streamer deletes them, so the list never shows a handover to
+nobody), `at`, `fade_ms` (0–10 000), `status`
 (`pending` → `running` → `done` | `failed` | `cancelled`), `reason`, the `session_id` it opened,
 `created_by`, `claimed_at`, `ended_at`.
 - **The target is a DJ, not an input.** At its time the api looks for the input that streamer
@@ -86,14 +104,17 @@ another tenant's DJ; deleting the streamer deletes them), `at`, `fade_ms` (0–1
   due within 10 s; scheduling one due sooner arms it at once. Whichever timer fires first claims
   the row (`update … where status = 'pending'`); the other replicas find it claimed. Then
   `goLive(input, 'manual', fadeMs)` as the system actor `live-handover`, and the row ends `done`
-  with the session, or `failed` with a reason: `not_connected`, `streamer_not_allowed`
+  with the session, or `failed` with a reason (a failure of the switch only: once the DJ is on
+  air nothing turns it into a failure): `not_connected`, `streamer_not_allowed`
   (disabled or expired since), `engine_unavailable`, `error` (logged). A DJ already on air on
   that input is `done` with their session, nothing switched. Rejected: scheduling in the engine
   (`POST /v1/schedule` style, as hard starts do): Node must create the session first and check
   the streamer at the time, and a timer plus a claim keeps it to one Node-side path.
 - **Never late by surprise.** More than a minute late (no api was running at its time), it fails
-  `missed` rather than switching at a time nobody chose. A claim left `running` for more than a
-  minute (its replica died) fails `interrupted`.
+  `missed` rather than switching at a time nobody chose. The replica carrying one out renews its
+  claim every 15 s while the switch runs (it may wait for another switch, or a slow engine); a
+  claim not renewed for a minute (its replica died) fails `interrupted`. Every write is scoped to
+  the station.
 - **Not only a handover.** With nobody on air at its time, the DJ simply goes on air: a planned
   start for an event DJ who isn't listed.
 - Routes: `GET …/live/handovers` (`live:read`; pending, running and those that ended in the last
@@ -104,7 +125,9 @@ another tenant's DJ; deleting the streamer deletes them), `at`, `fade_ms` (0–1
 
 ### Api
 - `PUT …/live/on-air` gains optional `fadeMs` (0–10 000).
-- `PUT …/live/inputs/:input/mute {muted}` (`engine:control`), audited `live.input.mute`.
+- `PUT …/live/inputs/:input/mute {muted}` (`engine:control`), audited `live.input.mute` with the
+  input's state before (from the engine) and after; 409 for an input nobody is connected on.
+- `live.session.start` audits record the crossfade asked (`fadeMs`).
 - `GET …/live/status` inputs gain `muted`.
 - `LiveSwitchEngine` gains `muteLive`; the engine adapter gains `muteLive` and `fadeMs` on
   `setLive` (sent in seconds).
@@ -115,7 +138,8 @@ can reuse them: `LiveInputActions` (put on air, or "Hand over" when another DJ i
 chosen crossfade; back to automation for the DJ on air; mute/unmute; disconnect with a
 confirmation), `HandoverFadeSelect` (cut, 1, 2, 3, 5, 8 s) and `ScheduledHandovers` (the list in
 station time with cancel, and a dialog to schedule one, typed in station time, guarded against
-unsaved changes). All render nothing without `engine:control`. The dashboard's live sources
+unsaved changes). The list shows the day as well as the time (it spans up to 48 h). All render
+nothing without `engine:control`. The dashboard's live sources
 panel (#71) mounts them under its pre-listen buttons, with a "Muted" badge, and refetches on
 `engine.live.muted`.
 
@@ -133,11 +157,17 @@ panel (#71) mounts them under its pre-listen buttons, with a "Muted" badge, and 
   frame (mid-crossfade) and a mute is recorded as silence. #68's tags ride on the input switch
   above the gain, which passes metadata through.
 - Tests: `live/live-handover.engine.int.test.ts` (engine project) records the real template's
-  output: two DJs connected, a 3 s handover (overlap 3 ± 0.3 s, total level within 1 dB of the
+  output, driven by the real switcher and scheduled handovers on a throwaway database (a stub of
+  the harbor auth callback names each DJ): two DJs connected, a scheduled 3 s handover found on
+  DJ 2's input and run by its timer (overlap 3 ± 0.3 s, total level within 1 dB of the
   DJs' through it, no window under −40 dBFS), a 2 s mute (silent on air, 100 ms ramps, the DJ
   still connected and pre-listen still streaming), a cut back (no gap, no overlap), a fade over
-  10 s refused. `live/handover.int.test.ts`: the crossfade asked of the engine, the binding
-  carried over (and not past the slot), mute, scheduled handovers (on time, two replicas, the
-  sweep's timers, not connected, disabled, missed, interrupted, cancel, validation).
+  10 s refused, and a mute refused once the DJ hung up, the input unmuted. `live/handover.int.test.ts`: the crossfade asked of the engine, the binding
+  carried over (and not past the slot, and on an ad-hoc approval), mute (never carried over, the
+  audit's real `from`), two replicas switching at once (the engine ends on the session the
+  database has open), scheduled handovers (on time, two replicas, the sweep's timers, a slow
+  switch keeping its claim, not connected, disabled, missed, interrupted, cancel, another
+  station, validation).
   `live.int.test.ts`: routes, permissions, audit. `features/live/handover.test.tsx`: the panel's
-  actions, the schedule dialog in station time, nothing for a presenter.
+  actions, the schedule dialog in station time (with the DST changes of March and October in Paris),
+  contract-shaped answers, nothing for a presenter.
