@@ -32,6 +32,7 @@ import { onAirRoutes } from './modules/onair/routes.ts';
 import { orgRoutes } from './modules/orgs/routes.ts';
 import { type PrelistenRoutesOptions, prelistenRoutes } from './modules/prelisten/routes.ts';
 import { type PromosPluginOptions, promosPlugin } from './modules/promos/plugin.ts';
+import { type PublicPluginOptions, publicPlugin } from './modules/public/plugin.ts';
 import { rotationRoutes } from './modules/rotation/routes.ts';
 import { rotationRulesRoutes } from './modules/rotation/rules/routes.ts';
 import { type SeguesPluginOptions, seguesPlugin } from './modules/segues/plugin.ts';
@@ -88,6 +89,8 @@ export interface AppOptions {
   prelisten?: PrelistenRoutesOptions;
   /** Team onboarding (#113): DNS resolver and sending limits. */
   invitations?: InvitationsOptions;
+  /** Public now-playing API (#74): live metadata reader, rate limits, snapshot lifetimes. */
+  publicApi?: PublicPluginOptions;
   /** Real-time stream tuning (tests shorten the timers). */
   sse?: Partial<SseOptions>;
   fastify?: FastifyServerOptions;
@@ -131,6 +134,8 @@ export async function buildApp(options: AppOptions) {
   await app.register(showsRoutes, { prefix: '/api/v1' });
   // On air (#70): the dashboard's snapshot of the air.
   await app.register(onAirRoutes, { prefix: '/api/v1' });
+  // Public API (#74): now playing, history and their SSE stream, by station slug, anonymous.
+  await app.register(publicPlugin, options.publicApi ?? {});
   // Segues and islands (#55): routes, and log/asset events -> island re-sync (durable queue).
   await app.register(seguesPlugin, options.segues ?? {});
   // Promo VTs and VT pools (#60): routes, and log/asset events -> promo segues (durable queue).
