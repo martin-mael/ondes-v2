@@ -32,6 +32,7 @@ export * from './contracts/shows.ts';
 export * from './contracts/streams.ts';
 export * from './contracts/tenancy.ts';
 export * from './json.ts';
+export * from './markers/target.ts';
 export * from './segues/gain.ts';
 export * from './segues/island.ts';
 export * from './segues/mix.ts';

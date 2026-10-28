@@ -6,6 +6,7 @@ import {
   BetweenHorizontalEndIcon,
   BetweenHorizontalStartIcon,
   EllipsisVerticalIcon,
+  FlagIcon,
   LockIcon,
   LockOpenIcon,
   PlayIcon,
@@ -40,6 +41,7 @@ export type ItemAction =
   | 'insertBefore'
   | 'insertAfter'
   | 'replace'
+  | 'editMarker'
   | 'moveUp'
   | 'moveDown'
   | 'lock'
@@ -78,6 +80,13 @@ export interface ItemRowProps {
   next: LogItem | undefined;
   /** May open the segue editor (#58) on the transition into the next item. */
   canSegue?: boolean;
+  /** A marker (#52): the item it times (null: none, a timing point), and how it aired. */
+  marker?: {
+    target: LogItem | null;
+    /** Times nothing because another marker or a live slot comes first: a calm warning. */
+    blocked: 'marker' | 'live_slot' | null;
+    outcome: { deltaMs: number; met: boolean } | null;
+  };
   onAction(action: ItemAction, item: LogItem): void;
   onDropItem(draggedId: string, target: LogItem, where: 'before' | 'after'): void;
 }
@@ -147,10 +156,14 @@ export function ItemRow(props: ItemRowProps) {
       </span>
       <span className="flex min-w-0 flex-col">
         <span className="flex min-w-0 items-center gap-2">
-          <span
-            aria-hidden
-            className={`inline-block size-2 shrink-0 rounded-full ${KIND_COLORS[item.kind]}`}
-          />
+          {item.kind === 'marker' ? (
+            <FlagIcon aria-hidden className="size-3 shrink-0" />
+          ) : (
+            <span
+              aria-hidden
+              className={`inline-block size-2 shrink-0 rounded-full ${KIND_COLORS[item.kind]}`}
+            />
+          )}
           <span className="text-xs text-muted-foreground">{t(`kind.${item.kind}`)}</span>
           <span className={`truncate font-medium ${missing ? 'text-destructive' : ''}`}>
             {title}
@@ -163,6 +176,18 @@ export function ItemRow(props: ItemRowProps) {
           )}
         </span>
         {artists && <span className="truncate pl-4 text-xs text-muted-foreground">{artists}</span>}
+        {props.marker &&
+          (props.marker.blocked ? (
+            <span className="pl-5 text-xs text-amber-700 dark:text-amber-400">
+              {t(`marker.blocked.${props.marker.blocked}`)}
+            </span>
+          ) : (
+            <span className="truncate pl-5 text-xs text-muted-foreground">
+              {props.marker.target
+                ? t('marker.times', { title: itemTitle(t, props.marker.target) })
+                : t('marker.timesNothing')}
+            </span>
+          ))}
         {item.relaxedRules.length > 0 && (
           <ul className="pl-4 text-xs text-amber-700 dark:text-amber-400">
             {item.relaxedRules.map((r) => (
@@ -192,6 +217,7 @@ function ItemBadges({
   aired,
   passedOver,
   block,
+  marker,
   missing,
 }: ItemRowProps & { missing: boolean }) {
   return (
@@ -202,6 +228,13 @@ function ItemBadges({
           {item.timing === 'soft' &&
             item.capMs !== null &&
             ` · ${t('timing.cap', { duration: formatDuration(item.capMs) })}`}
+        </Badge>
+      )}
+      {marker?.outcome && (
+        <Badge variant={marker.outcome.met ? 'outline' : 'destructive'}>
+          {t(marker.outcome.met ? 'marker.met' : 'marker.missed', {
+            delta: formatSigned(marker.outcome.deltaMs),
+          })}
         </Badge>
       )}
       {item.conflict && (
@@ -323,13 +356,20 @@ function ItemMenu({
                 {t('action.insertAfter')}
               </DropdownMenuItem>
             )}
-            <DropdownMenuItem
-              disabled={!changeable || item.kind === 'segment'}
-              onClick={() => onAction('replace', item)}
-            >
-              <RefreshCwIcon />
-              {t('action.replace')}
-            </DropdownMenuItem>
+            {item.kind === 'marker' ? (
+              <DropdownMenuItem disabled={!changeable} onClick={() => onAction('editMarker', item)}>
+                <FlagIcon />
+                {t('marker.edit')}
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem
+                disabled={!changeable || item.kind === 'segment'}
+                onClick={() => onAction('replace', item)}
+              >
+                <RefreshCwIcon />
+                {t('action.replace')}
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               disabled={!changeable || !canMoveUp}
               onClick={() => onAction('moveUp', item)}

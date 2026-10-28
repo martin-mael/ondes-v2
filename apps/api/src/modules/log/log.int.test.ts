@@ -413,6 +413,35 @@ describe('log edits', () => {
     );
   });
 
+  it('replaces and moves in one edit: one transaction, one audit row (#52)', async () => {
+    // [jingle, B, marker at :10, C]: the marker moves to :00:30, before B.
+    const [jingle, b, marker, c] = (await range(at(0), at(60))).items.map((i) => i.id);
+    const self = await call('programmer', 'PUT', `/log/items/${marker}`, {
+      kind: 'marker',
+      plannedDurationMs: 0,
+      title: 'news',
+      timing: 'soft',
+      anchorAt: at(0.5),
+      capMs: 20_000,
+      placement: { before: marker },
+    });
+    expect(self.statusCode).toBe(422);
+    const res = await call('programmer', 'PUT', `/log/items/${marker}`, {
+      kind: 'marker',
+      plannedDurationMs: 0,
+      title: 'news',
+      timing: 'soft',
+      anchorAt: at(0.5),
+      capMs: 20_000,
+      placement: { before: b },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().item).toMatchObject({ id: marker, timing: 'soft', anchorAt: at(0.5) });
+    const day = await range(at(0), at(60));
+    expect(day.items.map((i) => i.id)).toEqual([jingle, marker, b, c]);
+    expect((await audits(marker as string)).map((a) => a.action)).toEqual(['log_item.replace']);
+  });
+
   it('handles segments as one item', async () => {
     const res = await call('programmer', 'POST', '/log/items', {
       placement: { localDate },

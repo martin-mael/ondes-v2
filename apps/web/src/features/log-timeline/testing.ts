@@ -34,6 +34,25 @@ export function logItem(overrides: Partial<LogItem> = {}): LogItem {
   };
 }
 
+/** `logItem` with an asset of its kind (one the feeder can push), titled `title`. */
+export function playable(overrides: Partial<LogItem> & { title: string }): LogItem {
+  const item = logItem(overrides);
+  const type =
+    item.kind === 'jingle' || item.kind === 'vt' || item.kind === 'bed' ? item.kind : 'song';
+  const assetId = id();
+  return {
+    ...item,
+    assetId,
+    asset: {
+      id: assetId,
+      type,
+      title: overrides.title,
+      artists: [],
+      durationMs: item.plannedDurationMs,
+    },
+  };
+}
+
 export function asRunEntry(overrides: Partial<AsRunEntry> = {}): AsRunEntry {
   return {
     id: id(),

@@ -241,8 +241,11 @@ describe('planFeed: anchors (ADR 0003)', () => {
   it('holds a not-before item, then pushes it when its time comes', () => {
     const entries = [...songs(2), episode('not_before')];
     expect(planFeed({ nowMs: T0, onAir: onAir('s0', 0), entries }).hold?.itemId).toBe('ep');
-    const due = planFeed({ nowMs: hardAt - 100, onAir: null, entries });
-    expect(due.wanted[0]).toMatchObject({ entry: { id: 'ep' }, startMs: hardAt - 100 });
+    // Pushed at its anchor, not before (#52: never early).
+    const before = planFeed({ nowMs: hardAt - 100, onAir: null, entries });
+    expect(before.hold).toEqual({ itemId: 'ep', untilMs: hardAt });
+    const due = planFeed({ nowMs: hardAt, onAir: null, entries });
+    expect(due.wanted[0]).toMatchObject({ entry: { id: 'ep' }, startMs: hardAt });
   });
 
   it('soft: drops what would start after the anchor, and what would end past the cap', () => {

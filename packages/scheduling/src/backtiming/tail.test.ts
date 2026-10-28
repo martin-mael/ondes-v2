@@ -183,6 +183,66 @@ describe('backTimeRun on a hand-made tail', () => {
   });
 });
 
+describe('backTimeRun before a not-before marker (#52, ADR 0036)', () => {
+  const marker: PlannedItem = {
+    ...item('marker', T, 0),
+    timing: 'not_before',
+    anchorAt: new Date(T),
+  };
+
+  it('drops and shortens nothing when the run ends after the marker', () => {
+    const a = asset(1, 200 * S);
+    const b = asset(2, 200 * S);
+    const snap = snapshot([a, b], [asset(10, 2 * S, 'jingle')]);
+    // Hard, b would go (170 s too long); not before, it airs whole and the item waits.
+    const run = [item('song', T - 230 * S, 200 * S, a), item('song', T - 30 * S, 200 * S, b)];
+    const t = tools(snap);
+    const out = backTimeRun(snap, {
+      anchor: marker,
+      run,
+      runEndsAt: new Date(T + 170 * S),
+      tools: t.tools,
+    });
+    expect(out).toEqual(run);
+    expect(t.released).toEqual([]);
+  });
+
+  it('leaves a run that ends a few seconds late as it is', () => {
+    const song = asset(1, 200 * S);
+    const snap = snapshot([song], [asset(10, 10 * S, 'jingle')]);
+    const run = [item('song', T - 195 * S, 200 * S, song)];
+    const out = backTimeRun(snap, {
+      anchor: marker,
+      run,
+      runEndsAt: new Date(T + 5 * S),
+      tools: tools(snap).tools,
+    });
+    expect(out).toEqual(run);
+  });
+
+  it('fills an early run up to the marker without cutting the song', () => {
+    const song = asset(1, 200 * S);
+    const snap = snapshot(
+      [song],
+      [asset(10, 2 * S, 'jingle'), asset(11, 8 * S, 'jingle'), asset(12, 10 * S, 'jingle')],
+    );
+    // 9 s early: hard would take the 10 s jingle and cut the song by 1 s; not before takes the
+    // 8 s one and leaves the song whole (the item waits a second).
+    const run = [item('song', T - 209 * S, 200 * S, song)];
+    const out = backTimeRun(snap, {
+      anchor: marker,
+      run,
+      runEndsAt: new Date(T - 9 * S),
+      tools: tools(snap).tools,
+    });
+    expect(out.map((i) => [i.kind, i.plannedDurationMs])).toEqual([
+      ['song', 200 * S],
+      ['jingle', 8 * S],
+    ]);
+    expect(end(out)).toBeLessThanOrEqual(T);
+  });
+});
+
 describe('releasing a pick', () => {
   it('takes it out of the history the picker has indexed', () => {
     const songs = [asset(1, 200 * S), asset(2, 200 * S), asset(3, 200 * S)];

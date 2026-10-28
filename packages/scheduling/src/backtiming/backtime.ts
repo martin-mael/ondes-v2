@@ -31,7 +31,9 @@ import type {
 //
 // Kept items and segments are never touched; VTs and jingles of the tail stay, only moving
 // up when a song before them changes. Every `hard` and `soft` anchor is back-timed, clock
-// markers included (`isBackTimed` says why).
+// markers included, and `not_before` markers (`isBackTimed` says why). A `not_before` marker
+// only fills up to its anchor: it never cuts anything (ADR 0036), so a run that already ends
+// at or after it is left as it is, and nothing is dropped or shortened (steps 2 and 4).
 
 export interface BackTimingOptions {
   /** Below this, a residual is left to the feeder (re-plan, engine cut). */
@@ -75,10 +77,14 @@ interface FillSource {
  * wherever the music before it ended (the feeder only drops what would start after it), so an
  * hour that ends early makes every following hour early, up to the next hard start, by more
  * than its fill can stretch. Back-timing every hour keeps that drift to the runtime's own.
- * `not_before` anchors wait for their time: nothing to back-time.
+ * A `not_before` marker too (#52, ADR 0036): its item never starts early, so music that ends
+ * early leaves a wait; back-timed, the run ends at T. Other `not_before` items (a flow item
+ * after a hole, ADR 0026) wait on purpose: nothing to back-time.
  */
 export function isBackTimed(anchor: PlannedItem): boolean {
-  return anchor.anchorAt !== null && (anchor.timing === 'hard' || anchor.timing === 'soft');
+  if (anchor.anchorAt === null) return false;
+  if (anchor.timing === 'not_before') return anchor.kind === 'marker';
+  return anchor.timing === 'hard' || anchor.timing === 'soft';
 }
 
 /** The generator extension: `generateDay(snapshot, date, { extensions: backTiming(snapshot) })`. */
@@ -100,6 +106,9 @@ export function backTimeRun(
   const run = [...context.run];
   if (!isBackTimed(anchor)) return run;
   const target = (anchor.anchorAt as Date).getTime();
+  // Not before: late is fine, so only a run that ends early is planned up to the anchor.
+  const fillOnly = anchor.timing === 'not_before';
+  if (fillOnly && target - context.runEndsAt.getTime() <= o.toleranceMs) return run;
   // The run's clock, else the anchor's (a marker right after a show has an empty run).
   const fill = fillSourceFor(snapshot, [...run, anchor]);
 
@@ -131,7 +140,7 @@ export function backTimeRun(
   };
 
   const cutOf = (item: PlannedItem | undefined) =>
-    item?.kind === 'song' && editable(item)
+    !fillOnly && item?.kind === 'song' && editable(item)
       ? Math.max(0, Math.min(o.maxSongCutMs, item.plannedDurationMs - o.minSongMs))
       : 0;
   /** The fill wanted for a gap, 0 without a fill source. */

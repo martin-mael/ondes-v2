@@ -383,8 +383,13 @@ export const insertLogItemSchema = z.object({
 });
 export type InsertLogItem = z.input<typeof insertLogItemSchema>;
 
-/** `PUT …/log/items/:itemId`: replaces the item's content, keeping its place. */
-export const replaceLogItemSchema = logItemInputSchema;
+/**
+ * `PUT …/log/items/:itemId`: replaces the item's content, keeping its place, or moving it to
+ * `placement` in the same edit (one transaction, one audit row: a marker whose time moved, #52).
+ */
+export const replaceLogItemSchema = itemInputShape
+  .extend({ placement: logPlacementSchema.optional() })
+  .superRefine(itemRules((v) => !!v.episodeId));
 export type ReplaceLogItem = z.input<typeof replaceLogItemSchema>;
 
 /** `POST …/log/items/:itemId/move`. */

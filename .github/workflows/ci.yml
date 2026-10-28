@@ -77,6 +77,8 @@ jobs:
             integration:
               - *tooling
               - apps/api/**
+              # The markers engine test (#52) plays the api's feeder into the template.
+              - engine/tests/markers/**
               - packages/**
               - deploy/compose.dev.yml
               - deploy/dev/**
@@ -194,6 +196,8 @@ jobs:
       - *pnpm
       - *node
       - *install
+      # Outside any package: `pnpm typecheck` doesn't see it.
+      - run: pnpm exec tsc --noEmit -p engine/tests/markers
       # These tests start their own Liquidsoap/Icecast compose projects (testing/compose.yml).
       - run: pnpm test:integration --project engine
 
