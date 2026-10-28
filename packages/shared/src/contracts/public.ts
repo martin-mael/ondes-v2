@@ -116,14 +116,17 @@ export const PUBLIC_NEXT_ITEMS = 3;
 export const publicNowPlayingSchema = z
   .object({
     station: publicStationSchema,
-    at: isoTime.meta({ description: "The server's clock when this snapshot was built." }),
+    at: isoTime.meta({
+      description:
+        "The server's clock when this snapshot was built. Not part of the ETag: a 304 or an unchanged stream keeps the body you already have, `at` included, so compute elapsed time from `current.startedAt` and your own clock, not from `at`.",
+    }),
     mode: publicModeSchema,
     live: z.boolean().meta({ description: 'A DJ is on air (`mode` is `live`).' }),
     current: publicCurrentSchema.nullable(),
-    show: publicShowSchema.nullable(),
+    show: publicShowSchema.nullable().meta({ description: 'Null when `mode` is `off_air`.' }),
     liveInfo: publicLiveSchema.nullable().meta({ description: 'Set while `live` is true.' }),
     next: z.array(publicNextItemSchema).meta({
-      description: `The next tracks and episodes, at most ${PUBLIC_NEXT_ITEMS}, in play order. May be empty.`,
+      description: `The next tracks and episodes, at most ${PUBLIC_NEXT_ITEMS}, in play order. May be empty; always empty when \`mode\` is \`off_air\`.`,
     }),
   })
   .meta({ id: 'PublicNowPlaying' });

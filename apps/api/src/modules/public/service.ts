@@ -17,7 +17,7 @@ import {
   type PublicNowPlaying,
   type PublicStation,
 } from '@ondes/shared';
-import { and, desc, eq, inArray, isNotNull, ne, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, ne, or, type SQL } from 'drizzle-orm';
 import { getOnAir as getOpenEntry, toEntry } from '../asrun/index.ts';
 import { readOnAir } from '../onair/service.ts';
 
@@ -56,6 +56,18 @@ export async function findStationBySlug(
   db: Executor,
   slug: string,
 ): Promise<PublicStationRef | null> {
+  return findStation(db, eq(station.slug, slug));
+}
+
+/** The same lookup by id, for a station already resolved once (its `station.updated`). */
+export async function findStationById(
+  db: Executor,
+  stationId: string,
+): Promise<PublicStationRef | null> {
+  return findStation(db, eq(station.id, stationId));
+}
+
+async function findStation(db: Executor, where: SQL): Promise<PublicStationRef | null> {
   const [row] = await db
     .select({
       id: station.id,
@@ -65,10 +77,13 @@ export async function findStationBySlug(
       timezone: station.timezone,
     })
     .from(station)
-    .where(eq(station.slug, slug));
+    .where(where);
   if (!row) return null;
   return {
-    // Ids just read from the station's own row.
+    // The public API has no caller to check a scope against (it's anonymous, by slug), so the
+    // scope is built from the station row this query just read: its own id and org id, never
+    // ids from the request. `unsafeScope` only skips the membership check, which has no
+    // subject here.
     scope: unsafeScope(row.orgId, row.id),
     station: { slug: row.slug, name: row.name, timezone: row.timezone },
   };
@@ -89,23 +104,35 @@ export function publicModeOf(onAir: OnAir): PublicMode {
   }
 }
 
+export interface BuiltNowPlaying {
+  nowPlaying: PublicNowPlaying;
+  /**
+   * The asset on air, if any: the one asset whose cue edits change the snapshot (the current
+   * item's duration). The next items' durations come from the log, which has its own events.
+   */
+  onAirAssetId: string | null;
+}
+
 export async function buildNowPlaying(
   db: Executor,
   ref: PublicStationRef,
   readLive: LiveNowPlayingReader,
   now = new Date(),
-): Promise<PublicNowPlaying> {
-  const onAir = await readOnAir(db, ref.scope, now);
-  const [entry, metadata] =
-    publicModeOf(onAir) === 'live'
-      ? await Promise.all([getOpenEntry(db, ref.scope), readLive(db, ref.scope)])
-      : [null, null];
-  return toPublicNowPlaying(ref.station, onAir, entry, metadata);
+): Promise<BuiltNowPlaying> {
+  const [onAir, entry] = await Promise.all([
+    readOnAir(db, ref.scope, now),
+    getOpenEntry(db, ref.scope),
+  ]);
+  const metadata = publicModeOf(onAir) === 'live' ? await readLive(db, ref.scope) : null;
+  return {
+    nowPlaying: toPublicNowPlaying(ref.station, onAir, entry, metadata),
+    onAirAssetId: entry?.assetId ?? null,
+  };
 }
 
 /**
- * The public cut of the on-air snapshot. `entry` is the open as-run entry while live (the DJ
- * and the event's title it snapshotted), `metadata` what the DJ sent (#68).
+ * The public cut of the on-air snapshot. `entry` is the open as-run entry (while live, it has
+ * the DJ and the event's title it snapshotted), `metadata` what the DJ sent (#68).
  */
 export function toPublicNowPlaying(
   station: PublicStation,
@@ -115,12 +142,26 @@ export function toPublicNowPlaying(
 ): PublicNowPlaying {
   const mode = publicModeOf(onAir);
   const live = mode === 'live';
+  // Off air (nothing playing, or the emergency loop), the schedule isn't what listeners hear:
+  // no show and no next, rather than a programme that isn't on.
+  if (mode === 'off_air') {
+    return {
+      station,
+      at: onAir.at,
+      mode,
+      live,
+      current: null,
+      show: null,
+      liveInfo: null,
+      next: [],
+    };
+  }
   return {
     station,
     at: onAir.at,
     mode,
     live,
-    current: mode === 'off_air' ? null : currentOf(onAir, metadata),
+    current: currentOf(onAir, metadata),
     show: onAir.show
       ? {
           name: onAir.show.name,

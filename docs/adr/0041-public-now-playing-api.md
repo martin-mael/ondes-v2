@@ -35,7 +35,9 @@ session, show or user id. The schedule API (#75) adds its routes under the same 
 snapshot is parsed through `packages/shared/src/contracts/public.ts` before it is cached, so a
 field that isn't in the public contract can't leak even if the internal shapes grow.
 - Safety playlist → `automation` (music is playing). The emergency loop → `off_air` (it's the
-  "we'll be back" file) with no `current`.
+  "we'll be back" file). Off air, `current` and `show` are null and `next` is empty: what the
+  schedule says isn't what listeners hear, and a site showing "Matinale, next: …" over silence
+  or the emergency loop would mislead.
 - Jingles, VTs, beds, fills and promos are `interlude` with no title or artist: their titles are
   the station's internal names ("VT Marie 14h"). `next` and history keep only songs and
   episodes (plus live blocks in history); history drops `skipped` entries and the item on air.
@@ -49,13 +51,25 @@ readers wait for the same build; nothing is queried per request. A snapshot is r
 - an event for its station arrives on the RabbitMQ event fanout (the same subscription kind as
   the SSE plugin): `asrun.*`, `engine.up/down/booted/track.started`, `log.updated`,
   `log.item.changed`, `feeder.item.passed_over`, `live.session.*`, `live.metadata.changed`,
-  `asset.updated`, `station.updated` (which also drops the slug lookups);
+  `station.updated`;
+- `asset.updated` with `cues` for the asset on air (its cues give the current item's
+  duration). Loudness and playout settings change nothing public, and the next items'
+  durations come from the log, which has its own events, so other `asset.updated` are ignored;
 - its TTL runs out (30 s) or the show block it shows ends (no event marks that, ADR 0034).
 History is a second snapshot (last 50, sliced per `limit`, each slice serialised once),
 invalidated by `asrun.ended`. Slug lookups are cached for 60 s, misses included.
 
+The snapshots are built from a per-station ref (tenant scope plus public station fields), set
+by the first slug lookup. `station.updated` clears every slug lookup (a slug may have moved)
+and re-reads that station by id, one read at a time per station so an older read can't land
+last, then rebuilds; the ref is replaced, never dropped, so open streams keep updating. A
+deleted station keeps its last ref (its snapshot is off air) and its slug answers 404.
+
 The ETag hashes the content without the snapshot's own `at`, so a rebuild with nothing new is a
-304 and no new SSE frame. Responses carry `Cache-Control: public, max-age=5` (history 15) with
+304 and no new SSE frame. A client that gets a 304 (or no frame) keeps its body, `at` included:
+`at` is when the content was built, not "now", and the contract says so. Elapsed time is
+computed from `current.startedAt` and the client's clock. Putting `at` in the ETag instead would
+make every TTL rebuild a new body and a new frame to every listener for no new content. Responses carry `Cache-Control: public, max-age=5` (history 15) with
 `stale-while-revalidate`, so a CDN in front can absorb more.
 
 Each replica keeps its own snapshots, fed by the same fanout: N replicas cost N builds per
@@ -70,8 +84,8 @@ ETag) whenever the content changes. Per station, a change is debounced 250 ms (e
 bursts), the snapshot is rebuilt once from the cache and the same frame is written to every
 listener. One process-wide timer sends heartbeats and ends streams after ~30 min (minus up to
 10 %, spreading reconnects over replicas). No `Last-Event-ID` replay: the first frame is the
-whole state. Caps: 10 open streams per client IP (429), 10 000 per process (503), slow
-listeners (256 kB unflushed) dropped.
+whole state. Caps: 10 open streams per client IP (429), 10 000 per process (503), both with
+`Retry-After: 30`; slow listeners (256 kB unflushed) dropped.
 
 Rejected: reusing the internal plugin with a "public" permission set. Its events are internal
 shapes (as-run entries with ids); a public variant of each would be the same work as one public
@@ -100,11 +114,14 @@ resolves and `public.int.test.ts` that each documented route exists.
 `PublicPluginOptions.liveNowPlaying: (db, scope) => Promise<LiveNowPlaying | null>` with
 `{ title, artist, source: 'default' | 'encoder' | 'manual', updatedAt }`, called only while the
 station is live. Default: none (the live item shows the DJ and the show). #68 provides the
-reader (`getLiveNowPlaying` in `apps/api/src/modules/live/metadata.ts`: its `default` source is
-the show and episode as title, the DJ as artist; `encoder` and `manual` override it) and emits
+reader (`getLiveNowPlaying(db, scope)` in `apps/api/src/modules/live/metadata.ts`, #189: its
+`default` source is the show and episode as title, the DJ as artist; `encoder` and `manual`
+override it; its result is a superset of `LiveNowPlaying`) and emits
 `live.metadata.changed` (only `type` and `stationId` are read, loosely, so the
-event doesn't have to be in the contract first); the wiring in `app.ts`/`main.ts` lands at
-integration.
+event doesn't have to be in the contract first). The wiring lands at the wave integration:
+`publicApi: { liveNowPlaying: getLiveNowPlaying }` where `app.ts` registers `publicPlugin`. The
+`default` metadata is kept as `current`'s title and artist (the same text Icecast shows);
+`liveInfo` still has the DJ and the show apart.
 
 ## Consequences
 - Every station with a slug is public. A per-station switch (hide `next`, hide the API

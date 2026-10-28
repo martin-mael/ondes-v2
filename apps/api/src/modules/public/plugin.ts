@@ -12,6 +12,7 @@ import { buildOpenApi, PUBLIC_PREFIX, publicOperations } from './openapi.ts';
 import {
   buildHistory,
   buildNowPlaying,
+  findStationById,
   findStationBySlug,
   type LiveNowPlayingReader,
   noLiveNowPlaying,
@@ -52,6 +53,8 @@ declare module 'fastify' {
       readonly listeners: number;
       /** Resolves once the fanout subscription is consuming (immediately without RabbitMQ). */
       ready: Promise<void>;
+      /** Resolves once every `station.updated` re-read in flight has landed (tests). */
+      settled(): Promise<void>;
     };
   }
 }
@@ -71,7 +74,6 @@ const NOW_PLAYING_EVENTS = new Set([
   'live.session.ended',
   // Live metadata (#68): the DJ's encoder or a manual update.
   'live.metadata.changed',
-  'asset.updated',
   'station.updated',
 ]);
 const HISTORY_EVENTS = new Set(['asrun.ended', 'station.updated']);
@@ -81,6 +83,9 @@ const CORS_HEADERS = {
   'access-control-expose-headers':
     'ETag, Retry-After, x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset',
 };
+
+/** Suggested wait after a 503 (no room for a stream) or a 429 (too many from one address). */
+const STREAM_RETRY_AFTER_S = 30;
 
 /** Leaves the snapshot's own clock out of its ETag: only content changes make a new one. */
 const withoutClock = ({ at: _, ...rest }: PublicNowPlaying) => rest;
@@ -96,16 +101,24 @@ export const publicPlugin = fp(
       (slug) => findStationBySlug(app.db, slug),
       { ttlMs: options.stationTtlMs ?? 60_000, maxEntries: 10_000 },
     );
+    // Station id -> what the snapshots are built from. Set by the first slug lookup, then
+    // replaced only by a `station.updated` re-read (refresh below), never removed: open streams
+    // keep rebuilding from it.
     const refs = new Map<string, PublicStationRef>();
     const refOf = (stationId: string) => {
       const ref = refs.get(stationId);
       if (!ref) throw new Error(`public api: station ${stationId} was never resolved`);
       return ref;
     };
+    // The asset on air per station, as of its last build: `asset.updated` rebuilds only then.
+    const onAirAssets = new Map<string, string | null>();
     // Parsed through the public contract on the way in: a field that isn't in it can't leak.
     const nowPlaying = createSnapshotCache<string, PublicNowPlaying>(
-      async (stationId) =>
-        publicNowPlayingSchema.parse(await buildNowPlaying(app.db, refOf(stationId), readLive)),
+      async (stationId) => {
+        const built = await buildNowPlaying(app.db, refOf(stationId), readLive);
+        onAirAssets.set(stationId, built.onAirAssetId);
+        return publicNowPlayingSchema.parse(built.nowPlaying);
+      },
       {
         ttlMs: options.nowPlayingTtlMs ?? 30_000,
         maxEntries: 10_000,
@@ -122,20 +135,61 @@ export const publicPlugin = fp(
       ...options.stream,
     });
 
-    const onEvent = (raw: unknown) => {
-      const event = raw as { type?: unknown; stationId?: unknown } | null;
-      if (typeof event?.type !== 'string' || typeof event.stationId !== 'string') return;
-      const { type, stationId } = event;
-      if (type === 'station.updated') {
-        // Its slug or name may have changed: look every slug up again.
-        stations.clear();
-        refs.delete(stationId);
-      }
+    const rebuild = (stationId: string, type: string) => {
       if (HISTORY_EVENTS.has(type)) history.invalidate(stationId);
       if (NOW_PLAYING_EVENTS.has(type)) {
         nowPlaying.invalidate(stationId);
         stream.changed(stationId);
       }
+    };
+
+    // `station.updated` re-reads the station (its slug, name or timezone may have changed),
+    // one read at a time per station: a burst of events can't let an older read land last.
+    const refreshes = new Map<string, Promise<void>>();
+    const refresh = (stationId: string) => {
+      const previous = refreshes.get(stationId) ?? Promise.resolve();
+      const next = previous.then(async () => {
+        try {
+          const ref = await findStationById(app.db, stationId);
+          // A deleted station keeps its last ref: its snapshot shows it off air.
+          if (ref) refs.set(stationId, ref);
+        } catch (err) {
+          app.log.error({ err, stationId }, 'public api: station refresh failed');
+        }
+        // Rebuilt from the new ref (the rebuild on the event itself may have used the old one).
+        rebuild(stationId, 'station.updated');
+      });
+      refreshes.set(stationId, next);
+      void next.finally(() => {
+        if (refreshes.get(stationId) === next) refreshes.delete(stationId);
+      });
+      return next;
+    };
+
+    const onEvent = (raw: unknown) => {
+      const event = raw as {
+        type?: unknown;
+        stationId?: unknown;
+        data?: { assetId?: unknown; changes?: unknown };
+      } | null;
+      if (typeof event?.type !== 'string' || typeof event.stationId !== 'string') return;
+      const { type, stationId } = event;
+      if (type === 'asset.updated') {
+        // Only the cues of the asset on air show (the current item's duration); loudness and
+        // playout settings don't, and other assets reach `next` through the log's events.
+        const changes = Array.isArray(event.data?.changes) ? event.data.changes : [];
+        if (event.data?.assetId === onAirAssets.get(stationId) && changes.includes('cues')) {
+          nowPlaying.invalidate(stationId);
+          stream.changed(stationId);
+        }
+        return;
+      }
+      if (type === 'station.updated') {
+        // Slugs may have moved between stations: look every slug up again.
+        stations.clear();
+        if (refs.has(stationId)) void refresh(stationId);
+      }
+      rebuild(stationId, type);
     };
 
     let ready = Promise.resolve();
@@ -150,14 +204,19 @@ export const publicPlugin = fp(
         return stream.listeners;
       },
       ready,
+      settled: async () => {
+        await Promise.all(refreshes.values());
+      },
     });
     app.addHook('preClose', () => stream.close());
 
     const resolve = async (slug: string) => {
       const ref = (await stations.get(slug)).value;
       if (!ref) throw new HttpError(404, 'not_found', `no station "${slug}"`);
-      refs.set(ref.scope.stationId, ref);
-      return ref;
+      // First sight only: afterwards `refresh` owns it, so a slug lookup read before a
+      // `station.updated` can't overwrite what that event re-read.
+      if (!refs.has(ref.scope.stationId)) refs.set(ref.scope.stationId, ref);
+      return refOf(ref.scope.stationId);
     };
 
     /** Sends a cached JSON snapshot, or 304 when the client already has it. */
@@ -268,6 +327,7 @@ export const publicPlugin = fp(
             const { slug } = request.params as { slug: string };
             const ref = await resolve(slug);
             const admitted = stream.admit(request.ip);
+            if (admitted !== 'ok') reply.header('retry-after', String(STREAM_RETRY_AFTER_S));
             if (admitted === 'too_many') {
               throw new HttpError(429, 'rate_limited', 'too many open streams from this address');
             }

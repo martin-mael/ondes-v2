@@ -103,14 +103,15 @@ describe('toPublicNowPlaying', () => {
       null,
       null,
     );
-    expect(emergency).toMatchObject({ mode: 'off_air', current: null });
+    // Off air, the schedule isn't what listeners hear: no show, no next.
+    expect(emergency).toMatchObject({ mode: 'off_air', current: null, show: null, next: [] });
     const off = toPublicNowPlaying(
       station,
       onAir({ mode: { kind: 'off_air', djName: null }, current: null }),
       null,
       null,
     );
-    expect(off).toMatchObject({ mode: 'off_air', current: null });
+    expect(off).toMatchObject({ mode: 'off_air', current: null, show: null, next: [] });
   });
 
   it('shows the DJ and their metadata while live', () => {

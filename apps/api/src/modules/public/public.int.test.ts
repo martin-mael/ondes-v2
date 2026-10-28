@@ -7,6 +7,7 @@ import {
   createStation,
   type OrgScope,
   type StationScope,
+  station,
   unsafeScope,
 } from '@ondes/db';
 import { createTestDatabase, type TestDatabase } from '@ondes/db/testing';
@@ -157,9 +158,35 @@ describe('GET /api/v1/public/stations/:slug/now-playing', () => {
     expect((await nowPlaying(slug)).json().current.title).toBe('Second');
   }, 30_000);
 
+  it('rebuilds on asset.updated only for cue changes of the asset on air', async () => {
+    const { slug, scope } = await newStation();
+    const assetId = randomUUID();
+    const entry = await airing(scope, { title: 'Cued', assetId });
+    expect((await nowPlaying(slug)).json().current.title).toBe('Cued');
+    // Changed behind the snapshot's back: a rebuild would show it.
+    await tdb.db.update(asRunEntry).set({ title: 'Rebuilt' }).where(eq(asRunEntry.id, entry));
+
+    const updated = (id: string, changes: string[]) =>
+      app.publicApi.onEvent({
+        type: 'asset.updated',
+        stationId: scope.stationId,
+        data: { assetId: id, changes },
+      });
+    updated(randomUUID(), ['cues']);
+    updated(assetId, ['loudness', 'settings']);
+    expect((await nowPlaying(slug)).json().current.title).toBe('Cued');
+    updated(assetId, ['cues']);
+    expect((await nowPlaying(slug)).json().current.title).toBe('Rebuilt');
+  }, 30_000);
+
   it('is off air with nothing on air, and 404 for an unknown slug, 400 for a malformed one', async () => {
     const { slug } = await newStation();
-    expect((await nowPlaying(slug)).json()).toMatchObject({ mode: 'off_air', current: null });
+    expect((await nowPlaying(slug)).json()).toMatchObject({
+      mode: 'off_air',
+      current: null,
+      show: null,
+      next: [],
+    });
     const missing = await nowPlaying('no-such-station');
     expect(missing.statusCode).toBe(404);
     expect(missing.json()).toMatchObject({ error: 'not_found' });
@@ -319,6 +346,43 @@ describe('GET /api/v1/public/stations/:slug/events', () => {
     expect(live.publicApi.listeners).toBe(0);
   }, 30_000);
 
+  it('keeps streaming through a station.updated, with the station re-read', async () => {
+    const live = await newApp({ stream: { debounceMs: 20, heartbeatMs: 1_000 } });
+    await live.listen({ port: 0, host: '127.0.0.1' });
+    const { port } = live.server.address() as AddressInfo;
+    const { slug, scope } = await newStation();
+    await airing(scope, { title: 'Song' });
+    const res = await new Promise<IncomingMessage>((resolve, reject) => {
+      get(`http://127.0.0.1:${port}/api/v1/public/stations/${slug}/events`, resolve).on(
+        'error',
+        reject,
+      );
+    });
+    const f = frames(res);
+    expect((await f.next()).station.slug).toBe(slug);
+
+    const renamed = `${slug}-renamed`;
+    await tdb.db
+      .update(station)
+      .set({ slug: renamed, name: 'Renamed FM' })
+      .where(eq(station.id, scope.stationId));
+    // A burst, as a settings form saving several fields would send.
+    for (let i = 0; i < 3; i++) {
+      live.publicApi.onEvent({ type: 'station.updated', stationId: scope.stationId });
+    }
+    await live.publicApi.settled();
+    expect((await f.next()).station).toMatchObject({ slug: renamed, name: 'Renamed FM' });
+
+    // The stream still follows the station after the refresh.
+    await airing(scope, { title: 'Next song' });
+    live.publicApi.onEvent({ type: 'asrun.started', stationId: scope.stationId });
+    expect((await f.next()).current?.title).toBe('Next song');
+
+    expect((await nowPlaying(slug, {}, live)).statusCode).toBe(404);
+    expect((await nowPlaying(renamed, {}, live)).json().station.name).toBe('Renamed FM');
+    res.destroy();
+  }, 30_000);
+
   it('caps open streams per client IP and refuses unknown slugs before streaming', async () => {
     const capped = await newApp({ stream: { maxClientsPerIp: 1 } });
     await capped.listen({ port: 0, host: '127.0.0.1' });
@@ -332,10 +396,33 @@ describe('GET /api/v1/public/stations/:slug/events', () => {
     expect(first.statusCode).toBe(200);
     const second = await open(`/api/v1/public/stations/${slug}/events`);
     expect(second.statusCode).toBe(429);
+    expect(second.headers['retry-after']).toBe('30');
     second.resume();
     const unknown = await open('/api/v1/public/stations/nope/events');
     expect(unknown.statusCode).toBe(404);
     unknown.resume();
+    first.destroy();
+  }, 30_000);
+
+  it('answers 503 with Retry-After when the process has no room for another stream', async () => {
+    const full = await newApp({ stream: { maxClients: 1 } });
+    await full.listen({ port: 0, host: '127.0.0.1' });
+    const { port } = full.server.address() as AddressInfo;
+    const { slug } = await newStation();
+    const open = () =>
+      new Promise<IncomingMessage>((resolve, reject) => {
+        get(`http://127.0.0.1:${port}/api/v1/public/stations/${slug}/events`, resolve).on(
+          'error',
+          reject,
+        );
+      });
+    const first = await open();
+    expect(first.statusCode).toBe(200);
+    // The process cap comes before the per-IP one (10 by default).
+    const second = await open();
+    expect(second.statusCode).toBe(503);
+    expect(second.headers['retry-after']).toBe('30');
+    second.resume();
     first.destroy();
   }, 30_000);
 });
