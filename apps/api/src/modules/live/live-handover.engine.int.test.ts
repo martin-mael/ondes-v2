@@ -364,8 +364,11 @@ describe('DJ handover on the real engine', () => {
     // (-40 dBFS is 1/50 of the tone's level, reached within 2 % of each end of a sine fade).
     const inStart = firstSustained(two, dj1.from, (db) => db > -40);
     const outEnd = firstSustained(one, inStart, (db) => db < -40);
+    // Measured 3.0 s on an idle machine; a loaded one (CI runners, parallel suites) stretched
+    // it to 3.3 s once, frames arriving late from the DJ containers. +0.5 s still tells a 3 s
+    // crossfade from the 1 s default or a cut, and -0.3 s still catches a short one.
     expect(outEnd - inStart).toBeGreaterThan(FADE_MS / 1000 - 0.3);
-    expect(outEnd - inStart).toBeLessThan(FADE_MS / 1000 + 0.3);
+    expect(outEnd - inStart).toBeLessThanOrEqual(FADE_MS / 1000 + 0.5);
 
     // The mute: about 2 s under -60 dBFS, ramps included, and nothing else silent on air.
     const muted = windows.filter((w) => w.at > outEnd && w.at < back.from && w.db < -60);

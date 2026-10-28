@@ -159,7 +159,7 @@ panel (#71) mounts them under its pre-listen buttons, with a "Muted" badge, and 
 - Tests: `live/live-handover.engine.int.test.ts` (engine project) records the real template's
   output, driven by the real switcher and scheduled handovers on a throwaway database (a stub of
   the harbor auth callback names each DJ): two DJs connected, a scheduled 3 s handover found on
-  DJ 2's input and run by its timer (overlap 3 ± 0.3 s, total level within 1 dB of the
+  DJ 2's input and run by its timer (overlap 2.7 to 3.5 s, room for a loaded CI runner, total level within 1 dB of the
   DJs' through it, no window under −40 dBFS), a 2 s mute (silent on air, 100 ms ramps, the DJ
   still connected and pre-listen still streaming), a cut back (no gap, no overlap), a fade over
   10 s refused, and a mute refused once the DJ hung up, the input unmuted. `live/handover.int.test.ts`: the crossfade asked of the engine, the binding
