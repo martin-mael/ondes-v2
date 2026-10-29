@@ -1,6 +1,6 @@
 import { cn } from 'cn';
 import { ArrowLeftIcon } from 'lucide-react';
-import { type ComponentProps, createContext, type ReactNode, useContext } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 import { Button } from '@/ui/button';
 import { SidebarTrigger } from '@/ui/sidebar';
 
@@ -12,7 +12,7 @@ import { SidebarTrigger } from '@/ui/sidebar';
 // - `full`: tools that use the whole window (calendar, log, grid, library, editors);
 // - `list`: lists and tables, which get hard to scan when a row spans 1500px;
 // - `form`: settings and forms.
-// The bar's content follows the page's width, so its actions end where the content ends.
+// The bar always spans the window: title on the left, actions anchored to its right edge.
 
 export type PageWidth = 'full' | 'list' | 'form';
 
@@ -21,8 +21,6 @@ const WIDTH: Record<PageWidth, string> = {
   list: 'max-w-5xl',
   form: 'max-w-3xl',
 };
-
-const PageWidthContext = createContext<PageWidth>('full');
 
 export function Page({
   header,
@@ -39,25 +37,21 @@ export function Page({
   className?: string;
   children: ReactNode;
 }) {
+  // A filled page is exactly the window's height: `flex-1` would let it grow instead.
   return (
-    <PageWidthContext.Provider value={width}>
-      {/* A filled page is exactly the window's height: `flex-1` would let it grow instead. */}
+    <div className={cn('flex min-w-0 flex-col', fill ? 'h-svh min-h-[32rem] flex-none' : 'flex-1')}>
+      {header}
       <div
-        className={cn('flex min-w-0 flex-col', fill ? 'h-svh min-h-[32rem] flex-none' : 'flex-1')}
+        className={cn(
+          'flex w-full min-w-0 flex-col gap-6 p-4 sm:p-6',
+          WIDTH[width],
+          fill && 'min-h-0 flex-1',
+          className,
+        )}
       >
-        {header}
-        <div
-          className={cn(
-            'flex w-full min-w-0 flex-col gap-6 p-4 sm:p-6',
-            WIDTH[width],
-            fill && 'min-h-0 flex-1',
-            className,
-          )}
-        >
-          {children}
-        </div>
+        {children}
       </div>
-    </PageWidthContext.Provider>
+    </div>
   );
 }
 
@@ -81,15 +75,9 @@ export function PageHeader({
   /** Between the title and the actions, taking the room left (the library's search). */
   children?: ReactNode;
 }) {
-  const width = useContext(PageWidthContext);
   return (
     <header className="sticky top-0 z-20 shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-      <div
-        className={cn(
-          'flex min-h-16 flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 sm:px-6',
-          WIDTH[width],
-        )}
-      >
+      <div className="flex min-h-16 flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 sm:px-6">
         {/* On wide screens the sidebar folds from its rail (or Ctrl/Cmd+B). */}
         <SidebarTrigger className="-ml-1 md:hidden" />
         {back}
