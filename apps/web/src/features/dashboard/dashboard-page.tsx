@@ -4,7 +4,7 @@ import { cn } from 'cn';
 import { Badge } from '@/ui/badge';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { useI18n } from '../../app/i18n/i18n.tsx';
-import { PageHeader } from '../../app/page-header.tsx';
+import { Page, PageHeader } from '../../app/page-header.tsx';
 import { useSseStatus } from '../../app/sse/sse.tsx';
 import { dashboardWidgets } from './widgets.tsx';
 
@@ -22,19 +22,23 @@ export function DashboardPage() {
   );
 
   return (
-    <div className="flex flex-col gap-4 p-4 sm:gap-6 sm:p-6">
-      <PageHeader
-        title={t('dashboard.title')}
-        badge={
-          <Badge variant={status === 'open' ? 'default' : 'outline'} data-testid="sse-status">
-            {status === 'open'
-              ? t('dashboard.live')
-              : status === 'connecting'
-                ? t('dashboard.connecting')
-                : t('dashboard.offline')}
-          </Badge>
-        }
-      />
+    <Page
+      className="gap-4 sm:gap-6"
+      header={
+        <PageHeader
+          title={t('dashboard.title')}
+          badge={
+            <Badge variant={status === 'open' ? 'default' : 'outline'} data-testid="sse-status">
+              {status === 'open'
+                ? t('dashboard.live')
+                : status === 'connecting'
+                  ? t('dashboard.connecting')
+                  : t('dashboard.offline')}
+            </Badge>
+          }
+        />
+      }
+    >
       <div className="grid grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-2">
         {widgets.map(({ id, Component, width }) => (
           <section
@@ -46,6 +50,6 @@ export function DashboardPage() {
           </section>
         ))}
       </div>
-    </div>
+    </Page>
   );
 }

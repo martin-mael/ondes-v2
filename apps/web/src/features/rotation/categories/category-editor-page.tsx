@@ -26,7 +26,7 @@ import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { Textarea } from '@/ui/textarea';
 import { isApiError, request } from '../../../app/api/client.ts';
 import { type FieldErrors, FormAlert, fieldErrors } from '../../../app/forms.tsx';
-import { BackButton, PageHeader } from '../../../app/page-header.tsx';
+import { BackButton, Page, PageHeader } from '../../../app/page-header.tsx';
 import { DelayedSpinner, PageSkeleton } from '../../../app/pending.tsx';
 import { useUnsavedChanges } from '../../../app/unsaved.tsx';
 import { categoriesApi, categoryKeys, categoryQuery, useDraftPreview } from './api.ts';
@@ -233,33 +233,38 @@ function CategoryEditor({
   });
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      {guard}
-      <PageHeader
-        back={
-          <BackButton
-            nativeButton={false}
-            render={<Link to="/stations/$stationId/categories" params={{ stationId }} />}
-          >
-            {t('editor.back')}
-          </BackButton>
-        }
-        title={category ? t('editor.editTitle') : t('editor.newTitle')}
-        actions={
-          <>
-            {category && (
-              <Button variant="destructive" onClick={remove}>
-                <Trash2Icon data-icon="inline-start" />
-                {t('editor.delete')}
+    <Page
+      header={
+        <PageHeader
+          back={
+            <BackButton
+              nativeButton={false}
+              render={<Link to="/stations/$stationId/categories" params={{ stationId }} />}
+            >
+              {t('editor.back')}
+            </BackButton>
+          }
+          // Editing: the category's (saved) name, so you see which one.
+          title={category ? category.name : t('editor.newTitle')}
+          description={category ? t('editor.editTitle') : undefined}
+          actions={
+            <>
+              {category && (
+                <Button variant="destructive" onClick={remove}>
+                  <Trash2Icon data-icon="inline-start" />
+                  {t('editor.delete')}
+                </Button>
+              )}
+              <Button onClick={save} disabled={pending}>
+                <DelayedSpinner when={pending} data-icon="inline-start" />
+                {category ? t('editor.save') : t('editor.create')}
               </Button>
-            )}
-            <Button onClick={save} disabled={pending}>
-              <DelayedSpinner when={pending} data-icon="inline-start" />
-              {category ? t('editor.save') : t('editor.create')}
-            </Button>
-          </>
-        }
-      />
+            </>
+          }
+        />
+      }
+    >
+      {guard}
       {typeof formError === 'string' ? (
         <Alert variant="destructive">
           <CircleAlertIcon />
@@ -470,7 +475,7 @@ function CategoryEditor({
           />
         </div>
       </div>
-    </div>
+    </Page>
   );
 }
 

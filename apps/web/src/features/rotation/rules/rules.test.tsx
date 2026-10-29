@@ -106,7 +106,8 @@ describe('rotation rules', () => {
     // Album up above artist: artist is now relaxed first.
     await user.click(screen.getByRole('button', { name: 'Move up: Album separation' }));
     expect(screen.getByTestId('ladder')).toHaveTextContent(
-      /^Relaxation order: Artist separation → Album separation/,
+      // The label is the card's title now; the ladder itself starts the text.
+      /^Artist separation → Album separation/,
     );
 
     // Max plays may never be relaxed.

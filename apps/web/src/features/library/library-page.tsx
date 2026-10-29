@@ -41,6 +41,7 @@ import { Label } from '@/ui/label';
 import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert } from '../../app/forms.tsx';
+import { Page, PageHeader } from '../../app/page-header.tsx';
 import { ListSkeleton } from '../../app/pending.tsx';
 import { useSseEvent } from '../../app/sse/sse.tsx';
 import { facetsQuery, refreshFirstPage, searchQuery } from './api.ts';
@@ -224,60 +225,73 @@ export function LibraryPage() {
         : t('results', { count: total.toLocaleString() });
 
   return (
-    <div className="flex h-[calc(100svh-3rem)] min-h-96 min-w-0 flex-col gap-3 p-4 sm:p-6">
-      <div className="flex flex-wrap items-center gap-2">
-        <h1 className="mr-2 font-heading text-xl font-semibold">{t('title')}</h1>
-        <div className="relative min-w-64 flex-1">
-          <SearchIcon className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            type="search"
-            aria-label={t('search.placeholder')}
-            placeholder={t('search.placeholder')}
-            className="pl-7"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-        </div>
-        <span className="text-sm text-muted-foreground tabular-nums" aria-live="polite">
-          {countLabel}
-        </span>
-        <SavedFilters stationId={stationId} params={params} apply={update} />
-        <DropdownMenu>
-          <DropdownMenuTrigger render={<Button variant="outline" size="sm" />}>
-            <Columns3Icon data-icon="inline-start" />
-            {t('columns.menu')}
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuGroup>
-              {COLUMNS.filter((c) => c.id !== 'title').map((column) => (
-                <DropdownMenuCheckboxItem
-                  key={column.id}
-                  checked={columns.some((c) => c.id === column.id)}
-                  onCheckedChange={(checked) => {
-                    const current = columns.map((c) => c.id);
-                    setColumnIds(
-                      checked ? [...current, column.id] : current.filter((id) => id !== column.id),
-                    );
-                  }}
-                >
-                  {t(column.label)}
-                </DropdownMenuCheckboxItem>
-              ))}
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => setColumnIds([...DEFAULT_COLUMNS])}>
-              {t('columns.reset')}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {canWrite && (
-          <Button size="sm" onClick={() => setUploadsOpen(!uploadsOpen)}>
-            <UploadIcon data-icon="inline-start" />
-            {t('upload.button')}
-          </Button>
-        )}
-      </div>
-
+    // The search is the page's main control: it sits in the header bar, between the title and
+    // the actions. The list and the filters fill the window below and scroll inside.
+    <Page
+      fill
+      className="gap-3"
+      header={
+        <PageHeader
+          title={t('title')}
+          actions={
+            <>
+              <SavedFilters stationId={stationId} params={params} apply={update} />
+              <DropdownMenu>
+                <DropdownMenuTrigger render={<Button variant="outline" />}>
+                  <Columns3Icon data-icon="inline-start" />
+                  {t('columns.menu')}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuGroup>
+                    {COLUMNS.filter((c) => c.id !== 'title').map((column) => (
+                      <DropdownMenuCheckboxItem
+                        key={column.id}
+                        checked={columns.some((c) => c.id === column.id)}
+                        onCheckedChange={(checked) => {
+                          const current = columns.map((c) => c.id);
+                          setColumnIds(
+                            checked
+                              ? [...current, column.id]
+                              : current.filter((id) => id !== column.id),
+                          );
+                        }}
+                      >
+                        {t(column.label)}
+                      </DropdownMenuCheckboxItem>
+                    ))}
+                  </DropdownMenuGroup>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setColumnIds([...DEFAULT_COLUMNS])}>
+                    {t('columns.reset')}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              {canWrite && (
+                <Button onClick={() => setUploadsOpen(!uploadsOpen)}>
+                  <UploadIcon data-icon="inline-start" />
+                  {t('upload.button')}
+                </Button>
+              )}
+            </>
+          }
+        >
+          <div className="relative min-w-64 flex-1">
+            <SearchIcon className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="search"
+              aria-label={t('search.placeholder')}
+              placeholder={t('search.placeholder')}
+              className="pl-7"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+          </div>
+          <span className="text-sm text-muted-foreground tabular-nums" aria-live="polite">
+            {countLabel}
+          </span>
+        </PageHeader>
+      }
+    >
       {uploadsOpen && canWrite && (
         <UploadPanel
           stationId={stationId}
@@ -369,7 +383,7 @@ export function LibraryPage() {
         allowed={allowed}
         onClose={() => update({ asset: undefined })}
       />
-    </div>
+    </Page>
   );
 }
 
@@ -389,7 +403,7 @@ function SavedFilters({
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger render={<Button variant="outline" size="sm" />}>
+        <DropdownMenuTrigger render={<Button variant="outline" />}>
           <BookmarkIcon data-icon="inline-start" />
           {t('saved.menu')}
         </DropdownMenuTrigger>

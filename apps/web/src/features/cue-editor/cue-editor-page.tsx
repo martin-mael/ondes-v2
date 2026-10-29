@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert } from '../../app/forms.tsx';
-import { BackButton, PageHeader } from '../../app/page-header.tsx';
+import { BackButton, Page, PageHeader } from '../../app/page-header.tsx';
 import { PageSkeleton } from '../../app/pending.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
 import { assetQuery, invalidateLibrary } from '../library/api.ts';
@@ -66,19 +66,23 @@ export function CueEditorPage() {
   const subtitle = [asset.artists.join(', '), asset.album, asset.year].filter(Boolean).join(' · ');
 
   return (
-    <div className="flex min-w-0 flex-col gap-4 p-4 text-sm sm:p-6">
-      <PageHeader
-        back={back}
-        title={
-          <>
-            {asset.title}
-            {asset.version && (
-              <span className="font-normal text-muted-foreground"> ({asset.version})</span>
-            )}
-          </>
-        }
-        description={subtitle || undefined}
-      />
+    <Page
+      className="gap-4 text-sm"
+      header={
+        <PageHeader
+          back={back}
+          title={
+            <>
+              {asset.title}
+              {asset.version && (
+                <span className="font-normal text-muted-foreground"> ({asset.version})</span>
+              )}
+            </>
+          }
+          description={subtitle || undefined}
+        />
+      }
+    >
       <CueEditorSection
         layout="page"
         stationId={stationId}
@@ -88,6 +92,6 @@ export function CueEditorPage() {
         onDirtyChange={setDirty}
       />
       {guard}
-    </div>
+    </Page>
   );
 }

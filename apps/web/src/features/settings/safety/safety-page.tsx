@@ -31,7 +31,7 @@ import { isApiError } from '../../../app/api/client.ts';
 import { findStation, useOrgs } from '../../../app/auth/session.ts';
 import { FormAlert, useErrorMessage } from '../../../app/forms.tsx';
 import { useI18n } from '../../../app/i18n/i18n.tsx';
-import { PageHeader } from '../../../app/page-header.tsx';
+import { Page, PageHeader } from '../../../app/page-header.tsx';
 import { useSseEvent } from '../../../app/sse/sse.tsx';
 import { safetyApi, safetyQuery, type UploadProgress, uploadToLibrary } from './api.ts';
 import { AssetPicker } from './asset-picker.tsx';
@@ -62,13 +62,16 @@ export function SafetyPage() {
     queryClient.setQueryData(safetyQuery(stationId).queryKey, data);
 
   return (
-    <div className="flex flex-col gap-6 p-4 sm:p-6">
-      <PageHeader
-        title={t('title')}
-        description={t('description')}
-        badge={query.data && <OnAirBadge status={query.data} />}
-        actions={query.data && <SyncedAt at={query.data.syncedAt} />}
-      />
+    <Page
+      width="form"
+      header={
+        <PageHeader
+          title={t('title')}
+          description={t('description')}
+          badge={query.data && <OnAirBadge status={query.data} />}
+        />
+      }
+    >
       {!canEdit && <p className="text-sm text-muted-foreground">{t('readOnly')}</p>}
       {query.isError && <FormAlert error={query.error} />}
       {query.isPending ? (
@@ -87,9 +90,11 @@ export function SafetyPage() {
             canEdit={canEdit}
             onChange={setData}
           />
+          {/* Where the engine stands: a footnote to both cards, not a page action. */}
+          <SyncedAt at={query.data.syncedAt} />
         </>
       ) : null}
-    </div>
+    </Page>
   );
 }
 

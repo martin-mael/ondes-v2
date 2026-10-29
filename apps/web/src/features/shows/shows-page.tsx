@@ -8,7 +8,7 @@ import { Button } from '@/ui/button';
 import { Card, CardContent } from '@/ui/card';
 import { isApiError } from '../../app/api/client.ts';
 import { FormAlert } from '../../app/forms.tsx';
-import { PageHeader } from '../../app/page-header.tsx';
+import { Page, PageHeader } from '../../app/page-header.tsx';
 import { ListSkeleton } from '../../app/pending.tsx';
 import { useShowAccess } from './access.ts';
 import { showsQuery } from './api.ts';
@@ -86,20 +86,23 @@ export function ShowsPage() {
   const others = mine.length > 0 ? items.filter((s) => !mine.includes(s)) : items;
 
   return (
-    <div className="flex min-w-0 flex-col gap-6 p-4 sm:p-6">
-      <PageHeader
-        title={t('list.title')}
-        description={t('list.description')}
-        actions={
-          access.canManage && (
-            <Button onClick={() => setCreating(true)}>
-              <PlusIcon data-icon="inline-start" />
-              {t('list.new')}
-            </Button>
-          )
-        }
-      />
-
+    <Page
+      width="list"
+      header={
+        <PageHeader
+          title={t('list.title')}
+          description={t('list.description')}
+          actions={
+            access.canManage && (
+              <Button onClick={() => setCreating(true)}>
+                <PlusIcon data-icon="inline-start" />
+                {t('list.new')}
+              </Button>
+            )
+          }
+        />
+      }
+    >
       {list.isPending ? (
         <ListSkeleton />
       ) : list.isError ? (
@@ -153,6 +156,6 @@ export function ShowsPage() {
           })
         }
       />
-    </div>
+    </Page>
   );
 }

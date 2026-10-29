@@ -12,7 +12,7 @@ import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert, useErrorMessage } from '../../app/forms.tsx';
-import { BackButton } from '../../app/page-header.tsx';
+import { BackButton, Page, PageHeader } from '../../app/page-header.tsx';
 import { DelayedSpinner, PageSkeleton } from '../../app/pending.tsx';
 import { useSseEvent } from '../../app/sse/sse.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
@@ -422,18 +422,23 @@ function Recorder({
   const open = mic.status === 'open';
 
   return (
-    <div className="flex flex-col gap-4 p-4 sm:p-6">
+    <Page
+      width="list"
+      className="gap-4"
+      header={
+        <PageHeader
+          back={back(() => {
+            // Only the draft is unsaved: it goes back with this link, nothing is lost.
+            if (!holdsWork) allowLeave();
+          })}
+          title={title}
+          description={subtitle || undefined}
+        />
+      }
+    >
       {guard}
-      <div className="flex flex-wrap items-center gap-3">
-        {back(() => {
-          // Only the draft is unsaved: it goes back with this link, nothing is lost.
-          if (!holdsWork) allowLeave();
-        })}
-        <h1 className="font-heading text-xl font-semibold">{title}</h1>
-        {subtitle && <p className="min-w-0 truncate text-sm text-muted-foreground">{subtitle}</p>}
-      </div>
 
-      <section className="flex flex-col gap-3 rounded-md border p-4">
+      <section className="flex flex-col gap-3 rounded-lg border p-4">
         <h2 className="text-sm font-medium">{t('mic.title')}</h2>
         {!supported ? (
           <Alert>
@@ -475,6 +480,55 @@ function Recorder({
             {preroll && <p className="text-xs text-muted-foreground">{t('mic.headphones')}</p>}
           </>
         )}
+        {/* Recording sits with the mic it records from: one block, mic then take. */}
+        <div className="flex flex-wrap items-center gap-3 border-t pt-3">
+          {recording ? (
+            <Button variant="destructive" onClick={finish}>
+              <SquareIcon data-icon="inline-start" />
+              {t('record.stop')}
+              <DelayedSpinner when={phase === 'starting'} data-icon="inline-end" />
+            </Button>
+          ) : (
+            <Button onClick={() => void start()} disabled={!open || uploading}>
+              {take ? (
+                <RotateCcwIcon data-icon="inline-start" />
+              ) : (
+                <CircleIcon data-icon="inline-start" />
+              )}
+              {take ? t('record.retake') : t('record.start')}
+            </Button>
+          )}
+          {preroll && (
+            <div className="flex items-center gap-2">
+              <NativeSelect
+                aria-label={t('record.preroll')}
+                value={String(prerollS)}
+                disabled={recording}
+                onChange={(e) => setPrerollS(Number(e.target.value))}
+              >
+                {PREROLL_S.map((s) => (
+                  <NativeSelectOption key={s} value={s}>
+                    {s} s
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+              <span className="text-sm text-muted-foreground">
+                {t('record.prerollHint', { seconds: prerollS })}
+              </span>
+            </div>
+          )}
+          {phase === 'recording' && (
+            <span className="flex items-center gap-2 text-sm tabular-nums" role="status">
+              <span className="size-2 rounded-full bg-destructive" />
+              {t('record.recording', { time: formatTime(elapsed) })}
+            </span>
+          )}
+          {phase === 'recording' && elapsed >= MAX_TAKE_SECONDS - 60 && (
+            <span className="text-sm text-muted-foreground">
+              {t('record.limitSoon', { time: formatTime(MAX_TAKE_SECONDS) })}
+            </span>
+          )}
+        </div>
       </section>
 
       {prerollMissing && (
@@ -482,55 +536,6 @@ function Recorder({
           <AlertDescription>{t('record.noMusic')}</AlertDescription>
         </Alert>
       )}
-
-      <div className="flex flex-wrap items-center gap-3">
-        {recording ? (
-          <Button variant="destructive" onClick={finish}>
-            <SquareIcon data-icon="inline-start" />
-            {t('record.stop')}
-            <DelayedSpinner when={phase === 'starting'} data-icon="inline-end" />
-          </Button>
-        ) : (
-          <Button onClick={() => void start()} disabled={!open || uploading}>
-            {take ? (
-              <RotateCcwIcon data-icon="inline-start" />
-            ) : (
-              <CircleIcon data-icon="inline-start" />
-            )}
-            {take ? t('record.retake') : t('record.start')}
-          </Button>
-        )}
-        {preroll && (
-          <div className="flex items-center gap-2">
-            <NativeSelect
-              aria-label={t('record.preroll')}
-              value={String(prerollS)}
-              disabled={recording}
-              onChange={(e) => setPrerollS(Number(e.target.value))}
-            >
-              {PREROLL_S.map((s) => (
-                <NativeSelectOption key={s} value={s}>
-                  {s} s
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            <span className="text-sm text-muted-foreground">
-              {t('record.prerollHint', { seconds: prerollS })}
-            </span>
-          </div>
-        )}
-        {phase === 'recording' && (
-          <span className="flex items-center gap-2 text-sm tabular-nums" role="status">
-            <span className="size-2 rounded-full bg-destructive" />
-            {t('record.recording', { time: formatTime(elapsed) })}
-          </span>
-        )}
-        {phase === 'recording' && elapsed >= MAX_TAKE_SECONDS - 60 && (
-          <span className="text-sm text-muted-foreground">
-            {t('record.limitSoon', { time: formatTime(MAX_TAKE_SECONDS) })}
-          </span>
-        )}
-      </div>
 
       {take && !recording && (
         <TakePanel
@@ -573,7 +578,7 @@ function Recorder({
           )}
         </div>
       )}
-    </div>
+    </Page>
   );
 }
 

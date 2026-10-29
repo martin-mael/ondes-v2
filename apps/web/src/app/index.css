@@ -131,7 +131,9 @@
   [role="button"]:not(:disabled) {
     cursor: pointer;
   }
+  /* Scrolling to an element keeps it clear of the sticky page header. */
   html {
     @apply font-sans;
+    scroll-padding-top: 4.5rem;
   }
 }

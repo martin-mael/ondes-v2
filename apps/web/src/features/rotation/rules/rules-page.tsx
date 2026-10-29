@@ -25,7 +25,7 @@ import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { isApiError } from '../../../app/api/client.ts';
 import { findStation, useOrgs } from '../../../app/auth/session.ts';
 import { FormAlert } from '../../../app/forms.tsx';
-import { PageHeader } from '../../../app/page-header.tsx';
+import { Page, PageHeader } from '../../../app/page-header.tsx';
 import { DelayedSpinner, ListSkeleton } from '../../../app/pending.tsx';
 import { useUnsavedChanges } from '../../../app/unsaved.tsx';
 import { categoriesQuery } from '../categories/api.ts';
@@ -94,27 +94,28 @@ export function RulesPage() {
   const { stationId } = route.useParams();
   const settings = useQuery(rulesQuery(stationId));
 
+  // The editor owns the page once the rules are loaded: its Save is in the header bar.
+  if (settings.isSuccess) {
+    return (
+      <RulesEditor
+        // A save resets the draft to what the api stored.
+        key={settings.data.updatedAt?.toISOString() ?? 'defaults'}
+        stationId={stationId}
+        saved={settings.data.rules}
+        isDefault={settings.data.updatedAt === null}
+      />
+    );
+  }
   return (
-    <div className="flex flex-col gap-6 p-4 sm:p-6">
-      <PageHeader title={t('title')} description={t('description')} />
+    <Page header={<PageHeader title={t('title')} description={t('description')} />}>
       {settings.isPending ? (
         <ListSkeleton />
-      ) : settings.isError ? (
-        isApiError(settings.error, 'forbidden') ? (
-          <p className="text-sm text-muted-foreground">{t('forbidden')}</p>
-        ) : (
-          <FormAlert error={settings.error} />
-        )
+      ) : isApiError(settings.error, 'forbidden') ? (
+        <p className="text-sm text-muted-foreground">{t('forbidden')}</p>
       ) : (
-        <RulesEditor
-          // A save resets the draft to what the api stored.
-          key={settings.data.updatedAt?.toISOString() ?? 'defaults'}
-          stationId={stationId}
-          saved={settings.data.rules}
-          isDefault={settings.data.updatedAt === null}
-        />
+        <FormAlert error={settings.error} />
       )}
-    </div>
+    </Page>
   );
 }
 
@@ -174,93 +175,110 @@ function RulesEditor({
   const ignored = CATEGORY_RULES.filter((kind) => !rules.some((r) => r.kind === kind && r.enabled));
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,30rem)]">
-      {guard}
-      <div className="flex flex-col gap-4">
-        <div className="flex flex-wrap items-center gap-2">
-          {isDefault && <Badge variant="secondary">{t('defaults')}</Badge>}
-          <div className="ml-auto flex gap-2">
-            <Button variant="ghost" disabled={!dirty} onClick={() => change(saved)}>
-              {t('reset')}
-            </Button>
-            <Button onClick={save} disabled={pending || (!dirty && !isDefault)}>
-              <DelayedSpinner when={pending} data-icon="inline-start" />
-              {t('save')}
+    <Page
+      header={
+        <PageHeader
+          title={t('title')}
+          description={t('description')}
+          badge={isDefault && <Badge variant="secondary">{t('defaults')}</Badge>}
+          actions={
+            <>
+              <Button variant="ghost" disabled={!dirty} onClick={() => change(saved)}>
+                {t('reset')}
+              </Button>
+              <Button onClick={save} disabled={pending || (!dirty && !isDefault)}>
+                <DelayedSpinner when={pending} data-icon="inline-start" />
+                {t('save')}
+              </Button>
+            </>
+          }
+        />
+      }
+    >
+      {/* The rules on the left; how they give way and a test pick on the right. */}
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]">
+        {guard}
+        <div className="flex flex-col gap-4">
+          {showErrors && !parsed.success && (
+            <Alert variant="destructive">
+              <CircleAlertIcon />
+              <AlertDescription>{t('invalid')}</AlertDescription>
+            </Alert>
+          )}
+          {error ? <FormAlert error={error} /> : null}
+          {ignored.length > 0 && (
+            <Alert data-testid="ignored-settings">
+              <CircleAlertIcon />
+              <AlertDescription>
+                <ul>
+                  {ignored.map((kind) => (
+                    <li key={kind}>{t(`ignored.${kind}`)}</li>
+                  ))}
+                </ul>
+              </AlertDescription>
+            </Alert>
+          )}
+          {rules.length === 0 && <p className="text-sm text-muted-foreground">{t('empty')}</p>}
+          <ol className="flex flex-col gap-3">
+            {rules.map((rule, index) => (
+              <li key={rule.id}>
+                <RuleCard
+                  rule={rule}
+                  first={index === 0}
+                  last={index === rules.length - 1}
+                  issues={showErrors ? (issuesByRule.get(index) ?? []) : []}
+                  onChange={(next) => change(rules.map((r, i) => (i === index ? next : r)))}
+                  onMove={(delta) => {
+                    const next = [...rules];
+                    const [moved] = next.splice(index, 1);
+                    next.splice(index + delta, 0, moved as RotationRule);
+                    change(next);
+                  }}
+                  onRemove={() => change(rules.filter((_, i) => i !== index))}
+                />
+              </li>
+            ))}
+          </ol>
+
+          <div className="flex items-end gap-2">
+            <Field className="w-auto">
+              <FieldLabel htmlFor="rule-add-kind">{t('add.kind')}</FieldLabel>
+              <NativeSelect
+                id="rule-add-kind"
+                value={adding}
+                onChange={(e) => setAdding(e.target.value as RotationRuleKind)}
+              >
+                {rotationRuleKinds.map((kind) => (
+                  <NativeSelectOption key={kind} value={kind}>
+                    {kindLabel(t, kind)}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </Field>
+            <Button variant="outline" onClick={() => change([...rules, newRule(adding)])}>
+              <PlusIcon data-icon="inline-start" />
+              {t('add')}
             </Button>
           </div>
         </div>
-        {showErrors && !parsed.success && (
-          <Alert variant="destructive">
-            <CircleAlertIcon />
-            <AlertDescription>{t('invalid')}</AlertDescription>
-          </Alert>
-        )}
-        {error ? <FormAlert error={error} /> : null}
-        {ignored.length > 0 && (
-          <Alert data-testid="ignored-settings">
-            <CircleAlertIcon />
-            <AlertDescription>
-              <ul>
-                {ignored.map((kind) => (
-                  <li key={kind}>{t(`ignored.${kind}`)}</li>
-                ))}
-              </ul>
-            </AlertDescription>
-          </Alert>
-        )}
-        <p className="text-sm text-muted-foreground">{t('ladder')}</p>
-        <p className="text-sm" data-testid="ladder">
-          <span className="font-medium">{t('ladder.order')}: </span>
-          {ladder.length === 0
-            ? t('ladder.none')
-            : ladder.map((r) => kindLabel(t, r.kind)).join(' → ')}
-        </p>
-
-        {rules.length === 0 && <p className="text-sm text-muted-foreground">{t('empty')}</p>}
-        <ol className="flex flex-col gap-3">
-          {rules.map((rule, index) => (
-            <li key={rule.id}>
-              <RuleCard
-                rule={rule}
-                first={index === 0}
-                last={index === rules.length - 1}
-                issues={showErrors ? (issuesByRule.get(index) ?? []) : []}
-                onChange={(next) => change(rules.map((r, i) => (i === index ? next : r)))}
-                onMove={(delta) => {
-                  const next = [...rules];
-                  const [moved] = next.splice(index, 1);
-                  next.splice(index + delta, 0, moved as RotationRule);
-                  change(next);
-                }}
-                onRemove={() => change(rules.filter((_, i) => i !== index))}
-              />
-            </li>
-          ))}
-        </ol>
-
-        <div className="flex items-end gap-2">
-          <Field className="w-auto">
-            <FieldLabel htmlFor="rule-add-kind">{t('add.kind')}</FieldLabel>
-            <NativeSelect
-              id="rule-add-kind"
-              value={adding}
-              onChange={(e) => setAdding(e.target.value as RotationRuleKind)}
-            >
-              {rotationRuleKinds.map((kind) => (
-                <NativeSelectOption key={kind} value={kind}>
-                  {kindLabel(t, kind)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-          </Field>
-          <Button variant="outline" onClick={() => change([...rules, newRule(adding)])}>
-            <PlusIcon data-icon="inline-start" />
-            {t('add')}
-          </Button>
+        <div className="flex flex-col gap-6 xl:sticky xl:top-22 xl:self-start">
+          <Card>
+            <CardHeader>
+              <CardTitle>{t('ladder.order')}</CardTitle>
+              <CardDescription>{t('ladder')}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p data-testid="ladder" className="text-sm">
+                {ladder.length === 0
+                  ? t('ladder.none')
+                  : ladder.map((r) => kindLabel(t, r.kind)).join(' → ')}
+              </p>
+            </CardContent>
+          </Card>
+          <TryPanel stationId={stationId} rules={parsed.success ? parsed.data : null} />
         </div>
       </div>
-      <TryPanel stationId={stationId} rules={parsed.success ? parsed.data : null} />
-    </div>
+    </Page>
   );
 }
 
@@ -627,7 +645,7 @@ function TryPanel({ stationId, rules }: { stationId: string; rules: RotationRule
   };
 
   return (
-    <Card className="self-start">
+    <Card>
       <CardHeader>
         <CardTitle>{t('try.title')}</CardTitle>
         <CardDescription>{t('try.description')}</CardDescription>

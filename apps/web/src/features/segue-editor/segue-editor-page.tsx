@@ -41,7 +41,7 @@ import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert, useErrorMessage } from '../../app/forms.tsx';
-import { BackButton } from '../../app/page-header.tsx';
+import { BackButton, Page, PageHeader } from '../../app/page-header.tsx';
 import { DelayedSpinner, PageSkeleton } from '../../app/pending.tsx';
 import { useSseEvent } from '../../app/sse/sse.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
@@ -706,31 +706,37 @@ function Editor({
     : 'island.none';
 
   return (
-    <div className="flex flex-col gap-4 p-4 sm:p-6">
+    <Page
+      className="gap-4"
+      header={
+        <PageHeader
+          back={back}
+          title={t('title')}
+          description={`${titleOf(a)} → ${titleOf(b)}`}
+          badge={
+            <>
+              <Badge variant={segue?.status === 'ready' ? 'secondary' : 'outline'}>
+                {t(statusKey)}
+              </Badge>
+              {segue && (
+                <Badge variant={segue.island?.status === 'failed' ? 'destructive' : 'outline'}>
+                  {t(islandKey)}
+                </Badge>
+              )}
+            </>
+          }
+          actions={
+            canWrite && (
+              <Button onClick={() => save.mutate(lanes)} disabled={!canSave}>
+                <DelayedSpinner when={save.isPending} data-icon="inline-start" />
+                {t('toolbar.save')}
+              </Button>
+            )
+          }
+        />
+      }
+    >
       {guard}
-      <div className="flex flex-wrap items-center gap-3">
-        {back}
-        <h1 className="font-heading text-xl font-semibold">{t('title')}</h1>
-        <p className="min-w-0 truncate text-sm text-muted-foreground">
-          {titleOf(a)} → {titleOf(b)}
-        </p>
-        <div className="ml-auto flex items-center gap-2">
-          <Badge variant={segue?.status === 'ready' ? 'secondary' : 'outline'}>
-            {t(statusKey)}
-          </Badge>
-          {segue && (
-            <Badge variant={segue.island?.status === 'failed' ? 'destructive' : 'outline'}>
-              {t(islandKey)}
-            </Badge>
-          )}
-          {canWrite && (
-            <Button onClick={() => save.mutate(lanes)} disabled={!canSave}>
-              <DelayedSpinner when={save.isPending} data-icon="inline-start" />
-              {t('toolbar.save')}
-            </Button>
-          )}
-        </div>
-      </div>
 
       {missing.map((title) => (
         <Alert key={title}>
@@ -893,7 +899,7 @@ function Editor({
           setSelection({ lane: voiceKey(next.voices.length - 1), point: null });
         }}
       />
-    </div>
+    </Page>
   );
 }
 

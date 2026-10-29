@@ -13,7 +13,7 @@ import { NativeSelect, NativeSelectOption } from '@/ui/native-select';
 import { isApiError } from '../../app/api/client.ts';
 import { findStation, useOrgs } from '../../app/auth/session.ts';
 import { FormAlert } from '../../app/forms.tsx';
-import { PageHeader } from '../../app/page-header.tsx';
+import { Page, PageHeader } from '../../app/page-header.tsx';
 import { DelayedSpinner, PageSkeleton } from '../../app/pending.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
 import { clocksQuery } from '../clocks/api.ts';
@@ -180,31 +180,33 @@ export function GridPage() {
   };
 
   return (
-    <div className="flex flex-col gap-6 p-4 sm:p-6">
-      <PageHeader
-        title={t('title')}
-        description={
-          <>
-            {t('description')} <span>{t('stationTime', { timezone })}</span>
-          </>
-        }
-        actions={
-          canEdit && (
+    <Page
+      header={
+        <PageHeader
+          title={t('title')}
+          description={
             <>
-              {dirty && (
-                <Button variant="outline" onClick={discard} disabled={saving}>
-                  {t('discard')}
-                </Button>
-              )}
-              <Button onClick={save} disabled={!dirty || saving || conflict}>
-                <DelayedSpinner when={saving} data-icon="inline-start" />
-                {t('save')}
-              </Button>
+              {t('description')} <span>{t('stationTime', { timezone })}</span>
             </>
-          )
-        }
-      />
-
+          }
+          actions={
+            canEdit && (
+              <>
+                {dirty && (
+                  <Button variant="outline" onClick={discard} disabled={saving}>
+                    {t('discard')}
+                  </Button>
+                )}
+                <Button onClick={save} disabled={!dirty || saving || conflict}>
+                  <DelayedSpinner when={saving} data-icon="inline-start" />
+                  {t('save')}
+                </Button>
+              </>
+            )
+          }
+        />
+      }
+    >
       {conflict && (
         <Alert variant="destructive">
           <CircleAlertIcon />
@@ -263,6 +265,7 @@ export function GridPage() {
             {canEdit && (
               <section className="flex flex-col gap-2">
                 <h2 className="text-sm font-medium">{t('brush.title')}</h2>
+                <p className="text-xs text-muted-foreground">{t('brush.hint')}</p>
                 <div className="flex flex-wrap gap-1.5">
                   {clocks.map((clock) => (
                     <Button
@@ -351,6 +354,6 @@ export function GridPage() {
         </div>
       )}
       {guard}
-    </div>
+    </Page>
   );
 }

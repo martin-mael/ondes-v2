@@ -42,7 +42,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Textarea } from '@/ui/textarea';
 import { isApiError } from '../../app/api/client.ts';
 import { type FieldErrors, FormAlert, fieldErrors } from '../../app/forms.tsx';
-import { BackButton, PageHeader } from '../../app/page-header.tsx';
+import { BackButton, Page, PageHeader } from '../../app/page-header.tsx';
 import { DelayedSpinner, ListSkeleton, PageSkeleton } from '../../app/pending.tsx';
 import { useUnsavedChanges } from '../../app/unsaved.tsx';
 import { vtPoolsQuery } from '../promos/api.ts';
@@ -284,39 +284,44 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
   };
 
   return (
-    <div className="flex flex-col gap-6 p-4 sm:p-6">
+    <Page
+      header={
+        <PageHeader
+          back={
+            <BackButton
+              nativeButton={false}
+              render={<Link to="/stations/$stationId/clocks" params={{ stationId }} />}
+            >
+              {t('editor.back')}
+            </BackButton>
+          }
+          // Editing: the clock's (saved) name, so you see which one; new: "New clock".
+          title={clock ? clock.name : t('editor.newTitle')}
+          description={clock ? t('editor.editTitle') : undefined}
+          actions={
+            <>
+              {clock && (
+                <>
+                  <Button variant="outline" onClick={duplicate}>
+                    <CopyIcon data-icon="inline-start" />
+                    {t('duplicate')}
+                  </Button>
+                  <Button variant="destructive" onClick={remove}>
+                    <Trash2Icon data-icon="inline-start" />
+                    {t('editor.delete')}
+                  </Button>
+                </>
+              )}
+              <Button onClick={save} disabled={pending}>
+                <DelayedSpinner when={pending} data-icon="inline-start" />
+                {clock ? t('editor.save') : t('editor.create')}
+              </Button>
+            </>
+          }
+        />
+      }
+    >
       {guard}
-      <PageHeader
-        back={
-          <BackButton
-            nativeButton={false}
-            render={<Link to="/stations/$stationId/clocks" params={{ stationId }} />}
-          >
-            {t('editor.back')}
-          </BackButton>
-        }
-        title={clock ? t('editor.editTitle') : t('editor.newTitle')}
-        actions={
-          <>
-            {clock && (
-              <>
-                <Button variant="outline" onClick={duplicate}>
-                  <CopyIcon data-icon="inline-start" />
-                  {t('duplicate')}
-                </Button>
-                <Button variant="destructive" onClick={remove}>
-                  <Trash2Icon data-icon="inline-start" />
-                  {t('editor.delete')}
-                </Button>
-              </>
-            )}
-            <Button onClick={save} disabled={pending}>
-              <DelayedSpinner when={pending} data-icon="inline-start" />
-              {clock ? t('editor.save') : t('editor.create')}
-            </Button>
-          </>
-        }
-      />
       {conflict && (
         <Alert variant="destructive">
           <CircleAlertIcon />
@@ -491,7 +496,7 @@ function ClockEditor({ stationId, clock }: { stationId: string; clock: ClockDeta
           <PreviewCard stationId={stationId} slots={slots} target={target} categories={byId} />
         </div>
       </div>
-    </div>
+    </Page>
   );
 }
 

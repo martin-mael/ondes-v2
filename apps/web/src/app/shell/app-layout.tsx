@@ -17,7 +17,6 @@ import {
   SidebarMenuItem,
   SidebarProvider,
   SidebarRail,
-  SidebarTrigger,
 } from '@/ui/sidebar';
 import { findStation, lastStation, useOrgs } from '../auth/session.ts';
 import { useI18n } from '../i18n/i18n.tsx';
@@ -32,7 +31,8 @@ export function AppLayout() {
   return (
     <SidebarProvider>
       <Sidebar collapsible="icon">
-        <SidebarHeader>
+        {/* As tall as a page's header bar, with the same rule under it: one band across. */}
+        <SidebarHeader className="h-16 justify-center border-b">
           <StationSwitcher stationId={stationId} />
         </SidebarHeader>
         <SidebarContent>{stationId && <StationNav stationId={stationId} />}</SidebarContent>
@@ -41,13 +41,9 @@ export function AppLayout() {
         </SidebarFooter>
         <SidebarRail />
       </Sidebar>
+      {/* No bar of its own: each page's header is the bar (app/page-header.tsx). */}
       <SidebarInset>
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
-          <SidebarTrigger />
-        </header>
-        <div className="flex flex-1 flex-col">
-          <Outlet />
-        </div>
+        <Outlet />
       </SidebarInset>
     </SidebarProvider>
   );
