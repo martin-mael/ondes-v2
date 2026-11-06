@@ -30,8 +30,12 @@ is one band across the whole window: station on the left, page title and actions
 - `form` (768px) for settings: safety, live recording, account.
 
 The account page used to be centred while every other page was left-aligned. Now everything
-shares one left edge, and the bar's content follows the page's width, so its buttons end where
-the content ends.
+shares one left edge. The bar itself always spans the window, with its actions anchored to the
+right edge, so they sit in the same place on every page (a first version stopped them at the
+content's width, where they looked like they were floating).
+
+![Clocks, actions anchored right](header-anchor-clocks-light.jpg)
+![Categories, dark](header-anchor-categories-dark.jpg)
 
 ### 3. Controls next to what they control
 - **Calendar:** every control is in the bar: the period (previous / today / next and the dates)
