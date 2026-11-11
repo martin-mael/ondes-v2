@@ -45,7 +45,7 @@ Coverage note: strongest data on mAirList, RadioKing, Radio.co, Radio Cult, Live
 - [V] Custom commands for controlling hardware; SQL database support; ingest from news, traffic, weather, scheduling; reconciliation to billing/corporate systems.
 - [V] Auto segue marker insertion (DAD AutoSegue DCL).
 - [R] Licensing split: Production suite (Production, Voicetracking, Scheduling, Content Ingest, Conversion, Transfer Tools) vs on-air license adding Automation and on-air module. https://bswusa.com/enco-dad-lp-prod-package
-- [V] AITrack module: AI/synthetic voice-track pre-scheduling. MOM: unified ingest, media asset management, graphics, playout platform.
+- [V] MOM: unified ingest, media asset management, graphics, playout platform.
 - Gap: list prices not retrieved.
 
 ### Myriad (Broadcast Radio, UK)
@@ -144,7 +144,6 @@ Live assist and voice tracking
 - One-click switch between automation and live assist (Myriad).
 - Remote voice tracking from browser or app (Myriad 5/6, RadioBOSS Ultimate, WO AFR Mobile).
 - Group voice tracking: one recording to many stations (WO, April 2023).
-- AI voice track pre-scheduling with synthetic voices (DAD AITrack).
 
 Hardware and console control
 - Native console integrations: DHD, Lawo, AEQ, Axia, Telos VX, Wheatnet-IP, Wheatstone, Sonifex, D&R (mAirList Advanced Plus, Ember+).
@@ -191,7 +190,6 @@ Multi-user and rights
 - Native cross-platform desktop clients (WO v5, macOS/Win/Linux/iOS).
 - Dual edition model: Standard vs Pro vs Ultimate with clear feature gating (RadioBOSS, StationPlaylist, mAirList).
 - Traffic change visible to on-air talent immediately (Aquira to Zetta).
-- Pre-scheduling with automatic voice-track generation and preview (DAD AITrack).
 - Event triggers via DTMF or schedule and an automatic fallback to stored content on stream drop (Mixlr, RadioBOSS).
 - Dashboard for stream health and listener count, plus weekly audience reports (RadioKing Pro).
 - Reconciliation view that compares planned vs as-run logs (Aquira, DAD).
@@ -227,9 +225,8 @@ Observed gaps:
 3. Pricing is opaque and per-station; tiers gate automation, voice tracking and API behind expensive plans (Radio Cult Growth to Premium; Radio.co Lite lacks voice tracking; Zeno automation USD 60+). A transparent, per-tenant or per-seat model with automation included is an opening.
 4. Multi-tenant networks (groups of stations sharing voice tracks, music libraries, ad inventory and reporting) are served mainly by enterprise suites (Myriad split playout, WO groups, RCS Cloud). Modern SaaS for network groups is underserved.
 5. Licensing and royalty reporting (SoundExchange, SACEM/ASCAP-style, GEMA) is only bundled by Live365 historically; automated royalty logging per tenant is a gap.
-6. Modern voice AI (TTS voice tracks, AI-generated news/weather) is only now appearing (DAD AITrack, Radio Cult AI agents add-on). Room for web-first, multi-tenant AI voice tracking with human approval.
-7. Open-source alternatives (AzuraCast, LibreTime, Rivendell) cover hosting and basic automation but lack: console integrations, traffic/ad sales, as-run reconciliation, polished live-assist UI, and multi-station network features. A multi-tenant web app that closes these while staying self-hostable would sit between the two groups.
-8. Trust and support: reviews show billing and support pain. Transparent status, exportable data and a clear refund/outage policy are differentiators.
+6. Open-source alternatives (AzuraCast, LibreTime, Rivendell) cover hosting and basic automation but lack: console integrations, traffic/ad sales, as-run reconciliation, polished live-assist UI, and multi-station network features. A multi-tenant web app that closes these while staying self-hostable would sit between the two groups.
+7. Trust and support: reviews show billing and support pain. Transparent status, exportable data and a clear refund/outage policy are differentiators.
 
 Suggested priorities for our design (derived from this research, not verified by vendor testing):
 - Web live-assist console with keyboard hotkeys, now/next, countdown, drag-drop log editing, colored categories.

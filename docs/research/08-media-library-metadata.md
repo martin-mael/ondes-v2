@@ -208,7 +208,7 @@ Coverage note: the web search budget for this run was exhausted after about 27 s
 - Rights and territory flags, explicit flag, clean-version linking, embargo dates.
 - Promo pool import: Play MPE or other pool downloads, with source_pool field and expiry handling.
 - Versions/cuts model: one work, multiple cuts (radio edit, clean, extended), with cut-level scheduling.
-- Mood/energy scores from local analyzer (Essentia non-commercial models are not usable commercially without licence; plan for an alternative).
+- Energy scores from a local signal analyzer (no ML models).
 - Multiple intro and outro points per track (competitor feature).
 - Beat-grid alignment for segue points; snap-to-beat in the editor.
 - Tag write-back export (ID3, Vorbis, R128 and ReplayGain for Opus).
@@ -220,9 +220,7 @@ Coverage note: the web search budget for this run was exhausted after about 27 s
 ### Could
 - Voice-activity detection for intro/outro vocal start.
 - Automatic key-compatibility suggestions (Camelot wheel) for song-to-song transitions.
-- Perceptual dedupe by audio embeddings (beyond Chromaprint).
 - Spectrogram view.
-- Automatic genre/mood tagging by ML model (license-checked model only).
 - Promo pool direct API integration beyond download.
 - Scheduled re-analysis of whole library after analyzer upgrade with progress UI.
 - Peak envelope (BWF PEAK chunk) written into masters.

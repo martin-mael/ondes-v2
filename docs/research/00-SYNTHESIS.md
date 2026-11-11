@@ -70,7 +70,6 @@ Live studios / remote DJs / voice tracks ───────┘               
   - AzuraCast has no clocks.
   - LibreTime smart blocks have no artist separation (issue #1369, open since 2021).
   - "Once per X" insertion is unreliable when done at runtime. Generate it into the log instead.
-- **Trend:** ML/optimizer scheduling (INFORMS 2025, Super Hi-Fi). Treat it as a suggestion layer on top of hard rules.
 
 ### 2.3 Audio processing & loudness ([03](03-audio-processing-loudness.md))
 - **Targets:**
@@ -239,7 +238,6 @@ Live studios / remote DJs / voice tracks ───────┘               
   - Console integration (DHD, Lawo, Axia, Wheatstone via Ember+).
   - Cloud disaster recovery.
   - Group and remote voice tracking.
-  - AI voice tracks (ENCO AITrack).
   - Audio logger and stream monitor.
   - EAS/DTMF triggers.
 - **UX to copy:**
